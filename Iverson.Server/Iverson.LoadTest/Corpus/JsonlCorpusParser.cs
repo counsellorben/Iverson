@@ -3,12 +3,12 @@ using System.Text.Json;
 namespace Iverson.LoadTest.Corpus;
 
 /// <summary>
-/// Parses BEIR-format corpus files: JSONL corpus/queries and TSV qrels.
-/// https://github.com/beir-cellar/beir — corpus.jsonl has one JSON object per
-/// line with "_id", "title", "text"; queries.jsonl has "_id", "text"; qrels
-/// are TSV with a header row: "query-id\tcorpus-id\tscore".
+/// Parses JSONL corpus and query files: one JSON object per line, with "_id", "title", "text" in
+/// corpus.jsonl and "_id", "text" in queries.jsonl. This is BEIR's on-disk shape
+/// (https://github.com/beir-cellar/beir); FreshStack-derived files are normalised into the same
+/// shape upstream of this parser before reaching it.
 /// </summary>
-public static class BeirCorpusParser
+public static class JsonlCorpusParser
 {
     public static List<CorpusDocument> ParseCorpus(TextReader reader)
     {
@@ -29,7 +29,7 @@ public static class BeirCorpusParser
             var id = root.TryGetProperty("_id", out var idProp) ? idProp.GetString() : null;
             if (string.IsNullOrEmpty(id))
             {
-                throw new FormatException($"BEIR corpus line {lineNumber}: missing or empty \"_id\".");
+                throw new FormatException($"Corpus line {lineNumber}: missing or empty \"_id\".");
             }
 
             var title = root.TryGetProperty("title", out var titleProp) ? titleProp.GetString() ?? "" : "";
@@ -43,7 +43,7 @@ public static class BeirCorpusParser
             if (string.IsNullOrWhiteSpace(text))
             {
                 throw new FormatException(
-                    $"BEIR corpus line {lineNumber} (_id \"{id}\"): missing or empty \"text\". A document " +
+                    $"Corpus line {lineNumber} (_id \"{id}\"): missing or empty \"text\". A document " +
                     "with no body is never indexed and would silently vanish from every result set.");
             }
 
@@ -72,54 +72,24 @@ public static class BeirCorpusParser
             var id = root.TryGetProperty("_id", out var idProp) ? idProp.GetString() : null;
             if (string.IsNullOrEmpty(id))
             {
-                throw new FormatException($"BEIR queries line {lineNumber}: missing or empty \"_id\".");
+                throw new FormatException($"Queries line {lineNumber}: missing or empty \"_id\".");
             }
 
             var text = root.TryGetProperty("text", out var textProp) ? textProp.GetString() ?? "" : "";
+
+            // Mirrors the ParseCorpus guard above, for the same reason on the query side: an empty query
+            // string is embedded and searched without error, returns a meaningless ranking, and produces a
+            // run file that scores zero relevance with success reported at every checkpoint.
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                throw new FormatException(
+                    $"Queries line {lineNumber} (_id \"{id}\"): missing or empty \"text\". A query with no " +
+                    "text is embedded as an empty vector and silently scores nothing.");
+            }
 
             queries.Add(new CorpusQuery(id, text));
         }
 
         return queries;
-    }
-
-    public static List<Qrel> ParseQrels(TextReader reader)
-    {
-        var qrels = new List<Qrel>();
-
-        // First line is the header ("query-id\tcorpus-id\tscore"); skip it.
-        var header = reader.ReadLine();
-        if (header == null)
-        {
-            return qrels;
-        }
-
-        string? line;
-        var lineNumber = 1;
-        while ((line = reader.ReadLine()) != null)
-        {
-            lineNumber++;
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                continue;
-            }
-
-            var parts = line.Split('\t');
-            if (parts.Length < 3)
-            {
-                throw new FormatException($"BEIR qrels line {lineNumber}: expected 3 tab-separated fields, got {parts.Length}.");
-            }
-
-            var queryId = parts[0];
-            var docId = parts[1];
-            if (!int.TryParse(parts[2], out var relevance))
-            {
-                throw new FormatException($"BEIR qrels line {lineNumber}: score \"{parts[2]}\" is not an integer.");
-            }
-
-            qrels.Add(new Qrel(queryId, "0", docId, relevance));
-        }
-
-        return qrels;
     }
 }

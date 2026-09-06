@@ -63,6 +63,68 @@ internal sealed class EnrichmentAnnotationTestEntity
 }
 
 [IversonEntity]
+[IversonEmbeddingModel("snowflake-arctic-embed:s")]
+internal sealed class ModelAnnotationTestEntity
+{
+    [IversonKey]
+    public Guid Id { get; set; }
+
+    [IversonEmbedding]
+    [IversonChunk]
+    public string Body { get; set; } = "";
+}
+
+// A both-flags property plus a neither-flags property (ModelAnnotationTestEntity's shape) cannot
+// catch a swapped guard: `if (p.IsChunk) p.ModelId = model; if (p.IsEmbedding) p.ChunkModelId =
+// model;` produces IDENTICAL output on both, because the both-flags property gets both stamps
+// regardless of which guard controls which field. An embedding-ONLY property and a chunk-ONLY
+// property are required to make the two guards observably different — mirrors Python's
+// RegModelAsymmetricArticle and Go's regModelAsymmetricArticle.
+[IversonEntity]
+[IversonEmbeddingModel("snowflake-arctic-embed:s")]
+internal sealed class ModelAsymmetricAnnotationTestEntity
+{
+    [IversonKey]
+    public Guid Id { get; set; }
+
+    [IversonEmbedding]
+    public string Title { get; set; } = "";
+
+    [IversonChunk]
+    public string Body { get; set; } = "";
+}
+
+// Deliberately NOT [IversonEntity]: same isolation rationale as UnregisteredFkCollisionEntity
+// below — EntityRegistry only scans types that carry the attribute directly, so this base
+// carries the [IversonEmbeddingModel] declaration but is never itself registered as an entity.
+// Only the two derived types below are.
+[IversonEmbeddingModel("snowflake-arctic-embed:s")]
+internal class ModelInheritedBaseEntity
+{
+    [IversonKey]
+    public Guid Id { get; set; }
+}
+
+[IversonEntity]
+internal sealed class ModelInheritedAnnotationTestEntity : ModelInheritedBaseEntity
+{
+    [IversonEmbedding]
+    [IversonChunk]
+    public string Body { get; set; } = "";
+}
+
+// Declares its own model, which must win over ModelInheritedBaseEntity's — the case that keeps
+// "inherits" from becoming "cannot override".
+[IversonEntity]
+[IversonEmbeddingModel("nomic-embed-text")]
+internal sealed class ModelOverriddenAnnotationTestEntity : ModelInheritedBaseEntity
+{
+    [IversonEmbedding]
+    [IversonChunk]
+    public string Body { get; set; } = "";
+}
+
+[IversonEntity]
 internal sealed class SchemaTestAuthor
 {
     [IversonKey]
@@ -608,11 +670,149 @@ public class SchemaRegistrarTests
 
         chunk.IsChunk.Should().BeTrue();
         chunk.ChunkContextual.Should().BeTrue();
+        // EnrichmentAnnotationTestEntity carries no [IversonEmbeddingModel]; the undeclared arm
+        // must send "" on ChunkModelId same as ModelId (SchemaRegistrarTests.cs's
+        // RegisterAllAsync_AppliesEmbeddingAnnotation_OnMarkedProperty pins ModelId's undeclared
+        // arm but has no [IversonChunk] property to pin ChunkModelId's).
+        chunk.ChunkModelId.Should().BeEmpty();
 
         plain.IsSummaryTarget.Should().BeFalse();
         plain.IsKeywordsTarget.Should().BeFalse();
         plain.ExtractHint.Should().BeEmpty();
         plain.ChunkContextual.Should().BeFalse();
+    }
+
+    // This is where stamping is falsifiable — ModelRejectedScenario's harness cannot distinguish
+    // a stamped default from a server-side fallback, because its fixture declares the deployment
+    // default on purpose (single-model conformance environment).
+    [Fact]
+    public async Task RegisterAllAsync_StampsDeclaredEmbeddingModel_OnEmbeddingAndChunkProperties()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "ModelAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var body = req!.RootType!.Properties.Single(p => p.Name == "Body");
+        body.IsEmbedding.Should().BeTrue();
+        body.IsChunk.Should().BeTrue();
+        body.ModelId.Should().Be("snowflake-arctic-embed:s");
+        body.ChunkModelId.Should().Be("snowflake-arctic-embed:s");
+    }
+
+    // THE DISCRIMINATING CASE for a swapped per-field guard. ModelAnnotationTestEntity's
+    // both-flags/neither-flags shape passes even if `if (p.IsChunk) p.ModelId = model;` and
+    // `if (p.IsEmbedding) p.ChunkModelId = model;` are swapped, because the both-flags property
+    // gets both stamps under either guard ordering. Title (embedding-only) and Body (chunk-only)
+    // on ModelAsymmetricAnnotationTestEntity are what makes a swap observable: under the correct
+    // guards Title gets ModelId only and Body gets ChunkModelId only; under the swap those flip.
+    [Fact]
+    public async Task RegisterAllAsync_StampsDeclaredEmbeddingModel_OnlyOnTheMatchingFieldOfAnAsymmetricType()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "ModelAsymmetricAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var title = req!.RootType!.Properties.Single(p => p.Name == "Title");
+        var body  = req.RootType.Properties.Single(p => p.Name == "Body");
+
+        title.IsEmbedding.Should().BeTrue();
+        title.ModelId.Should().Be("snowflake-arctic-embed:s");
+        title.ChunkModelId.Should().BeEmpty();
+
+        body.IsChunk.Should().BeTrue();
+        body.ChunkModelId.Should().Be("snowflake-arctic-embed:s");
+        body.ModelId.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RegisterAllAsync_StampsInheritedEmbeddingModel_OnDerivedTypeWithNoOwnDeclaration()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "ModelInheritedAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var body = req!.RootType!.Properties.Single(p => p.Name == "Body");
+        body.ModelId.Should().Be("snowflake-arctic-embed:s");
+        body.ChunkModelId.Should().Be("snowflake-arctic-embed:s");
+    }
+
+    // The type declares its own model despite deriving from ModelInheritedBaseEntity; its own
+    // declaration must win rather than the base's, otherwise "inherits" would mean "cannot
+    // override".
+    [Fact]
+    public async Task RegisterAllAsync_StampsOwnEmbeddingModel_OnDerivedTypeThatOverridesTheBaseDeclaration()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "ModelOverriddenAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var body = req!.RootType!.Properties.Single(p => p.Name == "Body");
+        body.ModelId.Should().Be("nomic-embed-text");
+        body.ChunkModelId.Should().Be("nomic-embed-text");
     }
 
     [Theory]

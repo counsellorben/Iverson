@@ -46,6 +46,7 @@ public sealed class DlqRepositoryPostgresContainerFixture : IAsyncLifetime
     public async Task DisposeAsync() => await _container.DisposeAsync();
 }
 
+[Collection(ContainerCollection.Name)]
 public sealed class DlqRepositoryPostgresIntegrationTests(DlqRepositoryPostgresContainerFixture fixture)
     : IClassFixture<DlqRepositoryPostgresContainerFixture>
 {

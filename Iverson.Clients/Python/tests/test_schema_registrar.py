@@ -138,6 +138,105 @@ class RegUnsupportedElementArticle:
     widgets: list[_CustomElement] = None
 
 
+@iverson_entity(embedding_model="nomic-embed-text")
+class RegModelBothFlagsArticle:
+    """Declares a model and carries one property that is BOTH an embedding and a chunk
+    source, plus one property that is NEITHER — the neither-flags property is the guard-off
+    control that proves the stamp does not leak onto every property once a model is declared."""
+
+    id: str = iverson_key()
+    title: str = iverson_field(embedding=True, chunk=True)
+    category: str = iverson_metadata()
+
+
+@iverson_entity(embedding_model="nomic-embed-text")
+class RegModelAsymmetricArticle:
+    """Declares a model with an embedding-ONLY property and a chunk-ONLY property. This is the
+    shape that catches a guard swap (``is_chunk`` accidentally guarding ``model_id`` or vice
+    versa): with only a both-flags property and a neither-flags property, a swapped guard
+    produces identical output and goes undetected."""
+
+    id: str = iverson_key()
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
+@iverson_entity
+class RegModelUndeclaredArticle:
+    """No ``embedding_model`` declared. Carries both an embedding and a chunk property so the
+    undeclared arm is pinned on ``chunk_model_id`` as well as ``model_id`` — a fixture with only
+    an embedded property cannot catch a stamp that leaks onto the chunk field alone."""
+
+    id: str = iverson_key()
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
+@iverson_entity(embedding_model="nomic-embed-text")
+class RegModelInheritedParent:
+    """Declares the model that ``RegModelInheritedChild`` below must inherit."""
+
+    id: str = iverson_key()
+
+
+@iverson_entity
+class RegModelInheritedChild(RegModelInheritedParent):
+    """No ``embedding_model`` of its own — must inherit the parent's declared model onto its own
+    embedding/chunk properties. Declares its own embedding/chunk fields (rather than relying on
+    inherited ones) because a decorated base already scrubs its own ``FieldMeta`` sentinels to
+    ``None``, which is orthogonal to the model-inheritance behavior under test here."""
+
+    # A decorated base's field sentinels are scrubbed to `None` and do not inherit — without
+    # this redeclaration the child would register keyless.
+    id: str = iverson_key()
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
+@iverson_entity(embedding_model="snowflake-arctic-embed:s")
+class RegModelOverrideChild(RegModelInheritedParent):
+    """Declares its own model, distinct from the parent's ``nomic-embed-text`` — its own value
+    must win, not the parent's."""
+
+    # A decorated base's field sentinels are scrubbed to `None` and do not inherit — without
+    # this redeclaration the child would register keyless.
+    id: str = iverson_key()
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
+@iverson_entity(embedding_model="snowflake-arctic-embed:s")
+class RegModelChainParent(RegModelInheritedParent):
+    """Sits between ``RegModelInheritedParent`` (model "nomic-embed-text") and
+    ``RegModelChainChild`` below, declaring a DIFFERENT model. This is the fixture that
+    distinguishes "nearest declaring base" from "farthest" (root)."""
+
+
+@iverson_entity
+class RegModelChainChild(RegModelChainParent):
+    """No ``embedding_model`` of its own, three levels down. Must inherit the NEAREST declaring
+    base's model — ``RegModelChainParent``'s "snowflake-arctic-embed:s" — not
+    ``RegModelInheritedParent``'s "nomic-embed-text"."""
+
+    # A decorated base's field sentinels are scrubbed to `None` and do not inherit — without
+    # this redeclaration the child would register keyless.
+    id: str = iverson_key()
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
+@iverson_entity(embedding_model="")
+class RegModelOptOutChild(RegModelInheritedParent):
+    """Passes an explicit ``embedding_model=\"\"`` under a declaring parent — this is a
+    deliberate OPT OUT of inheriting the parent's model, not "not declared". Redeclares its own
+    ``id`` (rather than relying on the parent's, which is scrubbed to ``None`` after decoration)
+    so this fixture still carries a real key field."""
+
+    id: str = iverson_key()
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def make_stub() -> MagicMock:
@@ -584,6 +683,35 @@ class TestKeyFieldDeclarations:
         assert props["Id"].is_key is True
         assert props["Id"].description == "Stable identifier."
 
+    def test_inheriting_child_that_does_not_redeclare_the_key_raises(self):
+        """A decorated child of a fielded decorated parent inherits the parent's ``id``
+        *annotation* (the type hint) but not its ``FieldMeta`` sentinel, which is scrubbed to
+        ``None`` on the parent after decoration — so a child that relies on the parent's
+        ``iverson_key()`` rather than redeclaring it registers with ``key_field is None`` and
+        no client-side error, until this guard exists."""
+        @iverson_entity
+        class RegKeyedParent:
+            id: str = iverson_key()
+
+        @iverson_entity
+        class RegChildMissingKey(RegKeyedParent):
+            title: str = None
+
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegChildMissingKey)
+        with pytest.raises(ValueError, match="RegChildMissingKey"):
+            registrar.register_all()
+
+    def test_entity_with_no_key_at_all_raises(self):
+        @iverson_entity
+        class RegNeverKeyedArticle:
+            title: str = None
+
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegNeverKeyedArticle)
+        with pytest.raises(ValueError, match="RegNeverKeyedArticle"):
+            registrar.register_all()
+
 
 class TestArrayProperties:
     def test_list_str_flagged_as_array_of_string(self):
@@ -642,3 +770,77 @@ class TestAuthorizationRules:
         assert requests["RegArticle"].root_type.authorization.owner_field == "OwnerOne"
         assert requests["RegAuthor"].root_type.authorization.owner_field == "OwnerTwo"
         assert requests["RegDescribedKeyArticle"].root_type.HasField("authorization") is False
+
+
+class TestEmbeddingModelDeclaration:
+    """``@iverson_entity(embedding_model=...)`` is stamped onto ``model_id``/``chunk_model_id``
+    in place of the ``""`` literals in ``SchemaRegistrar._build_request``, guarded per property
+    on that property's own ``is_embedding``/``is_chunk`` values."""
+
+    def test_declared_model_stamped_on_both_flags_property(self):
+        request = register_request(RegModelBothFlagsArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == "nomic-embed-text"
+        assert props["Title"].chunk_model_id == "nomic-embed-text"
+
+    def test_declared_model_not_stamped_on_neither_flag_property(self):
+        request = register_request(RegModelBothFlagsArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Category"].model_id == ""
+        assert props["Category"].chunk_model_id == ""
+
+    def test_declared_model_stamped_only_on_model_id_for_embedding_only_property(self):
+        request = register_request(RegModelAsymmetricArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == "nomic-embed-text"
+        assert props["Title"].chunk_model_id == ""
+
+    def test_declared_model_stamped_only_on_chunk_model_id_for_chunk_only_property(self):
+        request = register_request(RegModelAsymmetricArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Body"].model_id == ""
+        assert props["Body"].chunk_model_id == "nomic-embed-text"
+
+    def test_undeclared_model_leaves_model_id_and_chunk_model_id_empty(self):
+        request = register_request(RegModelUndeclaredArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == ""
+        assert props["Title"].chunk_model_id == ""
+        assert props["Body"].model_id == ""
+        assert props["Body"].chunk_model_id == ""
+
+    def test_subclass_with_no_model_of_its_own_inherits_the_parents(self):
+        """A decorated subclass declaring no ``embedding_model`` of its own inherits the
+        nearest declaring base's, stamped on both ``model_id`` and ``chunk_model_id``."""
+        request = register_request(RegModelInheritedChild)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == "nomic-embed-text"
+        assert props["Body"].chunk_model_id == "nomic-embed-text"
+
+    def test_subclass_passing_its_own_model_wins_over_the_parents(self):
+        request = register_request(RegModelOverrideChild)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == "snowflake-arctic-embed:s"
+        assert props["Body"].chunk_model_id == "snowflake-arctic-embed:s"
+
+    def test_three_level_chain_inherits_the_nearest_base_not_the_farthest(self):
+        """Grandparent declares "nomic-embed-text", parent declares "snowflake-arctic-embed:s",
+        child declares nothing. The child must inherit the parent's (nearest), not the
+        grandparent's (farthest) — the one case that distinguishes the two directions."""
+        request = register_request(RegModelChainChild)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == "snowflake-arctic-embed:s"
+        assert props["Body"].chunk_model_id == "snowflake-arctic-embed:s"
+
+    def test_subclass_passing_explicit_empty_model_opts_out_of_inheriting_the_parents(self):
+        """``embedding_model=""`` passed explicitly is a deliberate opt-out, not "not
+        declared" — unlike a bare ``@iverson_entity`` (which inherits), this must send ``""``
+        on both ``model_id`` and ``chunk_model_id`` even though a declaring parent is in the
+        MRO. This is the behavior that brings Python in line with the other four clients, where
+        a derived type can opt out of an inherited model by declaring the empty value."""
+        request = register_request(RegModelOptOutChild)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == ""
+        assert props["Title"].chunk_model_id == ""
+        assert props["Body"].model_id == ""
+        assert props["Body"].chunk_model_id == ""

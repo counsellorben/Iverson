@@ -51,11 +51,13 @@ public sealed class QdrantGrpcContainerFixture : IAsyncLifetime
 }
 
 [Trait("Category", "Integration")]
+[Collection(ContainerCollection.Name)]
 public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrpcContainerFixture>
 {
     private readonly IntelligenceVectorService _vector;
     private readonly IntelligenceCollectionManager _mgr;
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
+    private readonly IEmbeddingServiceResolver _resolver = Substitute.For<IEmbeddingServiceResolver>();
     private readonly SchemaRegistry _registry;
     private readonly IntelligenceTenantScope _tenantScope = new("test-integration-signing-key-0123456789abcdef");
 
@@ -72,6 +74,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
         var sql = Substitute.For<IRecordStoreQueryExecutor>();
         sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _registry = new SchemaRegistry(new SchemaRegistryRepository(sql), NullLogger<SchemaRegistry>.Instance);
+        _resolver.Get(Arg.Any<string?>()).Returns(_embedding);
     }
 
     private static string UniqueName() => "art_" + Guid.NewGuid().ToString("N")[..8];
@@ -81,13 +84,14 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             _registry,
             Substitute.For<IEngagementStoreSearchService>(),
             _vector,
-            _embedding,
+            _resolver,
             NullLogger<ObjectSearchGrpcService>.Instance,
             new ActingUserAccessor { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") },
             new RowFieldAuthorizationEvaluator(),
             _tenantScope,
-            new ResultReranker(),
-            new ResultDiversifier());
+            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            new ResultDiversifier(Options.Create(new VectorRankingOptions())),
+            Options.Create(new DecayOptions()));
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
     {
@@ -115,7 +119,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             physicalCollection, [new NamedVector("title_vector", 4)], []));
 
         var vec = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
 
         await _vector.UpsertNamedAsync(physicalCollection, 1,
             new Dictionary<string, float[]> { ["title_vector"] = vec },
@@ -161,7 +165,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             physicalCollection, [new NamedVector("title_vector", 4)], []));
 
         var vec = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
 
         // "key" is the literal payload key IntelligenceStoreConsumer.cs:417 writes the identity
         // value under — it must be seeded explicitly here, or the Id-vs-Key assertion below has no
@@ -231,7 +235,11 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
 
         var vec = new float[768];
         vec[0] = 1f;
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
+        // This test drives both halves of the round trip on the same substitute: the real
+        // consumer below embeds the write side via EmbedDocumentAsync, and the read side's
+        // SearchSimilar call further down embeds the query via EmbedQueryAsync.
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
 
         // ── write side: run the real consumer, capture what it hands the vector store ──
         var vectorWrite = Substitute.For<IVectorWriteService>();
@@ -257,7 +265,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             Substitute.For<IEventConsumer>(),
             vectorSchema,
             vectorWrite,
-            _embedding,
+            _resolver,
             _registry,
             entities,
             new DocumentRenderer(_registry, entities),
@@ -329,7 +337,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
 
         var vec = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
         _embedding
-            .EmbedAsync(
+            .EmbedQueryAsync(
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(vec);

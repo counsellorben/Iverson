@@ -78,7 +78,7 @@ public sealed class BenchmarkIngestScenario(
         {
             Console.WriteLine($"[benchmark-ingest] BEIR corpus: {beirCorpus}");
             using var reader = new StreamReader(beirCorpus);
-            var corpus = BeirCorpusParser.ParseCorpus(reader);
+            var corpus = JsonlCorpusParser.ParseCorpus(reader);
             var (s, f) = await IngestAsync(corpus, keyMap, ct);
             succeeded += s; failed += f;
         }
@@ -87,7 +87,7 @@ public sealed class BenchmarkIngestScenario(
         {
             Console.WriteLine($"[benchmark-ingest] FreshStack corpus: {freshStackCorpus}");
             using var reader = new StreamReader(freshStackCorpus);
-            var corpus = FreshStackCorpusParser.ParseCorpus(reader);
+            var corpus = JsonlCorpusParser.ParseCorpus(reader);
             var (s, f) = await IngestAsync(corpus, keyMap, ct);
             succeeded += s; failed += f;
         }
@@ -237,7 +237,7 @@ public sealed class BenchmarkIngestScenario(
 
     /// <summary>
     /// Waits for consumer group "iverson.consumer.intelligence" to drain on <see cref="EntityTopics.Events"/>,
-    /// with no fixed deadline (on ~59K documents through CPU Ollama, draining may take hours — see Step 6).
+    /// with no fixed deadline (on ~59K documents through a CPU embedding backend, draining may take hours — see Step 6).
     /// Unlike <c>WritePathRunner.PrintKafkaLagAsync</c>, this returns success/failure to the caller instead
     /// of silently `break`-ing out, because a silent break here would reintroduce the false-completion
     /// signal this wait exists to prevent.

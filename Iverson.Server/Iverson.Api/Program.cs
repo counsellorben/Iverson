@@ -207,6 +207,9 @@ builder.Services.AddQdrant(
     cfg["Qdrant:ApiKey"],
     cfg["Qdrant:CertPath"]);
 
+builder.Services.AddVectorRanking(cfg);
+builder.Services.AddDecayOptions(cfg);
+
 builder.Services.AddKafka(cfg);
 
 builder.Services.AddSingleton<SchemaRegistry>();
@@ -433,6 +436,12 @@ app.Use(async (context, next) =>
 // ── Endpoints ──────────────────────────────────────────────────────────────────
 app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive").AllowAnonymous().WithMetadata(new HttpListenerOnly());
 
+app.MapGet("/build", () =>
+{
+    var (composite, assemblies) = BuildIdentity.Compute();
+    return Results.Ok(new { composite, assemblies });
+}).WithName("BuildIdentity").AllowAnonymous();
+
 app.MapGet("/health", async (HealthCheckCache healthCheckCache) =>
 {
     var result = await healthCheckCache.GetAsync();
@@ -534,10 +543,10 @@ try
 }
 catch (Exception ex)
 {
-    // Ollama is commonly still pulling ~2.2GB of models on a first install. Dying here
-    // crash-loops both roles and CrashLoopBackOff then delays recovery by up to five
-    // minutes AFTER Ollama is healthy. Initialization retries lazily at the one place
-    // that needs the dimension (schema registration), so continue.
+    // The embedding backend is commonly still downloading its model on a first install. Dying here
+    // crash-loops both roles; CrashLoopBackOff then delays recovery by up to five minutes AFTER the
+    // backend is healthy. Initialization retries lazily at the one place that needs the dimension
+    // (schema registration), so continue.
     app.Logger.LogWarning(ex,
         "Embedding service not initialized at startup; will initialize on first schema registration.");
 }

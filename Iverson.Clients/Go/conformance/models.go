@@ -177,3 +177,56 @@ type ErrorUnregisteredDoc struct {
 	OwnerId  string
 	Label    string
 }
+
+// S11ModelGo is S11 model-rejected's Go fixture
+// (Iverson.Server/Iverson.ClientConformance/Scenarios/ModelRejectedScenario.cs). Unlike S1's
+// shared fixtures, each requested language registers its OWN instance of this scenario's type
+// rather than one type shared across all five — the subject is what happens to a type ALREADY
+// registered by THIS client, so five languages sharing one type would leave four of the five
+// columns grading a row a different client registered. Must be named exactly "S11ModelGo":
+// ModelRejectedScenario.TypeNameFor("go") derives and asserts this name with ordinal comparison,
+// and this client derives the registered type name from the struct name with no override, so the
+// struct itself must carry that exact name.
+//
+// Declares the deployment's default model explicitly (IversonEmbeddingModel() returning
+// "BAAI/bge-base-en-v1.5") rather than a second one, on purpose: this exercises the whole declaration
+// path while keeping the conformance environment single-model, so no second model ever needs to
+// be pulled. It also means the harness alone cannot distinguish "the client stamped the declared
+// model" from "the client sent "" and the server fell back to the same value" — that distinction
+// is pinned by a client-side unit test instead (iverson_test/registrar_test.go's
+// TestSchemaRegistrar_EmbeddingModel_StampedOnBothFlagsProperty).
+type S11ModelGo struct {
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	TenantId string
+	OwnerId  string
+
+	Title string `iverson_embedding:"true"`
+	Body  string `iverson_chunk:"true"`
+}
+
+// IversonEmbeddingModel declares S11ModelGo's per-type embedding model.
+func (S11ModelGo) IversonEmbeddingModel() string { return "BAAI/bge-base-en-v1.5" }
+
+// S12DeclaredGo is S12 model-inherited's Go declaring parent: field-less, carrying only the
+// IversonEmbeddingModel method, and never registered. Embedded anonymously into S12InheritedGo,
+// which inherits the method (and so the declared model) but contributes no field of its own —
+// the registrar's struct walk skips an embedded field-less struct's own (nonexistent) fields.
+type S12DeclaredGo struct{}
+
+// IversonEmbeddingModel declares S12DeclaredGo's per-type embedding model, inherited by any
+// struct that embeds S12DeclaredGo anonymously and does not declare its own.
+func (S12DeclaredGo) IversonEmbeddingModel() string { return "BAAI/bge-base-en-v1.5" }
+
+// S12InheritedGo is S12 model-inherited's Go fixture (register_inherited_doc driver step).
+// Declares no IversonEmbeddingModel method of its own — it inherits S12DeclaredGo's via the
+// anonymous embed. Must be named exactly "S12InheritedGo": T8 derives and asserts this name with
+// ordinal comparison.
+type S12InheritedGo struct {
+	S12DeclaredGo
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	TenantId string
+	OwnerId  string
+
+	Title string `iverson_embedding:"true"`
+	Body  string `iverson_chunk:"true"`
+}

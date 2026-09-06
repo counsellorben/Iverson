@@ -24,6 +24,7 @@ public class IntelligenceStoreConsumerTests
     private readonly IVectorSchemaManager _vectorSchema;
     private readonly IVectorWriteService _vectorWrite;
     private readonly IEmbeddingService _embedding;
+    private readonly IEmbeddingServiceResolver _resolver;
     private readonly IRecordStoreQueryExecutor _sql;
     private readonly IEntityRepository _entities;
     private readonly SchemaRegistry _registry;
@@ -72,8 +73,16 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>())
             .Returns(Task.CompletedTask);
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(UnitVector());
+
+        // Every existing test in this file drives a single embedding service regardless of what
+        // model (if any) a field declares — mirroring the pre-resolver singleton behavior. Tests
+        // that care which model id the resolver was asked for stub a distinct fake for that model
+        // id (see the non-default-model tests below) or verify the argument via
+        // _resolver.Received().Get(...).
+        _resolver = Substitute.For<IEmbeddingServiceResolver>();
+        _resolver.Get(Arg.Any<string?>()).Returns(_embedding);
 
         _enrichment = Substitute.For<IEnrichmentService>();
         _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
@@ -99,7 +108,7 @@ public class IntelligenceStoreConsumerTests
             _consumer,
             _vectorSchema,
             _vectorWrite,
-            _embedding,
+            _resolver,
             _registry,
             _entities,
             new DocumentRenderer(_registry, _entities),
@@ -114,7 +123,7 @@ public class IntelligenceStoreConsumerTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("Great Title", Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync("Great Title", Arg.Any<CancellationToken>())
                   .Returns(fakeVector);
 
         var payload = """{"Title":"Great Title","Body":"Some body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
@@ -131,15 +140,86 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        _ = _embedding.Received().EmbedAsync(
+        _ = _embedding.Received().EmbedDocumentAsync(
             "Great Title",
             Arg.Any<CancellationToken>());
+        // ArticleSchema has one vector field (Title) and one chunk field (Body), so both the
+        // object-vector and chunk-vector paths embed here — both through EmbedDocumentAsync.
+        _ = _embedding.Received(2).EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
 
         await _vectorWrite.Received().UpsertNamedAsync(
             "articles_test-tenant",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    // Falsifiability (Task 4 brief): a fake resolver that returns the SAME service for every
+    // model id would make an assertion like "embedding happened" pass whether or not the write
+    // path honors the per-field model. This stubs a DISTINCT fake for the non-default model and
+    // asserts specifically THAT fake was called for both the vector field and the chunk field —
+    // and that the default fake was never touched.
+    [Fact]
+    public async Task HandleCreated_WithNonDefaultModel_EmbedsVectorAndChunkFieldsWithThatModel()
+    {
+        var arctic = Substitute.For<IEmbeddingService>();
+        var arcticVector = new float[1024];
+        arcticVector[0] = 1f;
+        arctic.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(arcticVector);
+        _resolver.Get("snowflake-arctic-embed:s").Returns(arctic);
+
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            VectorFields = [new VectorDescriptor("Title", 1024, "snowflake-arctic-embed:s")],
+            ChunkFields  = [new ChunkDescriptor("Body", 512, 64, "snowflake-arctic-embed:s", 1024)]
+        };
+        await _registry.RegisterAsync(schema);
+
+        var payload = """{"Title":"Great Title","Body":"Some body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Article",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-non-default-model",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // One call for the Title vector field, one for the Body chunk field — both through the
+        // non-default fake, none through the default.
+        _ = arctic.Received(1).EmbedDocumentAsync("Great Title", Arg.Any<CancellationToken>());
+        _ = arctic.Received(2).EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // Companion to the non-default test above: a type carrying the deployment default model (as
+    // ArticleSchema does) still resolves it EXPLICITLY through the resolver, per field, rather
+    // than happening to work because a fake resolver always returns the same fake regardless of
+    // the argument it was called with.
+    [Fact]
+    public async Task HandleCreated_WithDefaultModel_ResolvesDefaultOnBothVectorAndChunkPaths()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema()); // Title + Body -> "nomic-embed-text"
+
+        var payload = """{"Title":"Great Title","Body":"Some body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Article",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-default-model",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // One call for the Title vector field, one for the Body chunk field.
+        _resolver.Received(2).Get("nomic-embed-text");
     }
 
     [Fact]
@@ -409,6 +489,46 @@ public class IntelligenceStoreConsumerTests
         await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
     }
 
+    // Phase 2 Task 9′ (EnrichSmoke): a type registered over gRPC with a bypass-only RowPermission
+    // and no owner_field arrives with OwnerField == "" — proto3's default for an unset string,
+    // which object_mapping.proto defines as "no ownership dimension". The consumer took
+    // `"" is not null` as a configured owner field, called ExtractString(row, ""), indexed ""[0],
+    // and DLQ'd every write to the type after three attempts — so its vectors never reached Qdrant.
+    [Fact]
+    public async Task HandleCreated_WithProtoDefaultEmptyOwnerField_TreatsItAsNoOwnerFieldAndWritesThePoint()
+    {
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            Authorization = new AuthorizationRules(
+                "",
+                new List<RowPermission> { new("test-bypass", true, true, true) },
+                new List<FieldPermission>())
+        };
+        await _registry.RegisterAsync(schema);
+
+        var ev = new EntityEvent(
+            EventType: EntityEventType.Created,
+            TypeName: "Article",
+            Key: Guid.NewGuid().ToString(),
+            PayloadJson: """{"Title":"Test","Body":"Body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""",
+            TraceId: "trace-empty-owner-field",
+            SchemaVersion: "1",
+            OccurredAt: DateTimeOffset.UtcNow,
+            TargetStores: StoreTarget.Intelligence);
+
+        var act = async () => await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        await _vectorWrite.Received().UpsertNamedAsync(
+            Arg.Any<string>(),
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+        // Only the tenant re-derivation reads the authoritative row: there is no owner value to
+        // re-derive, exactly as when OwnerField is null.
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
+    }
+
     [Fact]
     public async Task HandleDeleted_CallsVectorDelete()
     {
@@ -473,7 +593,7 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        _ = _embedding.DidNotReceive().EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
         await _vectorWrite.DidNotReceive().UpsertNamedAsync(
             Arg.Any<string>(),
             Arg.Any<ulong>(),
@@ -501,7 +621,7 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        _ = _embedding.DidNotReceive().EmbedAsync("", Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedDocumentAsync("", Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -509,7 +629,7 @@ public class IntelligenceStoreConsumerTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns<float[]>(_ => throw new Exception("Ollama timeout"));
 
         var payload = """{"Title":"Test Title","Body":"Some body","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
@@ -621,7 +741,7 @@ public class IntelligenceStoreConsumerTests
     [Fact]
     public async Task HandleCreated_WithMultipleVectorFields_EmbedsAllFields()
     {
-        // Schema with two vector fields — verifies both EmbedAsync calls fire
+        // Schema with two vector fields — verifies both EmbedDocumentAsync calls fire
         var twoVectorSchema = new SchemaDescriptor
         {
             TypeName       = "Doc",
@@ -645,7 +765,7 @@ public class IntelligenceStoreConsumerTests
         await _registry.RegisterAsync(twoVectorSchema);
 
         _embedding
-            .EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(UnitVector());
 
         var payload = """{"Title":"Hello","Summary":"World","Id":"00000000-0000-0000-0000-000000000001"}""";
@@ -662,9 +782,9 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        _ = _embedding.Received(1).EmbedAsync("Hello",  Arg.Any<CancellationToken>());
-        _ = _embedding.Received(1).EmbedAsync("World",  Arg.Any<CancellationToken>());
-        _ = _embedding.Received(2).EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _ = _embedding.Received(1).EmbedDocumentAsync("Hello",  Arg.Any<CancellationToken>());
+        _ = _embedding.Received(1).EmbedDocumentAsync("World",  Arg.Any<CancellationToken>());
+        _ = _embedding.Received(2).EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -1230,7 +1350,7 @@ public class IntelligenceStoreConsumerTests
     private (List<string> EmbeddedTexts, List<IReadOnlyDictionary<string, object>?> Payloads) CaptureChunkWrites()
     {
         var embedded = new List<string>();
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(ci =>
                   {
                       lock (embedded) embedded.Add((string)ci[0]);
@@ -1779,7 +1899,7 @@ public class IntelligenceStoreConsumerTests
         // Exactly one chunk ("C07") embeds to a zero-magnitude vector; the rest are unit vectors
         // on component 0. Unfiltered, that single zero divides to NaN and poisons every component
         // of the centroid — so asserting the value, not just the key, is the point of this test.
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(ci => Task.FromResult(
                       ((string)ci[0]).Contains("C07") ? new float[768] : UnitVector()));
 
@@ -1819,7 +1939,7 @@ public class IntelligenceStoreConsumerTests
     {
         await _registry.RegisterAsync(DegenerateDocSchema());
 
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(_ => Task.FromResult(new float[768]));
 
         var ev = DocEvent($$$"""{"Body":"{{{MultiChunkBody}}}","TenantId":"test-tenant"}""", "trace-all-degenerate");
@@ -2197,7 +2317,7 @@ public class IntelligenceStoreConsumerTests
             _consumer,
             _vectorSchema,
             _vectorWrite,
-            _embedding,
+            _resolver,
             _registry,
             _entities,
             new DocumentRenderer(_registry, _entities),
@@ -2232,6 +2352,59 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    [Fact]
+    public async Task ChunkSplitting_WithAllWhitespaceWindow_DropsItAndPreservesSurvivingIndexes()
+    {
+        var schema = new SchemaDescriptor
+        {
+            TypeName       = "Doc",
+            TableName      = "docs",
+            CollectionName = "docs",
+            KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+            ScalarColumns  = [new ColumnDescriptor("Body", "text", false)],
+            FkColumns      = [],
+            VectorFields   = [],
+            ChunkFields    = [new ChunkDescriptor("Body", 50, 10, "text-embedding-3-small", 1536)],
+            Relations      = [],
+            TenantColumn   = "TenantId"
+        };
+        await _registry.RegisterAsync(schema);
+
+        var body    = "alpha" + new string(' ', 360) + "omega";
+        var payload = $$"""{"Body":"{{body}}"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Doc",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-empty-window",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        var indexes = new List<string>();
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Any<IReadOnlyDictionary<string, object>?>())
+            .Returns(ci =>
+            {
+                var p = ci.Arg<IReadOnlyDictionary<string, object>?>();
+                if (p is not null && p.TryGetValue("chunk_index", out var idx))
+                    indexes.Add((string)idx);
+                return Task.CompletedTask;
+            });
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // The gap is the point: a renumbering implementation yields "0","1" and fails here.
+        indexes.Should().Equal("0", "2");
+        _ = _embedding.DidNotReceive().EmbedDocumentAsync(
+            Arg.Is<string>(s => string.IsNullOrWhiteSpace(s)), Arg.Any<CancellationToken>());
     }
 
     // A test logger that records level + formatted message, mirroring

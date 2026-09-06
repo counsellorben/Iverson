@@ -29,7 +29,7 @@ public sealed class IntelligenceStoreConsumer(
     IEventConsumer consumer,
     IVectorSchemaManager vectorSchema,
     IVectorWriteService vectorWrite,
-    IEmbeddingService embedding,
+    IEmbeddingServiceResolver resolver,
     SchemaRegistry registry,
     IEntityRepository entities,
     DocumentRenderer documentRenderer,
@@ -137,7 +137,11 @@ public sealed class IntelligenceStoreConsumer(
                 .Where(x => !string.IsNullOrWhiteSpace(x.text))
                 .Select(async x => (
                     vectorKey: $"{x.vf.PropertyName.ToSnakeCase()}_vector",
-                    vector: await embedding.EmbedAsync(x.text!, ct)
+                    // Resolved per FIELD, not per type (contrast ObjectSearchGrpcService, which
+                    // resolves per type): the write path already has each field's own ModelId in
+                    // scope here, and one-model-per-type means every field on this schema agrees
+                    // with what a type-level lookup would return anyway.
+                    vector: await resolver.Get(x.vf.ModelId).EmbedDocumentAsync(x.text!, ct)
                 ))
                 .ToList();
 
@@ -226,7 +230,15 @@ public sealed class IntelligenceStoreConsumer(
                     if (string.IsNullOrWhiteSpace(text)) continue;
 
                     var vectorName = $"{cf.PropertyName.ToSnakeCase()}_vector";
-                    var chunks     = SplitIntoChunks(text, cf.MaxTokens, cf.Overlap).ToList();
+                    // A window falling entirely inside a run of whitespace strips to "". Filter AFTER the
+                    // generator, never inside it: SplitIntoChunks assigns index++ per window, so dropping a
+                    // window here preserves every survivor's ORIGINAL index and keeps ComputeChunkPointId
+                    // stable across re-ingests. Filtering before PrefixWithContextAsync also matters — that
+                    // method returns "{prefix}\n\n{chunkText}", which is non-empty even for an empty chunk,
+                    // so a later guard could not see the problem.
+                    var chunks = SplitIntoChunks(text, cf.MaxTokens, cf.Overlap)
+                        .Where(c => c.Text.Length > 0)
+                        .ToList();
 
                     // No summary yet (always so on first ingest) — stand in a truncated slice of
                     // the parent text so the excerpt is still situated in *something*.
@@ -241,7 +253,10 @@ public sealed class IntelligenceStoreConsumer(
                             ? await PrefixWithContextAsync(
                                   prefixGate, documentContext, chunkText, schema.TypeName, ev.Key, ct)
                             : chunkText;
-                        var chunkVector = await embedding.EmbedAsync(textToEmbed, ct);
+                        // Same per-FIELD resolution as the vector-field block above, and the same
+                        // reason: cf.ModelId is already in scope on the write path, and the
+                        // one-model-per-type invariant makes it identical to a per-type lookup.
+                        var chunkVector = await resolver.Get(cf.ModelId).EmbedDocumentAsync(textToEmbed, ct);
                         var chunkId     = ComputeChunkPointId(pointId, cf.PropertyName, chunkIndex);
                         return (chunkVector, chunkId, chunkText, chunkIndex);
                     }).ToList();
@@ -643,12 +658,21 @@ public sealed class IntelligenceStoreConsumer(
         _ensuredCollections.Add(collectionSchema.CollectionName);
     }
 
-    // Splits text into overlapping windows. Token approximation: 1 token ≈ 4 characters.
-    private static IEnumerable<(string Text, int Index)> SplitIntoChunks(string text, int maxTokens, int overlap)
+    // internal, not inlined into SplitIntoChunks, because these numbers are a cross-language contract
+    // rather than an implementation detail: ingest.py must window text identically, and
+    // IngestContractTests emits them so the two sides cannot drift apart silently.
+    internal static (int MaxChars, int Step, int Lookback) ChunkWindow(int maxTokens, int overlap)
     {
         var maxChars     = maxTokens * 4;
         var overlapChars = overlap * 4;
         var step         = Math.Max(maxChars - overlapChars, maxChars / 2);
+        return (maxChars, step, 50);
+    }
+
+    // Splits text into overlapping windows. Token approximation: 1 token ≈ 4 characters.
+    private static IEnumerable<(string Text, int Index)> SplitIntoChunks(string text, int maxTokens, int overlap)
+    {
+        var (maxChars, step, lookback) = ChunkWindow(maxTokens, overlap);
 
         var start = 0;
         var index = 0;
@@ -660,7 +684,7 @@ public sealed class IntelligenceStoreConsumer(
             // Extend to word boundary if possible
             if (end < text.Length && !char.IsWhiteSpace(text[end]))
             {
-                var ws = text.LastIndexOf(' ', end, Math.Min(end - start, 50));
+                var ws = text.LastIndexOf(' ', end, Math.Min(end - start, lookback));
                 if (ws > start) end = ws;
             }
 

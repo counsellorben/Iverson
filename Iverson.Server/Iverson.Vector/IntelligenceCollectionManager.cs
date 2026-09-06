@@ -11,6 +11,11 @@ public class IntelligenceCollectionManager(
     string apiKey,
     ILogger<IntelligenceCollectionManager> logger) : IVectorSchemaManager
 {
+    // public, not internal: both collection-creation call sites below share it so they cannot
+    // disagree, and IngestContractTests (in Iverson.Api.Tests, which Iverson.Vector does not grant
+    // InternalsVisibleTo to) reads it to emit the ingest contract's `distance` field.
+    public const Distance Metric = Distance.Cosine;
+
     public async Task EnsureCollectionAsync(string collectionName, ulong vectorSize)
     {
         using var _ = RequestHeaders.Use("api-key", apiKey);
@@ -32,7 +37,7 @@ public class IntelligenceCollectionManager(
         await client.CreateCollectionAsync(collectionName, new VectorParams
         {
             Size = vectorSize,
-            Distance = Distance.Cosine
+            Distance = Metric
         });
 
         activity?.SetStatus(ActivityStatusCode.Ok);
@@ -227,7 +232,7 @@ public class IntelligenceCollectionManager(
     {
         var paramsMap = new VectorParamsMap();
         foreach (var v in vectors)
-            paramsMap.Map[v.Name] = new VectorParams { Size = (ulong)v.Dimension, Distance = Distance.Cosine };
+            paramsMap.Map[v.Name] = new VectorParams { Size = (ulong)v.Dimension, Distance = Metric };
         await client.CreateCollectionAsync(name, paramsMap);
     }
 

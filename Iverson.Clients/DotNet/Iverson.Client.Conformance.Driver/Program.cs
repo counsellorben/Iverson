@@ -49,6 +49,20 @@ const string IdentityWrongTenant = "tenant_not_the_acting_user";
 // mapped write against ErrorUnregisteredDoc — a type nothing ever registers — reporting the gRPC
 // status code and detail that attempt received. The driver judges none of it.
 const string ErrorContractScenario = "error-contract";
+// model-rejected (S11): register only (this driver only, register-once per scenario invocation —
+// see Scenarios/ModelRejectedScenario.cs). Every requested language registers its OWN instance of
+// S11ModelDotnet, carrying [IversonEmbeddingModel("BAAI/bge-base-en-v1.5")], and reports the descriptor
+// it sent so the orchestrator's Reregistrar has JSON to mutate. No write/read phase: the
+// orchestrator re-registers the reported descriptor itself, with a model override, and grades the
+// rejection directly.
+const string ModelRejectedScenario = "model-rejected";
+// model-inherited (S12): register only (this driver only, register-once per scenario
+// invocation). Every requested language registers its OWN instance of S12InheritedDotnet, which
+// declares no [IversonEmbeddingModel] of its own and instead inherits
+// "BAAI/bge-base-en-v1.5" from its field-less parent S12DeclaredDotnet — and reports the descriptor it
+// sent so the orchestrator can assert the inherited model landed on the embedding/chunk
+// properties. No write/read phase.
+const string ModelInheritedScenario = "model-inherited";
 // The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
 // similarity comparison grades on — SearchSimilar streams the Qdrant payload, whose row key lives
 // under a reserved "key" entry the typed projection does not bind to Id. Must stay in step with
@@ -62,7 +76,7 @@ const string VectorQueryText = "a short note about vector search conformance";
 const uint VectorTopK = 50;
 var supportedScenarios = new[]
     { CrudRoundtripScenario, InteropScenario, SchemaCatalogScenario, QueryScenario, VectorSearchScenario,
-      IdentityScenario, ErrorContractScenario };
+      IdentityScenario, ErrorContractScenario, ModelRejectedScenario, ModelInheritedScenario };
 
 var args_ = Args.Parse(args);
 
@@ -145,6 +159,14 @@ else if (scenario == ErrorContractScenario)
 else if (scenario == IdentityScenario)
 {
     await RunIdentityAsync();
+}
+else if (scenario == ModelRejectedScenario)
+{
+    await RunModelRejectedAsync();
+}
+else if (scenario == ModelInheritedScenario)
+{
+    await RunModelInheritedAsync();
 }
 else
 {
@@ -824,6 +846,75 @@ async Task RunIdentityAsync()
             }
 
             steps.Add(deniedResult);
+            break;
+        }
+
+        default:
+            await Console.Error.WriteLineAsync($"unknown phase '{phase}' for scenario '{scenario}'");
+            Environment.Exit(2);
+            break;
+    }
+}
+
+// ── S11 model-rejected ───────────────────────────────────────────────────────────────────────
+async Task RunModelRejectedAsync()
+{
+    switch (phase)
+    {
+        case "register":
+        {
+            // Registers ONLY S11ModelDotnet. Every requested language registers its own instance
+            // of this scenario's fixture (see Scenarios/ModelRejectedScenario.cs), so
+            // OnlySendTypeName here is not enforcing exclusivity across languages the way it does
+            // for S4/S5/S6/S7's shared/register-once fixtures — it is suppressing this assembly's
+            // OTHER fixture types from RegisterAllAsync's walk over EntityRegistry.All.
+            capture.OnlySendTypeName = nameof(S11ModelDotnet);
+            var registerOutcome = await Run(async () =>
+            {
+                var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+                await registrar.RegisterAllAsync();
+            });
+            capture.OnlySendTypeName = null;
+
+            steps.Add(new StepResult(
+                "register_model_doc",
+                Ok: registerOutcome is null,
+                Error: registerOutcome,
+                TypeDescriptor: Json.Element(capture.Select(nameof(S11ModelDotnet)))));
+            break;
+        }
+
+        default:
+            await Console.Error.WriteLineAsync($"unknown phase '{phase}' for scenario '{scenario}'");
+            Environment.Exit(2);
+            break;
+    }
+}
+
+// ── S12 model-inherited ──────────────────────────────────────────────────────────────────────
+async Task RunModelInheritedAsync()
+{
+    switch (phase)
+    {
+        case "register":
+        {
+            // Registers ONLY S12InheritedDotnet. S12DeclaredDotnet is the field-less parent that
+            // carries [IversonEmbeddingModel("BAAI/bge-base-en-v1.5")] and is never itself registered
+            // (no [IversonEntity]) — OnlySendTypeName here suppresses this assembly's other
+            // fixture types from RegisterAllAsync's walk over EntityRegistry.All.
+            capture.OnlySendTypeName = nameof(S12InheritedDotnet);
+            var registerOutcome = await Run(async () =>
+            {
+                var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+                await registrar.RegisterAllAsync();
+            });
+            capture.OnlySendTypeName = null;
+
+            steps.Add(new StepResult(
+                "register_inherited_doc",
+                Ok: registerOutcome is null,
+                Error: registerOutcome,
+                TypeDescriptor: Json.Element(capture.Select(nameof(S12InheritedDotnet)))));
             break;
         }
 

@@ -9,6 +9,7 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.StarRocks;
 using Iverson.Vector;
+using Microsoft.Extensions.Options;
 using Qdrant.Client;
 
 using Filter = Qdrant.Client.Grpc.Filter;
@@ -32,15 +33,18 @@ public sealed class ObjectSearchGrpcService(
     SchemaRegistry registry,
     IEngagementStoreSearchService search,
     IVectorQueryService vector,
-    IEmbeddingService embedding,
+    IEmbeddingServiceResolver resolver,
     ILogger<ObjectSearchGrpcService> logger,
     IActingUserAccessor actingUserAccessor,
     IRowFieldAuthorizationEvaluator authEvaluator,
     IntelligenceTenantScope tenantScope,
     IResultReranker reranker,
-    IResultDiversifier diversifier)
+    IResultDiversifier diversifier,
+    IOptions<DecayOptions> decayOptions)
     : ObjectSearchService.ObjectSearchServiceBase
 {
+    private readonly DecayOptions _decayOptions = decayOptions.Value;
+
     // ── SQL Search ─────────────────────────────────────────────────────────────
 
     public override async Task Search(
@@ -195,7 +199,17 @@ public sealed class ObjectSearchGrpcService(
         float[] queryVector;
         try
         {
-            queryVector = await embedding.EmbedAsync(request.Query, context.CancellationToken);
+            // Resolved per TYPE, not per field (contrast IntelligenceStoreConsumer, which
+            // resolves per field): a query targets the type as a whole, not one property, so
+            // there is no single field's ModelId in scope here — but one-model-per-type means
+            // SchemaDescriptor.ModelOf(schema) always agrees with whatever any individual field
+            // on this schema would resolve to.
+            queryVector = await resolver.Get(SchemaDescriptor.ModelOf(schema))
+                .EmbedQueryAsync(request.Query, context.CancellationToken);
+        }
+        catch (EmptyEmbeddingInputException ex)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -258,7 +272,7 @@ public sealed class ObjectSearchGrpcService(
             Id:        r.Id,
             BaseScore: r.Score,
             Centroid:  centroids.TryGetValue(r.Id, out var centroid) ? centroid : null,
-            Decay:     DecayFor(r, decayField, now))).ToList();
+            Decay:     DecayFor(r, decayField, now, _decayOptions.HalfLifeDays))).ToList();
 
         var byId = ResultsById(results);
 
@@ -366,7 +380,17 @@ public sealed class ObjectSearchGrpcService(
         float[] queryVector;
         try
         {
-            queryVector = await embedding.EmbedAsync(request.Query, context.CancellationToken);
+            // Resolved per TYPE, not per field (contrast IntelligenceStoreConsumer, which
+            // resolves per field): a query targets the type as a whole, not one property, so
+            // there is no single field's ModelId in scope here — but one-model-per-type means
+            // SchemaDescriptor.ModelOf(schema) always agrees with whatever any individual field
+            // on this schema would resolve to.
+            queryVector = await resolver.Get(SchemaDescriptor.ModelOf(schema))
+                .EmbedQueryAsync(request.Query, context.CancellationToken);
+        }
+        catch (EmptyEmbeddingInputException ex)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -445,7 +469,8 @@ public sealed class ObjectSearchGrpcService(
             if (r.Payload.TryGetValue("parent_id", out var parent) && !string.IsNullOrEmpty(parent))
                 centroids.TryGetValue(IntelligenceStoreConsumer.KeyToUlong(parent), out centroid);
 
-            return new RerankCandidate(r.Id, r.Score, centroid, DecayFor(r, decayField, now));
+            return new RerankCandidate(
+                r.Id, r.Score, centroid, DecayFor(r, decayField, now, _decayOptions.HalfLifeDays));
         }).ToList();
 
         var byId = ResultsById(results);
@@ -767,9 +792,10 @@ public sealed class ObjectSearchGrpcService(
         return byId;
     }
 
-    private static double? DecayFor(VectorSearchResult result, string? decayField, DateTimeOffset now) =>
+    private static double? DecayFor(
+        VectorSearchResult result, string? decayField, DateTimeOffset now, double halfLifeDays) =>
         decayField is not null && result.Payload.TryGetValue(decayField, out var stored)
-            ? DecayFieldResolver.ComputeDecay(stored, now)
+            ? DecayFieldResolver.ComputeDecay(stored, now, halfLifeDays)
             : null;
 
     // ── Helpers ────────────────────────────────────────────────────────────────

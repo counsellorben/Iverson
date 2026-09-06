@@ -237,6 +237,7 @@ locals {
     qdrant       = { machine_type = var.qdrant_machine_type, count = var.qdrant_node_count }
     kafka        = { machine_type = var.kafka_machine_type, count = var.kafka_node_count }
     ollama       = { machine_type = var.ollama_machine_type, count = var.ollama_node_count }
+    tei          = { machine_type = var.tei_machine_type, count = var.tei_node_count }
   }
 }
 

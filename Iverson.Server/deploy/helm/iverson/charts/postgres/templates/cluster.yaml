@@ -24,6 +24,17 @@ spec:
     initdb:
       database: iverson
       owner: iverson
+      # Run once, as superuser, right after initdb. The API's startup (PostgresSchemaManager
+      # .EnsureRuntimeRoleAsync) creates the NOLOGIN role `iverson_runtime` and later runs
+      # `SET LOCAL ROLE iverson_runtime` for tenant-scoped writes. On docker-compose the app user is
+      # the Postgres superuser, so both work implicitly; here enableSuperuserAccess is false and the
+      # app user can neither CREATE ROLE (SqlState 42501) nor SET ROLE without membership. Creating
+      # the role and granting membership at bootstrap makes the API's own CREATE a no-op.
+      # An already-initialised cluster does not re-run this: apply the two statements by hand
+      # (`kubectl cnpg psql <release>-postgres -- -d iverson`).
+      postInitApplicationSQL:
+        - CREATE ROLE iverson_runtime NOLOGIN
+        - GRANT iverson_runtime TO iverson
   managed:
     roles:
       - name: authentik

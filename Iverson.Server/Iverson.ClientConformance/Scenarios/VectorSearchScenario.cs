@@ -121,8 +121,8 @@ public sealed class VectorSearchScenario(
     /// <summary>
     /// The Qdrant wait is more patient AND less frequent than the StarRocks one, for one reason:
     /// this scenario's probe is not free to the thing it is waiting on. Each attempt embeds the
-    /// query text twice through the same Ollama instance the ingest path is using to vectorize the
-    /// rows being waited for, so polling every two seconds spends the model's throughput on the
+    /// query text twice through the same embedding backend the ingest path is using to vectorize
+    /// the rows being waited for, so polling every two seconds spends the model's throughput on the
     /// observation instead of on the work. A slower poll and a longer budget observe the same
     /// event without competing with it.
     /// </summary>

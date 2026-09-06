@@ -22,6 +22,8 @@ import io.iverson.client.search.Query;
 import io.iverson.client.search.QueryBuilder;
 import iverson.ObjectSearch;
 import iverson.ObjectSearch.SearchOperator;
+import io.iverson.conformance.models.S11ModelJava;
+import io.iverson.conformance.models.S12InheritedJava;
 import io.iverson.conformance.models.SharedArticle;
 import io.iverson.conformance.models.SharedAuthor;
 import io.iverson.conformance.models.VectorDoc;
@@ -82,9 +84,24 @@ public final class Driver {
     // key no row exists under, and attempts one mapped write against ErrorUnregisteredDoc — a type
     // nothing ever registers — reporting the gRPC status code and detail each received.
     private static final String ERROR_CONTRACT_SCENARIO = "error-contract";
+    // model-rejected (S11): register only (this driver only, register-once per scenario
+    // invocation — see Scenarios/ModelRejectedScenario.cs). Every requested language registers
+    // its OWN instance of S11ModelJava, carrying @IversonEmbeddingModel("BAAI/bge-base-en-v1.5"), and
+    // reports the descriptor it sent so the orchestrator's Reregistrar has JSON to mutate. No
+    // write/read phase: the orchestrator re-registers the reported descriptor itself, with a
+    // model override, and grades the rejection directly.
+    private static final String MODEL_REJECTED_SCENARIO = "model-rejected";
+    // model-inherited (S12): register only (this driver only, register-once per scenario
+    // invocation). Every requested language registers its OWN instance of S12InheritedJava, which
+    // declares no @IversonEmbeddingModel of its own and instead inherits "BAAI/bge-base-en-v1.5" from
+    // its field-less parent S12DeclaredJava — and reports the descriptor it sent so the
+    // orchestrator can assert the inherited model landed on the embedding/chunk properties. No
+    // write/read phase.
+    private static final String MODEL_INHERITED_SCENARIO = "model-inherited";
     private static final java.util.Set<String> SUPPORTED_SCENARIOS =
         java.util.Set.of(CRUD_ROUNDTRIP_SCENARIO, INTEROP_SCENARIO, SCHEMA_CATALOG_SCENARIO,
-            QUERY_SCENARIO, VECTOR_SEARCH_SCENARIO, IDENTITY_SCENARIO, ERROR_CONTRACT_SCENARIO);
+            QUERY_SCENARIO, VECTOR_SEARCH_SCENARIO, IDENTITY_SCENARIO, ERROR_CONTRACT_SCENARIO,
+            MODEL_REJECTED_SCENARIO, MODEL_INHERITED_SCENARIO);
 
     /**
      * The tenant value every driver stamps on the IdentityDoc row it creates: deliberately NOT the
@@ -213,6 +230,24 @@ public final class Driver {
                         return;
                     }
                 }
+            } else if (MODEL_REJECTED_SCENARIO.equals(scenario)) {
+                switch (phase) {
+                    case "register" -> doModelRejectedRegister(client, capture, steps);
+                    default -> {
+                        System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
+                        System.exit(2);
+                        return;
+                    }
+                }
+            } else if (MODEL_INHERITED_SCENARIO.equals(scenario)) {
+                switch (phase) {
+                    case "register" -> doModelInheritedRegister(client, capture, steps);
+                    default -> {
+                        System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
+                        System.exit(2);
+                        return;
+                    }
+                }
             } else {
                 switch (phase) {
                     case "register" -> doRegister(client, capture, typeHint, steps);
@@ -329,6 +364,47 @@ public final class Driver {
                 "name", type.getName(), "fields", fields, "relations", relations));
         }
         return java.util.Map.of("types", reported);
+    }
+
+    // ── S11 model-rejected ───────────────────────────────────────────────────────────────────
+
+    /**
+     * Registers ONLY {@code S11ModelJava} — this scenario's own fixture, never shared with the
+     * other four languages, since the subject is what happens to a type ALREADY registered by
+     * THIS client. No write/read phase: {@code ModelRejectedScenario} re-registers the reported
+     * descriptor itself, with a model override, and grades the rejection directly.
+     */
+    private static void doModelRejectedRegister(
+            IversonClient client, CaptureInterceptor capture, List<StepResult> steps) {
+        String registerError = null;
+        try {
+            SchemaRegistrar registrar = new SchemaRegistrar(client);
+            registrar.registerAll(S11ModelJava.class);
+        } catch (Exception e) {
+            registerError = describe(e);
+        }
+
+        steps.add(registerStep("register_model_doc", registerError, capture.select("S11ModelJava")));
+    }
+
+    // ── S12 model-inherited ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Registers ONLY {@code S12InheritedJava}. {@code S12DeclaredJava} is the field-less parent
+     * that carries {@code @IversonEmbeddingModel("BAAI/bge-base-en-v1.5")} and is never itself
+     * registered (no {@code @IversonEntity}).
+     */
+    private static void doModelInheritedRegister(
+            IversonClient client, CaptureInterceptor capture, List<StepResult> steps) {
+        String registerError = null;
+        try {
+            SchemaRegistrar registrar = new SchemaRegistrar(client);
+            registrar.registerAll(S12InheritedJava.class);
+        } catch (Exception e) {
+            registerError = describe(e);
+        }
+
+        steps.add(registerStep("register_inherited_doc", registerError, capture.select("S12InheritedJava")));
     }
 
     // ── S6 query ─────────────────────────────────────────────────────────────────────────────

@@ -25,9 +25,14 @@ internal static class SchemaBuilder
     private static readonly HashSet<string> s_reservedChunkPayloadKeys =
         new(StringComparer.Ordinal) { "text", "parent_id", "field", "chunk_index" };
 
+    // internal, not inlined into BuildDescriptor, because the pluralization rule is a
+    // cross-language contract rather than an implementation detail: IngestContractTests reads
+    // it to emit collectionNaming.base, so the two sides cannot drift apart silently.
+    internal static string ToTableName(string typeName) => typeName.ToSnakeCase() + "s";
+
     internal static SchemaDescriptor BuildDescriptor(TypeDescriptor typeDesc, IEmbeddingService embedding)
     {
-        var tableName = typeDesc.TypeName.ToSnakeCase() + "s";
+        var tableName = ToTableName(typeDesc.TypeName);
 
         var keyProp = typeDesc.Properties.FirstOrDefault(p => p.IsKey)
             ?? throw new InvalidOperationException($"No key property on '{typeDesc.TypeName}'.");
@@ -164,6 +169,17 @@ internal static class SchemaBuilder
                 embedding.Dimension,
                 typeDesc.DocumentContextual));
         }
+
+        // Placed AFTER the document-template block on purpose, so the guard sits downstream of
+        // every source of chunk fields. Counted off typeDesc.Properties, NOT `chunks`: the block
+        // above synthesizes a "Document" chunk field, and that entry is legitimate alongside one
+        // attributed property. Counting `chunks` here rejects every templated type.
+        var chunkProps = typeDesc.Properties.Where(p => p.IsChunk).Select(p => p.Name).ToList();
+        if (chunkProps.Count > 1)
+            throw new InvalidOperationException(
+                $"Type '{typeDesc.TypeName}' has [IversonChunk] on {chunkProps.Count} properties "
+                + $"({string.Join(", ", chunkProps.Select(n => $"'{n}'"))}). "
+                + "Only one property per type may be chunked.");
 
         ContractsAuthorizationRules? contractsAuthorization = typeDesc.Authorization;
         var authorization = contractsAuthorization is null

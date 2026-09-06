@@ -1,11 +1,12 @@
 using FluentAssertions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Iverson.Vector.Tests;
 
 public sealed class ResultDiversifierTests
 {
-    private readonly ResultDiversifier _diversifier = new();
+    private readonly ResultDiversifier _diversifier = new(Options.Create(new VectorRankingOptions()));
 
     [Fact]
     public void Diversify_AllVectorsPresent_LambdaArithmeticDrivesSelectionOrder()

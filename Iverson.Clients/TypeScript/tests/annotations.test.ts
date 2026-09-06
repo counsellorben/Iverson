@@ -9,8 +9,16 @@ import {
     IversonKey,
     IversonSearchKey,
     IversonLargeField,
+    IversonEmbedding,
+    IversonChunk,
+    IversonSummary,
+    IversonKeywords,
+    IversonExtracted,
     IversonMetadata,
+    IversonArray,
+    IversonGuid,
     IversonDescription,
+    IversonEmbeddingModel,
     ManyToOne,
     ManyToMany,
     OneToMany,
@@ -19,12 +27,21 @@ import {
     getKeyField,
     getSearchKeys,
     getLargeFields,
+    getEmbeddingFields,
+    getChunkFields,
+    getSummaryFields,
+    getKeywordsFields,
+    getExtractedFields,
     getMetadataFields,
+    getArrayFields,
+    getGuidFields,
     getTypeDescription,
     getPropertyDescriptions,
     getRelations,
     getRelationsWithFactory,
+    getEmbeddingModel,
 } from '../src/annotations.js';
+import { ClrType } from '../generated/object_mapping.js';
 
 // ── Test entities ─────────────────────────────────────────────────────────────
 
@@ -339,5 +356,174 @@ describe('@IversonDescription', () => {
     it('returns empty defaults when absent', () => {
         expect(getTypeDescription(UndescribedProduct)).toBe('');
         expect(getPropertyDescriptions(UndescribedProduct)).toEqual({});
+    });
+});
+
+// ── @IversonEmbeddingModel(modelId) ────────────────────────────────────────────
+//
+// Class-level, never per-property; the stamping onto modelId/chunkModelId is pinned separately
+// in tests/core.test.ts's `describeEntity — embedding model declaration` block. This only pins
+// that the decorator itself carries the value through Reflect.defineMetadata.
+
+@IversonEntity()
+@IversonEmbeddingModel('nomic-embed-text')
+class ModelDeclaredProduct {
+    @IversonKey()
+    id: string = '';
+}
+
+describe('@IversonEmbeddingModel', () => {
+    it('stores the declared model, readable via getEmbeddingModel', () => {
+        expect(getEmbeddingModel(ModelDeclaredProduct)).toBe('nomic-embed-text');
+    });
+
+    it('defaults to empty string when never declared', () => {
+        expect(getEmbeddingModel(UndescribedProduct)).toBe('');
+    });
+});
+
+// ── Sibling subclasses do not leak accumulated decorator metadata ─────────────
+//
+// Every accumulate-style decorator (ManyToOne/ManyToMany/OneToMany/OneToOne, IversonMetadata,
+// and their siblings in src/annotations.ts) reads via `Reflect.getMetadata(KEY, ctor) ?? []`
+// then pushes and writes back. `Reflect.getMetadata` walks the prototype chain, so on a
+// SUBCLASS the first decorated field would read (and, pre-fix, mutate in place) the PARENT's
+// collection before the subclass's own `defineMetadata` call ever runs — corrupting the
+// parent's collection and leaking entries between unrelated sibling subclasses.
+//
+// This is table-driven rather than one copy-pasted block per site: all twelve accumulate
+// sites share the identical bug shape (read via the prototype chain, mutate what came back,
+// write back onto the subclass), so the twelve blocks would differ only in which decorator
+// and which accessor they call. A table keeps that one shared scenario — parent + two
+// siblings + an undecorated grandchild — expressed once, and drives it with the "apply a
+// representative decoration" and "read the resulting collection" functions particular to
+// each site. `has`/`size` are deliberately generic over the underlying collection shape
+// (array, Map, Set, or plain object) rather than forcing every site through array equality.
+interface AccumulateSite {
+    label: string;
+    /** Applies the decorator, with representative arguments, to one property of `klass`. */
+    decorate: (klass: Function, propertyKey: string) => void;
+    /** Whether the accessor's collection for `target` contains an entry for `propertyKey`. */
+    has: (target: Function, propertyKey: string) => boolean;
+    /** The number of entries in the accessor's collection for `target`. */
+    size: (target: Function) => number;
+}
+
+// Referenced by the relation-decorator table row below; its own content is irrelevant, only
+// its identity (name) as a relation target matters.
+@IversonEntity()
+class LeakRelatedTarget {
+    @IversonKey()
+    id: string = '';
+}
+
+const accumulateSites: AccumulateSite[] = [
+    {
+        label: 'IversonSearchKey / getSearchKeys',
+        decorate: (klass, key) => { IversonSearchKey(0)(klass.prototype, key); },
+        has: (target, key) => getSearchKeys(target).some(k => k.field === key),
+        size: (target) => getSearchKeys(target).length,
+    },
+    {
+        label: 'IversonLargeField / getLargeFields',
+        decorate: (klass, key) => { IversonLargeField()(klass.prototype, key); },
+        has: (target, key) => getLargeFields(target).includes(key),
+        size: (target) => getLargeFields(target).length,
+    },
+    {
+        label: 'IversonEmbedding / getEmbeddingFields',
+        decorate: (klass, key) => { IversonEmbedding()(klass.prototype, key); },
+        has: (target, key) => getEmbeddingFields(target).includes(key),
+        size: (target) => getEmbeddingFields(target).length,
+    },
+    {
+        label: 'IversonChunk / getChunkFields',
+        decorate: (klass, key) => { IversonChunk(256, 32)(klass.prototype, key); },
+        has: (target, key) => getChunkFields(target).some(c => c.field === key),
+        size: (target) => getChunkFields(target).length,
+    },
+    {
+        label: 'IversonSummary / getSummaryFields',
+        decorate: (klass, key) => { IversonSummary()(klass.prototype, key); },
+        has: (target, key) => getSummaryFields(target).includes(key),
+        size: (target) => getSummaryFields(target).length,
+    },
+    {
+        label: 'IversonKeywords / getKeywordsFields',
+        decorate: (klass, key) => { IversonKeywords()(klass.prototype, key); },
+        has: (target, key) => getKeywordsFields(target).includes(key),
+        size: (target) => getKeywordsFields(target).length,
+    },
+    {
+        label: 'IversonExtracted / getExtractedFields',
+        decorate: (klass, key) => { IversonExtracted('extract me')(klass.prototype, key); },
+        has: (target, key) => getExtractedFields(target).some(e => e.field === key),
+        size: (target) => getExtractedFields(target).length,
+    },
+    {
+        label: 'IversonMetadata / getMetadataFields',
+        decorate: (klass, key) => { IversonMetadata()(klass.prototype, key); },
+        has: (target, key) => getMetadataFields(target).includes(key),
+        size: (target) => getMetadataFields(target).length,
+    },
+    {
+        label: 'IversonArray / getArrayFields (Map)',
+        decorate: (klass, key) => { IversonArray(ClrType.CLR_STRING)(klass.prototype, key); },
+        has: (target, key) => getArrayFields(target).has(key),
+        size: (target) => getArrayFields(target).size,
+    },
+    {
+        label: 'IversonGuid / getGuidFields (Set)',
+        decorate: (klass, key) => { IversonGuid()(klass.prototype, key); },
+        has: (target, key) => getGuidFields(target).has(key),
+        size: (target) => getGuidFields(target).size,
+    },
+    {
+        label: 'IversonDescription (property mode) / getPropertyDescriptions (object)',
+        decorate: (klass, key) => { IversonDescription('a description')(klass.prototype, key); },
+        has: (target, key) => Object.prototype.hasOwnProperty.call(getPropertyDescriptions(target), key),
+        size: (target) => Object.keys(getPropertyDescriptions(target)).length,
+    },
+    {
+        label: 'ManyToOne / getRelations',
+        decorate: (klass, key) => { ManyToOne(() => LeakRelatedTarget)(klass.prototype, key); },
+        has: (target, key) => getRelations(target).some(r => r.field === key),
+        size: (target) => getRelations(target).length,
+    },
+];
+
+describe.each(accumulateSites)('Sibling subclasses do not leak accumulated decorator metadata: $label', (site) => {
+    class LeakParent {}
+    class LeakSiblingA extends LeakParent {}
+    class LeakSiblingB extends LeakParent {}
+    class LeakSiblingNoOwnDecorator extends LeakParent {
+        // Declares no decorator of its own — reading must still walk the prototype chain
+        // and see the parent's entry. Only mutation-on-read changes, not reading.
+    }
+
+    site.decorate(LeakParent, 'parentField');
+    site.decorate(LeakSiblingA, 'siblingAField');
+    site.decorate(LeakSiblingB, 'siblingBField');
+
+    it("the parent's collection still contains exactly its own entry after both siblings are defined", () => {
+        expect(site.size(LeakParent)).toBe(1);
+        expect(site.has(LeakParent, 'parentField')).toBe(true);
+    });
+
+    it("sibling A's view includes its own entry and the parent's, but excludes sibling B's", () => {
+        expect(site.has(LeakSiblingA, 'parentField')).toBe(true);
+        expect(site.has(LeakSiblingA, 'siblingAField')).toBe(true);
+        expect(site.has(LeakSiblingA, 'siblingBField')).toBe(false);
+    });
+
+    it("sibling B's view includes its own entry and the parent's, but excludes sibling A's", () => {
+        expect(site.has(LeakSiblingB, 'parentField')).toBe(true);
+        expect(site.has(LeakSiblingB, 'siblingBField')).toBe(true);
+        expect(site.has(LeakSiblingB, 'siblingAField')).toBe(false);
+    });
+
+    it('a subclass with no own decorator still inherits only the parent entry', () => {
+        expect(site.size(LeakSiblingNoOwnDecorator)).toBe(1);
+        expect(site.has(LeakSiblingNoOwnDecorator, 'parentField')).toBe(true);
     });
 });

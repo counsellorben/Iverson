@@ -93,6 +93,11 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string, authByType
 	registeredTypes[t.Name()] = t
 	registeredTypesMu.Unlock()
 
+	// One model per type (Global Constraint 2): resolved once here, then stamped onto
+	// each property below, guarded on that property's own IsEmbedding/IsChunk so a
+	// declared model never leaks onto a property that is neither.
+	model := embeddingModel(e)
+
 	properties := make([]*pb.PropertyDescriptor, 0, len(meta.Fields))
 	for _, fm := range meta.Fields {
 		sf, ok := t.FieldByName(fm.Name)
@@ -140,6 +145,15 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string, authByType
 			IsKeywordsTarget: fm.IsKeywordsTarget,
 			ExtractHint:      fm.ExtractHint,
 			ChunkContextual:  fm.ChunkContextual,
+		}
+		// Added, not a replacement of the zero value: an undeclared type (model == "")
+		// still hits these branches for its embedding/chunk properties and assigns "",
+		// identical to the proto3 default every other property carries unguarded.
+		if fm.IsEmbedding {
+			prop.ModelId = model
+		}
+		if fm.IsChunk {
+			prop.ChunkModelId = model
 		}
 		properties = append(properties, prop)
 	}
@@ -206,6 +220,30 @@ func typeDescription(e interface{}) string {
 		p.Elem().Set(v)
 		if d, ok := p.Interface().(DescribedEntity); ok {
 			return d.IversonDescription()
+		}
+	}
+	return ""
+}
+
+// EmbeddingModelEntity is implemented by entities that declare their embedding model.
+type EmbeddingModelEntity interface{ IversonEmbeddingModel() string }
+
+// embeddingModel returns the entity's declared embedding model, or "" when the entity
+// does not implement EmbeddingModelEntity. A struct value is also checked through a
+// pointer, so pointer-receiver implementations are honoured. "" on the wire means "not
+// declared" — the server falls back to its own configured default, so an un-updated
+// client (or one whose entity declares nothing) keeps working with no server-side
+// special-casing.
+func embeddingModel(e interface{}) string {
+	if d, ok := e.(EmbeddingModelEntity); ok {
+		return d.IversonEmbeddingModel()
+	}
+	v := reflect.ValueOf(e)
+	if v.Kind() == reflect.Struct {
+		p := reflect.New(v.Type())
+		p.Elem().Set(v)
+		if d, ok := p.Interface().(EmbeddingModelEntity); ok {
+			return d.IversonEmbeddingModel()
 		}
 	}
 	return ""

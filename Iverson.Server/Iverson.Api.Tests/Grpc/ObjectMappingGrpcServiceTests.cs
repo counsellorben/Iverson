@@ -27,6 +27,7 @@ public class ObjectMappingGrpcServiceTests
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
     private readonly IEmbeddingService _embedding;
+    private readonly IEmbeddingServiceResolver _resolver;
     private readonly IActingUserAccessor _actingUserAccessor;
     private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
     private readonly IOutboxPublisher _outboxPublisher;
@@ -79,6 +80,8 @@ public class ObjectMappingGrpcServiceTests
         _embedding = Substitute.For<IEmbeddingService>();
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
+        _resolver = Substitute.For<IEmbeddingServiceResolver>();
+        _resolver.Get(Arg.Any<string?>()).Returns(_embedding);
 
         _registry = new SchemaRegistry(
             new SchemaRegistryRepository(_sql),
@@ -94,7 +97,7 @@ public class ObjectMappingGrpcServiceTests
             NullLogger<OutboxPublisher>.Instance);
         _relationResolver = new EntityRelationResolver(_registry, _entities, _authEvaluator);
         _schemaRegistration = new SchemaRegistrationOrchestrator(
-            _schemaManager, _embedding, _registry, Substitute.For<IDocumentRerenderQueueRepository>(),
+            _schemaManager, _resolver, _registry, Substitute.For<IDocumentRerenderQueueRepository>(),
             NullLogger<SchemaRegistrationOrchestrator>.Instance);
         _auditLog = new AuditLog(_auditLogger);
         _sut = new ObjectMappingGrpcService(

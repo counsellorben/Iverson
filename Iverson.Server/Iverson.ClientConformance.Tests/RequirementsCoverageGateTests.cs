@@ -94,7 +94,7 @@ public class RequirementsCoverageGateTests
         "DECL", "REL", "REG", "IDN", "LIFE", "QRY", "VEC", "SCH", "ERR",
     };
 
-    private static string RepositoryRoot()
+    internal static string RepositoryRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Iverson.slnx")))
@@ -271,7 +271,7 @@ public class RequirementsCoverageGateTests
     /// Closing (a)–(d) mechanically needs a Roslyn syntax walk, which is larger than this gate
     /// should carry for the residual risk.</para>
     /// </summary>
-    private static string StripCommentLines(string source) =>
+    internal static string StripCommentLines(string source) =>
         string.Join('\n', source
             .Split('\n')
             .Where(line =>
@@ -1317,7 +1317,7 @@ public class RequirementsCoverageGateTests
         var testProjectDir = Path.Combine(RepositoryRoot(), "Iverson.Server", "Iverson.ClientConformance.Tests");
 
         IsGradableSourceFile(Path.Combine(root, "Requirements.cs")).Should().BeFalse(
-            "Requirements.cs DECLARES every const, so reading it back reports all 43 cited by "
+            "Requirements.cs DECLARES every const, so reading it back reports all 45 cited by "
             + "their own declaration lines and Check2 grades nothing whatsoever (mutant B1)");
         IsGradableSourceFile(Path.Combine(root, "Scenarios", "Requirements.cs")).Should().BeFalse(
             "the exclusion is by file NAME at any depth, not by one hard-coded path");
@@ -1332,7 +1332,7 @@ public class RequirementsCoverageGateTests
 
         IsGradableSourceFile(Path.Combine(root, "Scenarios", "IdentityScenario.cs")).Should().BeTrue(
             "a real orchestrator source must still be READ — without this control every assertion "
-            + "above is satisfied by a selection that excludes everything and reports all 43 uncited");
+            + "above is satisfied by a selection that excludes everything and reports all 45 uncited");
         IsGradableSourceFile(Path.Combine(root, "Verifier.cs")).Should().BeTrue();
 
         var live = Check2Inputs().Files;

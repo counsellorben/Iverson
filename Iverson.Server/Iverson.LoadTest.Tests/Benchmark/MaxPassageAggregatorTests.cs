@@ -19,7 +19,8 @@ public class MaxPassageAggregatorTests
 
         var result = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10);
 
-        result.Should().ContainSingle().Which.Should().Be(("doc-1", 0.9));
+        result.Ranked.Should().ContainSingle().Which.Should().Be(("doc-1", 0.9));
+        result.UnresolvedParentKeys.Should().BeEmpty();
     }
 
     [Fact]
@@ -40,7 +41,7 @@ public class MaxPassageAggregatorTests
 
         var result = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10);
 
-        result.Should().BeEquivalentTo(new[]
+        result.Ranked.Should().BeEquivalentTo(new[]
         {
             ("doc-high", 0.9),
             ("doc-mid", 0.5),
@@ -59,8 +60,8 @@ public class MaxPassageAggregatorTests
 
         var result = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 3);
 
-        result.Should().HaveCount(3);
-        result.Should().BeEquivalentTo(new[]
+        result.Ranked.Should().HaveCount(3);
+        result.Ranked.Should().BeEquivalentTo(new[]
         {
             ("doc-9", 9.0),
             ("doc-8", 8.0),
@@ -69,13 +70,55 @@ public class MaxPassageAggregatorTests
     }
 
     [Fact]
-    public void Aggregate_ParentKeyMissingFromKeyMap_ThrowsNamingTheKey()
+    public void Aggregate_ParentKeyMissingFromKeyMap_IsReportedNotThrown()
     {
         var chunks = new[] { ("unknown-key", 0.5) };
         var keyMap = new Dictionary<string, string>();
 
-        var act = () => MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10);
+        var result = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10);
 
-        act.Should().Throw<InvalidOperationException>().WithMessage("*unknown-key*");
+        // Reported rather than thrown so the caller can survey every query before failing once;
+        // BenchmarkQueryScenario is what turns a non-empty UnresolvedParentKeys into a failed run.
+        result.UnresolvedParentKeys.Should().ContainSingle().Which.Should().Be("unknown-key");
+        result.Ranked.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Aggregate_UnresolvedParent_IsExcludedFromTheRankingItWouldOtherwiseTop()
+    {
+        // The unresolved chunk outscores the resolvable one. If it leaked into the ranking it would
+        // sit at rank 1 under some doc id; it must be absent AND reported.
+        var chunks = new[] { ("unknown-key", 0.99), ("key-1", 0.10) };
+        var keyMap = new Dictionary<string, string> { ["key-1"] = "doc-1" };
+
+        var result = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10);
+
+        result.Ranked.Should().ContainSingle().Which.Should().Be(("doc-1", 0.10));
+        result.UnresolvedParentKeys.Should().ContainSingle().Which.Should().Be("unknown-key");
+    }
+
+    [Fact]
+    public void Aggregate_TwoParentsOneDocId_CollapseToMaxScore()
+    {
+        // The same corpus ingested twice: distinct parent keys, one doc id. A TREC run listing that
+        // doc id at two ranks is malformed, so the aggregation must collapse them.
+        var chunks = new[] { ("key-a", 0.3), ("key-b", 0.8) };
+        var keyMap = new Dictionary<string, string> { ["key-a"] = "doc-1", ["key-b"] = "doc-1" };
+
+        var result = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10);
+
+        result.Ranked.Should().ContainSingle().Which.Should().Be(("doc-1", 0.8));
+    }
+
+    [Fact]
+    public void Aggregate_WithText_SurfacesEachDocumentsWinningChunk()
+    {
+        var keyMap = new Dictionary<string, string> { ["p1"] = "d1", ["p2"] = "d2" };
+        var chunks = new[] { ("p1", 0.3, "p1 weak"), ("p2", 0.8, "p2 best"), ("p1", 0.6, "p1 best"), ("p3", 0.9, "orphan") };
+
+        var result = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10);
+
+        result.Ranked.Should().Equal(("d2", 0.8, "p2 best"), ("d1", 0.6, "p1 best"));
+        result.UnresolvedParentKeys.Should().Equal("p3");
     }
 }

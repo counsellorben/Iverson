@@ -15,11 +15,18 @@
 networkPolicy:
   clusterCidrs: ["172.18.0.0/16"]
 
-# Restated explicitly even though it matches values.yaml's own default (true) — this profile
-# runs the prometheus subchart (unlike values-laptop.yaml), and Task 7's Prometheus__BaseUrl
-# env var (charts/api/templates/deployment.yaml) is gated on this flag.
 global:
+  # Restated explicitly even though it matches values.yaml's own default (true) — this profile
+  # runs the prometheus subchart (unlike values-laptop.yaml), and Task 7's Prometheus__BaseUrl
+  # env var (charts/api/templates/deployment.yaml) is gated on this flag.
   prometheusEnabled: true
+  # One entry, served by the tei subchart. A profile list override REPLACES rather than merges, and
+  # activeEmbeddingModel (inherited from values.yaml) must name an entry here. This list must still
+  # contain every model any REGISTERED type's stored `_iverson_schema` row names — under TEI,
+  # trimming a still-carried entry now surfaces as the API's /info identity guard, not an Ollama 404.
+  embeddingModels:
+    - name: BAAI/bge-base-en-v1.5
+      slug: bge-base
 
 postgres:
   instances: 1
@@ -75,6 +82,18 @@ ollama:
   resources:
     requests: { cpu: "250m", memory: "1Gi" }
     limits: { cpu: "500m", memory: "2Gi" }
+
+tei:
+  replicas: 1
+  # tei renders as a StatefulSet, so this feeds volumeClaimTemplates. Raising it on an
+  # existing install will make `helm upgrade` fail (those fields are immutable) — first run
+  # `kubectl delete sts iverson-tei-bge-base --cascade=orphan` (keeps the pod/PVC), or also
+  # delete the PVC for a clean re-pull.
+  storageSize: 2Gi
+  storageClassName: "standard"
+  resources:
+    requests: { cpu: "250m", memory: "1Gi" }
+    limits: { cpu: "1", memory: "2Gi" }
 
 api:
   replicas: 1

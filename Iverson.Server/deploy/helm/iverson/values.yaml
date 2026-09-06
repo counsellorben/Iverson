@@ -41,6 +41,19 @@ global:
   # would let the pulled model and the requested model drift apart, which fails at runtime
   # with a 404 from Ollama on every generative call.
   generativeModel: "qwen2.5:3b"
+  # Every entry is served by the tei subchart (one StatefulSet + headless Service per entry). `slug`
+  # is the DNS-safe suffix of that entry's objects: <release>-tei-<slug>. The prefix keys stay
+  # three-state (omitted = derive from the model family; "" = deliberately none).
+  # This list must still contain every model any REGISTERED type's stored `_iverson_schema`
+  # row names, not merely the active one — under TEI, trimming a still-carried entry now
+  # surfaces as the API's /info identity guard, not an Ollama 404.
+  embeddingModels:
+    - name: BAAI/bge-base-en-v1.5
+      slug: bge-base
+  # The default model api and worker request for any registered type that does not declare its
+  # own. Must name an entry above; a mismatch renders cleanly and surfaces as an identity mismatch
+  # from the backend's /info naming the unpulled model on the first embed call, not at deploy.
+  activeEmbeddingModel: BAAI/bge-base-en-v1.5
   # Drives the starrocks subchart's condition AND the api/worker env guards AND
   # Engagement__Enabled. One flag, because two flags that must agree can disagree —
   # and the disagreeing state renders a secretKeyRef against a Secret that no longer
@@ -116,10 +129,22 @@ ollama:
   replicas: 2
   storageSize: 20Gi
   storageClassName: ""
-  imageTag: "0.5.0"
+  imageTag: "0.12.11"
   resources:
     requests: { cpu: "8", memory: "16Gi", ephemeral-storage: "2Gi" }
     limits: { cpu: "8", memory: "16Gi", ephemeral-storage: "4Gi" }
+  nodeSelector: {}
+  tolerations: []
+
+tei:
+  enabled: true
+  replicas: 2
+  storageSize: 2Gi            # bge-base weights are 0.44 GB
+  storageClassName: ""
+  imageTag: "cpu-1.8"
+  resources:
+    requests: { cpu: "2", memory: "2Gi", ephemeral-storage: "1Gi" }
+    limits: { cpu: "4", memory: "4Gi", ephemeral-storage: "2Gi" }
   nodeSelector: {}
   tolerations: []
 

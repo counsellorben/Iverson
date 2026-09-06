@@ -131,6 +131,50 @@ public class SchemaBuilderTests
     }
 
     [Fact]
+    public void BuildDescriptor_Throws_WhenTwoPropertiesAreChunked()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Bad" };
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",      ClrType = ClrType.ClrGuid,   IsKey = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Body",    ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Summary", ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+
+        var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*Body*Summary*");
+    }
+
+    // The rule counts attributed properties, not ChunkFields: a document template synthesizes a
+    // second "Document" chunk field, and that pairing is legal. This test is what discriminates
+    // the two implementations -- a `chunks.Count > 1` guard passes the test above and fails here.
+    [Fact]
+    public void BuildDescriptor_AllowsOneChunkedProperty_AlongsideADocumentTemplate()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Article", DocumentTemplate = "{Title}" };
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",    ClrType = ClrType.ClrGuid,   IsKey = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Title", ClrType = ClrType.ClrString });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Body",  ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        descriptor.ChunkFields.Select(c => c.PropertyName).Should().BeEquivalentTo(["Body", "Document"]);
+    }
+
+    [Fact]
     public void BuildDescriptor_PopulatesMetadataColumnsAndDescriptions()
     {
         var embedding = Substitute.For<IEmbeddingService>();

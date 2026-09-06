@@ -86,8 +86,8 @@ def iverson_field(
             for chunk-level vector embeddings and its windowing.
         metadata: a property that describes or qualifies the entity rather
             than carrying its primary content.
-        summary / keywords: Ollama enrichment targets.
-        extract_hint: Ollama extraction target, guided by this hint. ``""``
+        summary / keywords: enrichment targets.
+        extract_hint: extraction target, guided by this hint. ``""``
             means "not an extraction target"; a blank-but-non-empty hint is
             rejected.
         description: human-readable field description.
@@ -167,17 +167,17 @@ def iverson_chunk(
 
 
 def iverson_summary(description: str = "") -> FieldMeta:
-    """Mark a field as the target for an Ollama-driven summary."""
+    """Mark a field as the target for a model-generated summary."""
     return iverson_field(summary=True, description=description)
 
 
 def iverson_keywords(description: str = "") -> FieldMeta:
-    """Mark a field as the target for Ollama-driven keyword extraction."""
+    """Mark a field as the target for model-generated keyword extraction."""
     return iverson_field(keywords=True, description=description)
 
 
 def iverson_extracted(hint: str, description: str = "") -> FieldMeta:
-    """Mark a field as an Ollama extraction target, guided by ``hint``.
+    """Mark a field as an extraction target, guided by ``hint``.
 
     The hint is mandatory here, unlike the optional ``extract_hint`` kwarg on
     ``iverson_field`` where ``""`` means "not declared". Normalizing ``""`` to
@@ -219,11 +219,32 @@ ENTITY_REGISTRY: dict[str, type] = {}
 # ── @iverson_entity decorator ──────────────────────────────────────────────────
 
 
-def iverson_entity(cls: type | None = None, *, description: str = ""):
+def iverson_entity(cls: type | None = None, *, description: str = "", embedding_model: str | None = None):
     """Class decorator that collects ``FieldMeta`` annotations into metadata.
 
     Usable bare (``@iverson_entity``) or called
     (``@iverson_entity(description="...")`` to describe the type itself).
+
+    Args:
+        description: human-readable description of the type itself.
+        embedding_model: the embedding model this type's embedding/chunk properties are
+            generated with. One model per TYPE, never per property — every
+            ``iverson_embedding()``/``iverson_chunk()`` field on this class is stamped with
+            the same value. Three cases: ``None`` (the default, i.e. the argument was not
+            supplied) means "not declared HERE" — if a decorated base class in this class's MRO
+            declares a non-empty model, the nearest such declaration is inherited; if no base
+            declares one, resolution ends in ``""``. An explicit ``""`` means "declared HERE as
+            opted OUT" — no MRO walk happens, and this type's properties are stamped with ``""``
+            even if a base declares a model, matching how the other Iverson clients treat an
+            explicit empty value. A non-empty value is used as-is and overrides any inherited
+            one. Whenever resolution ends in ``""`` (undeclared throughout the MRO, or an
+            explicit opt-out), the server resolves the deployment's configured default, exactly
+            as it does for a client that predates this parameter — so an un-updated caller keeps
+            working with no server-side special-casing. Only ``embedding_model`` inherits this
+            way from a decorated base — its ``FieldMeta`` sentinels (including ``iverson_key()``)
+            are replaced with ``None`` on the base (see "After decoration" below) and do NOT
+            carry into subclasses, so the declaring base must be field-less, or the child must
+            redeclare every field it needs.
 
     After decoration:
     - ``cls._iverson_meta`` is a dict with keys:
@@ -236,12 +257,15 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
         - ``metadata_fields`` (list[str]): field names marked as metadata signals
         - ``descriptions`` (dict[str, str]): field name → description text
         - ``description`` (str): description of the type itself
+        - ``embedding_model`` (str): the declared embedding model, or ``""`` if undeclared
     - Every ``FieldMeta`` class attribute is replaced with ``None`` so instances
       can set it normally.
     """
     if cls is None:
         def _decorate(inner_cls: type) -> type:
-            return iverson_entity(inner_cls, description=description)
+            return iverson_entity(
+                inner_cls, description=description, embedding_model=embedding_model,
+            )
         return _decorate
 
     annotations: dict[str, Any] = {}
@@ -250,6 +274,21 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
         if base is object:
             continue
         annotations.update(getattr(base, "__annotations__", {}))
+
+    if embedding_model is None:
+        # None (not supplied) means "inherit from the MRO"; an explicit "" is a deliberate
+        # opt-out and must NOT walk the MRO — see the docstring's three cases. Unlike the
+        # annotation gather above (which walks farthest-first to accumulate every inherited
+        # field), this walks NEAREST-first — cls.__mro__[1:] is parent, then grandparent, ... —
+        # so a middle class's own declaration wins over an ancestor's. Skip object and any
+        # undecorated base (neither carries `_iverson_meta`). If no declaring base is found,
+        # resolve to "" (the "undeclared" sentinel `_iverson_meta["embedding_model"]` carries).
+        embedding_model = ""
+        for base in cls.__mro__[1:]:
+            base_meta = getattr(base, "_iverson_meta", None)
+            if base_meta and base_meta.get("embedding_model"):
+                embedding_model = base_meta["embedding_model"]
+                break
 
     key_field: str | None = None
     search_keys: list[tuple[str, int]] = []
@@ -327,6 +366,7 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
         "metadata_fields": metadata_fields,
         "descriptions": descriptions,
         "description": description,
+        "embedding_model": embedding_model,
         "summary_fields": summary_fields,
         "keywords_fields": keywords_fields,
         "extracted_fields": extracted_fields,

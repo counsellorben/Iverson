@@ -181,6 +181,15 @@ resource "kubernetes_storage_class" "ollama" {
   volume_binding_mode = "WaitForFirstConsumer"
 }
 
+resource "kubernetes_storage_class" "tei" {
+  metadata {
+    name = "iverson-tei"
+  }
+  storage_provisioner = var.storage_class_config.provisioner
+  parameters          = var.storage_class_config.parameters
+  volume_binding_mode = "WaitForFirstConsumer"
+}
+
 resource "kubernetes_storage_class" "prometheus" {
   metadata {
     name = "iverson-prometheus"

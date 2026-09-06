@@ -40,6 +40,7 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
     public async Task DisposeAsync() => await _container.DisposeAsync();
 }
 
+[Collection(ContainerCollection.Name)]
 public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     : IClassFixture<QdrantContainerFixture>
 {

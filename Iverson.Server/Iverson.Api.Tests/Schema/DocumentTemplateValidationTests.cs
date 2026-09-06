@@ -10,6 +10,7 @@ using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using Xunit;
 
@@ -20,6 +21,7 @@ public class DocumentTemplateValidationTests
     private readonly IRecordStoreQueryExecutor _sql = Substitute.For<IRecordStoreQueryExecutor>();
     private readonly IRecordStoreSchemaManager _schemaManager = Substitute.For<IRecordStoreSchemaManager>();
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
+    private readonly IEmbeddingServiceResolver _resolver = Substitute.For<IEmbeddingServiceResolver>();
     private readonly IDocumentRerenderQueueRepository _rerenderQueue = Substitute.For<IDocumentRerenderQueueRepository>();
     private readonly SchemaRegistry _registry;
     private readonly SchemaRegistrationOrchestrator _sut;
@@ -28,12 +30,13 @@ public class DocumentTemplateValidationTests
     {
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
+        _resolver.Get(Arg.Any<string?>()).Returns(_embedding);
         _registry = new SchemaRegistry(
             new SchemaRegistryRepository(_sql),
             NullLogger<SchemaRegistry>.Instance);
         _sut = new SchemaRegistrationOrchestrator(
             _schemaManager,
-            _embedding,
+            _resolver,
             _registry,
             _rerenderQueue,
             NullLogger<SchemaRegistrationOrchestrator>.Instance);
@@ -317,7 +320,9 @@ public class DocumentTemplateValidationTests
 
         var vector = Substitute.For<IVectorQueryService>();
         var embedding = Substitute.For<IEmbeddingService>();
-        embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new float[768]);
+        embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new float[768]);
+        var searchResolver = Substitute.For<IEmbeddingServiceResolver>();
+        searchResolver.Get(Arg.Any<string?>()).Returns(embedding);
         vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Qdrant.Client.Grpc.Filter>())
               .Returns(new List<VectorSearchResult>().AsReadOnly());
         var search = Substitute.For<IEngagementStoreSearchService>();
@@ -325,11 +330,12 @@ public class DocumentTemplateValidationTests
             { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
 
         var searchService = new ObjectSearchGrpcService(
-            _registry, search, vector, embedding,
+            _registry, search, vector, searchResolver,
             NullLogger<ObjectSearchGrpcService>.Instance,
             actingUserAccessor, new RowFieldAuthorizationEvaluator(),
             new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
-            new ResultReranker(), new ResultDiversifier());
+            new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(Options.Create(new VectorRankingOptions())),
+            Options.Create(new DecayOptions()));
 
         var writer = Substitute.For<IServerStreamWriter<ChunkSearchResponse>>();
         writer.WriteAsync(Arg.Any<ChunkSearchResponse>(), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);

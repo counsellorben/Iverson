@@ -86,6 +86,16 @@ variable "ollama_node_count" {
   default = 2
 }
 
+variable "tei_instance_type" {
+  type    = string
+  default = "c7i.xlarge"
+}
+
+variable "tei_node_count" {
+  type    = number
+  default = 2
+}
+
 variable "general_instance_type" {
   type    = string
   default = "m6i.xlarge"

@@ -80,6 +80,16 @@ variable "ollama_node_count" {
   default = 2
 }
 
+variable "tei_machine_type" {
+  type    = string
+  default = "c2-standard-4"
+}
+
+variable "tei_node_count" {
+  type    = number
+  default = 2
+}
+
 variable "general_machine_type" {
   type    = string
   default = "n2-standard-4"

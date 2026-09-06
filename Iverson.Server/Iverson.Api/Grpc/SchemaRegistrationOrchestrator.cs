@@ -14,7 +14,7 @@ public interface ISchemaRegistrationOrchestrator
 
 public sealed class SchemaRegistrationOrchestrator(
     IRecordStoreSchemaManager schemaManager,
-    IEmbeddingService embedding,
+    IEmbeddingServiceResolver resolver,
     SchemaRegistry registry,
     IDocumentRerenderQueueRepository rerenderQueue,
     ILogger<SchemaRegistrationOrchestrator> logger)
@@ -27,6 +27,31 @@ public sealed class SchemaRegistrationOrchestrator(
     // a safe DDL identifier. No underscores are permitted in the input because ToSnakeCase
     // inserts its own; this pattern also naturally rejects an empty string.
     private static readonly Regex IdentifierPattern = new("^[A-Za-z][A-Za-z0-9]*$", RegexOptions.Compiled);
+
+    // The declaration is class-level in every client, so every embedding/chunk property of a type
+    // is expected to carry the same value — reading both flag-halves (ModelId AND ChunkModelId) so
+    // a dual-flag property's ChunkModelId is never dropped unnoticed. Empty means "not declared" —
+    // four clients send "" and Go omits the fields. More than one distinct non-empty value across
+    // the whole type is a malformed declaration, not a value to silently pick among.
+    private static string? DeclaredModel(TypeDescriptor typeDesc)
+    {
+        var declared = typeDesc.Properties
+            .SelectMany(p => new[] { p.IsEmbedding ? p.ModelId      : null,
+                                     p.IsChunk     ? p.ChunkModelId : null })
+            .Where(m => !string.IsNullOrEmpty(m))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (declared.Count > 1)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Type '{typeDesc.TypeName}' declares more than one embedding model across its "
+                + $"properties: {string.Join(", ", declared.Select(m => $"'{m}'"))}. The declaration "
+                + $"is class-level — every embedding/chunk property on a type must name the same model."));
+        }
+
+        return declared.SingleOrDefault();
+    }
 
     public async Task<IReadOnlyList<string>> RegisterAsync(SchemaRequest request, CancellationToken ct)
     {
@@ -50,21 +75,78 @@ public sealed class SchemaRegistrationOrchestrator(
             foreach (var property in typeDesc.Properties)
                 ValidateIdentifier(property.Name, $"property name on type '{typeDesc.TypeName}'");
 
+            var declared = DeclaredModel(typeDesc);
+
+            // Resolved once, and bound rather than re-derived. On the undeclared arm this is the loop's only
+            // Get call; re-deriving the default below the guard would make it two.
+            var defaultService = declared is null ? resolver.Get(null) : null;
+
+            // Null when this registration carries no embedded content at all — a type that has just lost its
+            // last embedding/chunk property is not changing its model, it is ceasing to have one, and the
+            // write path already supports that. Taking service.ModelId here instead would reject exactly that
+            // evolution whenever the deployment default has moved on.
+            var hasEmbedded = typeDesc.Properties.Any(p => p.IsEmbedding || p.IsChunk);
+            var nextModel   = hasEmbedded ? (declared ?? defaultService!.ModelId) : null;
+
+            // batchDescriptors, not registry.Get alone: registry.RegisterAsync does not run until
+            // phase 3, so if this SAME request names typeDesc.TypeName twice (a root colliding with a
+            // dependent, or two dependents sharing a name — nothing above rejects that), the registry
+            // is unchanged between the two occurrences and would report the SAME stale priorModel for
+            // both, letting two different resolved models both slip past a null-vs-null or
+            // null-vs-same comparison. batchDescriptors already holds the first occurrence's built
+            // descriptor by the time a second is reached (populated below, after BuildDescriptor), so
+            // checking it first mirrors the phase-2 cross-validation's effectiveDescriptors move: the
+            // registry alone is stale during a batch.
+            var priorDescriptor = batchDescriptors.TryGetValue(typeDesc.TypeName, out var inBatch)
+                ? inBatch
+                : registry.Get(typeDesc.TypeName);
+            var priorModel = priorDescriptor is { } prior ? SchemaDescriptor.ModelOf(prior) : null;
+
+            if (priorModel is not null && nextModel is not null &&
+                !string.Equals(priorModel, nextModel, StringComparison.Ordinal))
+            {
+                // The base name alone (SchemaBuilder.ToTableName, e.g. "docs") is never a real Qdrant
+                // collection: IntelligenceTenantScope.ResolveCollectionName qualifies every collection
+                // by tenant — "{base}_{tenantId}" for vectors, "{base}_chunks_{tenantId}" for chunks —
+                // and there is one such pair per tenant that has ingested this type. Naming the bare
+                // base here would send an operator searching for a collection that never existed, who
+                // then concludes cleanup is already done and leaves every real per-tenant collection
+                // holding the mixed vectors.
+                var collectionBase = SchemaBuilder.ToTableName(typeDesc.TypeName);
+                throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                    $"Type '{typeDesc.TypeName}' is registered with embedding model '{priorModel}', but this "
+                    + $"registration resolves to '{nextModel}'. Changing a type's model would leave one "
+                    + $"collection holding vectors from two incompatible spaces, which no dimension check "
+                    + $"catches when the two models share a dimension. To change it, BOTH clear the schema "
+                    + $"row and drop the collections: "
+                    + $"DELETE FROM _iverson_schema WHERE type_name = '{typeDesc.TypeName}'; "
+                    + $"then, for every tenant that has ingested '{typeDesc.TypeName}', drop Qdrant "
+                    + $"collections '{collectionBase}_<tenantId>' (vectors) and "
+                    + $"'{collectionBase}_chunks_<tenantId>' (chunks). "
+                    + $"Dropping the collections alone leaves this row, and the next registration is "
+                    + $"rejected identically. Until then, '{priorModel}' must remain served by this "
+                    + $"deployment's embedding backend — every other type still registered under it "
+                    + $"needs it to stay reachable."));
+            }
+
+            var service = defaultService ?? resolver.Get(declared);
+
             try
             {
-                await embedding.EnsureInitializedAsync(ct);
+                await service.EnsureInitializedAsync(ct);
             }
             catch (Exception ex)
             {
                 throw new RpcException(new Status(StatusCode.Unavailable,
                     $"Embedding service is unavailable, so schema registration cannot determine the vector "
-                    + $"dimension. Check that Ollama is reachable and retry. ({ex.Message})"));
+                    + $"dimension. Check that the embedding backend is reachable and retry. Resolved embedding model for "
+                    + $"'{typeDesc.TypeName}': '{service.ModelId}' — confirm it has been pulled. ({ex.Message})"));
             }
 
             SchemaDescriptor descriptor;
             try
             {
-                descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+                descriptor = SchemaBuilder.BuildDescriptor(typeDesc, service);
             }
             catch (DocumentTemplateParseException ex)
             {

@@ -1,4 +1,5 @@
 using System.Numerics.Tensors;
+using Microsoft.Extensions.Options;
 
 namespace Iverson.Vector;
 
@@ -7,9 +8,9 @@ namespace Iverson.Vector;
 /// Pure and I/O-free: performs no network calls and reads no clock. The decay signal
 /// is consumed as a pre-computed value in [0,1]; the decay curve itself is owned elsewhere.
 /// </summary>
-public sealed class ResultReranker : IResultReranker
+public sealed class ResultReranker(IOptions<VectorRankingOptions> options) : IResultReranker
 {
-    private const double WBase = 0.60, WCentroid = 0.30, WDecay = 0.10;
+    private readonly VectorRankingOptions _o = options.Value;
 
     public IReadOnlyList<RerankedResult> Rerank(float[] queryVector, IReadOnlyList<RerankCandidate> candidates)
     {
@@ -32,20 +33,20 @@ public sealed class ResultReranker : IResultReranker
             }
             else
             {
-                var weightedSum = WBase * candidate.BaseScore;
-                var weightTotal = WBase;
+                var weightedSum = _o.WBase * candidate.BaseScore;
+                var weightTotal = _o.WBase;
 
                 if (hasCentroid)
                 {
                     var centroidSimilarity = TensorPrimitives.CosineSimilarity(queryVector, candidate.Centroid!);
-                    weightedSum += WCentroid * centroidSimilarity;
-                    weightTotal += WCentroid;
+                    weightedSum += _o.WCentroid * centroidSimilarity;
+                    weightTotal += _o.WCentroid;
                 }
 
                 if (hasDecay)
                 {
-                    weightedSum += WDecay * candidate.Decay!.Value;
-                    weightTotal += WDecay;
+                    weightedSum += _o.WDecay * candidate.Decay!.Value;
+                    weightTotal += _o.WDecay;
                 }
 
                 fusedScore = weightedSum / weightTotal;

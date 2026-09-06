@@ -6,6 +6,7 @@ using Iverson.Client.Contracts;
 using Iverson.Client.Core;
 using Iverson.Events;
 using Iverson.LoadTest.Auth;
+using Iverson.LoadTest.Benchmark;
 using Iverson.LoadTest.Entities;
 using Iverson.LoadTest.Seeding;
 using Iverson.LoadTest.Scenarios;
@@ -31,6 +32,7 @@ var clientScope   = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SCOPE");
 var postgresCs   = Env("IVERSON_POSTGRES_CS",     "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
 var starRocksCs  = Env("IVERSON_STARROCKS_CS",    "Server=127.0.0.1;Port=9030;Database=iverson;Uid=root;Pwd=;");
 var kafkaBoots   = Env("IVERSON_KAFKA_BOOTSTRAP", "localhost:9092");
+var httpUrl      = Env("IVERSON_HTTP_URL",        "http://localhost:8081");
 var actingUserToken = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_TOKEN");
 var actingUserHostHeader = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_HOST_HEADER") ?? "authentik-server:9000";
 // Compose-fixed defaults; kind requires an explicit override (client_id and redirect_uri are
@@ -50,7 +52,7 @@ var actingUserBaseUrl = tokenEndpoint is not null
     ? tokenEndpoint[..tokenEndpoint.IndexOf("/application/o/token/", StringComparison.Ordinal)]
     : "http://localhost:9000";
 
-var config = new LoadTestConfig(postgresCs, starRocksCs, kafkaBoots);
+var config = new LoadTestConfig(postgresCs, starRocksCs, kafkaBoots, httpUrl);
 
 // Only meaningful for --target kind: the kind/cloud charts' Kafka (Strimzi) exposes just a
 // TLS + SCRAM-SHA-512 listener, unlike docker-compose's plaintext broker — see
@@ -249,12 +251,23 @@ switch (command)
                                      IVERSON_KAFKA_SASL_MECHANISM, IVERSON_KAFKA_SASL_USERNAME,
                                      IVERSON_KAFKA_SASL_PASSWORD, IVERSON_KAFKA_SSL_CA_LOCATION.
               --corpus-path <dir>    Root directory for benchmark-ingest; expects beir/corpus.jsonl
-                                     and/or freshstack/corpus.jsonl beneath it
+                                     and/or freshstack/corpus.jsonl beneath it. Produce the freshstack/
+                                     directory with scripts/freshstack_to_jsonl.py, which normalises
+                                     FreshStack's native format into the same corpus.jsonl/queries.jsonl
+                                     shape beir/ uses.
               --output-dir <dir>     Directory benchmark-query writes TREC run files to
               --key-map-path <file> Path benchmark-ingest saves the ParentKey -> DocId map to, and
                                      benchmark-query reads it from
               --config-label <name> Label identifying one of the sweep's eight configurations,
                                      used by benchmark-query when naming its run file
+              --rerank-url <url>    benchmark-query only: rescore each query's 50 max-passage documents
+                                     with a TEI cross-encoder at this base URL (e.g. http://127.0.0.1:8090)
+                                     before writing the chunks run file. Omitted = today's control path.
+              --rerank-model <id>   Refuse to start unless the reranker's /info model_id equals this
+                                     (requires --rerank-url)
+              --rerank-input <mode> winning-chunk (default) scores each document through its winning chunk;
+                                     document scores it through its full beir/corpus.jsonl text (title +
+                                     abstract). Requires --rerank-url.
             """);
         break;
 }
@@ -370,7 +383,8 @@ static async Task ClearDataAsync(string starRocksCs, string postgresCs)
 
 // ── Supporting types ──────────────────────────────────────────────────────────
 
-public sealed record LoadTestConfig(string PostgresCs, string StarRocksCs, string KafkaBootstrap);
+public sealed record LoadTestConfig(
+    string PostgresCs, string StarRocksCs, string KafkaBootstrap, string HttpUrl);
 
 public sealed class CommandFlags
 {
@@ -384,6 +398,9 @@ public sealed class CommandFlags
     public string OutputDir   { get; init; } = "";
     public string KeyMapPath  { get; init; } = "";
     public string ConfigLabel { get; init; } = "";
+    public string RerankUrl   { get; init; } = "";
+    public string RerankModel { get; init; } = "";
+    public string RerankInput { get; init; } = RerankInputs.WinningChunkFlag;
 
     public static CommandFlags Parse(string[] args) => new()
     {
@@ -397,6 +414,9 @@ public sealed class CommandFlags
         OutputDir   = StrFlag(args, "--output-dir",   ""),
         KeyMapPath  = StrFlag(args, "--key-map-path", ""),
         ConfigLabel = StrFlag(args, "--config-label", ""),
+        RerankUrl   = StrFlag(args, "--rerank-url",   ""),
+        RerankModel = StrFlag(args, "--rerank-model", ""),
+        RerankInput = StrFlag(args, "--rerank-input", RerankInputs.WinningChunkFlag),
     };
 
     private static int    IntFlag(

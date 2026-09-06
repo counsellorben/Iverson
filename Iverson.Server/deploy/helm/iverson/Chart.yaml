@@ -25,6 +25,10 @@ dependencies:
     version: "0.1.0"
     repository: "file://charts/ollama"
     condition: ollama.enabled
+  - name: tei
+    version: "0.1.0"
+    repository: "file://charts/tei"
+    condition: tei.enabled
   - name: api
     version: "0.1.0"
     repository: "file://charts/api"

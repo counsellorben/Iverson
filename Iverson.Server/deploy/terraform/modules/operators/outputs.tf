@@ -5,6 +5,7 @@ output "storage_class_names" {
     qdrant     = kubernetes_storage_class.qdrant.metadata[0].name
     kafka      = kubernetes_storage_class.kafka.metadata[0].name
     ollama     = kubernetes_storage_class.ollama.metadata[0].name
+    tei        = kubernetes_storage_class.tei.metadata[0].name
     prometheus = kubernetes_storage_class.prometheus.metadata[0].name
   }
 }

@@ -216,6 +216,15 @@ class SchemaRegistrar:
 
         type_name = meta["type_name"]
         key_field = meta["key_field"]
+        if key_field is None:
+            raise ValueError(
+                f"{type_name} has no key field: register_all would send a descriptor with no "
+                "key property, which the server rejects. If this type inherits from a decorated "
+                "base that declares `iverson_key()`, note that a decorated base's FieldMeta "
+                "sentinels (including the key) are replaced with `None` and do NOT carry into "
+                "subclasses — either make the declaring base field-less, or redeclare the key "
+                "field (and every other field this type needs) on this class itself."
+            )
         search_keys_by_field = {f: o for f, o in meta["search_keys"]}
         large_fields_set = set(meta["large_fields"])
         embedding_fields_set = set(meta["embedding_fields"])
@@ -226,6 +235,7 @@ class SchemaRegistrar:
         summary_fields_set = set(meta.get("summary_fields", []))
         keywords_fields_set = set(meta.get("keywords_fields", []))
         extracted_fields_by_name = meta.get("extracted_fields", {})
+        embedding_model = meta.get("embedding_model", "")
         self._validate_key_declarations(
             type_name,
             key_field,
@@ -272,11 +282,11 @@ class SchemaRegistrar:
                 is_large_field=(field_name in large_fields_set),
                 is_embedding=(field_name in embedding_fields_set),
                 vector_dim=0,
-                model_id="",
+                model_id=(embedding_model if field_name in embedding_fields_set else ""),
                 is_chunk=is_chunk,
                 chunk_max_tokens=chunk_max_tokens,
                 chunk_overlap=chunk_overlap,
-                chunk_model_id="",
+                chunk_model_id=(embedding_model if is_chunk else ""),
                 chunk_vector_dim=0,
                 chunk_contextual=chunk_contextual,
                 is_summary_target=(field_name in summary_fields_set),

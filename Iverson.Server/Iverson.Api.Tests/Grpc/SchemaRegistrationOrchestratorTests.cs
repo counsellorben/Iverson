@@ -7,6 +7,7 @@ using Iverson.Embeddings;
 using Iverson.Sql;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 using Xunit;
 
 namespace Iverson.Api.Tests.Grpc;
@@ -16,6 +17,7 @@ public class SchemaRegistrationOrchestratorTests
     private readonly IRecordStoreQueryExecutor _sql = Substitute.For<IRecordStoreQueryExecutor>();
     private readonly IRecordStoreSchemaManager _schemaManager = Substitute.For<IRecordStoreSchemaManager>();
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
+    private readonly IEmbeddingServiceResolver _resolver = Substitute.For<IEmbeddingServiceResolver>();
     private readonly SchemaRegistry _registry;
     private readonly SchemaRegistrationOrchestrator _sut;
 
@@ -23,12 +25,17 @@ public class SchemaRegistrationOrchestratorTests
     {
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
+        // Every existing test in this file registers a type against a single embedding service,
+        // regardless of what model (if any) it declares — mirroring the pre-resolver singleton
+        // behavior. Tests that care which model id the resolver was asked for verify that via
+        // _resolver.Received().Get(...) rather than by varying this stub's return value.
+        _resolver.Get(Arg.Any<string?>()).Returns(_embedding);
         _registry = new SchemaRegistry(
             new SchemaRegistryRepository(_sql),
             NullLogger<SchemaRegistry>.Instance);
         _sut = new SchemaRegistrationOrchestrator(
             _schemaManager,
-            _embedding,
+            _resolver,
             _registry,
             Substitute.For<IDocumentRerenderQueueRepository>(),
             NullLogger<SchemaRegistrationOrchestrator>.Instance);
@@ -630,6 +637,401 @@ public class SchemaRegistrationOrchestratorTests
         schema.VectorFields.Should().ContainSingle();
         schema.VectorFields[0].Dimension.Should().Be(768);
         schema.VectorFields[0].ModelId.Should().Be("nomic-embed-text");
+    }
+
+    // DeclaredModel is private on the orchestrator, so its behavior is observed the same way
+    // production observes it: through which argument RegisterAsync's phase-1 loop passed to
+    // IEmbeddingServiceResolver.Get.
+    [Fact]
+    public async Task RegisterAsync_WithAllPropertiesSendingEmptyModel_ResolvesTheDefaultService()
+    {
+        var typeDesc = SimpleType("EmptyModelDoc", "Name");
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty
+        });
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Body", ClrType = ClrType.ClrString, IsChunk = true,
+            ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = string.Empty
+        });
+
+        await _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+
+        _resolver.Received(1).Get(null);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithADeclaredModel_ResolvesThatModel()
+    {
+        var typeDesc = SimpleType("ArcticDoc", "Name");
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Body", ClrType = ClrType.ClrString, IsChunk = true,
+            ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
+        });
+
+        await _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+
+        _resolver.Received(1).Get("snowflake-arctic-embed:s");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithTwoPropertiesNamingDifferentModels_ThrowsInvalidArgument()
+    {
+        var typeDesc = SimpleType("ConflictedDoc", "Name");
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Summary", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = "nomic-embed-text"
+        });
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Body", ClrType = ClrType.ClrString, IsChunk = true,
+            ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("ConflictedDoc");
+        ex.Which.Status.Detail.Should().Contain("nomic-embed-text");
+        ex.Which.Status.Detail.Should().Contain("snowflake-arctic-embed:s");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithADualFlagPropertyWhoseModelIdAndChunkModelIdDisagree_ThrowsInvalidArgument()
+    {
+        var typeDesc = SimpleType("DualFlagDoc", "Name");
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Body", ClrType = ClrType.ClrString,
+            IsEmbedding = true, ModelId = "nomic-embed-text",
+            IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("nomic-embed-text");
+        ex.Which.Status.Detail.Should().Contain("snowflake-arctic-embed:s");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithTwoPropertiesNamingTheSameModel_IsAccepted()
+    {
+        var typeDesc = SimpleType("AgreeingDoc", "Name");
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Summary", ClrType = ClrType.ClrString, IsEmbedding = true,
+            ModelId = "snowflake-arctic-embed:s"
+        });
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Body", ClrType = ClrType.ClrString, IsChunk = true,
+            ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        _resolver.Received(1).Get("snowflake-arctic-embed:s");
+    }
+
+    // Regression for the "resolve after the guard" reorder: before that change, resolver.Get was
+    // called eagerly, once per loop iteration, BEFORE the guard's comparison — so a re-registration
+    // that the guard goes on to reject had still already resolved (and would have initialized) the
+    // rejected model's service. Binding the resolved service after the guard means a guard-rejected
+    // model is never even looked up.
+    [Fact]
+    public async Task RegisterAsync_ReRegisteringWithADifferentDeclaredModel_NeverResolvesTheRejectedModel()
+    {
+        var arctic = Substitute.For<IEmbeddingService>();
+        arctic.Dimension.Returns(768);
+        arctic.ModelId.Returns("snowflake-arctic-embed:s");
+        _resolver.Get("snowflake-arctic-embed:s").Returns(arctic);
+
+        var td = SimpleType("Doc", "Name");
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var td2 = SimpleType("Doc", "Name");
+        td2.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            ModelId = "snowflake-arctic-embed:s"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        _resolver.DidNotReceive().Get("snowflake-arctic-embed:s");
+    }
+
+    // The re-registration guard: rejects a re-registration that changes a type's resolved
+    // embedding model, because ApplyCollectionAsync only catches a model swap that changes the
+    // vector dimension — two models sharing a dimension slip past it and the collection silently
+    // accumulates vectors from two incompatible spaces.
+    [Fact]
+    public async Task RegisterAsync_ReRegisteringWithTheSameModel_DoesNotThrow()
+    {
+        var td = SimpleType("Doc", "Name");
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var td2 = SimpleType("Doc", "Name");
+        td2.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_ReRegisteringWithADifferentDeclaredModel_ThrowsFailedPrecondition()
+    {
+        var arctic = Substitute.For<IEmbeddingService>();
+        arctic.Dimension.Returns(768);
+        arctic.ModelId.Returns("snowflake-arctic-embed:s");
+        // Configured after the constructor's Arg.Any<string?>() stub, so it takes precedence for
+        // calls carrying this specific model id — the default stub keeps answering every other call.
+        _resolver.Get("snowflake-arctic-embed:s").Returns(arctic);
+
+        var td = SimpleType("Doc", "Name");
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var td2 = SimpleType("Doc", "Name");
+        td2.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            ModelId = "snowflake-arctic-embed:s"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        // The message must name BOTH models, the DELETE statement, AND the actual tenant-scoped
+        // collection pattern — NOT the bare base name "docs", which is never a real Qdrant
+        // collection (IntelligenceTenantScope.ResolveCollectionName always qualifies by tenant).
+        // An operator following only one half of the remedy, or searching for the bare base name,
+        // is left with the row or a real per-tenant collection still present.
+        ex.Which.Status.Detail.Should().Contain("nomic-embed-text");
+        ex.Which.Status.Detail.Should().Contain("snowflake-arctic-embed:s");
+        ex.Which.Status.Detail.Should().Contain("DELETE FROM _iverson_schema WHERE type_name = 'Doc'");
+        ex.Which.Status.Detail.Should().Contain("'docs_<tenantId>' (vectors)");
+        ex.Which.Status.Detail.Should().Contain("'docs_chunks_<tenantId>' (chunks)");
+    }
+
+    // Pins the guard's ORDERING, not just its outcome. The guard sits BEFORE
+    // EnsureInitializedAsync so that re-registering with a model the deployment never pulled is
+    // rejected with FailedPrecondition rather than failing with Unavailable from the probe — an
+    // operator misreading FailedPrecondition-from-the-model-guard as an Ollama outage would go
+    // looking in the wrong place. Every OTHER guard test stubs a resolver whose
+    // EnsureInitializedAsync completes instantly, so none of them can tell the guard runs before
+    // the probe from the guard running after it and short-circuiting on the same exception type.
+    // This test uses a service whose EnsureInitializedAsync THROWS, and asserts both that the
+    // guard's own FailedPrecondition surfaces (not Unavailable) and that the throwing service was
+    // never even called — the only way to fail this test is to move the guard below the probe.
+    [Fact]
+    public async Task RegisterAsync_ReRegisteringWithAModelWhoseServiceCannotInitialize_ThrowsFailedPrecondition_WithoutProbingIt()
+    {
+        var td = SimpleType("Doc", "Name");
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var unreachable = Substitute.For<IEmbeddingService>();
+        unreachable.Dimension.Returns(768);
+        unreachable.ModelId.Returns("snowflake-arctic-embed:s");
+        unreachable.EnsureInitializedAsync(Arg.Any<CancellationToken>())
+            .Throws(new InvalidOperationException("connection refused"));
+        _resolver.Get("snowflake-arctic-embed:s").Returns(unreachable);
+
+        var td2 = SimpleType("Doc", "Name");
+        td2.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            ModelId = "snowflake-arctic-embed:s"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        await unreachable.DidNotReceive().EnsureInitializedAsync(Arg.Any<CancellationToken>());
+    }
+
+    // Optional coverage (not required by Fix 2, added alongside it): this branch changed the
+    // Unavailable message to name the resolved model and point at "confirm it has been pulled",
+    // with no prior test covering the new text. A first-time registration (no priorModel, so the
+    // guard's AND is false and EnsureInitializedAsync is actually reached) is the only way to
+    // exercise this branch at all.
+    [Fact]
+    public async Task RegisterAsync_EmbeddingServiceFailsToInitialize_ThrowsUnavailable_NamingTheResolvedModel()
+    {
+        var unreachable = Substitute.For<IEmbeddingService>();
+        unreachable.Dimension.Returns(768);
+        unreachable.ModelId.Returns("snowflake-arctic-embed:s");
+        unreachable.EnsureInitializedAsync(Arg.Any<CancellationToken>())
+            .Throws(new InvalidOperationException("connection refused"));
+        _resolver.Get("snowflake-arctic-embed:s").Returns(unreachable);
+
+        var td = SimpleType("Doc", "Name");
+        td.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            ModelId = "snowflake-arctic-embed:s"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.Unavailable);
+        ex.Which.Status.Detail.Should().Contain("'Doc': 'snowflake-arctic-embed:s'");
+        ex.Which.Status.Detail.Should().Contain("confirm it has been pulled");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_GainingItsFirstEmbeddedProperty_RegistersCleanly()
+    {
+        // Absent -> present: priorModel is null (no vector/chunk fields yet), so the guard's
+        // three-way AND is false regardless of what this registration resolves to. This is the
+        // missingVectors -> MigrateCollectionAsync path the write side already supports.
+        var td = SimpleType("Doc", "Name");
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var td2 = SimpleType("Doc", "Name");
+        td2.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        _registry.Get("Doc")!.VectorFields.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_LosingItsLastEmbeddedProperty_RegistersCleanly()
+    {
+        // Present -> absent: nextModel is null (hasEmbedded is false on the inbound typeDesc), so
+        // the guard's three-way AND is false. This is removing vectors, not mixing two spaces.
+        var td = SimpleType("Doc", "Name");
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var td2 = SimpleType("Doc", "Name");
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        _registry.Get("Doc")!.VectorFields.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_UndeclaredModelWithChangedDeploymentDefault_ThrowsFailedPrecondition()
+    {
+        // Neither registration declares a model (ModelId is empty both times) — DeclaredModel
+        // returns null on both calls, so this proves the guard compares RESOLVED models, not
+        // declared ones: an operator who never touched the client's declaration is still caught
+        // when the deployment default moves out from under an already-registered type.
+        var td = SimpleType("Doc", "Name");
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var newDefault = Substitute.For<IEmbeddingService>();
+        newDefault.Dimension.Returns(1024);
+        newDefault.ModelId.Returns("snowflake-arctic-embed:s");
+        // Reconfiguring the SAME Arg.Any<string?>() call specification: the later configuration
+        // wins for every subsequent call matching it, so resolver.Get(null) now answers newDefault.
+        _resolver.Get(Arg.Any<string?>()).Returns(newDefault);
+
+        var td2 = SimpleType("Doc", "Name");
+        td2.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        ex.Which.Status.Detail.Should().Contain("nomic-embed-text");
+        ex.Which.Status.Detail.Should().Contain("snowflake-arctic-embed:s");
+    }
+
+    // THE DISCRIMINATING CASE. A two-check guard that takes `nextModel = service.ModelId`
+    // unconditionally (ignoring hasEmbedded) passes every test above and fails only this one: the
+    // deployment default has moved AND this registration drops the type's last embedded property.
+    // That type is not changing its model, it is ceasing to have one — rejecting it would block a
+    // legitimate evolution the write path already supports.
+    [Fact]
+    public async Task RegisterAsync_ChangedDeploymentDefaultAndDroppingLastEmbeddedProperty_RegistersCleanly()
+    {
+        var td = SimpleType("Doc", "Name");
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var newDefault = Substitute.For<IEmbeddingService>();
+        newDefault.Dimension.Returns(1024);
+        newDefault.ModelId.Returns("snowflake-arctic-embed:s");
+        _resolver.Get(Arg.Any<string?>()).Returns(newDefault);
+
+        // This registration drops the embedding property entirely.
+        var td2 = SimpleType("Doc", "Name");
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        _registry.Get("Doc")!.VectorFields.Should().BeEmpty();
+    }
+
+    // Fix B (review round 1): registry.Get alone is STALE for the whole of phase 1 -- registry.RegisterAsync
+    // does not run until phase 3 -- so a type appearing twice in the SAME request (a dependent sharing the
+    // root's name, or two dependents sharing a name; nothing above rejects that) would have both occurrences
+    // see the identical, unregistered-so-null priorModel and both pass, even when they resolve to two
+    // different incompatible models. Phase 3 would then register them in sequence, the second silently
+    // overwriting the first -- exactly the outcome this guard exists to prevent, reached through one request
+    // instead of two. The guard now checks batchDescriptors (populated after BuildDescriptor, below) before
+    // falling back to registry.Get, mirroring phase 2's effectiveDescriptors move.
+    [Fact]
+    public async Task RegisterAsync_SameTypeNameTwiceInOneRequestWithDifferentModels_ThrowsFailedPrecondition()
+    {
+        var arctic = Substitute.For<IEmbeddingService>();
+        arctic.Dimension.Returns(768);
+        arctic.ModelId.Returns("snowflake-arctic-embed:s");
+        _resolver.Get("snowflake-arctic-embed:s").Returns(arctic);
+
+        var root = SimpleType("Doc", "Name");
+        root.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+
+        // A dependent sharing the ROOT's type name -- nothing upstream of the guard rejects this.
+        var dependent = SimpleType("Doc", "Name");
+        dependent.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            ModelId = "snowflake-arctic-embed:s"
+        });
+
+        var request = new SchemaRequest { RootType = root, Dependents = { dependent } };
+
+        var act = () => _sut.RegisterAsync(request, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        ex.Which.Status.Detail.Should().Contain("nomic-embed-text");
+        ex.Which.Status.Detail.Should().Contain("snowflake-arctic-embed:s");
+        // Phase 1 validates every type before any registry write, so neither occurrence registers.
+        _registry.Get("Doc").Should().BeNull();
     }
 
     [Fact]

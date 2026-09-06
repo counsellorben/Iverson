@@ -196,6 +196,7 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
 /// so RegisterSchema itself no longer eagerly provisions StarRocks or Qdrant.)
 /// </summary>
 [Trait("Category", "Integration")]
+[Collection(ContainerCollection.Name)]
 public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContainerFixture fixture)
     : IClassFixture<AllStoresContainerFixture>
 {
@@ -219,9 +220,12 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
         // prove RegisterSchema provisions Postgres end to end, so the DDL/schema registration
         // work it delegates to ISchemaRegistrationOrchestrator must actually run against the
         // fixture's real Postgres schema manager.
+        var embeddingResolver = Substitute.For<IEmbeddingServiceResolver>();
+        embeddingResolver.Get(Arg.Any<string?>()).Returns(Substitute.For<IEmbeddingService>());
+
         var schemaRegistration = new SchemaRegistrationOrchestrator(
             fixture.PostgresSchemaManager,
-            Substitute.For<IEmbeddingService>(),
+            embeddingResolver,
             registry,
             Substitute.For<IDocumentRerenderQueueRepository>(),
             NullLogger<SchemaRegistrationOrchestrator>.Instance);
