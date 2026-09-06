@@ -21,3 +21,12 @@ def test_plan_falls_back_to_the_question_when_the_model_returns_no_queries():
     client.messages.parse.return_value = SimpleNamespace(parsed_output=Plan(queries=[]))
     result = plan(client, "claude-opus-5", "Type: PolicyDoc", "leave policy")
     assert result.queries == [RetrievalQuery(query_text="leave policy", filters=[])]
+
+
+def test_plan_passes_one_to_three_queries_through_unchanged():
+    client = MagicMock()
+    for n in (1, 2, 3):
+        queries = [RetrievalQuery(query_text=f"q{i}", filters=[Filter(field="Source", value="legal")] if i else [])
+                   for i in range(n)]
+        client.messages.parse.return_value = SimpleNamespace(parsed_output=Plan(queries=queries))
+        assert plan(client, "claude-opus-5", "Type: PolicyDoc", "leave policy").queries == queries

@@ -196,3 +196,56 @@ def test_expand_document_keeps_passages_best_first_after_topup():
         cfg=AgentConfig(m=1))
     answer = session.run("q?", "tok", trace_id="t")
     assert answer.citations[0].passages == ["a-new", "a1"]
+
+
+def test_refusal_carries_the_stop_details():
+    session, _, _ = make_session([SimpleNamespace(
+        content=[], stop_reason="refusal",
+        stop_details=SimpleNamespace(category="general_harms", explanation="not allowed"))])
+    with pytest.raises(ModelRefused) as info:
+        session.run("q?", "tok", trace_id="t")
+    assert (info.value.category, info.value.explanation) == ("general_harms", "not allowed")
+    assert "general_harms" in str(info.value) and "not allowed" in str(info.value)
+
+
+def test_truncated_answer_is_returned_flagged():
+    session, _, _ = make_session([message(text("Leave is 20 days [doc 1] and"), stop_reason="max_tokens")])
+    answer = session.run("q?", "tok", trace_id="t")
+    assert answer.text == "Leave is 20 days [doc 1] and"
+    assert [c.key for c in answer.citations] == ["A"]
+    assert answer.flags == ["answer truncated at max_tokens"]
+
+
+def test_search_more_with_no_new_documents_says_so_and_does_not_count_a_page_change():
+    session, anthropic, _ = make_session(
+        [message(tool_use("search_more", query_text="q2", filters=[]), stop_reason="tool_use"),
+         message(text("Done [doc 1]."))],
+        cfg=AgentConfig(m=1))          # the default chunks return A and B again: nothing new
+    answer = session.run("q?", "tok", trace_id="t")
+    tool_result = anthropic.messages.create.call_args.kwargs["messages"][-1]["content"][0]
+    assert tool_result["content"] == "No new documents were found for: q2"
+    assert answer.tool_calls == 1 and answer.context_keys == ["A", "B"]
+
+
+def test_expand_document_out_of_range_and_unknown_tool_are_reported_not_raised():
+    session, anthropic, _ = make_session(
+        [message(tool_use("expand_document", doc_number=7, query_text="more"),
+                 SimpleNamespace(type="tool_use", id="tu-x", name="frobnicate", input={}),
+                 stop_reason="tool_use"),
+         message(text("Done [doc 1]."))],
+        cfg=AgentConfig(m=1))
+    answer = session.run("q?", "tok", trace_id="t")
+    results = anthropic.messages.create.call_args.kwargs["messages"][-1]["content"]
+    assert [r["content"] for r in results] == ["[doc 7] is not a document shown to you.", "Unknown tool frobnicate."]
+    assert answer.tool_calls == 2 and answer.text == "Done [doc 1]."
+
+
+def test_user_key_is_the_jwt_subject_when_the_token_is_a_jwt():
+    import base64
+    import json
+    from iverson_agent.session import _user_key
+    payload = base64.urlsafe_b64encode(json.dumps({"sub": "user-42"}).encode()).rstrip(b"=").decode()
+    assert _user_key(f"hdr.{payload}.sig") == "user-42"
+    assert _user_key("opaque-token") == "opaque-token"
+    no_sub = base64.urlsafe_b64encode(b'{"iss":"x"}').rstrip(b"=").decode()
+    assert _user_key(f"hdr.{no_sub}.sig") == f"hdr.{no_sub}.sig"

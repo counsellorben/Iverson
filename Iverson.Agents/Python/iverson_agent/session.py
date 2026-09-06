@@ -9,10 +9,11 @@ import re
 from dataclasses import dataclass, field
 
 from iverson_client import IversonClient
+from iverson_client.core import _to_pascal_case
 from iverson_agent.config import AgentConfig
 from iverson_agent.planner import plan
 from iverson_agent.retrieval import (
-    DocumentContext, assemble, estimate_tokens, locate, render_context,
+    DocumentContext, RankedParent, _render_one, assemble, estimate_tokens, locate, render_context,
 )
 from iverson_agent.schema import SchemaCache, render_schema, resolve_type, validate_filters
 
@@ -64,7 +65,15 @@ _CITATION = re.compile(r"\[doc (\d+)\]")
 
 
 class ModelRefused(Exception):
-    """The model returned stop_reason == "refusal" (§6)."""
+    """The model returned stop_reason == "refusal" (§6).
+
+    `category` and `explanation` carry the API's `stop_details` when it sent them, so the caller
+    can tell a policy refusal on the question apart from one on the retrieved documents."""
+
+    def __init__(self, category: str | None = None, explanation: str | None = None) -> None:
+        self.category = category
+        self.explanation = explanation
+        super().__init__(f"model refused ({category or 'no category'}): {explanation or 'no explanation'}")
 
 
 @dataclass(frozen=True)
@@ -106,7 +115,6 @@ class AgentSession:
                 raise ValueError(f"{meta['type_name']} declares {len(chunk_fields)} chunk fields; "
                                  "pass chunk_property explicitly")
             chunk_property = chunk_fields[0]
-        from iverson_client.core import _to_pascal_case
         self._anthropic = anthropic_client
         self._iverson = iverson_client
         self._cls = entity_cls
@@ -163,6 +171,10 @@ class AgentSession:
         text = _text_of(response)
         invalid = _invalid_citations(text, len(state.contexts))
         flags: list[str] = []
+        if response.stop_reason == "max_tokens":
+            # §6: 16 000 output tokens should never truncate a cited answer; if it did, the tail
+            # (and its citations) is missing, so the answer is returned flagged, not as complete.
+            flags.append("answer truncated at max_tokens")
         if invalid:
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content":
@@ -194,7 +206,8 @@ class AgentSession:
             kwargs["tool_choice"] = {"type": "none"}
         response = self._anthropic.messages.create(**kwargs)
         if response.stop_reason == "refusal":
-            raise ModelRefused()
+            details = getattr(response, "stop_details", None)
+            raise ModelRefused(getattr(details, "category", None), getattr(details, "explanation", None))
         return response
 
     def _retrieve(self, docs, queries, question, trace_id):
@@ -233,7 +246,6 @@ class AgentSession:
             if not 1 <= n <= len(state.contexts):
                 return f"[doc {n}] is not a document shown to you."
             target = state.contexts[n - 1]
-            from iverson_agent.retrieval import RankedParent
             refreshed = assemble(docs, self._cls, self._type_name, self._chunk_property,
                                  [RankedParent(target.key, target.best_score, [])],
                                  inp["query_text"], self._cfg.m, trace_id, self._title_field)
@@ -257,7 +269,6 @@ class _State:
 
 
 def _render_block(n: int, c: DocumentContext) -> str:
-    from iverson_agent.retrieval import _render_one
     return _render_one(n, c, c.passages)
 
 

@@ -23,10 +23,11 @@ class RetrievalUnavailable(RetrievalError):
 
 
 class QueryRejected(RetrievalError):
-    """`SearchChunks` was still `InvalidArgument` after the unfiltered retry (§6 row 1).
+    """`SearchChunks` was `InvalidArgument` with no filters left to drop (§6 row 1).
 
-    In `locate` this skips the one query; anywhere else (stage 2's top-up) it stays a session
-    failure, which is why it remains a `RetrievalError`."""
+    `locate` skips that one query. Stage 2's PK-filtered top-up never reaches here: its only
+    filter is the parent-key equality, which is never dropped, so an `InvalidArgument` on it is a
+    plain `RetrievalError` and fails the session."""
 
 
 @dataclass
@@ -57,7 +58,14 @@ def chunks_request(type_name: str, chunk_property: str, query_text: str, top_k: 
         filter_logic=pb.AND, trace_id=trace_id)
 
 
-def _search(coordinator, request: pb.SearchChunksRequest) -> list[pb.ChunkSearchResponse]:
+def _search(coordinator, request: pb.SearchChunksRequest, *,
+            retry_unfiltered: bool = True) -> list[pb.ChunkSearchResponse]:
+    """One `SearchChunks` call behind the §6 error boundary.
+
+    `retry_unfiltered=True` is stage 1's contract: an `InvalidArgument` drops every planned
+    filter and retries once. Stage 2's top-up passes False — its filter is the parent-key
+    equality that scopes the top-up to one document, and retrying without it would merge another
+    document's chunks into this one's context."""
     try:
         return coordinator.search_chunks(request)
     except grpc.RpcError as err:
@@ -65,13 +73,15 @@ def _search(coordinator, request: pb.SearchChunksRequest) -> list[pb.ChunkSearch
         if code == grpc.StatusCode.UNAVAILABLE:
             raise RetrievalUnavailable(err.details()) from err
         if code == grpc.StatusCode.INVALID_ARGUMENT:
-            if request.filter:
+            if request.filter and retry_unfiltered:
                 log.warning("[locate] trace=%s InvalidArgument with filters; retrying unfiltered: %s",
                             request.trace_id, err.details())
                 retry = pb.SearchChunksRequest()
                 retry.CopyFrom(request)
                 del retry.filter[:]
                 return _search(coordinator, retry)
+            if request.filter:
+                raise RetrievalError(f"{code.name} on a filter that cannot be dropped: {err.details()}") from err
             raise QueryRejected(f"{code.name}: {err.details()}") from err
         raise RetrievalError(f"{code.name}: {err.details()}") from err
 
@@ -131,11 +141,9 @@ def assemble(coordinator, entity_cls: type, type_name: str, chunk_property: str,
             continue
         passages = list(p.chunks)
         if len(passages) < m:
-            more = _search(coordinator, pb.SearchChunksRequest(
-                type_name=type_name, property=chunk_property, query=question, top_k=m,
-                filter=[pb.SearchClause(property=key_prop, operator=pb.EQUALS,
-                                        value=_to_search_value(p.key), clause_type=pb.FILTER)],
-                trace_id=trace_id))
+            more = _search(coordinator, chunks_request(type_name, chunk_property, question, m,
+                                                       [ValidFilter(key_prop, p.key)], trace_id),
+                           retry_unfiltered=False)          # the PK filter is never dropped
             if not more:
                 log.info("[assemble] trace=%s no chunks for parent %s under PK filter; using stage-1 fragments",
                          trace_id, p.key)

@@ -151,3 +151,30 @@ def test_render_context_numbers_documents_and_drops_lowest_passages_first():
     assert [t for _, t in ctx[0].passages] == ["x" * 400]         # pruned in place: citations see only the page
     tiny = render_context(ctx, budget_tokens=60)
     assert "sum-A" in tiny and "[doc 2]" in tiny                  # summary fallback; documents never dropped
+
+
+def test_topup_invalid_argument_is_not_retried_without_its_pk_filter():
+    # The top-up's only filter is the parent-key equality that scopes it to ONE document. Stage
+    # 1's drop-all-filters retry must not apply here: an unfiltered retry would return the
+    # question's best chunks from ANY document and merge them into this parent's context.
+    coord = MagicMock()
+    coord.get_many.return_value = [entity("A")]
+    coord.search_chunks.side_effect = rpc_error(grpc.StatusCode.INVALID_ARGUMENT)
+    from iverson_agent.retrieval import RankedParent
+    with pytest.raises(RetrievalError):
+        assemble(coord, Doc, "Doc", "Body", [RankedParent("A", 0.9, [(0.9, "a1")])],
+                 "q", m=3, trace_id="t", title_field="title")
+    coord.search_chunks.assert_called_once()
+    assert [(c.property, c.value.string_val) for c in coord.search_chunks.call_args.args[0].filter] == [("Id", "A")]
+
+
+def test_topup_request_is_built_like_a_stage_one_request():
+    coord = MagicMock()
+    coord.get_many.return_value = [entity("A")]
+    coord.search_chunks.return_value = []
+    from iverson_agent.retrieval import RankedParent
+    assemble(coord, Doc, "Doc", "Body", [RankedParent("A", 0.9, [(0.9, "a1")])],
+             "question", m=3, trace_id="t", title_field="title")
+    req = coord.search_chunks.call_args.args[0]
+    assert (req.type_name, req.property, req.query, req.top_k, req.trace_id) == ("Doc", "Body", "question", 3, "t")
+    assert req.filter_logic == pb.AND and len(req.filter) == 1

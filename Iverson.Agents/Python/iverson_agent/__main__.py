@@ -25,13 +25,29 @@ def _credentials() -> IversonClientCredentials:
 
 
 def _endpoint() -> tuple[str, int, bool]:
+    """(host, port, use_tls) from IVERSON_GRPC_URL.
+
+    The scheme decides TLS: `https://` connects with TLS (default port 443); `http://` — the
+    default, `http://localhost:8080`, matching the compose stack's plaintext h2c listener —
+    connects without it. Anything other than localhost should be `https://`."""
     url = urlsplit(os.environ.get("IVERSON_GRPC_URL", "http://localhost:8080"))
+    if url.scheme not in ("http", "https"):
+        raise ValueError(f"IVERSON_GRPC_URL must start with http:// or https://, got {url.geturl()!r}")
     return url.hostname or "localhost", url.port or (443 if url.scheme == "https" else 8080), url.scheme == "https"
 
 
 def _entity(spec: str) -> type:
-    module, _, name = spec.partition(":")
-    return getattr(importlib.import_module(module), name)
+    """Resolve `module:Class` to the @iverson_entity class, failing with the spec in the message."""
+    module, sep, name = spec.partition(":")
+    if not sep or not module or not name:
+        raise ValueError(f"--entity must be module:Class, got {spec!r}")
+    try:
+        cls = getattr(importlib.import_module(module), name)
+    except (ImportError, AttributeError) as err:
+        raise ValueError(f"--entity {spec!r} could not be resolved: {err}") from err
+    if not hasattr(cls, "_iverson_meta"):
+        raise ValueError(f"--entity {spec!r} is not an @iverson_entity class")
+    return cls
 
 
 def main(argv: list[str] | None = None) -> int:

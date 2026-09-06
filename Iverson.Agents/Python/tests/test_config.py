@@ -1,4 +1,7 @@
+import dataclasses
 from datetime import timedelta
+
+import pytest
 
 from iverson_agent.config import AgentConfig
 
@@ -11,6 +14,5 @@ def test_defaults_match_spec_section_5():
 
 
 def test_config_is_frozen():
-    import dataclasses
-    with __import__("pytest").raises(dataclasses.FrozenInstanceError):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         AgentConfig().k = 9
