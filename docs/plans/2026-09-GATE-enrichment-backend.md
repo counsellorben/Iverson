@@ -1,7 +1,8 @@
 # Enrichment Backend Gate — TGI-1.5B vs Ollama-3B
 
-Recorded 2026-09-06, from `.worktrees/embedding-migration-phase2` HEAD `ae5c08d` (branch
-`embedding-migration-phase2`). Corresponds to Task 8 of
+Recorded 2026-09-06, from `.worktrees/embedding-migration-phase2` HEAD `553b3b2` (branch
+`embedding-migration-phase2`), and amended at `c7352a1` (fix round) and `def62bb` (Phase C′ end
+state). Corresponds to Task 8 of
 `docs/plans/2026-09-05-embedding-migration-phase2-implementation-plan.md`; the gate rule is
 `docs/specs/2026-09-05-embedding-migration-phase2-design.md` §6.4, and the branch it selects between
 is §7's Phase C / Phase C′.
@@ -138,7 +139,7 @@ TGI's `/info` at the start of its pass: `Qwen/Qwen2.5-1.5B-Instruct 3072 3584` (
 | 2 | `tgi.p95_wall_s < 120` | 527.387 | — | **FAIL** |
 | 3 | `tgi.failed == 0 and tgi.empty == 0` | failed=5, empty=5 | — | **FAIL** |
 | 4 | `tgi.extraction_parse_ok == 5` | 5 | — | **PASS** |
-| 5 | `tgi.min_mem_available_bytes > 500e6` and no OOM kill | 1,294,192,640 B (1.29 GB); OOM=false | — | **PASS** |
+| 5 | `tgi.min_mem_available_bytes > 500e6` and no OOM kill | 1,294,192,640 B (1.29 GB); OOM=false | — | **PASS** (qualified — see "Box observations": iowait 24–47 % and swap fully committed at 4095/4096 MB were concurrent conditions during this same pass, per ruling R8) |
 
 Three of five criteria fail. Per spec §6.4 ("all five" required to pass), the gate does not pass.
 
