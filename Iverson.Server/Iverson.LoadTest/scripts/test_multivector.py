@@ -72,3 +72,15 @@ def test_summarize_latency():
 def test_summarize_latency_rejects_empty():
     with pytest.raises(ValueError):
         multivector.summarize_latency([])
+
+
+def test_rank_chunk_hits_collapses_through_the_parent_map():
+    hits = [{"id": 1, "score": 0.9, "payload": {"parent_id": "ka"}},
+            {"id": 2, "score": 0.8, "payload": {"parent_id": "kb"}},
+            {"id": 3, "score": 0.95, "payload": {"parent_id": "ka"}}]
+    assert multivector.rank_chunk_hits(hits, {"ka": "A", "kb": "B"}, 50) == [("A", 0.95), ("B", 0.8)]
+
+
+def test_rank_chunk_hits_fails_loud_on_unknown_parent():
+    with pytest.raises(SystemExit):
+        multivector.rank_chunk_hits([{"id": 1, "score": 0.9, "payload": {"parent_id": "zz"}}], {}, 50)

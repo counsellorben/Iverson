@@ -81,6 +81,19 @@ def collapse_by_doc(scored, limit):
     return sorted(best.items(), key=lambda kv: kv[1], reverse=True)[:limit]
 
 
+def rank_chunk_hits(hits, key_to_doc, limit):
+    """Per-chunk search hits -> document ranking via the parent map (MaxPassageAggregator +
+    CollapseByDocId). An unresolved parent means the index holds a document this run cannot
+    name; that ranking must not be scored (spec §3.3)."""
+    scored = []
+    for hit in hits:
+        parent = hit["payload"]["parent_id"]
+        if parent not in key_to_doc:
+            sys.exit(f"chunk {hit['id']}: parent {parent} has no object point")
+        scored.append((key_to_doc[parent], hit["score"]))
+    return collapse_by_doc(scored, limit)
+
+
 def trec_lines(query_id, ranked, run_tag):
     """TrecRunWriter's format: `qid Q0 docid rank score runtag`, rank from 1, score F6."""
     return [f"{query_id} Q0 {doc_id} {rank} {score:.6f} {run_tag}"
@@ -244,6 +257,94 @@ def cmd_stats(args):
     print(f"[multivector] wrote {path}")
 
 
+# ── query ───────────────────────────────────────────────────────────────────────────────
+
+def cmd_query(args):
+    # Both layouts must be HNSW-indexed and idle before a latency is taken (CIR-1 §2.2); the
+    # state measured under is written into the sidecar so the gate document reports it.
+    index_state = {}
+    for name in (args.chunks_collection, args.multivector_collection):
+        info = require_collection(name)
+        if info["status"] != "green":
+            sys.exit(f"'{name}' is {info['status']}: wait for indexing to finish before measuring")
+        index_state[name] = {k: info[k] for k in ("status", "points_count", "indexed_vectors_count", "segments_count")}
+    queries_path = os.path.join(args.run_dir, "beir", "queries.jsonl")
+    with open(queries_path, encoding="utf-8") as f:
+        queries = [json.loads(line) for line in f if line.strip()]
+    if not queries:
+        sys.exit(f"no queries in {queries_path}")
+    key_to_doc = {p["payload"]["key"]: p["payload"]["docId"]
+                  for p in scroll(args.object_collection, False, ["key", "docId"])}
+
+    runs_dir = os.path.join(args.run_dir, "runs")
+    os.makedirs(runs_dir, exist_ok=True)
+    chunk_lines, mv_lines, short = [], [], []
+    latency = {"chunks": [], "multivector": []}
+
+    def write_outputs():
+        # Called on every exit path (try/finally): a failed run still leaves its partial
+        # evidence on disk, and the latency sidecar carries whatever was measured.
+        with open(os.path.join(runs_dir, f"{CHUNKS_RUN_LABEL}.chunks.trec"), "w", encoding="utf-8") as f:
+            f.write("\n".join(chunk_lines) + ("\n" if chunk_lines else ""))
+        with open(os.path.join(runs_dir, f"{MULTIVECTOR_RUN_LABEL}.chunks.trec"), "w", encoding="utf-8") as f:
+            f.write("\n".join(mv_lines) + ("\n" if mv_lines else ""))
+        sidecar = {
+            "model": args.model, "embed_url": args.embed_url,
+            "chunks_collection": args.chunks_collection,
+            "multivector_collection": args.multivector_collection,
+            "chunk_top_k": CHUNK_TOP_K, "document_budget": DOCUMENT_BUDGET,
+            "queries": len(queries),
+            "index_state": index_state,
+        }
+        for mode, samples in latency.items():
+            sidecar[mode] = summarize_latency(samples) if samples else None
+        with open(os.path.join(runs_dir, "raw-latency.json"), "w", encoding="utf-8") as f:
+            json.dump(sidecar, f, indent=2)
+
+    try:
+        for i, q in enumerate(queries, start=1):
+            qid, text = q["_id"], q["text"]
+            # Same route and empty prefix as the API for this model (spec A6, A23).
+            vec = ingest.embed(text, args.model, "", args.embed_url)
+
+            # Interleaved per query so the two latencies see the same box state.
+            t0 = time.perf_counter()
+            status, resp = ingest.qdrant_request("POST", f"/collections/{args.chunks_collection}/points/search", {
+                "vector": {"name": CHUNK_VECTOR_NAME, "vector": vec},
+                "limit": CHUNK_TOP_K, "with_payload": ["parent_id"],
+            })
+            latency["chunks"].append((time.perf_counter() - t0) * 1000)
+            if status != 200:
+                sys.exit(f"query {qid}: chunk search HTTP {status} {resp}")
+            ranked = rank_chunk_hits(resp["result"], key_to_doc, DOCUMENT_BUDGET)
+
+            t0 = time.perf_counter()
+            status, resp = ingest.qdrant_request("POST", f"/collections/{args.multivector_collection}/points/query", {
+                "query": [vec], "limit": DOCUMENT_BUDGET, "with_payload": ["docId"],
+            })
+            latency["multivector"].append((time.perf_counter() - t0) * 1000)
+            if status != 200:
+                sys.exit(f"query {qid}: multivector query HTTP {status} {resp}")
+            mv_ranked = [(p["payload"]["docId"], p["score"]) for p in resp["result"]["points"]]
+
+            if len(ranked) < DOCUMENT_BUDGET or len(mv_ranked) < DOCUMENT_BUDGET:
+                short.append((qid, len(ranked), len(mv_ranked)))
+            chunk_lines.extend(trec_lines(qid, ranked, CHUNKS_RUN_LABEL))
+            mv_lines.extend(trec_lines(qid, mv_ranked, MULTIVECTOR_RUN_LABEL))
+            if i % 50 == 0 or i == len(queries):
+                print(f"[multivector] {i}/{len(queries)} queries")
+    finally:
+        write_outputs()
+
+    if short:
+        sys.exit(f"{len(short)} query(ies) filled fewer than {DOCUMENT_BUDGET} documents "
+                 f"(qid, chunks-docs, multivector-docs): {short[:5]} -- R@50 would be understated; not scored")
+    for mode, samples in latency.items():
+        s = summarize_latency(samples)
+        print(f"[multivector] {mode:12} n={s['n']} p50={s['p50_ms']:.1f} ms p95={s['p95_ms']:.1f} ms mean={s['mean_ms']:.1f} ms")
+    print(f"[multivector] wrote {CHUNKS_RUN_LABEL}.chunks.trec, {MULTIVECTOR_RUN_LABEL}.chunks.trec, raw-latency.json in {runs_dir}")
+
+
 # ── CLI ─────────────────────────────────────────────────────────────────────────────────
 
 def add_common_args(p):
@@ -260,6 +361,13 @@ def main():
     add_common_args(b)
     b.add_argument("--drop", action="store_true", help="delete and recreate the multivector collection")
     b.set_defaults(func=cmd_build)
+
+    q = sub.add_parser("query", help="raw Qdrant runs for both layouts + latency sidecar")
+    add_common_args(q)
+    q.add_argument("--run-dir", required=True, help="run directory holding beir/queries.jsonl; writes runs/")
+    q.add_argument("--model", required=True, help="embedding model id, sent as the request's model field")
+    q.add_argument("--embed-url", required=True, help="TEI base URL, e.g. http://localhost:8091")
+    q.set_defaults(func=cmd_query)
 
     s = sub.add_parser("stats", help="points / indexed / segments / disk for both collections")
     add_common_args(s)
