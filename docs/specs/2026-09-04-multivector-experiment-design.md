@@ -161,8 +161,10 @@ and writes `runs/storage.json`.
 
 `ingest.py` (gte ingest: `--model Alibaba-NLP/gte-modernbert-base --embed-url http://localhost:8091
 --chunk-max-chars 512 --chunk-step 448`), `benchmark-query` (API control run), `report.py
---baseline` (scoring + paired statistics), the Phase 1 plan's Task 6 steps 4–6 (snapshot loop,
-`_iverson_schema` delete, API recreate) and the Phase 2 plan's Task 4 restore (the `RESTORE.md` loop
+--baseline` (scoring + paired statistics), the Phase 1 plan's Task 6 step 5 (snapshot loop) and
+step 6 (`_iverson_schema` delete, API recreate) — step 4 is reused only for its run-dir bootstrap
+(`mkdir`/`cp` of `beir/` and `qrels.trec`), never for its ingest, which §6 step 3 replaces — and the
+Phase 2 plan's Task 4 restore (the `RESTORE.md` loop
 against `scifact-bge-base-qdrant-snapshots/`, then `docker compose up -d`; §11 A15). One change of
 shape from Phase 2: the API **and the worker** carry `Embeddings__ModelId=${BENCH_EMBED_MODEL:-…}` and
 both run the `/info` identity guard at startup, so the two are recreated together, with `--no-deps`.
@@ -202,11 +204,11 @@ and worker on defaults — verified 2026-09-06); nothing else runs during the in
    `max_input_length` 4096. No `--profile`: `tei-embed` is a default service since Phase 2.
 2. Skip this step if `scifact-bge-base-qdrant-snapshots/` already holds the bge-base baseline (it does
    as of 2026-09-06: two `.snapshot` files + `RESTORE.md`); otherwise snapshot the live bge-base
-   collections with the Phase 1 plan's Task 6 step 4 loop.
+   collections with the Phase 1 plan's Task 6 step 5 loop (`:837`).
 3. `ingest.py --drop --corpus <run>/beir/corpus.jsonl --key-map-path <run>/keymap.json --model
    Alibaba-NLP/gte-modernbert-base --embed-url http://localhost:8091 --chunk-max-chars 512
    --chunk-step 448` in the background; poll the log. Expect sidecar `documents 5183, chunks 19967`,
-   vector size 768. Snapshot both gte collections.
+   vector size 768. Snapshot both gte collections with that same Task 6 step 5 loop.
 4. `docker exec iverson-postgres psql -U iverson -d iverson -c "DELETE FROM _iverson_schema WHERE
    type_name = 'BenchmarkDocument';"` (the row pins bge-base), then
    `BENCH_EMBED_MODEL=Alibaba-NLP/gte-modernbert-base EMBED_MODEL_ID=Alibaba-NLP/gte-modernbert-base
@@ -214,7 +216,7 @@ and worker on defaults — verified 2026-09-06); nothing else runs during the in
    `EmbeddingService initialized: model=Alibaba-NLP/gte-modernbert-base dimension=768`.
 5. `benchmark-query … --config-label gte-chunks-api` (≈ 10 min).
 6. `multivector.py build`, `multivector.py query`, `multivector.py stats`; snapshot the multivector
-   collection into the same snapshot directory.
+   collection with the Task 6 step 5 loop into the same snapshot directory.
 7. Score:
    - `report.py --run <run>/runs --qrels <run>/qrels.trec --stats-path <run>/keymap.json.stats.json
      --baseline <run>/runs/gte-chunks-raw.chunks.trec` — the gated pair plus the API run against the
@@ -315,7 +317,7 @@ tests assert the exact dicts the script builds.
 | A12 | 19,967 chunks; guard passes | §10 row 2; `ChunkBudgetGuard.cs:26-40` |
 | A13 | `--pair` enforces pool invariance → use `--baseline`; missing `.meta.json` scores as `build: unknown` | `report.py:631-661, 175-197` |
 | A14 | 300 queries / 300 qrels queries | `wc -l`, `awk` over the run dir |
-| A15 | migration per-arm procedure reusable | Phase 1 plan Task 6 steps 4–6 (`:819-859`), Phase 2 plan Task 4 restore + `up` (`:516-525`), `scifact-bge-base-qdrant-snapshots/RESTORE.md` |
+| A15 | migration per-arm procedure reusable | Phase 1 plan Task 6 step 4 run-dir copy (`:819`), step 5 snapshot loop (`:837`), step 6 schema delete + API recreate (`:849`), Phase 2 plan Task 4 restore + `up` (`:516-525`), `scifact-bge-base-qdrant-snapshots/RESTORE.md` |
 | A16 | collection info + on-disk size | §10 rows 3, 11 |
 | A18 | `stack.py` is unsafe mid-experiment: tiers include `tei-embed` (`stack.py:84-87`), `up` is `docker compose up -d --no-deps <tier>` (`:102-103`), out-of-tier stop (`:126-131`) | re-verified 2026-09-06 |
 | A19 | `--drop` touches only its two named collections; `ApplyCollectionAsync` only its schema's collection | `ingest.py:789-790`; `IntelligenceCollectionManager.cs:44-100` |
