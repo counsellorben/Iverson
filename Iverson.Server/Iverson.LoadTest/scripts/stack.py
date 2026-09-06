@@ -23,11 +23,13 @@ Usage:
     python3 Iverson.Server/Iverson.LoadTest/scripts/stack.py query --timeout 300
 
 `ingest`/`query` run `docker compose up -d --no-deps <tier services>`. --no-deps is load
--bearing: iverson-api's compose entry declares `depends_on: starrocks (service_healthy),
-kafka (service_healthy), jaeger (service_healthy), tei-embed (service_healthy)`; the
-`query` tier already includes tei-embed, so the other three are what --no-deps skips.
-Without --no-deps, `query` would start and then wait out StarRocks's 60s+ cold-start gate
-for a dependency this benchmark never queries.
+-bearing: iverson-api's compose entry declares `depends_on: postgres (service_healthy),
+starrocks (service_healthy), starrocks-init (service_completed_successfully), qdrant
+(service_healthy), kafka (service_healthy), jaeger (service_healthy), authentik-server
+(service_healthy), tei-embed (service_healthy)`; the `query` tier already includes postgres,
+qdrant, authentik-server, and tei-embed, so the other four -- starrocks, starrocks-init,
+kafka, and jaeger -- are what --no-deps skips. Without --no-deps, `query` would start and
+then wait out StarRocks's 60s+ cold-start gate for a dependency this benchmark never queries.
 
 Any *running* container whose name starts with `iverson-` but is not part of the requested
 tier is then stopped, so a previous `query` run doesn't leave iverson-api and its
@@ -85,8 +87,8 @@ TIERS = {
 }
 
 # Service name -> container_name, copied from docker-compose.yml. `docker stop`/`docker ps`
-# operate on container names, which differ from service names for every entry but qdrant
-# and iverson-api.
+# operate on container names, which differ from service names for every entry except
+# iverson-api (qdrant's container is iverson-qdrant, not qdrant).
 CONTAINER = {
     "qdrant": "iverson-qdrant",
     "tei-embed": "iverson-tei-embed",

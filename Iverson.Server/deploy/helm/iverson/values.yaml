@@ -29,6 +29,9 @@ global:
   # Every entry is served by the tei subchart (one StatefulSet + headless Service per entry). `slug`
   # is the DNS-safe suffix of that entry's objects: <release>-tei-<slug>. The prefix keys stay
   # three-state (omitted = derive from the model family; "" = deliberately none).
+  # This list must still contain every model any REGISTERED type's stored `_iverson_schema`
+  # row names, not merely the active one — under TEI, trimming a still-carried entry now
+  # surfaces as the API's /info identity guard, not an Ollama 404.
   embeddingModels:
     - name: BAAI/bge-base-en-v1.5
       slug: bge-base

@@ -162,7 +162,7 @@ services:
     volumes:
       - reranker_models:/data
 
-  # Default embedding backend (spec docs/specs/2026-09-04-embedding-migration-design.md §3.4):
+  # Default embedding backend (spec docs/specs/2026-09-05-embedding-migration-phase2-design.md §3.7):
   # iverson-api and iverson-worker both depend_on this via `condition: service_healthy`, so it
   # starts with the rest of the stack. EMBED_MODEL_ID still selects the served model, e.g.
   # EMBED_MODEL_ID=BAAI/bge-small-en-v1.5 docker compose up -d --no-deps tei-embed

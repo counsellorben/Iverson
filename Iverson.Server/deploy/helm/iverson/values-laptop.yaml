@@ -13,7 +13,9 @@ global:
   engagementEnabled: false   # no StarRocks: vendor sizes FE at 8 CPU/16GB
   tracingEnabled: false      # no jaeger
   # One entry, served by the tei subchart. A profile list override REPLACES rather than merges, and
-  # activeEmbeddingModel (inherited from values.yaml) must name an entry here.
+  # activeEmbeddingModel (inherited from values.yaml) must name an entry here. This list must still
+  # contain every model any REGISTERED type's stored `_iverson_schema` row names — under TEI,
+  # trimming a still-carried entry now surfaces as the API's /info identity guard, not an Ollama 404.
   embeddingModels:
     - name: BAAI/bge-base-en-v1.5
       slug: bge-base
