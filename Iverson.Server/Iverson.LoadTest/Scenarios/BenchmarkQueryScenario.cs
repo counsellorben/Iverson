@@ -42,6 +42,10 @@ public sealed class BenchmarkQueryScenario(
     private const string SimilarRunSuffix      = "similar";
     private const string ChunksRunSuffix       = "chunks";
 
+    // Per-batch ceiling; cold-box bge-reranker-base batch ~= 2.5s, x5 for sustained load ~= 12.5s,
+    // so 120s is ~10x margin. A hung reranker aborts the run after this (fail loud, spec §6).
+    private static readonly TimeSpan RerankBatchTimeout = TimeSpan.FromSeconds(120);
+
     // ingest.py writes documents/chunks in lowercase (plus embed_calls/embeds_saved/elapsed_seconds,
     // which this scenario has no use for and JsonSerializer silently ignores).
     private static readonly JsonSerializerOptions StatsJsonOptions =
@@ -73,6 +77,21 @@ public sealed class BenchmarkQueryScenario(
         {
             Console.Error.WriteLine("benchmark-query requires --config-label.");
             throw new InvalidOperationException("--config-label was not provided.");
+        }
+        if (!string.IsNullOrWhiteSpace(flags.RerankModel) && string.IsNullOrWhiteSpace(flags.RerankUrl))
+        {
+            Console.Error.WriteLine("benchmark-query: --rerank-model requires --rerank-url.");
+            throw new InvalidOperationException("--rerank-model was given without --rerank-url.");
+        }
+        RerankInput rerankInput;
+        try
+        {
+            rerankInput = RerankInputs.Parse(flags.RerankInput, flags.RerankUrl);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine($"benchmark-query: {ex.Message}");
+            throw;
         }
 
         // Refuse a chunk budget that cannot reach DocumentBudget distinct documents (see
@@ -118,6 +137,32 @@ public sealed class BenchmarkQueryScenario(
             }
         }
 
+        // Reranking is opt-in per run (spec §3.3). The client lives for the whole sweep; every failure
+        // it throws aborts the run (spec §6) -- a reranked arm whose reranker silently fell back would
+        // score as a null result and read as "reranking doesn't help".
+        TeiRerankClient? reranker = null;
+        TeiInfo?         rerankerInfo = null;
+        if (!string.IsNullOrWhiteSpace(flags.RerankUrl))
+        {
+            reranker = new TeiRerankClient(new HttpClient
+            {
+                BaseAddress = new Uri(flags.RerankUrl.TrimEnd('/') + "/"),
+                Timeout     = RerankBatchTimeout,
+            });
+            rerankerInfo = await reranker.GetInfoAsync(ct);
+            if (!string.IsNullOrWhiteSpace(flags.RerankModel) && rerankerInfo.ModelId != flags.RerankModel)
+            {
+                Console.Error.WriteLine(
+                    $"REFUSING: reranker at {flags.RerankUrl} serves '{rerankerInfo.ModelId}', not " +
+                    $"'{flags.RerankModel}' -- an arm attributed to the wrong model must not start.");
+                throw new InvalidOperationException("reranker model_id does not match --rerank-model.");
+            }
+            Console.WriteLine(
+                $"[benchmark-query] Reranking with {rerankerInfo.ModelId} at {flags.RerankUrl} " +
+                $"(max_input_length={rerankerInfo.MaxInputLength}, auto_truncate={rerankerInfo.AutoTruncate}, " +
+                $"input={flags.RerankInput}).");
+        }
+
         // Record which build produced this run. A run that cannot be attributed to a build should
         // not start -- and an API that cannot answer a read-only GET will not serve the sweep either.
         using (var http = new HttpClient())
@@ -161,6 +206,14 @@ public sealed class BenchmarkQueryScenario(
                 ["composite"]     = buildJson["composite"]?.DeepClone(),
                 ["assemblies"]    = buildJson["assemblies"]?.DeepClone(),
                 ["recordedAtUtc"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                ["reranker"]      = rerankerInfo is null ? null : new JsonObject
+                {
+                    ["baseUrl"]        = flags.RerankUrl,
+                    ["modelId"]        = rerankerInfo.ModelId,
+                    ["maxInputLength"] = rerankerInfo.MaxInputLength,
+                    ["autoTruncate"]   = rerankerInfo.AutoTruncate,
+                    ["input"]          = flags.RerankInput,
+                },
             };
 
             Directory.CreateDirectory(flags.OutputDir);
@@ -172,6 +225,20 @@ public sealed class BenchmarkQueryScenario(
 
         var keyMap = await KeyMap.LoadAsync(flags.KeyMapPath, ct);
         Console.WriteLine($"[benchmark-query] Loaded key map ({keyMap.Count:N0} entries) from {flags.KeyMapPath}");
+
+        // document mode scores each winner through its full corpus text (spec §3.2). Loaded once; a
+        // missing or unparsable corpus file aborts here, before the first query (fail loud, spec §4).
+        IReadOnlyDictionary<string, string>? corpusText = null;
+        if (rerankInput == RerankInput.Document)
+        {
+            var corpusFile = Path.Combine(flags.CorpusPath, "beir", "corpus.jsonl");
+            using var reader = new StreamReader(corpusFile);
+            corpusText = JsonlCorpusParser.ParseCorpus(reader)
+                .ToDictionary(d => d.DocId, d => d.Text, StringComparer.Ordinal);
+            Console.WriteLine(
+                $"[benchmark-query] Loaded corpus text ({corpusText.Count:N0} documents) from {corpusFile} " +
+                "for --rerank-input document.");
+        }
 
         var queries = LoadQueries(flags.CorpusPath);
         Console.WriteLine($"[benchmark-query] Loaded {queries.Count:N0} queries.");
@@ -201,7 +268,7 @@ public sealed class BenchmarkQueryScenario(
             var headers  = new Metadata().WithActingUser(await identity.GetTokenAsync(ct));
 
             var similar = await RunSimilarAsync(query, headers, ct);
-            var chunks  = await RunChunksAsync(query, headers, keyMap, ct);
+            var chunks  = await RunChunksAsync(query, headers, keyMap, reranker, rerankInput, corpusText, ct);
             failures += similar.Failed + chunks.Failed;
             foreach (var parentKey in chunks.Unresolved)
                 unresolvedParents.Add(parentKey);
@@ -293,20 +360,22 @@ public sealed class BenchmarkQueryScenario(
     }
 
     private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed, IReadOnlyList<string> Unresolved)> RunChunksAsync(
-        CorpusQuery query, Metadata headers, IReadOnlyDictionary<string, string> keyMap, CancellationToken ct)
+        CorpusQuery query, Metadata headers, IReadOnlyDictionary<string, string> keyMap,
+        TeiRerankClient? reranker, RerankInput rerankInput, IReadOnlyDictionary<string, string>? corpusText,
+        CancellationToken ct)
     {
         var request = Query.Chunks<BenchmarkDocument>(d => d.Body)
             .Text(query.Text)
             .TopK((uint)(DocumentBudget * ChunkBudgetMultiplier))
             .Build();
 
-        var chunks = new List<(string ParentKey, double Score)>();
+        var chunks = new List<(string ParentKey, double Score, string Text)>();
         var failed = 0;
         try
         {
             using var call = search.SearchChunks(request, headers, cancellationToken: ct);
             await foreach (var r in call.ResponseStream.ReadAllAsync(ct))
-                chunks.Add((r.ParentKey, r.Score));
+                chunks.Add((r.ParentKey, r.Score, r.ChunkText));
         }
         catch (RpcException ex)
         {
@@ -314,8 +383,43 @@ public sealed class BenchmarkQueryScenario(
             failed = 1;
         }
 
-        var aggregated = MaxPassageAggregator.Aggregate(chunks, keyMap, DocumentBudget);
-        return (aggregated.Ranked, failed, aggregated.UnresolvedParentKeys);
+        if (reranker is null)
+        {
+            // Control path: byte-identical to the pre-reranker harness.
+            var aggregated = MaxPassageAggregator.Aggregate(chunks.Select(c => (c.ParentKey, c.Score)), keyMap, DocumentBudget);
+            return (aggregated.Ranked, failed, aggregated.UnresolvedParentKeys);
+        }
+
+        // Spec §3.3: aggregate to DocumentBudget documents FIRST (the unit reranked is the document,
+        // scored through its winning chunk), rescore, then re-sort -- TrecRunWriter sorts nothing.
+        var winners  = MaxPassageAggregator.Aggregate(chunks, keyMap, DocumentBudget);
+
+        // Which text each winner sends (spec §3.3). A winner absent from the corpus map throws here,
+        // naming the query as well as the document (spec §4).
+        IReadOnlyList<string> inputs;
+        try
+        {
+            inputs = RerankInputs.Select(rerankInput, winners.Ranked, corpusText);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new InvalidOperationException($"QueryId={query.QueryId}: {ex.Message}", ex);
+        }
+
+        // Fail loud (spec §6) at query 1, not hour 3: an empty input text would be scored by TEI as
+        // some arbitrary constant for every such document, which is silent corruption of that query's
+        // ranking, not a visible failure. Runs over the selected inputs, so it covers both modes.
+        for (var i = 0; i < inputs.Count; i++)
+        {
+            if (string.IsNullOrWhiteSpace(inputs[i]))
+                throw new InvalidOperationException(
+                    $"QueryId={query.QueryId}: the rerank input text for DocId={winners.Ranked[i].DocId} " +
+                    "is empty -- this arm must not be scored.");
+        }
+
+        var scores   = await reranker.ScoreAsync(query.Text, inputs, ct);
+        var rescored = winners.Ranked.Select((w, i) => (w.DocId, scores[i]));
+        return (DocumentRanking.CollapseByDocId(rescored, DocumentBudget), failed, winners.UnresolvedParentKeys);
     }
 
     private static List<CorpusQuery> LoadQueries(string corpusPath)

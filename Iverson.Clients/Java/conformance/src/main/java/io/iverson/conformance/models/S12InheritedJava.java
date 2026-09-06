@@ -10,7 +10,7 @@ import java.util.UUID;
 /**
  * S12 {@code model-inherited}'s Java fixture ({@code register_inherited_doc} driver step).
  * Declares no {@code @IversonEmbeddingModel} of its own — it inherits
- * {@code @IversonEmbeddingModel("nomic-embed-text")} from its field-less parent
+ * {@code @IversonEmbeddingModel("BAAI/bge-base-en-v1.5")} from its field-less parent
  * {@link S12DeclaredJava}, now that the annotation is {@code @Inherited}. Must be named exactly
  * {@code S12InheritedJava}: T8 derives and asserts this name with ordinal comparison.
  */

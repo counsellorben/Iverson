@@ -68,7 +68,7 @@ export function isIversonEntity(target: Function): boolean {
 // ── @IversonEmbeddingModel(modelId) ────────────────────────────────────────────
 
 /**
- * Declares the Ollama model this type's embedding/chunk properties are generated with. Class-
+ * Declares the embedding model this type's embedding/chunk properties are generated with. Class-
  * level only, never per-property — one model applies to every `@IversonEmbedding()`/
  * `@IversonChunk()` field on the class, which `describeEntity` stamps onto each such property's
  * `modelId`/`chunkModelId` guarded on that property's own embedding/chunk flags. A relation
@@ -178,7 +178,7 @@ export function getChunkFields(target: Function): ChunkMeta[] {
 
 // ── @IversonSummary() ─────────────────────────────────────────────────────────
 
-/** Marks a property as the target for an Ollama-driven summary during ingest enrichment. */
+/** Marks a property as the target for a model-generated summary during ingest enrichment. */
 export function IversonSummary(): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: string[] =
@@ -194,7 +194,7 @@ export function getSummaryFields(target: Function): string[] {
 
 // ── @IversonKeywords() ────────────────────────────────────────────────────────
 
-/** Marks a property as the target for Ollama-driven keyword extraction during ingest enrichment. */
+/** Marks a property as the target for model-generated keyword extraction during ingest enrichment. */
 export function IversonKeywords(): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: string[] =
@@ -216,7 +216,7 @@ export interface ExtractedMeta {
 }
 
 /**
- * Marks a property as the target for an Ollama-driven extraction during
+ * Marks a property as the target for a model-generated extraction during
  * ingest enrichment, guided by `hint`.
  *
  * The hint is mandatory: the server only treats a property as an extraction

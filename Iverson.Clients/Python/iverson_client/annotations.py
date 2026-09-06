@@ -86,8 +86,8 @@ def iverson_field(
             for chunk-level vector embeddings and its windowing.
         metadata: a property that describes or qualifies the entity rather
             than carrying its primary content.
-        summary / keywords: Ollama enrichment targets.
-        extract_hint: Ollama extraction target, guided by this hint. ``""``
+        summary / keywords: enrichment targets.
+        extract_hint: extraction target, guided by this hint. ``""``
             means "not an extraction target"; a blank-but-non-empty hint is
             rejected.
         description: human-readable field description.
@@ -167,17 +167,17 @@ def iverson_chunk(
 
 
 def iverson_summary(description: str = "") -> FieldMeta:
-    """Mark a field as the target for an Ollama-driven summary."""
+    """Mark a field as the target for a model-generated summary."""
     return iverson_field(summary=True, description=description)
 
 
 def iverson_keywords(description: str = "") -> FieldMeta:
-    """Mark a field as the target for Ollama-driven keyword extraction."""
+    """Mark a field as the target for model-generated keyword extraction."""
     return iverson_field(keywords=True, description=description)
 
 
 def iverson_extracted(hint: str, description: str = "") -> FieldMeta:
-    """Mark a field as an Ollama extraction target, guided by ``hint``.
+    """Mark a field as an extraction target, guided by ``hint``.
 
     The hint is mandatory here, unlike the optional ``extract_hint`` kwarg on
     ``iverson_field`` where ``""`` means "not declared". Normalizing ``""`` to
@@ -227,7 +227,7 @@ def iverson_entity(cls: type | None = None, *, description: str = "", embedding_
 
     Args:
         description: human-readable description of the type itself.
-        embedding_model: the Ollama model this type's embedding/chunk properties are
+        embedding_model: the embedding model this type's embedding/chunk properties are
             generated with. One model per TYPE, never per property — every
             ``iverson_embedding()``/``iverson_chunk()`` field on this class is stamped with
             the same value. Three cases: ``None`` (the default, i.e. the argument was not

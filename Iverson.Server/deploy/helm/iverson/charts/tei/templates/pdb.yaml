@@ -1,0 +1,14 @@
+{{- if gt (.Values.replicas | int) 1 }}
+{{- range .Values.global.embeddingModels }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $.Release.Name }}-tei-{{ .slug }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: {{ $.Release.Name }}-tei-{{ .slug }}
+---
+{{- end }}
+{{- end }}

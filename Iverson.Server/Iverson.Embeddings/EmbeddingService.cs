@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -16,6 +17,10 @@ public sealed class EmbeddingService(
 
     private int _dimension;
     private readonly SemaphoreSlim _initLock = new(1, 1);
+    // Resolved through Models so the DI-constructed default service reaches the backend that
+    // serves its model when that model is listed (a benchmark arm makes a TEI-only model the
+    // default; the resolver never consults the list for the default id).
+    private readonly string _baseUrl = options.Value.BaseUrlFor(options.Value.ModelId);
 
     private readonly string _documentPrefix =
         options.Value.DocumentPrefix ?? EmbeddingPrefixes.For(options.Value.ModelId).Document;
@@ -40,6 +45,11 @@ public sealed class EmbeddingService(
         {
             if (_dimension > 0) return;
             var probe = await EmbedAsync("probe", ct);
+            // Before _dimension is recorded (spec §3.2): a mismatch must leave the service
+            // uninitialised so every later call re-runs the guard and re-throws, instead of
+            // returning at the top. The startup caller swallows this exception; schema
+            // registration is the caller that turns it into Unavailable and blocks the arm.
+            await VerifyServedModelAsync(ct);
             _dimension = probe.Length;
             logger.LogInformation(
                 "EmbeddingService initialized: model={Model} dimension={Dimension} documentPrefix={DocPrefix} queryPrefix={QueryPrefix}",
@@ -50,6 +60,31 @@ public sealed class EmbeddingService(
             _initLock.Release();
         }
     }
+
+    // TEI serves one model per container and ignores the request's "model" field, so the dimension
+    // probe cannot tell bge-base from nomic (both 768). TEI answers GET /info with the served
+    // model_id; a backend without /info (Ollama answered 404) makes this a no-op.
+    private async Task VerifyServedModelAsync(CancellationToken ct)
+    {
+        using var client   = httpClientFactory.CreateClient(Telemetry.HttpClientName);
+        using var request  = new HttpRequestMessage(HttpMethod.Get, EndpointUri("/info"));
+        using var response = await client.SendAsync(request, ct);
+        if (response.StatusCode != HttpStatusCode.OK) return;
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var doc          = await JsonDocument.ParseAsync(stream, default, ct);
+        if (!doc.RootElement.TryGetProperty("model_id", out var served)) return;
+
+        var servedId = served.GetString();
+        if (!string.Equals(servedId, ModelId, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                $"Embedding backend at {_baseUrl} serves model '{servedId}' but this service is " +
+                $"configured for '{ModelId}'.");
+    }
+
+    // Absolute, from this service's own base URL: services for different models share the named
+    // HttpClient (handler + telemetry) but not its BaseAddress.
+    private Uri EndpointUri(string path) => new(new Uri(_baseUrl), path);
 
     private async Task<float[]> EmbedAsync(string text, CancellationToken ct = default)
     {
@@ -63,7 +98,7 @@ public sealed class EmbeddingService(
 
             var body = JsonSerializer.Serialize(
                 new { model = ModelId, input = text }, _jsonOpts);
-            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/embed")
+            using var request = new HttpRequestMessage(HttpMethod.Post, EndpointUri("/v1/embeddings"))
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
@@ -74,9 +109,10 @@ public sealed class EmbeddingService(
             await using var responseStream = await response.Content.ReadAsStreamAsync(ct);
             using var doc                  = await JsonDocument.ParseAsync(responseStream, default, ct);
 
-            // /api/embed returns { "embeddings": [[...]] }
+            // /v1/embeddings returns { "data": [ { "embedding": [...] } ] } on TEI (and on Ollama's OpenAI-compatible route)
             var embedding = doc.RootElement
-                .GetProperty("embeddings")[0]
+                .GetProperty("data")[0]
+                .GetProperty("embedding")
                 .EnumerateArray()
                 .Select(e => (float)e.GetDouble())
                 .ToArray();

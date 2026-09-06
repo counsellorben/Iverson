@@ -46,13 +46,13 @@ const LANGUAGE = 'typescript';
 // own vector-search builders.
 // model-rejected (S11): register only (register-once per scenario invocation — see
 // Iverson.Server/Iverson.ClientConformance/Scenarios/ModelRejectedScenario.cs). This driver
-// registers its OWN instance of S11ModelTypescript, carrying @IversonEmbeddingModel('nomic-embed-text'),
+// registers its OWN instance of S11ModelTypescript, carrying @IversonEmbeddingModel('BAAI/bge-base-en-v1.5'),
 // and reports the descriptor it sent so the orchestrator's Reregistrar has JSON to mutate. No
 // write/read phase: the orchestrator re-registers the reported descriptor itself, with a model
 // override, and grades the rejection directly.
 // model-inherited (S12): register only (register-once per scenario invocation). This driver
 // registers its OWN instance of S12InheritedTypescript, which declares no
-// @IversonEmbeddingModel of its own and instead inherits 'nomic-embed-text' from its field-less
+// @IversonEmbeddingModel of its own and instead inherits 'BAAI/bge-base-en-v1.5' from its field-less
 // parent S12DeclaredTypescript, and reports the descriptor it sent so the orchestrator can assert
 // the inherited model landed on the embedding/chunk properties. No write/read phase.
 const SCENARIOS = new Set([
@@ -517,7 +517,7 @@ async function main(argv: string[]): Promise<number> {
         }));
     } else if (phase === 'register' && scenario === 'model-inherited') {
         // S12 model-inherited: registers ONLY S12InheritedTypescript. S12DeclaredTypescript is
-        // the field-less parent that carries @IversonEmbeddingModel('nomic-embed-text') and is
+        // the field-less parent that carries @IversonEmbeddingModel('BAAI/bge-base-en-v1.5') and is
         // never itself registered (no @IversonEntity()).
         let error: string | null = null;
         try {

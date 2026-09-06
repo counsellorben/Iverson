@@ -407,10 +407,10 @@ try
 }
 catch (Exception ex)
 {
-    // Ollama is commonly still pulling ~2.2GB of models on a first install. Dying here
-    // crash-loops both roles and CrashLoopBackOff then delays recovery by up to five
-    // minutes AFTER Ollama is healthy. Initialization retries lazily at the one place
-    // that needs the dimension (schema registration), so continue.
+    // The embedding backend is commonly still downloading its model on a first install. Dying here
+    // crash-loops both roles; CrashLoopBackOff then delays recovery by up to five minutes AFTER the
+    // backend is healthy. Initialization retries lazily at the one place that needs the dimension
+    // (schema registration), so continue.
     app.Logger.LogWarning(ex,
         "Embedding service not initialized at startup; will initialize on first schema registration.");
 }

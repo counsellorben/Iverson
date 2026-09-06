@@ -19,20 +19,36 @@ public sealed record AuthentikIdentityConfig(
 
 public sealed record MintedToken(string AccessToken, string? RefreshToken, int ExpiresInSeconds);
 
-public sealed class AuthentikFlowExecutorClient(
-    AuthentikIdentityConfig identity,
-    ILogger<AuthentikFlowExecutorClient> logger) : IDisposable
+public sealed class AuthentikFlowExecutorClient : IDisposable
 {
     private const string FlowSlug = "default-authentication-flow";
     private const int MaxFlowStages = 20;
     private const int MaxTotpAttempts = 4;
 
-    private readonly HttpClient _http = new(new HttpClientHandler
+    private readonly AuthentikIdentityConfig identity;
+    private readonly ILogger<AuthentikFlowExecutorClient> logger;
+
+    // Kept as a field (rather than only inside the handler below) so SendAsync can read the
+    // authentik_csrf cookie back out of it for the CSRF header — see R15. Built in the
+    // constructor body (not a field initializer) because a field initializer cannot reference
+    // another instance field (CS0236), and _http's handler needs this same container instance.
+    private readonly System.Net.CookieContainer _cookies = new();
+
+    private readonly HttpClient _http;
+
+    public AuthentikFlowExecutorClient(
+        AuthentikIdentityConfig identity,
+        ILogger<AuthentikFlowExecutorClient> logger)
     {
-        AllowAutoRedirect = false,
-        UseCookies = true,
-        CookieContainer = new System.Net.CookieContainer(),
-    });
+        this.identity = identity;
+        this.logger = logger;
+        _http = new HttpClient(new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            UseCookies = true,
+            CookieContainer = _cookies,
+        });
+    }
 
     // RFC 6238 TOTP — HMAC-SHA1, 6 digits, 30s period. Mirrors mint_acting_user_token.py's `totp()`.
     private static string Totp(string secretBase32, DateTimeOffset? at = null)
@@ -108,6 +124,21 @@ public sealed class AuthentikFlowExecutorClient(
         var req = new HttpRequestMessage(method, url) { Content = content };
         req.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
         if (identity.HostHeader is { Length: > 0 } h) req.Headers.Host = h;
+
+        // Authentik's flow executor only exempts POSTs from CSRF while the session is
+        // unauthenticated — the very first login of a process. Once that login succeeds, the
+        // handler's CookieContainer carries an authenticated session cookie for the rest of the
+        // process's life, and every later POST through this same client (e.g. a re-authentication
+        // triggered by MintAsync after the cached token expires) is session-authenticated and
+        // CSRF-checked, even though nothing here was ever sending the CSRF header — hence R15.
+        // Authentik's contract: echo the `authentik_csrf` cookie back as `X-authentik-CSRF`; send
+        // nothing when that cookie doesn't exist yet (the unauthenticated first login).
+        if (method != HttpMethod.Get)
+        {
+            var csrfCookie = _cookies.GetCookies(new Uri(identity.BaseUrl))["authentik_csrf"];
+            if (csrfCookie is not null) req.Headers.Add("X-authentik-CSRF", csrfCookie.Value);
+        }
+
         return await _http.SendAsync(req);
     }
 

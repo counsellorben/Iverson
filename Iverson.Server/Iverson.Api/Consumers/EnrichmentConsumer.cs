@@ -42,6 +42,17 @@ public sealed class EnrichmentConsumer(
 {
     private const string GroupId = "iverson.consumer.enrichment";
 
+    // Cut the source text, not the assembled prompt: three prompts lead with their instruction and
+    // the extraction prompt trails with its hint, so a cut on the prompt would drop one of them —
+    // this way the instruction and the extraction hint always survive. Head-preserving and
+    // deterministic. 8,000 characters is ~2,000 tokens, which together with the instruction fits
+    // Ollama qwen2.5:3b's 4,096-token window, so the backend never silently truncates from the head the
+    // way Ollama otherwise does, and it also stays under TGI's --max-input-tokens 3072 should TGI
+    // return as the enrichment backend. Applied before ComputeHash so the loop-prevention hash
+    // covers what was actually sent. SciFact's longest abstract is 5,253 characters, so the cap
+    // only bites unusually long sources.
+    internal const int MaxSourceChars = 8_000;
+
     protected override Task ExecuteAsync(CancellationToken ct) =>
         ConsumerResilience.RunWithRestartAsync(
             () => consumer.ConsumeAsync(EntityTopics.Events, GroupId, DispatchAsync, ct),
@@ -127,6 +138,7 @@ public sealed class EnrichmentConsumer(
 
         // ── Step 2: hash source text + enrichment specification, and compare ──────
         var sourceText = BuildSourceText(schema, row);
+        if (sourceText.Length > MaxSourceChars) sourceText = sourceText[..MaxSourceChars];
         var hash = ComputeHash(sourceText, schema.EnrichmentTargets);
 
         var storedHash = await state.GetHashAsync(tenantValue, schema.TypeName, ev.Key);
@@ -143,12 +155,23 @@ public sealed class EnrichmentConsumer(
         // projection into the stores, so nothing below throws PoisonMessageException.
         try
         {
-            var columns = await GenerateAsync(schema, sourceText, ct);
+            var columns = await GenerateAsync(schema, sourceText, ev.Key, ct);
             if (columns.Count == 0)
             {
+                // Every target was skipped (an extraction holding no parseable JSON object, or a
+                // reply that was all whitespace). There is nothing to write back and nothing to
+                // republish, but the pass ran to completion, so its outcome IS the enrichment
+                // result for this source+specification hash: record the state row, exactly as a
+                // partial pass records one that already covers its skipped column. Without it,
+                // every later event for the object — and every ReconcileTypeAsync replay — re-ran
+                // the same temperature-0 generation and failed the same way. A changed source
+                // text, an edited hint or a new target changes the hash and re-enriches, as always;
+                // a transient failure still throws past this point and records nothing.
                 logger.LogWarning(
-                    "[Enrichment] Generated no values for {Type}:{Key} — no writeback, no state row.",
+                    "[Enrichment] Generated no values for {Type}:{Key} — no writeback; state row recorded so this source text and specification are not retried.",
                     schema.TypeName.SanitizeForLog(), ev.Key);
+                await txRunner.ExecuteInTransactionAsync(tx =>
+                    state.UpsertAsync(tx, tenantValue, schema.TypeName, ev.Key, hash, DateTimeOffset.UtcNow));
                 return;
             }
 
@@ -256,28 +279,51 @@ public sealed class EnrichmentConsumer(
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private async Task<Dictionary<string, object?>> GenerateAsync(
-        SchemaDescriptor schema, string sourceText, CancellationToken ct)
+        SchemaDescriptor schema, string sourceText, string key, CancellationToken ct)
     {
         var columns = new Dictionary<string, object?>(schema.EnrichmentTargets.Count);
 
         foreach (var target in schema.EnrichmentTargets)
         {
-            var generated = target.Kind switch
+            string? generated;
+            switch (target.Kind)
             {
-                EnrichmentKind.Summary  => await enrichment.GenerateAsync(
-                    string.Format(EnrichmentPrompts.Summary, sourceText), ct),
-                EnrichmentKind.Keywords => await enrichment.GenerateAsync(
-                    string.Format(EnrichmentPrompts.Keywords, sourceText), ct),
-                // EnrichmentPrompts.Extraction carries a single {0} slot for the source text;
-                // the per-target hint (mandatory for [IversonExtracted], enforced at
-                // registration) is appended so the model knows what to pull out.
-                EnrichmentKind.Extracted => await enrichment.GenerateJsonAsync(
-                    string.Format(EnrichmentPrompts.Extraction, sourceText) +
-                    $"\n\nExtract specifically: {target.Hint}", ct),
-                _ => throw new ArgumentOutOfRangeException(
-                    nameof(schema), target.Kind,
-                    $"Unhandled {nameof(EnrichmentKind)} value — add a case above.")
-            };
+                case EnrichmentKind.Summary:
+                    generated = await enrichment.GenerateAsync(
+                        string.Format(EnrichmentPrompts.Summary, sourceText), ct);
+                    break;
+                case EnrichmentKind.Keywords:
+                    generated = await enrichment.GenerateAsync(
+                        string.Format(EnrichmentPrompts.Keywords, sourceText), ct);
+                    break;
+                case EnrichmentKind.Extracted:
+                    // EnrichmentPrompts.Extraction carries a single {0} slot for the source text;
+                    // the per-target hint (mandatory for [IversonExtracted], enforced at
+                    // registration) is appended so the model knows what to pull out.
+                    try
+                    {
+                        generated = await enrichment.GenerateJsonAsync(
+                            string.Format(EnrichmentPrompts.Extraction, sourceText) +
+                            $"\n\nExtract specifically: {target.Hint}", ct);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        // GenerateJsonAsync throws InvalidOperationException when the reply holds no
+                        // parseable JSON object — and also when the backend's reply is not the expected
+                        // chat-completions shape (the exception carries which). Skip only this column —
+                        // the object's other targets (and its already-generated Summary/Keywords) must
+                        // still be written (spec §4: "nothing is stored for that column").
+                        logger.LogWarning(ex,
+                            "[Enrichment] Extraction for {Type}:{Key} column {Column} failed (no parseable JSON object, or an unexpected reply shape — see exception); column skipped",
+                            schema.TypeName.SanitizeForLog(), key, target.ColumnName);
+                        generated = null;
+                    }
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(
+                        nameof(schema), target.Kind,
+                        $"Unhandled {nameof(EnrichmentKind)} value — add a case above.");
+            }
 
             if (!string.IsNullOrWhiteSpace(generated))
                 columns[target.ColumnName] = generated.Trim();

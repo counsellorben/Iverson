@@ -124,9 +124,9 @@ public sealed class SchemaRegistrationOrchestrator(
                     + $"collections '{collectionBase}_<tenantId>' (vectors) and "
                     + $"'{collectionBase}_chunks_<tenantId>' (chunks). "
                     + $"Dropping the collections alone leaves this row, and the next registration is "
-                    + $"rejected identically. Until then, '{priorModel}' must remain pulled in this "
-                    + $"deployment's Ollama — every other type still registered under it needs it to "
-                    + $"stay reachable."));
+                    + $"rejected identically. Until then, '{priorModel}' must remain served by this "
+                    + $"deployment's embedding backend — every other type still registered under it "
+                    + $"needs it to stay reachable."));
             }
 
             var service = defaultService ?? resolver.Get(declared);
@@ -139,7 +139,7 @@ public sealed class SchemaRegistrationOrchestrator(
             {
                 throw new RpcException(new Status(StatusCode.Unavailable,
                     $"Embedding service is unavailable, so schema registration cannot determine the vector "
-                    + $"dimension. Check that Ollama is reachable and retry. Resolved embedding model for "
+                    + $"dimension. Check that the embedding backend is reachable and retry. Resolved embedding model for "
                     + $"'{typeDesc.TypeName}': '{service.ModelId}' — confirm it has been pulled. ({ex.Message})"));
             }
 

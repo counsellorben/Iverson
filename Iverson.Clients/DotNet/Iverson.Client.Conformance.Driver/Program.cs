@@ -51,7 +51,7 @@ const string IdentityWrongTenant = "tenant_not_the_acting_user";
 const string ErrorContractScenario = "error-contract";
 // model-rejected (S11): register only (this driver only, register-once per scenario invocation —
 // see Scenarios/ModelRejectedScenario.cs). Every requested language registers its OWN instance of
-// S11ModelDotnet, carrying [IversonEmbeddingModel("nomic-embed-text")], and reports the descriptor
+// S11ModelDotnet, carrying [IversonEmbeddingModel("BAAI/bge-base-en-v1.5")], and reports the descriptor
 // it sent so the orchestrator's Reregistrar has JSON to mutate. No write/read phase: the
 // orchestrator re-registers the reported descriptor itself, with a model override, and grades the
 // rejection directly.
@@ -59,7 +59,7 @@ const string ModelRejectedScenario = "model-rejected";
 // model-inherited (S12): register only (this driver only, register-once per scenario
 // invocation). Every requested language registers its OWN instance of S12InheritedDotnet, which
 // declares no [IversonEmbeddingModel] of its own and instead inherits
-// "nomic-embed-text" from its field-less parent S12DeclaredDotnet — and reports the descriptor it
+// "BAAI/bge-base-en-v1.5" from its field-less parent S12DeclaredDotnet — and reports the descriptor it
 // sent so the orchestrator can assert the inherited model landed on the embedding/chunk
 // properties. No write/read phase.
 const string ModelInheritedScenario = "model-inherited";
@@ -899,7 +899,7 @@ async Task RunModelInheritedAsync()
         case "register":
         {
             // Registers ONLY S12InheritedDotnet. S12DeclaredDotnet is the field-less parent that
-            // carries [IversonEmbeddingModel("nomic-embed-text")] and is never itself registered
+            // carries [IversonEmbeddingModel("BAAI/bge-base-en-v1.5")] and is never itself registered
             // (no [IversonEntity]) — OnlySendTypeName here suppresses this assembly's other
             // fixture types from RegisterAllAsync's walk over EntityRegistry.All.
             capture.OnlySendTypeName = nameof(S12InheritedDotnet);

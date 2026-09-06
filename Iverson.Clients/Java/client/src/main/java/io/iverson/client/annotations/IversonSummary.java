@@ -6,7 +6,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Marks a string field as the target for an Ollama-generated summary during
+ * Marks a string field as the target for a model-generated summary during
  * ingest enrichment. The server writes the generated summary into this field.
  */
 @Target(ElementType.FIELD)

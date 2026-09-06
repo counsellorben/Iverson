@@ -311,6 +311,40 @@ public class EngagementStoreConsumerTests
         doc.RootElement.GetProperty("Name").GetString().Should().Be(realOwner);
     }
 
+    // Sibling of IntelligenceStoreConsumerTests.HandleCreated_WithProtoDefaultEmptyOwnerField_*:
+    // this consumer has the identical `ownerField is not null` gate in front of the same
+    // ExtractString, so a bypass-only type registered over gRPC (OwnerField == "", proto3's
+    // default) threw IndexOutOfRangeException here too and lost the StarRocks projection.
+    [Fact]
+    public async Task HandleUpsert_WithProtoDefaultEmptyOwnerField_TreatsItAsNoOwnerFieldAndUpserts()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new AuthorizationRules(
+                "",
+                new List<RowPermission> { new("test-bypass", true, true, true) },
+                new List<FieldPermission>())
+        };
+        await _registry.RegisterAsync(schema);
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Author",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   """{"Name":"Alice"}""",
+            TraceId:       "trace-empty-owner-field",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Engagement);
+
+        var act = async () => await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        await _sr.Received(1).UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
+        // One authoritative-row read, for the tenant; no owner value to re-derive.
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
+    }
+
     [Fact]
     public async Task HandleUpsert_WithOwnerFieldAndNoAuthoritativeRow_OmitsOwnerKeyFromPayload()
     {

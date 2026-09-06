@@ -26,32 +26,19 @@ global:
   # would let the pulled model and the requested model drift apart, which fails at runtime
   # with a 404 from Ollama on every generative call.
   generativeModel: "qwen2.5:3b"
-  # The embedding models Ollama pulls. Under `global` for the same reason generativeModel is:
-  # the ollama subchart PULLS these and the api/worker subcharts REQUEST one of them, so
-  # scoping them to one subchart would let the pulled and requested sets drift apart.
-  #
-  # The prefix keys are three-state and the distinction is load-bearing. Omitting a key leaves
-  # the C# property null, which means "derive from the model family"; setting it to "" means
-  # "deliberately no prefix". Arctic's document prefix IS the empty string, so "" cannot
-  # double as unset — which is why the templates use `hasKey`, not `default`.
-  #
-  # This list must contain every model any REGISTERED type's stored `_iverson_schema` row
-  # names, not merely the currently-active one. A type registered under a model keeps that
-  # model pinned in its stored descriptor indefinitely — re-registering it under a different
-  # model is refused by the SchemaRegistrationOrchestrator guard. Removing an entry a
-  # registered type still carries takes ingest and search for that type down (Unavailable
-  # from the probe, then 404s from Ollama) until either the model is restored here, or that
-  # type's schema row and Qdrant collections are cleared out from under it.
+  # Every entry is served by the tei subchart (one StatefulSet + headless Service per entry). `slug`
+  # is the DNS-safe suffix of that entry's objects: <release>-tei-<slug>. The prefix keys stay
+  # three-state (omitted = derive from the model family; "" = deliberately none).
+  # This list must still contain every model any REGISTERED type's stored `_iverson_schema`
+  # row names, not merely the active one — under TEI, trimming a still-carried entry now
+  # surfaces as the API's /info identity guard, not an Ollama 404.
   embeddingModels:
-    - name: nomic-embed-text
-      # prefixes omitted -> EmbeddingPrefixes derives them from the model family
-    - name: snowflake-arctic-embed:s
-      documentPrefix: ""
-      queryPrefix: "Represent this sentence for searching relevant passages: "
+    - name: BAAI/bge-base-en-v1.5
+      slug: bge-base
   # The default model api and worker request for any registered type that does not declare its
-  # own. Must name an entry above; a mismatch renders cleanly and surfaces as a 404 from Ollama
-  # naming the unpulled model on the first embed call, not at deploy.
-  activeEmbeddingModel: nomic-embed-text
+  # own. Must name an entry above; a mismatch renders cleanly and surfaces as an identity mismatch
+  # from the backend's /info naming the unpulled model on the first embed call, not at deploy.
+  activeEmbeddingModel: BAAI/bge-base-en-v1.5
   # Drives the starrocks subchart's condition AND the api/worker env guards AND
   # Engagement__Enabled. One flag, because two flags that must agree can disagree —
   # and the disagreeing state renders a secretKeyRef against a Secret that no longer
@@ -124,6 +111,18 @@ ollama:
   resources:
     requests: { cpu: "8", memory: "16Gi", ephemeral-storage: "2Gi" }
     limits: { cpu: "8", memory: "16Gi", ephemeral-storage: "4Gi" }
+  nodeSelector: {}
+  tolerations: []
+
+tei:
+  enabled: true
+  replicas: 2
+  storageSize: 2Gi            # bge-base weights are 0.44 GB
+  storageClassName: ""
+  imageTag: "cpu-1.8"
+  resources:
+    requests: { cpu: "2", memory: "2Gi", ephemeral-storage: "1Gi" }
+    limits: { cpu: "4", memory: "4Gi", ephemeral-storage: "2Gi" }
   nodeSelector: {}
   tolerations: []
 

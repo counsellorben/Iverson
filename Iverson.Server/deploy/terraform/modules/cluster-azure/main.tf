@@ -206,6 +206,7 @@ locals {
     qdrant      = { vm_size = var.qdrant_vm_size, count = var.qdrant_node_count, label = "qdrant" }
     kafka       = { vm_size = var.kafka_vm_size, count = var.kafka_node_count, label = "kafka" }
     ollama      = { vm_size = var.ollama_vm_size, count = var.ollama_node_count, label = "ollama" }
+    tei         = { vm_size = var.tei_vm_size, count = var.tei_node_count, label = "tei" }
   }
 }
 

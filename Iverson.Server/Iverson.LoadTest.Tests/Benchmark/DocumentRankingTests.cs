@@ -75,6 +75,25 @@ public class DocumentRankingTests
     [Fact]
     public void CollapseByDocId_NoInput_ReturnsEmpty()
     {
-        DocumentRanking.CollapseByDocId([], limit: 10).Should().BeEmpty();
+        DocumentRanking.CollapseByDocId(Array.Empty<(string DocId, double Score)>(), limit: 10).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void CollapseByDocId_WithText_KeepsTheTextOfTheMaximumChunk()
+    {
+        var scored = new[] { ("d1", 0.2, "low"), ("d1", 0.9, "winner"), ("d1", 0.5, "mid"), ("d2", 0.7, "only") };
+
+        var result = DocumentRanking.CollapseByDocId(scored, limit: 10);
+
+        result.Should().Equal(("d1", 0.9, "winner"), ("d2", 0.7, "only"));
+    }
+
+    [Fact]
+    public void CollapseByDocId_WithText_TieKeepsTheFirstSeenChunk()
+    {
+        // Same rule as the 2-tuple overload (`score > existing`): on an exact tie the first chunk wins.
+        var scored = new[] { ("d1", 0.5, "first"), ("d1", 0.5, "second") };
+
+        DocumentRanking.CollapseByDocId(scored, limit: 10).Should().Equal(("d1", 0.5, "first"));
     }
 }

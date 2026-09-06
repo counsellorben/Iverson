@@ -51,6 +51,8 @@ spec:
       ports: [{ protocol: TCP, port: 9030 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]
       ports: [{ protocol: TCP, port: 6334 }]
+    - to: [{ podSelector: { matchLabels: { iverson.io/component: tei } } }]
+      ports: [{ protocol: TCP, port: 8080 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-ollama } } }]
       ports: [{ protocol: TCP, port: 11434 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-jaeger } } }]
@@ -82,6 +84,8 @@ spec:
       ports: [{ protocol: TCP, port: 9030 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]
       ports: [{ protocol: TCP, port: 6334 }]
+    - to: [{ podSelector: { matchLabels: { iverson.io/component: tei } } }]
+      ports: [{ protocol: TCP, port: 8080 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-ollama } } }]
       ports: [{ protocol: TCP, port: 11434 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-jaeger } } }]
@@ -390,6 +394,35 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: {{ .Release.Name }}-tei-ingress
+spec:
+  podSelector:
+    matchLabels: { iverson.io/component: tei }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
+      ports: [{ protocol: TCP, port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-tei-egress
+spec:
+  podSelector:
+    matchLabels: { iverson.io/component: tei }
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to: []   # huggingface.co: the first start downloads the model weights into the PVC. No
+               # portable pod/namespaceSelector target exists for an external host.
+      ports: [{ protocol: TCP, port: 443 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: {{ .Release.Name }}-ollama-ingress
 spec:
   podSelector:
@@ -413,7 +446,7 @@ spec:
     - to: []   # DNS
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
     - to: []   # model registry (registry.ollama.ai): the pull-model init container fetches
-               # nomic-embed-text from there on every start — same external-pull need as
+               # the generative model from there on every start — same external-pull need as
                # docker-compose's ollama-init container. No portable pod/namespaceSelector
                # target exists for an external registry.
       ports: [{ protocol: TCP, port: 443 }]

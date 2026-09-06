@@ -144,9 +144,78 @@ services:
     entrypoint: ["sh", "-c"]
     command:
       - |
-        curl -X POST http://ollama:11434/api/pull -d '{"name":"nomic-embed-text"}' &&
         curl -X POST http://ollama:11434/api/pull -d '{"name":"qwen2.5:3b"}'
     restart: "no"
+
+  # Cross-encoder reranker (spec docs/specs/2026-09-03-reranker-design.md §5). Behind a profile so
+  # nothing starts unless asked:   docker compose --profile reranker up -d reranker
+  # Switch model per arm with RERANKER_MODEL_ID (the container serves ONE model). The model cache is
+  # a named volume, never /tmp (a 4.9 GB tmpfs on the dev box, spec §7.6.3). --auto-truncate is the
+  # stated head-truncation policy (§3.5); the harness records /info in each run's sidecar.
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    container_name: iverson-reranker
+    profiles: ["reranker"]
+    command: ["--model-id", "${RERANKER_MODEL_ID:-cross-encoder/ms-marco-MiniLM-L-6-v2}", "--auto-truncate"]
+    ports:
+      - "8090:80"
+    volumes:
+      - reranker_models:/data
+
+  # Default embedding backend (spec docs/specs/2026-09-05-embedding-migration-phase2-design.md §3.7):
+  # iverson-api and iverson-worker both depend_on this via `condition: service_healthy`, so it
+  # starts with the rest of the stack. EMBED_MODEL_ID still selects the served model, e.g.
+  # EMBED_MODEL_ID=BAAI/bge-small-en-v1.5 docker compose up -d --no-deps tei-embed
+  # — and must agree with the api/worker's Embeddings__ModelId (the API's /info identity guard
+  # catches a mismatch loudly; TEI itself ignores the request's "model" field, since one model is
+  # served per container). --auto-truncate is required: SciFact abstracts exceed the 512-token
+  # window and TEI answers 413 without it. Model cache is a named volume, never /tmp.
+  tei-embed:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    container_name: iverson-tei-embed
+    restart: unless-stopped
+    # TEI's default max_batch_tokens (16384) OOM-kills warm-up for gte-modernbert-base on the 9 GB box
+    # (spec 2026-09-04-multivector-experiment-design §10 row 7); that arm passes TEI_MAX_BATCH_TOKENS=4096.
+    # The default here is TEI's own, so every bge arm is unchanged.
+    command: ["--model-id", "${EMBED_MODEL_ID:-BAAI/bge-base-en-v1.5}", "--auto-truncate", "--max-batch-tokens", "${TEI_MAX_BATCH_TOKENS:-16384}"]
+    ports:
+      - "8091:80"
+    volumes:
+      - tei_models:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 5m
+
+  # Generative backend the enrichment gate (docs/plans/2026-09-GATE-enrichment-backend.md) evaluated
+  # AND FAILED on this box: Ollama stays the enrichment backend (Phase C′). TGI is retained only for
+  # the deferred cloud measurement of the 3B candidate. Nothing on this branch routes to it — both
+  # roles' Enrichment__BaseUrl point at http://ollama:11434, nothing depends_on it, and the Launcher
+  # omits it. Behind a profile so a plain `docker compose up -d` never starts it:
+  #   docker compose --profile tgi up -d tgi
+  # Intel CPU image; bf16 weights; the token limits keep warm-up to ~10 minutes (the image defaults
+  # pre-allocate a 32k context and take twenty). HF_HUB_DISABLE_XET: the Hub's Xet download path
+  # fails from this box, the classic path works. First start: ~11 min download + ~10 min warm-up.
+  tgi:
+    image: ghcr.io/huggingface/text-generation-inference:3.3.4-intel-cpu
+    container_name: iverson-tgi
+    profiles: ["tgi"]
+    command: ["--model-id", "${GEN_MODEL_ID:-Qwen/Qwen2.5-1.5B-Instruct}", "--dtype", "bfloat16", "--max-input-tokens", "3072", "--max-total-tokens", "3584", "--max-batch-prefill-tokens", "3072"]
+    environment:
+      - HF_HUB_DISABLE_XET=1
+    shm_size: 1g
+    ports:
+      - "8092:80"
+    volumes:
+      - tgi_models:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 25m
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
@@ -368,15 +437,14 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - Otel__Endpoint=http://jaeger:4317
-      - Embeddings__BaseUrl=http://ollama:11434
-      # Must agree with ollama-init's pulled model (line ~147) and with the five conformance
-      # fixtures' "nomic-embed-text" literals — this is the deployment default the client
-      # conformance harness's ModelRejectedScenario (S11 model-rejected) registers types against
-      # before re-registering with an override model it expects to be refused. A mismatch here
-      # doesn't fail loudly: the rejection scenario still passes (it never contacts Ollama with
-      # the wrong model), but every OTHER embedding-dependent scenario goes red with
-      # Unavailable/404 because the resolved model was never pulled.
-      - Embeddings__ModelId=nomic-embed-text
+      - Embeddings__BaseUrl=http://tei-embed:80
+      # MMR lambda; 0.70 is VectorRankingOptions' default. The reranker evaluation's A0'/A3 arms run
+      # the API at 1.00 (spec §7.2):   VECTOR_RANKING_LAMBDA=1.00 docker compose up -d iverson-api
+      - VectorRanking__Lambda=${VECTOR_RANKING_LAMBDA:-0.70}
+      # Must agree with tei-embed's served model (its --model-id, EMBED_MODEL_ID) and with the five
+      # conformance fixtures' declared model: this is the deployment default types register under.
+      # A mismatch fails loudly at first initialisation — the API's /info identity guard.
+      - Embeddings__ModelId=${BENCH_EMBED_MODEL:-BAAI/bge-base-en-v1.5}
       - Enrichment__BaseUrl=http://ollama:11434
       - Enrichment__ModelId=qwen2.5:3b
       - Kafka__BootstrapServers=kafka:29092
@@ -432,8 +500,8 @@ services:
         condition: service_healthy
       authentik-server:
         condition: service_healthy
-      ollama-init:
-        condition: service_completed_successfully
+      tei-embed:
+        condition: service_healthy
 
   # The worker role. Every Kafka consumer and background reconciliation worker in Iverson.Api is
   # gated on `workloadRole == "worker"` (Iverson.Api/Program.cs) — IntelligenceStoreConsumer,
@@ -460,8 +528,8 @@ services:
       # IConfiguration under the literal key "WORKLOAD_ROLE" — the first key Program.cs checks.
       - WORKLOAD_ROLE=worker
       - Otel__Endpoint=http://jaeger:4317
-      - Embeddings__BaseUrl=http://ollama:11434
-      - Embeddings__ModelId=nomic-embed-text
+      - Embeddings__BaseUrl=http://tei-embed:80
+      - Embeddings__ModelId=${BENCH_EMBED_MODEL:-BAAI/bge-base-en-v1.5}
       - Enrichment__BaseUrl=http://ollama:11434
       - Enrichment__ModelId=qwen2.5:3b
       - Kafka__BootstrapServers=kafka:29092
@@ -501,6 +569,8 @@ services:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
+      tei-embed:
+        condition: service_healthy
       # ...plus one more: wait for iverson-api to finish its OWN bootstrap before starting this
       # one. Both roles run the identical startup block (it sits outside Program.cs's
       # `workloadRole == "api"` guard), and that block is genuinely concurrency-safe by design —
@@ -527,3 +597,6 @@ volumes:
   kafka_data:
   ollama_data:
   prometheus_data:
+  reranker_models:
+  tei_models:
+  tgi_models:

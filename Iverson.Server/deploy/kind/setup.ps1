@@ -28,6 +28,13 @@ helm upgrade --install calico tigera-operator `
   --set goldmane.enabled=false `
   --set whisker.enabled=false `
   --wait
+# The operator registers this CRD a few seconds after its pod is Ready, and `kubectl wait`
+# fails immediately with NotFound on a resource that does not exist yet. Poll for existence first.
+for ($i = 0; $i -lt 30; $i++) {
+  kubectl get crd installations.operator.tigera.io *> $null
+  if ($LASTEXITCODE -eq 0) { break }
+  Start-Sleep -Seconds 2
+}
 kubectl wait --for=condition=Established crd/installations.operator.tigera.io --timeout=60s
 helm upgrade --install calico tigera-operator `
   --repo https://docs.tigera.io/calico/charts `
@@ -92,4 +99,4 @@ helm upgrade --install metrics-server metrics-server `
 
 Write-Host "All operators installed."
 Write-Host "Next: deploy/kind/build-and-load-image.ps1 to build+load the app image, then helm upgrade --install iverson . -f values-local.yaml -n iverson"
-Write-Host "Note: if you later raise ollama.storageSize on an existing cluster, 'helm upgrade' will fail (StatefulSet volumeClaimTemplates are immutable) - see the comment next to storageSize in values-local.yaml."
+Write-Host "Note: if you later raise tei.storageSize (or ollama.storageSize while ollama is deployed) on an existing cluster, 'helm upgrade' will fail (StatefulSet volumeClaimTemplates are immutable) for iverson-tei-bge-base (or iverson-ollama) - see the comment next to storageSize in values-local.yaml."

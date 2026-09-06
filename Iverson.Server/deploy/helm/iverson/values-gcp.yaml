@@ -67,6 +67,16 @@ ollama:
       value: "ollama"
       effect: "NoSchedule"
 
+tei:
+  storageClassName: "iverson-tei"
+  nodeSelector:
+    iverson.io/node-pool: tei
+  tolerations:
+    - key: "iverson.io/node-pool"
+      operator: "Equal"
+      value: "tei"
+      effect: "NoSchedule"
+
 api:
   ingress:
     className: "gce"

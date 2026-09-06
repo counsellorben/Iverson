@@ -60,7 +60,7 @@ public sealed class InheritedModelScenario(
     /// field-less parent, and therefore the id <c>S12Inherited&lt;Lang&gt;</c> must resolve to when
     /// it inherits correctly. The one value this whole scenario asserts equality against.
     /// </summary>
-    internal const string ExpectedModelId = "nomic-embed-text";
+    internal const string ExpectedModelId = "BAAI/bge-base-en-v1.5";
 
     /// <summary>
     /// The fixture type name each language registers, one per language and never shared — mirrors

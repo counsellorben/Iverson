@@ -14,6 +14,14 @@ public sealed record ChunkAggregation(
     IReadOnlyList<string>                       UnresolvedParentKeys);
 
 /// <summary>
+/// <see cref="ChunkAggregation"/> plus each document's winning (max-passage) chunk text — the
+/// input the cross-encoder scores in Phase 1 (spec §3.3).
+/// </summary>
+public sealed record WinningChunkAggregation(
+    IReadOnlyList<(string DocId, double Score, string Text)> Ranked,
+    IReadOnlyList<string>                                    UnresolvedParentKeys);
+
+/// <summary>
 /// Collapses a stream of chunk-level search results down to one row per parent document
 /// (max-passage aggregation): the parent's score is the maximum score among its chunks, not
 /// the first chunk seen or the sum of its chunks. <c>SearchChunksRequest.top_k</c> counts
@@ -46,5 +54,24 @@ public static class MaxPassageAggregator
         }
 
         return new ChunkAggregation(DocumentRanking.CollapseByDocId(resolved, limit), unresolved);
+    }
+
+    public static WinningChunkAggregation Aggregate(
+        IEnumerable<(string ParentKey, double Score, string Text)> chunks,
+        IReadOnlyDictionary<string, string> keyMap,
+        int limit)
+    {
+        var resolved   = new List<(string DocId, double Score, string Text)>();
+        var unresolved = new List<string>();
+
+        foreach (var (parentKey, score, text) in chunks)
+        {
+            if (keyMap.TryGetValue(parentKey, out var docId))
+                resolved.Add((docId, score, text));
+            else
+                unresolved.Add(parentKey);
+        }
+
+        return new WinningChunkAggregation(DocumentRanking.CollapseByDocId(resolved, limit), unresolved);
     }
 }

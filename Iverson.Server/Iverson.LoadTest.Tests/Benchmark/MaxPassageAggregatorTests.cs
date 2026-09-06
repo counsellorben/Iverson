@@ -109,4 +109,16 @@ public class MaxPassageAggregatorTests
 
         result.Ranked.Should().ContainSingle().Which.Should().Be(("doc-1", 0.8));
     }
+
+    [Fact]
+    public void Aggregate_WithText_SurfacesEachDocumentsWinningChunk()
+    {
+        var keyMap = new Dictionary<string, string> { ["p1"] = "d1", ["p2"] = "d2" };
+        var chunks = new[] { ("p1", 0.3, "p1 weak"), ("p2", 0.8, "p2 best"), ("p1", 0.6, "p1 best"), ("p3", 0.9, "orphan") };
+
+        var result = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10);
+
+        result.Ranked.Should().Equal(("d2", 0.8, "p2 best"), ("d1", 0.6, "p1 best"));
+        result.UnresolvedParentKeys.Should().Equal("p3");
+    }
 }

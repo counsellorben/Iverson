@@ -14,6 +14,9 @@ dependencies:
 - name: ollama
   repository: file://charts/ollama
   version: 0.1.0
+- name: tei
+  repository: file://charts/tei
+  version: 0.1.0
 - name: api
   repository: file://charts/api
   version: 0.1.0
@@ -35,5 +38,5 @@ dependencies:
 - name: authentik
   repository: file://charts/authentik
   version: 0.1.0
-digest: sha256:d0178ab838466204ce9bf2141333db10be47f0ab88ae64d1df733cb848e57a08
-generated: "2026-07-27T22:05:11.14883941-04:00"
+digest: sha256:a5f2a2415a8fd2413aaf8c2298166f8fdcd7b0d0a8fa65e42a638def67648788
+generated: "2026-09-05T17:03:01.618516295-04:00"

@@ -489,6 +489,46 @@ public class IntelligenceStoreConsumerTests
         await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
     }
 
+    // Phase 2 Task 9′ (EnrichSmoke): a type registered over gRPC with a bypass-only RowPermission
+    // and no owner_field arrives with OwnerField == "" — proto3's default for an unset string,
+    // which object_mapping.proto defines as "no ownership dimension". The consumer took
+    // `"" is not null` as a configured owner field, called ExtractString(row, ""), indexed ""[0],
+    // and DLQ'd every write to the type after three attempts — so its vectors never reached Qdrant.
+    [Fact]
+    public async Task HandleCreated_WithProtoDefaultEmptyOwnerField_TreatsItAsNoOwnerFieldAndWritesThePoint()
+    {
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            Authorization = new AuthorizationRules(
+                "",
+                new List<RowPermission> { new("test-bypass", true, true, true) },
+                new List<FieldPermission>())
+        };
+        await _registry.RegisterAsync(schema);
+
+        var ev = new EntityEvent(
+            EventType: EntityEventType.Created,
+            TypeName: "Article",
+            Key: Guid.NewGuid().ToString(),
+            PayloadJson: """{"Title":"Test","Body":"Body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""",
+            TraceId: "trace-empty-owner-field",
+            SchemaVersion: "1",
+            OccurredAt: DateTimeOffset.UtcNow,
+            TargetStores: StoreTarget.Intelligence);
+
+        var act = async () => await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        await _vectorWrite.Received().UpsertNamedAsync(
+            Arg.Any<string>(),
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+        // Only the tenant re-derivation reads the authoritative row: there is no owner value to
+        // re-derive, exactly as when OwnerField is null.
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
+    }
+
     [Fact]
     public async Task HandleDeleted_CallsVectorDelete()
     {

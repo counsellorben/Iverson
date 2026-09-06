@@ -24,7 +24,7 @@ public sealed class EmbeddingServiceResolver(
             // are shaped for the DEFAULT model, and stamping a nomic-shaped prefix onto arctic's
             // embeddings is exactly the misconfiguration EmbeddingPrefixes exists to prevent.
             // Left null, the field initializers derive this model's own pair from the table.
-            Options.Create(new EmbeddingServiceOptions { BaseUrl = options.Value.BaseUrl, ModelId = m }),
+            Options.Create(new EmbeddingServiceOptions { BaseUrl = options.Value.BaseUrlFor(m), ModelId = m }),
             serviceLogger));
     }
 }

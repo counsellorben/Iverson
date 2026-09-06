@@ -91,6 +91,16 @@ variable "ollama_node_count" {
   default = 2
 }
 
+variable "tei_vm_size" {
+  type    = string
+  default = "Standard_F4s_v2"
+}
+
+variable "tei_node_count" {
+  type    = number
+  default = 2
+}
+
 variable "general_vm_size" {
   type    = string
   default = "Standard_D4ds_v5"

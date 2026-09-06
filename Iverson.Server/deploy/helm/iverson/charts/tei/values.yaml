@@ -1,0 +1,9 @@
+replicas: 2
+storageSize: 2Gi
+storageClassName: ""
+imageTag: "cpu-1.8"
+resources:
+  requests: { cpu: "2", memory: "2Gi", ephemeral-storage: "1Gi" }
+  limits: { cpu: "4", memory: "4Gi", ephemeral-storage: "2Gi" }
+nodeSelector: {}
+tolerations: []

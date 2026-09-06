@@ -11,22 +11,44 @@ namespace Iverson.Embeddings.Tests;
 
 public sealed class EmbeddingServiceTests
 {
-    private sealed class FakeHttpMessageHandler(HttpResponseMessage response) : HttpMessageHandler
+    private sealed class FakeHttpMessageHandler(
+        HttpResponseMessage embedResponse,
+        HttpResponseMessage? infoResponse = null) : HttpMessageHandler
     {
-        public HttpRequestMessage? LastRequest     { get; private set; }
+        public HttpRequestMessage? LastRequest     { get; private set; }   // /v1/embeddings requests only
         public string?             LastRequestBody { get; private set; }
+        public Uri?                LastInfoUri     { get; private set; }
+        public int                 InfoCalls;
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken ct)
         {
+            if (request.RequestUri!.AbsolutePath == "/info")
+            {
+                LastInfoUri = request.RequestUri;
+                Interlocked.Increment(ref InfoCalls);
+                return infoResponse is null
+                    ? new HttpResponseMessage(HttpStatusCode.NotFound)   // Ollama's answer
+                    : await CopyAsync(infoResponse, ct);
+            }
+
             LastRequest     = request;
             LastRequestBody = request.Content is not null
                 ? await request.Content.ReadAsStringAsync(ct)
                 : null;
-            return response;
+            return await CopyAsync(embedResponse, ct);
         }
     }
+
+    // A fresh HttpResponseMessage per call: EnsureInitializedAsync now issues two requests and the
+    // service reads each response's content stream once.
+    private static async Task<HttpResponseMessage> CopyAsync(HttpResponseMessage source, CancellationToken ct) =>
+        new(source.StatusCode)
+        {
+            Content = new StringContent(
+                await source.Content.ReadAsStringAsync(ct), Encoding.UTF8, "application/json")
+        };
 
     private EmbeddingService CreateService(HttpMessageHandler handler, string modelId = "nomic-embed-text")
     {
@@ -60,11 +82,21 @@ public sealed class EmbeddingServiceTests
             NullLogger<EmbeddingService>.Instance);
     }
 
+    // The OpenAI-compatible shape both Ollama and TEI serve at /v1/embeddings.
     private static HttpResponseMessage SuccessResponse(float[] embedding) =>
         new(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                $$"""{"embeddings":[[{{string.Join(",", embedding)}}]]}""",
+                $$$"""{"object":"list","data":[{"object":"embedding","index":0,"embedding":[{{{string.Join(",", embedding)}}}]}],"model":"x","usage":{"prompt_tokens":1,"total_tokens":1}}""",
+                Encoding.UTF8,
+                "application/json")
+        };
+
+    private static HttpResponseMessage InfoResponse(string modelId) =>
+        new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                $$"""{"model_id":"{{modelId}}","max_input_length":512,"auto_truncate":true}""",
                 Encoding.UTF8,
                 "application/json")
         };
@@ -180,21 +212,126 @@ public sealed class EmbeddingServiceTests
            .WithMessage("*not initialized*");
     }
 
+    [Fact]
+    public async Task EmbedDocumentAsync_PostsToV1Embeddings_OnTheConfiguredBaseUrl_NotTheClientBaseAddress()
+    {
+        // CreateService gives the HttpClient BaseAddress http://localhost:11434; the options say otherwise.
+        var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f]));
+        var svc = CreateService(handler, new EmbeddingServiceOptions
+            { ModelId = "some-unknown-model", BaseUrl = "http://tei-embed:8091" });
+
+        await svc.EmbedDocumentAsync("hello");
+
+        handler.LastRequest!.Method.Should().Be(HttpMethod.Post);
+        handler.LastRequest.RequestUri.Should().Be(new Uri("http://tei-embed:8091/v1/embeddings"));
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_InfoReportsTheConfiguredModel_Initialises()
+    {
+        var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f, 0.2f]), InfoResponse("BAAI/bge-base-en-v1.5"));
+        var svc = CreateService(handler, "BAAI/bge-base-en-v1.5");
+
+        await svc.EnsureInitializedAsync();
+
+        svc.Dimension.Should().Be(2);
+        handler.InfoCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_SendsInfoToTheServicesOwnBaseUrl_NotTheClientBaseAddress()
+    {
+        // CreateService gives the HttpClient BaseAddress http://localhost:11434 (Ollama); every
+        // other guard test's options.BaseUrl matches that address, so a relative "/info" request
+        // (resolved against the client's BaseAddress instead of the service's own _baseUrl) would
+        // stay green there. A per-model TEI service's BaseUrl differs from the client's
+        // BaseAddress, so only an assertion here catches a guard that silently asks Ollama's
+        // global URL instead — where it would 404 and no-op forever.
+        var handler = new FakeHttpMessageHandler(
+            SuccessResponse([0.1f, 0.2f]), InfoResponse("BAAI/bge-base-en-v1.5"));
+        var svc = CreateService(handler, new EmbeddingServiceOptions
+            { ModelId = "BAAI/bge-base-en-v1.5", BaseUrl = "http://tei-embed:8091" });
+
+        await svc.EnsureInitializedAsync();
+
+        handler.LastInfoUri.Should().Be(new Uri("http://tei-embed:8091/info"));
+        svc.Dimension.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_Info200WithoutModelId_Initialises()
+    {
+        // spec §3.2: a 200 response that carries no model_id is a stated no-op, not a guard
+        // failure — distinct from the 404 (Ollama) no-op case already covered above.
+        var infoResponse = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"version":"x"}""", Encoding.UTF8, "application/json")
+        };
+        var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f, 0.2f, 0.3f]), infoResponse);
+        var svc = CreateService(handler);
+
+        await svc.EnsureInitializedAsync();
+
+        svc.Dimension.Should().Be(3);
+        handler.InfoCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_InfoReportsAnotherModel_ThrowsNamingBothIds_OnEveryCall()
+    {
+        var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f, 0.2f]), InfoResponse("BAAI/bge-base-en-v1.5"));
+        var svc = CreateService(handler, "BAAI/bge-small-en-v1.5");
+
+        await svc.Invoking(s => s.EnsureInitializedAsync())
+                 .Should().ThrowAsync<InvalidOperationException>()
+                 .WithMessage("*BAAI/bge-base-en-v1.5*BAAI/bge-small-en-v1.5*");
+        var act = () => svc.Dimension;
+        act.Should().Throw<InvalidOperationException>();
+
+        // Guard-before-dimension: a second call must run the guard again and throw again. A guard
+        // placed after `_dimension = probe.Length` returns at the top and this assertion fails.
+        await svc.Invoking(s => s.EnsureInitializedAsync())
+                 .Should().ThrowAsync<InvalidOperationException>();
+        handler.InfoCalls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_Info404_Initialises()
+    {
+        var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f, 0.2f, 0.3f]));   // no info response → 404
+        var svc = CreateService(handler);
+
+        await svc.EnsureInitializedAsync();
+
+        svc.Dimension.Should().Be(3);
+        handler.InfoCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_SendsInfoAfterTheProbe_NotBeforeIt()
+    {
+        // A guard that ran before the probe would leave LastRequestBody null when it threw.
+        var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f]), InfoResponse("other-model"));
+        var svc = CreateService(handler, "nomic-embed-text");
+
+        await svc.Invoking(s => s.EnsureInitializedAsync()).Should().ThrowAsync<InvalidOperationException>();
+
+        handler.LastRequestBody.Should().Contain("\"probe\"");
+    }
+
     private sealed class CountingHttpMessageHandler(HttpResponseMessage response) : HttpMessageHandler
     {
-        public int CallCount;
+        public int CallCount;   // /v1/embeddings requests only: "probe once per lifetime", not "one HTTP call"
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken ct)
         {
+            if (request.RequestUri!.AbsolutePath == "/info")
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
             Interlocked.Increment(ref CallCount);
             await Task.Delay(20, ct); // widen the race window for concurrency test
-            return new HttpResponseMessage(response.StatusCode)
-            {
-                Content = new StringContent(
-                    await response.Content!.ReadAsStringAsync(ct), Encoding.UTF8, "application/json")
-            };
+            return await CopyAsync(response, ct);
         }
     }
 
@@ -225,16 +362,18 @@ public sealed class EmbeddingServiceTests
 
     private sealed class FlakyThenSuccessHandler(HttpResponseMessage success) : HttpMessageHandler
     {
-        public int CallCount;
+        public int CallCount;   // /v1/embeddings requests only
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken ct)
         {
+            if (request.RequestUri!.AbsolutePath == "/info")
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
             Interlocked.Increment(ref CallCount);
             if (CallCount == 1)
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError));
-            return Task.FromResult(success);
+            return CopyAsync(success, ct);
         }
     }
 
@@ -260,6 +399,8 @@ public sealed class EmbeddingServiceTests
     [InlineData("nomic-embed-text",          "search_document: ", "search_query: ")]
     [InlineData("nomic-embed-text:latest",   "search_document: ", "search_query: ")]
     [InlineData("snowflake-arctic-embed:s",  "",                  "Represent this sentence for searching relevant passages: ")]
+    [InlineData("BAAI/bge-base-en-v1.5",    "",                  "Represent this sentence for searching relevant passages: ")]
+    [InlineData("BAAI/bge-small-en-v1.5",   "",                  "Represent this sentence for searching relevant passages: ")]
     [InlineData("some-unknown-model",        "",                  "")]
     public void For_ResolvesByFamily_StrippingAnyTag(string modelId, string doc, string query)
     {
@@ -344,5 +485,24 @@ public sealed class EmbeddingServiceTests
         await sut.EmbedQueryAsync("hello");
 
         handler.LastRequestBody.Should().NotContain("search_query: ");
+    }
+
+    [Fact]
+    public async Task DefaultService_WhoseModelIsListedInModels_UsesTheListedBaseUrl()
+    {
+        // The DI-constructed default service is built from the global options with ModelId set to
+        // the TEI-only candidate (compose BENCH_EMBED_MODEL); the resolver short-circuits to it for
+        // that id, so this service must resolve its own base URL through Models (CDR-1 §2.1).
+        var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f]));
+        var svc = CreateService(handler, new EmbeddingServiceOptions
+        {
+            BaseUrl = "http://ollama:11434",
+            ModelId = "BAAI/bge-base-en-v1.5",
+            Models  = [new ModelEndpoint { Name = "BAAI/bge-base-en-v1.5", BaseUrl = "http://tei-embed:8091" }]
+        });
+
+        await svc.EmbedDocumentAsync("hello");
+
+        handler.LastRequest!.RequestUri.Should().Be(new Uri("http://tei-embed:8091/v1/embeddings"));
     }
 }

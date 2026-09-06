@@ -134,7 +134,26 @@ public enum RelationKind { OneToOne, OneToMany, ManyToOne, ManyToMany }
 public sealed record AuthorizationRules(
     string? OwnerField,
     IReadOnlyList<RowPermission> RowPermissions,
-    IReadOnlyList<FieldPermission> FieldPermissions);
+    IReadOnlyList<FieldPermission> FieldPermissions)
+{
+    // object_mapping.proto declares owner_field as a plain string whose EMPTY value means "no
+    // ownership dimension", and proto3 never yields null for it — so a bypass-only rule set
+    // reaches SchemaBuilder.BuildDescriptor as "", and was persisted to _iverson_schema as "".
+    // Every reader in this assembly branches on `is not null`; the two store consumers then
+    // handed "" to ExtractString, which indexes propertyName[0] and threw
+    // IndexOutOfRangeException, DLQ-ing every write to such a type. Normalizing HERE — not at
+    // the builder — is what covers all three ways a descriptor comes to exist: BuildDescriptor,
+    // SchemaRegistry.LoadAsync rehydrating an already-persisted "" through System.Text.Json
+    // (which binds this parameter by name and never sets the property a second time), and a
+    // hand-constructed record, including a `with { OwnerField = "" }` (which bypasses the
+    // initializer and goes through the init accessor). RowFieldAuthorizationEvaluator already
+    // treated "" and null alike; now every consumer sees the one shape it tests for.
+    public string? OwnerField
+    {
+        get;
+        init => field = string.IsNullOrEmpty(value) ? null : value;
+    } = string.IsNullOrEmpty(OwnerField) ? null : OwnerField;
+}
 
 public sealed record RowPermission(string Role, bool CanReadAll, bool CanWriteAll, bool CanDeleteAll);
 

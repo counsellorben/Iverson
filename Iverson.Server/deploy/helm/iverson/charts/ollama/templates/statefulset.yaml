@@ -56,9 +56,6 @@ spec:
             - |
               ollama serve &
               sleep 5
-              {{- range .Values.global.embeddingModels }}
-              ollama pull {{ .name }}
-              {{- end }}
               ollama pull {{ .Values.global.generativeModel }}
           resources:
             requests: { cpu: "500m", memory: "512Mi", ephemeral-storage: "1Gi" }
