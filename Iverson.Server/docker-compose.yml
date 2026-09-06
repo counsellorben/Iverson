@@ -173,6 +173,7 @@ services:
   tei-embed:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
     container_name: iverson-tei-embed
+    restart: unless-stopped
     command: ["--model-id", "${EMBED_MODEL_ID:-BAAI/bge-base-en-v1.5}", "--auto-truncate"]
     ports:
       - "8091:80"
@@ -185,13 +186,19 @@ services:
       retries: 20
       start_period: 5m
 
-  # Generative backend under evaluation (spec docs/specs/2026-09-05-embedding-migration-phase2-design.md
-  # §3.7). Intel CPU image; bf16 weights; the token limits keep warm-up to ~10 minutes (the image
-  # defaults pre-allocate a 32k context and take twenty). HF_HUB_DISABLE_XET: the Hub's Xet download
-  # path fails from this box, the classic path works. First start: ~11 min download + ~10 min warm-up.
+  # Generative backend the enrichment gate (docs/plans/2026-09-GATE-enrichment-backend.md) evaluated
+  # AND FAILED on this box: Ollama stays the enrichment backend (Phase C′). TGI is retained only for
+  # the deferred cloud measurement of the 3B candidate. Nothing on this branch routes to it — both
+  # roles' Enrichment__BaseUrl point at http://ollama:11434, nothing depends_on it, and the Launcher
+  # omits it. Behind a profile so a plain `docker compose up -d` never starts it:
+  #   docker compose --profile tgi up -d tgi
+  # Intel CPU image; bf16 weights; the token limits keep warm-up to ~10 minutes (the image defaults
+  # pre-allocate a 32k context and take twenty). HF_HUB_DISABLE_XET: the Hub's Xet download path
+  # fails from this box, the classic path works. First start: ~11 min download + ~10 min warm-up.
   tgi:
     image: ghcr.io/huggingface/text-generation-inference:3.3.4-intel-cpu
     container_name: iverson-tgi
+    profiles: ["tgi"]
     command: ["--model-id", "${GEN_MODEL_ID:-Qwen/Qwen2.5-1.5B-Instruct}", "--dtype", "bfloat16", "--max-input-tokens", "3072", "--max-total-tokens", "3584", "--max-batch-prefill-tokens", "3072"]
     environment:
       - HF_HUB_DISABLE_XET=1
