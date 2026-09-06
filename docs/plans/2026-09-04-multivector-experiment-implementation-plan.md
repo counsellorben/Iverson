@@ -14,7 +14,7 @@
 
 ## Global Constraints
 
-- **Precondition for Tasks 4–5:** the `embedding-migration` branch has merged to local main (this plan reuses its `ingest.py` flags, `tei-embed` service and per-arm procedure) and the box is on the SciFact nomic baseline (5,183 object / 19,967 chunk points, 768 dims, API defaults). Tasks 1–3 may run on a worktree based on the merged main at any time.
+- **Precondition for Tasks 4–5:** the embedding migration (Phases 1 and 2) has merged to local main (this plan reuses its `ingest.py` flags, `tei-embed` service and per-arm procedure) and the box is on the SciFact bge-base baseline (5,183 object / 19,967 chunk points, 768 dims, `tei-embed` serving `BAAI/bge-base-en-v1.5`, API and worker on defaults). Tasks 1–3 may run on a worktree based on the merged main at any time.
 - **Box discipline (spec §4, §6):** nothing else runs on the box during the ingest; every `docker compose` call is a single-service `--no-deps` action from `Iverson.Server/`; **never call `stack.py`** after TEI is up — its out-of-tier stop halts `iverson-tei-embed`; never a tier-wide `up` (it recreates postgres/authentik).
 - **Window and counts are fixed:** `--chunk-max-chars 512 --chunk-step 448`; the ingest sidecar must report exactly `documents 5183, chunks 19967`; any other number invalidates the arm.
 - **Model id everywhere:** `Alibaba-NLP/gte-modernbert-base` — on the TEI recreate (`EMBED_MODEL_ID`), the ingest (`--model`), the API recreate (`BENCH_EMBED_MODEL` and `EMBED_MODEL_ID`) and the query script (`--model`). No prefix on either side.
@@ -32,7 +32,7 @@
 - (outside the repo, untracked) `~/repositories/iverson-benchmark-corpora/scifact-gte-<date>/` and `scifact-gte-qdrant-snapshots/`.
 
 **Modify**
-- `Iverson.Server/docker-compose.yml:175` — `tei-embed` command gains `"--max-batch-tokens", "${TEI_MAX_BATCH_TOKENS:-16384}"`.
+- `Iverson.Server/docker-compose.yml:177` — `tei-embed` command gains `"--max-batch-tokens", "${TEI_MAX_BATCH_TOKENS:-16384}"`.
 
 ## Inherited from spec
 
@@ -60,7 +60,7 @@ Verified 2026-09-04/05 against the `embedding-migration` worktree at `f2706a4` (
 | # | Category | Assumption | Evidence |
 |---|---|---|---|
 | P1 | File path | `scripts/multivector.py` and `scripts/test_multivector.py` do not exist on main or the migration branch | `ls` → no such file (both) |
-| P2/P27 | Command | `docker-compose.yml:175` is exactly `command: ["--model-id", "${EMBED_MODEL_ID:-BAAI/bge-base-en-v1.5}", "--auto-truncate"]`; `docker compose --profile tei config` renders the list with the env default interpolated | `sed -n 175p`; `config` output shows `- --model-id` / `- BAAI/bge-base-en-v1.5` / `- --auto-truncate` |
+| P2/P27 | Command | `docker-compose.yml:177` is exactly `command: ["--model-id", "${EMBED_MODEL_ID:-BAAI/bge-base-en-v1.5}", "--auto-truncate"]`; `:175` is `container_name: iverson-tei-embed`, `:176` `restart: unless-stopped`; the service has had no `profiles:` key since Phase 2 (`8db18dd`), so a plain `docker compose config` renders the list with the env default interpolated | CIR-2 §1: `sed -n 173,187p`; `config` shows `- --model-id` / `- BAAI/bge-base-en-v1.5` / `- --auto-truncate`; `config --services \| grep -c '^tei-embed$'` → 1 |
 | P3 | Signature | `import ingest` from the scripts dir performs no network I/O (socket guard) and exports `qdrant_request, key_to_ulong, embed, DEFAULT_OBJECT_COLLECTION, DEFAULT_CHUNKS_COLLECTION, QDRANT_URL, HTTP_TIMEOUT_SECONDS, EMBED_RETRIES`; defaults `benchmark_documents_tenant_bypass` / `benchmark_documents_chunks_tenant_bypass`; `HTTP_TIMEOUT_SECONDS` 300 | ran the import under a socket guard |
 | P4 | Code validity | `test_report.py` imports its module via `sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))` then `import report  # noqa: E402` | `test_report.py:8-15` |
 | P5 | Signature | `ingest.key_to_ulong(key: str) -> int`; `ingest.embed(text, model, document_prefix, embed_url)` posts `{model, input}` to `<embed_url>/v1/embeddings` (served by Ollama and TEI alike) and returns `data[0]["embedding"]` (list of floats) | `inspect.signature`; `ingest.py:527-557` (section header "Embedding backend (Ollama or TEI, /v1/embeddings)") |
@@ -84,16 +84,24 @@ Verified 2026-09-04/05 against the `embedding-migration` worktree at `f2706a4` (
 | P28 | Code validity | `points_count` is exact, so `build`'s row reconciliation and point-count check compare against a true count | CIR-1 span (b): equals `POST /points/count {"exact": true}` on both live collections |
 | P29 | Command | TEI `/info` exposes `max_batch_tokens` (Task 4 step 2 greps for it) | CIR-1 span (d): verified live on the running `iverson-tei-embed` |
 | P30 | Command | The compose project is `iversonserver` whether invoked from the migration worktree (where the live containers were created) or from main's `Iverson.Server` after the merge, so single-service `up` adopts the existing containers | CIR-1 span (e): name derives from the directory basename; containers carry the `com.docker.compose.project=iversonserver` label |
-| P31 | File path | Task 5 step 5's template `2026-09-GATE-embedding-migration.md` does not exist yet (the migration's Task 8 output); `2026-09-GATE-reranker-phase1.md` exists, so the shape is available either way | CIR-1 span (f): `ls docs/plans/` |
+| P31 | File path | Task 5 step 5's template `2026-09-GATE-embedding-migration.md` exists (the migration's Task 8 shipped it); `2026-09-GATE-reranker-phase1.md` exists too | CIR-2 §1: `ls docs/plans/` on main at `d678dbe` |
+| P32 | Precondition | The live box is on the bge-base baseline, not nomic: `tei-embed` `/info` → `BAAI/bge-base-en-v1.5`; `_iverson_schema` holds a `BenchmarkDocument` row pinning bge-base; `scifact-bge-base-qdrant-snapshots/` exists (2 `.snapshot` + `RESTORE.md`) | CIR-2 span (a), live 2026-09-06 |
+| P33 | Consumer impact | `iverson-api` and `iverson-worker` both embed through `tei-embed` (`docker-compose.yml:437, 444` / `:528, 529`) and `depends_on` it `service_healthy` (`:500-501`, `:569-570`) | CIR-2 span (b) |
+| P34 | Code validity | The API's startup embedding init is non-fatal (`Program.cs:402-414` catches and warns) but schema registration calls `EnsureInitializedAsync` (`SchemaRegistrationOrchestrator.cs:136`) and reads `embedding.Dimension` (`SchemaBuilder.cs:67`), so `SCHEMA-OK` needs a live embedding backend | CIR-2 span (c) |
+| P35 | Command | `iverson-worker` is a compose service with `restart: unless-stopped` (`docker-compose.yml:510-516`); an explicit `docker stop` holds until something starts it again | CIR-2 span (d) |
+| P36 | Command | `ls -d …/scifact-gte-*` also matches `scifact-gte-qdrant-snapshots`, which sorts after any dated `scifact-gte-20*` name under `LANG=C.UTF-8` | CIR-2 span (e), reproduced on a scratch pair |
+| P37 | Code validity | The multivector collection clears Qdrant's `indexing_threshold`, so `wait_for_index` does not refuse a correctly built collection | CIR-2 span (f), segment arithmetic against the two live collections |
+| P38 | Command | `nomic-embed-text:latest` is still resident in the Ollama volume (`GET /api/tags`) for Task 3 step 5's smoke; `ollama-init` now pulls only `qwen2.5:3b`, so it survives only because the volume is named | CIR-2 span (g), live |
+| P39 | File path | The Phase 1 plan's cited line numbers still resolve | CIR-2 span (h), the P14 re-check |
 
 ## Tasks
 
 ### Task 1: Templated `--max-batch-tokens` on the compose `tei-embed` service
 
 **Files:**
-- Modify: `Iverson.Server/docker-compose.yml:175`
+- Modify: `Iverson.Server/docker-compose.yml:177`
 
-- [ ] **Step 1: Edit the command.** Replace line 175
+- [ ] **Step 1: Edit the command.** Replace line 177
 
 ```yaml
     command: ["--model-id", "${EMBED_MODEL_ID:-BAAI/bge-base-en-v1.5}", "--auto-truncate"]
@@ -109,10 +117,10 @@ with
 - [ ] **Step 2: Verify the render, default and override.**
 ```bash
 cd Iverson.Server
-docker compose --profile tei config | grep -A 9 '^  tei-embed:' | grep -A 5 'command:'
+docker compose config | grep -A 9 '^  tei-embed:' | grep -A 5 'command:'
 # expect the five items ending: - --max-batch-tokens / - "16384"
-TEI_MAX_BATCH_TOKENS=4096 docker compose --profile tei config | grep -A 9 '^  tei-embed:' | grep -c '"4096"\|^      - 4096$'   # 1
-docker compose config --services | grep -c '^tei-embed$'   # 0 — still profile-gated
+TEI_MAX_BATCH_TOKENS=4096 docker compose config | grep -A 9 '^  tei-embed:' | grep -c '"4096"\|^      - 4096$'   # 1
+docker compose config --services | grep -c '^tei-embed$'   # 1 — default service, no profile (Phase 2)
 ```
 
 - [ ] **Step 3: Commit.**
@@ -707,9 +715,10 @@ K=dev-only-not-for-production-qdrant-key-0123456789
 curl -s -H "api-key: $K" 127.0.0.1:6333/collections/benchmark_documents_chunks_tenant_bypass | grep -o '"points_count":[0-9]*\|"size":[0-9]*'   # 19967, 768
 curl -s -H "api-key: $K" 127.0.0.1:6333/collections/benchmark_documents_tenant_bypass        | grep -o '"points_count":[0-9]*'                # 5183
 curl -s 127.0.0.1:8081/build | grep -o '"composite":"[^"]*"'   # record it: every run this plan produces must carry it
-ls /home/ben/repositories/iverson-benchmark-corpora/scifact-512-qdrant-snapshots/*.snapshot | wc -l   # 2 — the nomic baseline restore set exists (spec §6 step 2: skip snapshotting it again)
+curl -s http://127.0.0.1:8091/info | grep -o '"model_id":"[^"]*"'   # BAAI/bge-base-en-v1.5 — the baseline step 3's --drop destroys
+ls /home/ben/repositories/iverson-benchmark-corpora/scifact-bge-base-qdrant-snapshots/*.snapshot | wc -l   # 2 — the bge-base baseline restore set exists (spec §6 step 2: skip snapshotting it again)
 ```
-Any other point count or size: restore the nomic baseline first (Task 5 step 6's loop) and stop.
+Any other point count or size: restore the bge-base baseline first (Task 5 step 6's loop) and stop.
 
 - [ ] **Step 2: Run directory and TEI.**
 ```bash
@@ -781,11 +790,11 @@ No commit: everything this task produces lives outside the repo.
 - Create: `docs/plans/2026-09-GATE-multivector.md`; (outside the repo) `$MV/runs/gte-chunks-raw.chunks.trec`, `$MV/runs/gte-multivector-raw.chunks.trec`, `$MV/runs/raw-latency.json`, `$MV/runs/storage.json`, `$MV/report-*.txt`, the multivector snapshot in `scifact-gte-qdrant-snapshots/`
 
 **Interfaces**
-- Consumes: Tasks 2–4; `$SCI/runs/rerank-a0.chunks.trec` (the nomic baseline); `$MV/qrels.trec`.
+- Consumes: Tasks 2–4; `$BGE/runs/bge-base.{chunks,similar}.trec` (the bge-base M1 run, the model-observation baseline) and `$SCI/runs/rerank-a0.{chunks,similar}.trec` (nomic, context); `$MV/qrels.trec`.
 
 - [ ] **Step 1: Build, query, stats** (TEI still up on gte; the API may stay up, it is not used).
 ```bash
-export MV=$(ls -d /home/ben/repositories/iverson-benchmark-corpora/scifact-gte-* | tail -1); ls $MV/runs/gte-chunks-api.meta.json   # Task 4's run dir, proven by the API run's sidecar
+export MV=$(ls -d /home/ben/repositories/iverson-benchmark-corpora/scifact-gte-20*/ | tail -1); MV=${MV%/}; ls $MV/runs/gte-chunks-api.meta.json || exit 1   # Task 4's dated run dir (the glob excludes scifact-gte-qdrant-snapshots), proven by the API run's sidecar
 K=dev-only-not-for-production-qdrant-key-0123456789
 cd /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest/scripts
 python3 multivector.py build 2>&1 | tee $MV/multivector-build.log      # … green, indexed_vectors_count > 0; 5183 points, 19967 rows == 19967 chunk points
@@ -809,36 +818,44 @@ ls -la $SNAP   # three .snapshot files
 ```bash
 export PYTHONPATH=/home/ben/repositories/iverson-benchmark-corpora/python-libs
 export SCI=/home/ben/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26
+export BGE=/home/ben/repositories/iverson-benchmark-corpora/scifact-bge-base-2026-09-04
 # (a) everything in the run dir, structural checks + throughput, no pairing
 python3 report.py --run $MV/runs --qrels $MV/qrels.trec --stats-path $MV/keymap.json.stats.json 2>&1 | tee $MV/report-all.txt
 # (b) the gated layout comparison, plus the API run against the same raw control (Holm family of 2)
 python3 report.py --run $MV/runs/gte-multivector-raw.chunks.trec --run $MV/runs/gte-chunks-api.chunks.trec \
   --qrels $MV/qrels.trec --baseline $MV/runs/gte-chunks-raw.chunks.trec 2>&1 | tee $MV/report-layout.txt
-# (c) the model observation
-python3 report.py --run $MV/runs/gte-chunks-api.chunks.trec --qrels $MV/qrels.trec \
-  --baseline $SCI/runs/rerank-a0.chunks.trec 2>&1 | tee $MV/report-model.txt
+# (c) the model observation: gte vs the bge-base M1 run, plus the rerank-a0 and .similar rows step 5's table needs
+python3 report.py --run $MV/runs/gte-chunks-api.chunks.trec --run $MV/runs/gte-chunks-api.similar.trec \
+  --run $BGE/runs/bge-base.chunks.trec --run $BGE/runs/bge-base.similar.trec \
+  --run $SCI/runs/rerank-a0.chunks.trec --run $SCI/runs/rerank-a0.similar.trec \
+  --qrels $MV/qrels.trec --baseline $BGE/runs/bge-base.chunks.trec 2>&1 | tee $MV/report-model.txt
 ```
-Expected in (a): every `.chunks.trec` 15,000 rows, 300 queries, 300/300 covered, no duplicate doc ids; the two raw runs report `build: unknown`; `gte-chunks-api` carries Task 4's composite. Expected in (b): a `FEW QUERIES CHANGED` banner on the layout pair is plausible (shared vectors) — read the permutation p, as the banner says. A `BUILD MISMATCH` line in (c) is expected (rerank-a0 predates the migration image) and benign per the migration's same-build control.
+Expected in (a): every `.chunks.trec` 15,000 rows, 300 queries, 300/300 covered, no duplicate doc ids; the two raw runs report `build: unknown`; `gte-chunks-api` carries Task 4's composite. Expected in (b): a `FEW QUERIES CHANGED` banner on the layout pair is plausible (shared vectors) — read the permutation p, as the banner says. `BUILD MISMATCH` lines in (c) are expected (`bge-base` carries the migration branch's composite `7d3a15092f963723`; `rerank-a0` predates it) and benign per the migration's same-build control.
 
-- [ ] **Step 4: Restore the nomic baseline and leave the box on it** (migration Task 7 step 5, verbatim, plus removal of the experiment's collection).
+- [ ] **Step 4: Restore the bge-base baseline and leave the box on it** (spec §6 step 8; the Phase 2 plan's Task 4 restore at `:516-525`, plus removal of the experiment's collection).
 ```bash
-cd /home/ben/repositories/Iverson/Iverson.Server && docker compose --profile tei stop tei-embed
 K=dev-only-not-for-production-qdrant-key-0123456789
 curl -s -X DELETE -H "api-key: $K" 127.0.0.1:6333/collections/benchmark_documents_multivector_tenant_bypass; echo   # snapshotted in step 2; the box ends as found
 for c in benchmark_documents_tenant_bypass benchmark_documents_chunks_tenant_bypass; do curl -s -X DELETE -H "api-key: $K" 127.0.0.1:6333/collections/$c; echo; done
-cd /home/ben/repositories/iverson-benchmark-corpora/scifact-512-qdrant-snapshots
+cd /home/ben/repositories/iverson-benchmark-corpora/scifact-bge-base-qdrant-snapshots
 for f in *.snapshot; do c="${f%%-6802952876034638*}"; curl -s -X POST -H "api-key: $K" "http://localhost:6333/collections/$c/snapshots/upload?priority=snapshot" -F "snapshot=@$f"; echo; done
 curl -s -H "api-key: $K" 127.0.0.1:6333/collections/benchmark_documents_chunks_tenant_bypass | grep -o '"points_count":[0-9]*\|"size":[0-9]*'   # 19967, 768
 curl -s -H "api-key: $K" 127.0.0.1:6333/collections/benchmark_documents_tenant_bypass        | grep -o '"points_count":[0-9]*'                # 5183
-docker exec iverson-postgres psql -U iverson -d iverson -c "DELETE FROM _iverson_schema WHERE type_name = 'BenchmarkDocument';"
-cd /home/ben/repositories/Iverson/Iverson.Server && docker compose up -d --no-deps iverson-api      # defaults: nomic, Ollama
+docker exec iverson-postgres psql -U iverson -d iverson -c "DELETE FROM _iverson_schema WHERE type_name = 'BenchmarkDocument';"   # the gte row Task 4 step 5 registered
+cd /home/ben/repositories/Iverson/Iverson.Server
+unset BENCH_EMBED_MODEL TEI_MAX_BATCH_TOKENS
+EMBED_MODEL_ID=BAAI/bge-base-en-v1.5 docker compose up -d --no-deps --force-recreate tei-embed
+until curl -sf 127.0.0.1:8091/info >/dev/null; do sleep 5; done
+curl -s 127.0.0.1:8091/info | grep -o '"model_id":"[^"]*"'   # BAAI/bge-base-en-v1.5
+docker start iverson-zookeeper iverson-kafka iverson-starrocks iverson-jaeger 2>/dev/null   # stopped by Task 4 step 1
+docker compose up -d --no-deps iverson-api iverson-worker      # defaults: bge-base on tei-embed; both were configured for gte in Task 4 step 5
 until curl -sf 127.0.0.1:8081/build >/dev/null; do sleep 3; done
-docker logs iverson-api 2>&1 | grep "EmbeddingService initialized"   # model=nomic-embed-text dimension=768
+for c in iverson-api iverson-worker; do docker logs $c 2>&1 | grep "EmbeddingService initialized"; done   # model=BAAI/bge-base-en-v1.5 dimension=768 — both
 source /home/ben/iverson-benchmark-data/bench-env.sh
 cd Iverson.LoadTest && dotnet run -c Release -- benchmark-query --help 2>&1 | grep -q "Schemas registered." && echo SCHEMA-OK
 ```
 
-- [ ] **Step 5: Write `docs/plans/2026-09-GATE-multivector.md`** in the shape of `2026-09-GATE-embedding-migration.md` / `2026-09-GATE-reranker-phase1.md`: header (date, main HEAD, plan reference, where `$MV` and the snapshots live); Method (spec §6 protocol, the 512/448 ruling and the single-chunk probe that forced it, the derived-arm construction, `--baseline` not `--pair` and why); Arms table (`rerank-a0`, `gte-chunks-api`, `gte-chunks-raw`, `gte-multivector-raw`: model, layout, query path, rows, ingest `elapsed_seconds` / `embed_calls` for the gte ingest, query wall-clock); the scores from (a) for all runs incl. `.similar`; the `report.py` compare blocks from (b) and (c) quoted verbatim; the latency and storage table from `raw-latency.json` and `storage.json` (p50/p95/mean per mode, the p95 ratio, points / indexed / segments / disk per collection); a **Gate** section with the three §7 criteria each marked PASS/FAIL with the number that decided it — nDCG@10 CI lower bound, R@50 CI lower bound, p95 ratio ≤ 1.25 — and the one-word verdict **GO / NO-GO**, naming the failing criterion on NO-GO; the model observation stated with its statistics and no threshold; spec §8's adoption implications restated as the follow-up spec's inputs; close with the box state (nomic restored, 5,183 / 19,967, API defaults, TEI stopped).
+- [ ] **Step 5: Write `docs/plans/2026-09-GATE-multivector.md`** in the shape of `2026-09-GATE-embedding-migration.md` / `2026-09-GATE-reranker-phase1.md`: header (date, main HEAD, plan reference, where `$MV` and the snapshots live); Method (spec §6 protocol, the 512/448 ruling and the single-chunk probe that forced it, the derived-arm construction, `--baseline` not `--pair` and why); Arms table (`bge-base`, `rerank-a0`, `gte-chunks-api`, `gte-chunks-raw`, `gte-multivector-raw`: model, layout, query path, rows, ingest `elapsed_seconds` / `embed_calls` for the gte ingest, query wall-clock); the scores from (a) for all runs incl. `.similar`; the `report.py` compare blocks from (b) and (c) quoted verbatim; the latency and storage table from `raw-latency.json` and `storage.json` (p50/p95/mean per mode, the p95 ratio, points / indexed / segments / disk per collection); a **Gate** section with the three §7 criteria each marked PASS/FAIL with the number that decided it — nDCG@10 CI lower bound, R@50 CI lower bound, p95 ratio ≤ 1.25 — and the one-word verdict **GO / NO-GO**, naming the failing criterion on NO-GO; the model observation (`gte-chunks-api` vs `bge-base`) stated with its statistics and no threshold, `rerank-a0` as context; spec §8's adoption implications restated as the follow-up spec's inputs; close with the box state (bge-base restored, 5,183 / 19,967, `tei-embed` on bge-base, API and worker on defaults).
 
 - [ ] **Step 6: Commit.**
 ```bash
