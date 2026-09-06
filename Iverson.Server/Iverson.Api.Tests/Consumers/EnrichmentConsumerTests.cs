@@ -424,6 +424,34 @@ public class EnrichmentConsumerTests
         await act.Should().NotThrowAsync();
     }
 
+    // I3: GenerateJsonAsync throws InvalidOperationException when the reply holds no parseable
+    // JSON object. That must skip only the Extracted column (spec §4: "nothing is stored for that
+    // column") — not discard the object's already-generated Summary column, and not escape as an
+    // unhandled exception that would retry the whole object forever at temperature 0.
+    [Fact]
+    public async Task HandleUpdated_WhenExtractionYieldsNoParseableJson_SkipsThatColumnButWritesTheRest()
+    {
+        await _registry.RegisterAsync(EnrichedArticle());
+        _enrichment.GenerateJsonAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Throws(new InvalidOperationException("no parseable JSON object in reply"));
+
+        IReadOnlyDictionary<string, object?>? written = null;
+        _entities.UpdateColumnsAsync(Arg.Any<IDbTransactionContext>(), Arg.Any<TableSchema>(),
+                Arg.Any<string>(), Arg.Any<IReadOnlyDictionary<string, object?>>())
+            .Returns(ci => { written = (IReadOnlyDictionary<string, object?>)ci[3]!; return Task.CompletedTask; });
+
+        var sut = BuildSut();
+        var act = async () => await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        written.Should().NotBeNull();
+        written!.Should().ContainKey("Summary");
+        written.Should().NotContainKey(
+            "Extracted", "extraction with no parseable JSON must be skipped, not fail the whole object");
+        await _state.ReceivedWithAnyArgs().UpsertAsync(
+            default!, default!, default!, default!, default!, default);
+    }
+
     [Fact]
     public async Task HandleUpdated_ForTypeWithNoEnrichmentTargets_DoesNothing()
     {

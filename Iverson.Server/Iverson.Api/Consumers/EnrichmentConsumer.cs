@@ -43,11 +43,14 @@ public sealed class EnrichmentConsumer(
     private const string GroupId = "iverson.consumer.enrichment";
 
     // Cut the source text, not the assembled prompt: three prompts lead with their instruction and
-    // the extraction prompt trails with its hint, so a cut on the prompt would drop one of them.
-    // 8,000 characters is ~2,000 tokens, under TGI's --max-input-tokens 3072 with room for the
-    // instruction and the chat template (spec §3.5). Ollama silently truncated from the head at
-    // 4,096 tokens; this is a deliberate reduction, not parity. Applied before ComputeHash so the
-    // loop-prevention hash covers what was actually sent.
+    // the extraction prompt trails with its hint, so a cut on the prompt would drop one of them —
+    // this way the instruction and the extraction hint always survive. Head-preserving and
+    // deterministic. 8,000 characters is ~2,000 tokens; plus the instruction that fits Ollama
+    // qwen2.5:3b's 4,096-token window, so the backend never silently truncates from the head the
+    // way Ollama otherwise does, and it also stays under TGI's --max-input-tokens 3072 should TGI
+    // return as the enrichment backend. Applied before ComputeHash so the loop-prevention hash
+    // covers what was actually sent. SciFact's longest abstract is 5,253 characters, so the cap
+    // only bites unusually long sources.
     internal const int MaxSourceChars = 8_000;
 
     protected override Task ExecuteAsync(CancellationToken ct) =>
@@ -152,7 +155,7 @@ public sealed class EnrichmentConsumer(
         // projection into the stores, so nothing below throws PoisonMessageException.
         try
         {
-            var columns = await GenerateAsync(schema, sourceText, ct);
+            var columns = await GenerateAsync(schema, sourceText, ev.Key, ct);
             if (columns.Count == 0)
             {
                 logger.LogWarning(
@@ -265,28 +268,50 @@ public sealed class EnrichmentConsumer(
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private async Task<Dictionary<string, object?>> GenerateAsync(
-        SchemaDescriptor schema, string sourceText, CancellationToken ct)
+        SchemaDescriptor schema, string sourceText, string key, CancellationToken ct)
     {
         var columns = new Dictionary<string, object?>(schema.EnrichmentTargets.Count);
 
         foreach (var target in schema.EnrichmentTargets)
         {
-            var generated = target.Kind switch
+            string? generated;
+            switch (target.Kind)
             {
-                EnrichmentKind.Summary  => await enrichment.GenerateAsync(
-                    string.Format(EnrichmentPrompts.Summary, sourceText), ct),
-                EnrichmentKind.Keywords => await enrichment.GenerateAsync(
-                    string.Format(EnrichmentPrompts.Keywords, sourceText), ct),
-                // EnrichmentPrompts.Extraction carries a single {0} slot for the source text;
-                // the per-target hint (mandatory for [IversonExtracted], enforced at
-                // registration) is appended so the model knows what to pull out.
-                EnrichmentKind.Extracted => await enrichment.GenerateJsonAsync(
-                    string.Format(EnrichmentPrompts.Extraction, sourceText) +
-                    $"\n\nExtract specifically: {target.Hint}", ct),
-                _ => throw new ArgumentOutOfRangeException(
-                    nameof(schema), target.Kind,
-                    $"Unhandled {nameof(EnrichmentKind)} value — add a case above.")
-            };
+                case EnrichmentKind.Summary:
+                    generated = await enrichment.GenerateAsync(
+                        string.Format(EnrichmentPrompts.Summary, sourceText), ct);
+                    break;
+                case EnrichmentKind.Keywords:
+                    generated = await enrichment.GenerateAsync(
+                        string.Format(EnrichmentPrompts.Keywords, sourceText), ct);
+                    break;
+                case EnrichmentKind.Extracted:
+                    // EnrichmentPrompts.Extraction carries a single {0} slot for the source text;
+                    // the per-target hint (mandatory for [IversonExtracted], enforced at
+                    // registration) is appended so the model knows what to pull out.
+                    try
+                    {
+                        generated = await enrichment.GenerateJsonAsync(
+                            string.Format(EnrichmentPrompts.Extraction, sourceText) +
+                            $"\n\nExtract specifically: {target.Hint}", ct);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        // GenerateJsonAsync throws when the reply holds no parseable JSON object.
+                        // Skip only this column — the object's other targets (and its already-
+                        // generated Summary/Keywords) must still be written (spec §4: "nothing is
+                        // stored for that column").
+                        logger.LogWarning(ex,
+                            "[Enrichment] Extraction for {Type}:{Key} column {Column} produced no parseable JSON object; column skipped",
+                            schema.TypeName.SanitizeForLog(), key, target.ColumnName);
+                        generated = null;
+                    }
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(
+                        nameof(schema), target.Kind,
+                        $"Unhandled {nameof(EnrichmentKind)} value — add a case above.");
+            }
 
             if (!string.IsNullOrWhiteSpace(generated))
                 columns[target.ColumnName] = generated.Trim();
