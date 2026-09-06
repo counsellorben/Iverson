@@ -438,6 +438,23 @@ The multivector layout holds the same 19,967 vectors in **26 % of the points** a
 disk**, and is **1.64× faster at p95**. Both collections reported `status: green` at query time.
 Absolute latency numbers are this box only; the ratio is what the gate reads.
 
+The measured window is what `time.perf_counter()` brackets around `ingest.qdrant_request` in
+`cmd_query` — the full client-side round trip, including HTTP setup and `json.loads` of the response,
+not server-side search time alone. The two calls also return different response sizes: the chunk
+search asks for 250 hits with `parent_id` payload, the multivector query for 50 hits with `docId`
+payload, so the client-side `json.loads` is ~5× larger for the control arm. Criterion 3 passes at
+0.61× against a 1.25× ceiling, so this has no effect on the verdict even in the (implausible) worst
+case that the entire measured difference were this client-side parse rather than server-side search —
+but a reader taking "1.64× faster" as an adoption number should know the window is round-trip, not
+search-only.
+
+Arm order within each query was also fixed, not alternated: the chunk search always ran first,
+immediately after the shared query embedding call, and the multivector query always second, so any
+warm-up or cache effect across the pair is charged entirely to one arm. The spec asked for the two
+modes to be interleaved *across* queries sharing one embedding, which is what was delivered; a fully
+alternating per-query order (swapping which arm goes first) would have removed this last ordering
+confound as well.
+
 ## Gate
 
 The rule (spec §7): **Go** requires all three of —
@@ -484,6 +501,32 @@ belongs inside the gate rather than being controlled away — but it means the r
 adoption spec that wanted to revisit it would have to over-fetch on the multivector side (and pay the
 latency, of which there is a large margin: 0.61× against a 1.25× ceiling).
 
+A second asymmetry sits alongside the over-fetch one: the two arms were not equally indexed at query
+time. `runs/storage.json` and the `index_state` sidecar in `runs/raw-latency.json` record the chunks
+collection (`benchmark_documents_chunks_tenant_bypass`) as `status: green` with `indexed_vectors_count`
+16,678 of 19,967 points (2 segments), while the multivector collection
+(`benchmark_documents_multivector_tenant_bypass`) was 5,183 of 5,183 (also 2 segments) — fully indexed.
+In Qdrant, a segment below `indexing_threshold` is searched exactly rather than through HNSW; 19,967 −
+16,678 = 3,289 vectors, consistent with one sub-threshold segment on the chunks side. So roughly 16 % of
+the control arm's corpus was brute-force (perfect-recall) searched while the arm under test was 100 %
+approximate. This biases both deciding numbers in the direction observed: it inflates the control's
+R@50 (criterion 2, which already fails on the point estimate with only 11/300 queries changed) and it
+inflates the control's latency, since exact search over a small segment is not necessarily cheaper than
+approximate search but removes any approximation error from that slice (criterion 3, which passes). The
+verdict stands regardless — criterion 1 (nDCG@10) fails independently of this asymmetry, and the bias
+is bounded to the ~16 % sub-threshold slice — so this is recorded as a documentation gap, not a
+verdict correction. `multivector.py build`'s `wait_for_index` (see script, `wait_for_index`) was applied
+only to the collection it had just built (the multivector collection); the pre-existing chunks
+collection was never re-checked. `cmd_query`'s precondition (`multivector.py`, `cmd_query`) checks
+`info["status"] != "green"` but not `indexed_vectors_count`, so a collection sitting below its indexing
+threshold still passes the gate that is supposed to stop the measurement. This is a gap in the spec
+(§7/§12 never required equal index state between the two arms, only that HNSW approximation itself sits
+inside the comparison) and in the plan (Task 5/P37 verified the indexed state of the newly built
+collection only, not the pre-existing one) as much as it is a gap in the harness. A re-attempt should
+equalise index state before measuring — raise `indexing_threshold` on both collections (or set it to 0
+to force always-indexed segments) or force-optimise both collections so neither has a sub-threshold
+segment at query time.
+
 ### The model observation (reported, no threshold)
 
 `gte-chunks-api` vs `bge-base` `.chunks`, the same window, the same API ranking stack, Holm m = 5:
@@ -520,6 +563,10 @@ would have had to solve, and the cost is unmeasured here:
   would eat into the 0.61× p95 margin, which is the one criterion that passed.
 - Any re-attempt should first settle the over-fetch question above: a multivector arm asking for more
   than 50 documents and truncating, so the two arms have comparable HNSW recall budgets.
+- The multivector arm writes TREC rows straight from each point's `payload.docId` with no dedupe,
+  unlike the chunk arm's `collapse_by_doc`; two multivector points sharing a `docId` would produce a
+  malformed run. Here `report.py`'s duplicate-doc-id structural check covered it and reported none, but
+  an adoption path should not rely on the scorer to catch that — it should dedupe at write time.
 
 ## Scope limits carried forward
 

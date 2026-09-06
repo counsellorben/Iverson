@@ -280,8 +280,8 @@ carry chunk texts in the point payload. Neither cost is measured here; both belo
 - TREC row formatting matches `TrecRunWriter`'s six columns;
 - latency summary: p50/p95 over a known sample.
 
-The Qdrant request bodies are pinned by §10 rows 3–5, verified against the live 1.18.2 server; the
-tests assert the exact dicts the script builds.
+The Qdrant request bodies are pinned by the spec's live probes (§10 rows 3–5) and were exercised live
+by the build/query smokes and the real runs, not asserted by unit tests.
 
 ## 10. Measurements taken during design (2026-09-04/05, live)
 
