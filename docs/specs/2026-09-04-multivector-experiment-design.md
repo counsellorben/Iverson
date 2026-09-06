@@ -219,9 +219,14 @@ and worker on defaults — verified 2026-09-06); nothing else runs during the in
    - `report.py --run <run>/runs --qrels <run>/qrels.trec --stats-path <run>/keymap.json.stats.json
      --baseline <run>/runs/gte-chunks-raw.chunks.trec` — the gated pair plus the API run against the
      raw control;
-   - `report.py --run <run>/runs/gte-chunks-api.chunks.trec --run
-     …/scifact-bge-base-2026-09-04/runs/bge-base.chunks.trec --qrels <run>/qrels.trec --baseline
-     …/scifact-bge-base-2026-09-04/runs/bge-base.chunks.trec` — the model observation.
+   - `report.py --run <run>/runs/gte-chunks-api.chunks.trec --run <run>/runs/gte-chunks-api.similar.trec
+     --run …/scifact-bge-base-2026-09-04/runs/bge-base.chunks.trec
+     --run …/scifact-bge-base-2026-09-04/runs/bge-base.similar.trec
+     --run …/scifact-run-2026-08-26/runs/rerank-a0.chunks.trec
+     --run …/scifact-run-2026-08-26/runs/rerank-a0.similar.trec --qrels <run>/qrels.trec
+     --baseline …/scifact-bge-base-2026-09-04/runs/bge-base.chunks.trec` — the model observation,
+     plus the `rerank-a0` and `.similar` rows step 9's table names (the three run dirs' `qrels.trec`
+     are byte-identical, so one qrels file scores all of them).
    `--pair` is **not** used: it enforces pool invariance (identical per-query document sets, built for
    reranking arms) and would declare the multivector arm invalid (§11 A13).
 8. Restore the bge-base baseline: the `RESTORE.md` loop against `scifact-bge-base-qdrant-snapshots/`,
