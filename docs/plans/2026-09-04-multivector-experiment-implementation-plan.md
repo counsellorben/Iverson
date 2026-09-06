@@ -93,6 +93,11 @@ Verified 2026-09-04/05 against the `embedding-migration` worktree at `f2706a4` (
 | P37 | Code validity | The multivector collection clears Qdrant's `indexing_threshold`, so `wait_for_index` does not refuse a correctly built collection | CIR-2 span (f), segment arithmetic against the two live collections |
 | P38 | Command | `nomic-embed-text:latest` is still resident in the Ollama volume (`GET /api/tags`) for Task 3 step 5's smoke; `ollama-init` now pulls only `qwen2.5:3b`, so it survives only because the volume is named | CIR-2 span (g), live |
 | P39 | File path | The Phase 1 plan's cited line numbers still resolve | CIR-2 span (h), the P14 re-check |
+| P40 | Command | The API starts, serves `/build` and registers schemas with `iverson-starrocks`, `iverson-kafka`, `iverson-zookeeper`, `iverson-jaeger` and `iverson-worker` stopped | CIR-3 span (a): the Phase 1 plan's identical stop list (`:783`) and its step 6 / Task 7 step 5 sequences ran to completion; their artefacts are on disk |
+| P41 | Code validity | `benchmark-query --help` reaches schema registration and prints `Schemas registered.` before failing on the missing corpus path | CIR-3 span (b): `Program.cs:18, 88, 164`; `BenchmarkQueryScenario.cs:61-64` |
+| P42 | Code validity | Re-registering `BenchmarkDocument` after a snapshot restore does not drop or rebuild the restored collections: `ApplyCollectionAsync` creates only when absent, throws on a dimension mismatch, migrates only for a missing named vector; bge-base and gte are both 768 and the object collection already carries `body_vector` and `body_centroid` | CIR-3 span (c): `IntelligenceCollectionManager.cs:46-110`, live collection config |
+| P43 | Command | `EMBED_MODEL_ID` is consumed only by `tei-embed` (`docker-compose.yml:167-168` comment, `:177`), so passing it on an api-only `up` is inert | CIR-3 span (d): grep over compose |
+| P44 | Command | `docker compose --profile tei` is accepted when no such profile is defined | CIR-3 span (f): compose 2.40.3, identical service list, exit 0 |
 
 ## Tasks
 
@@ -718,7 +723,7 @@ curl -s 127.0.0.1:8081/build | grep -o '"composite":"[^"]*"'   # record it: ever
 curl -s http://127.0.0.1:8091/info | grep -o '"model_id":"[^"]*"'   # BAAI/bge-base-en-v1.5 — the baseline step 3's --drop destroys
 ls /home/ben/repositories/iverson-benchmark-corpora/scifact-bge-base-qdrant-snapshots/*.snapshot | wc -l   # 2 — the bge-base baseline restore set exists (spec §6 step 2: skip snapshotting it again)
 ```
-Any other point count or size: restore the bge-base baseline first (Task 5 step 6's loop) and stop.
+Any other point count or size: restore the bge-base baseline first (Task 5 step 4's restore loop) and stop.
 
 - [ ] **Step 2: Run directory and TEI.**
 ```bash
@@ -779,7 +784,7 @@ dotnet run -c Release -- benchmark-query --help 2>&1 | grep -q "Schemas register
 docker exec iverson-postgres psql -U iverson -d iverson -tAc "SELECT type_name, updated_at FROM _iverson_schema WHERE type_name = 'BenchmarkDocument'"   # one fresh row
 dotnet run -c Release -- benchmark-query --corpus-path $MV --key-map-path $MV/keymap.json --output-dir $MV/runs --config-label gte-chunks-api 2>&1 | tee $MV/runs/gte-chunks-api.log
 wc -l $MV/runs/gte-chunks-api.chunks.trec $MV/runs/gte-chunks-api.similar.trec   # 15000 each
-grep -o '"composite":"[^"]*"' $MV/runs/gte-chunks-api.meta.json                 # equals step 1's composite
+grep -o '"composite":[[:space:]]*"[^"]*"' $MV/runs/gte-chunks-api.meta.json   # equals step 1's composite (the sidecar is indented: "composite": "…")
 ```
 
 No commit: everything this task produces lives outside the repo.
