@@ -42,11 +42,15 @@ No arm hit the `ChunkBudgetGuard` refusal (`REFUSING: chunk budget cannot reach 
 distinct documents`) — expected, since `×2`/`×3` are the multipliers the guard rejects on this
 corpus (assumption 28), not `×4`/`×5`/`×6`/`×8`.
 
-The ×4 arm produced 1,498 rows instead of the full 1,500 (two fewer chunk rows across 300
-queries × 5-document budget) — some queries simply had fewer than the full complement of chunks
-available at the smaller multiplier for at least one of their five retrieved documents. This is
-not a guard refusal; `report.py`'s structural check confirms all 300 queries are still covered by
-the run (`covered by this run 300 / 300`).
+The ×4 arm produced 1,498 rows instead of the full 1,500. The harness emits one row per
+collapsed **document** (capped at `DocumentBudget = 5`), not one row per chunk, so 1,498 means
+two queries returned only four distinct documents each: at `ChunkBudgetMultiplier = 4` the
+20-chunk pool held no chunk belonging to what would otherwise have been each query's fifth
+document — document `16979690` for query `129` and document `8570690` for query `1359`, both of
+which are present in the ×5, ×6 and ×8 runs. This is not a guard refusal; `report.py`'s
+structural check confirms all 300 queries are still covered by the run (`covered by this run
+300 / 300`). Scores and the plateau reported below are unaffected: the two missing documents are
+the fifth-ranked ones for two of 300 queries.
 
 All four `.meta.json` composites are identical to each other and to the Step 1 baseline
 (`faf832574f7b14b5`), confirming the harness edit changes no server build, only the client-side
@@ -348,11 +352,13 @@ $ cd Iverson.Agents/Python && .venv/bin/python -m pytest -q
 
 ## Concerns
 
-- The ×4 arm produced 2 fewer chunk rows (1,498 vs. the expected 1,500) than the other three arms.
-  This does not affect scoring validity (`report.py` confirms 300/300 query coverage and non-zero
-  scores for all present rows) and is noted for completeness — it reflects that a smaller
-  multiplier can leave fewer than 5 candidate chunks per document for a small number of queries,
-  not a defect in the harness or the sweep.
+- The ×4 arm produced 2 fewer rows (1,498 vs. the expected 1,500) than the other three arms.
+  Rows are one per collapsed **document** (capped at `DocumentBudget = 5`), so this is two queries
+  — `129` and `1359` — that yielded only four distinct documents: at `ChunkBudgetMultiplier = 4`
+  their 20-chunk pools contained no chunk of the document that would have been fifth (`16979690`
+  and `8570690` respectively, both present in the ×5/×6/×8 runs). It does not affect scoring
+  validity (`report.py` confirms 300/300 query coverage and non-zero scores for all present rows)
+  and leaves the deltas and the plateau unchanged; it is not a defect in the harness or the sweep.
 - Every comparison in this sweep is far from significance (Holm p_adj = 1.0000 throughout,
   0.3–1.0% of queries changed per pair, deltas an order of magnitude below each comparison's
   MDE @ 80% power). The sweep's negative result is itself the finding: fan-out multiplier has no
