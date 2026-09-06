@@ -174,7 +174,10 @@ services:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
     container_name: iverson-tei-embed
     restart: unless-stopped
-    command: ["--model-id", "${EMBED_MODEL_ID:-BAAI/bge-base-en-v1.5}", "--auto-truncate"]
+    # TEI's default max_batch_tokens (16384) OOM-kills warm-up for gte-modernbert-base on the 9 GB box
+    # (spec 2026-09-04-multivector-experiment-design §10 row 7); that arm passes TEI_MAX_BATCH_TOKENS=4096.
+    # The default here is TEI's own, so every bge arm is unchanged.
+    command: ["--model-id", "${EMBED_MODEL_ID:-BAAI/bge-base-en-v1.5}", "--auto-truncate", "--max-batch-tokens", "${TEI_MAX_BATCH_TOKENS:-16384}"]
     ports:
       - "8091:80"
     volumes:
