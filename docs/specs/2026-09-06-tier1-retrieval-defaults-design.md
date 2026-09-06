@@ -65,14 +65,14 @@ All bge-base through `tei-embed` (a default service already on bge-base; no mode
 |---|---|---|---|---|---|---|
 | `bge-base` (exists) | SciFact | 512/448 | M1 (`scifact-bge-base-2026-09-04`) | 19,967 | 5 | API `.chunks`/`.similar` exist |
 | `sci-2048` | SciFact | 2048/1792 | new, ≈ 3 h | 6,587 | 5 | API at λ 0.70/0.70; `similar_arms.py` |
-| `fs-2048` | FreshStack 6k | 2048/1792 | new, ≈ 20 h | 18,626 (3.10/doc) | 11 | API at λ 0.70/0.70; λ sweep (4 runs); `similar_arms.py` |
-| `fs-512` | FreshStack 6k | 512/448 | new, ≈ 25 h | 64,763 (10.79/doc) | 11 | same as `fs-2048` |
+| `fs-2048` | FreshStack 6k | 2048/1792 | new, ≈ 20 h | 18,622 (3.10/doc) | 11 | API at λ 0.70/0.70; λ sweep (4 runs); `similar_arms.py` |
+| `fs-512` | FreshStack 6k | 512/448 | new, ≈ 25 h | 64,735 (10.79/doc) | 11 | same as `fs-2048` |
 
 The chunk-budget multiplier is a per-corpus constant so that each comparison holds its budget fixed: 5 on
 both SciFact arms (as every SciFact run to date), 11 on both FreshStack arms — the guard's minimum at
 10.79 chunks/doc (§9 row 4), applied to the 2048 arm too so the two FreshStack `.chunks` runs differ only
 in window. Ingest ETAs scale the migration's measured 720 ms per 512-char bge-base embed; the `fs-512`
-figure is the sum of 64,763 chunk embeds and 6,000 whole-body embeds.
+figure is the sum of 64,735 chunk embeds and 6,000 whole-body embeds.
 
 **λ sweep** (FreshStack arms only, query-only): λ ∈ {0.50, 0.70, 0.85, 1.00}, applied to both endpoints at
 once through the two new env vars, one API recreate + `benchmark-query` per value (≈ 30 min each for
@@ -155,8 +155,9 @@ spec's gate document says so. The client standard does not state the default and
 
 ## 4. Failure semantics — fail loud
 
-Every count is checked: each ingest's sidecar must equal the chunker's prediction for its window (6,587 /
-18,626 / 64,763 chunks; 5,183 / 6,000 documents); the guard must pass at the arm's multiplier; every run
+Every count is checked: each ingest's sidecar must equal the chunker's prediction for its window after
+whitespace-only windows are dropped, exactly as `ingest_document` does before it counts (6,587 /
+18,622 / 64,735 chunks; 5,183 / 6,000 documents); the guard must pass at the arm's multiplier; every run
 file 50 × queries rows with full qrels coverage; `similar_arms.py` exits non-zero after writing what it
 has on any failed query. The obsolete `VectorRanking:Lambda` key throws at startup. Box discipline is the
 migration's: one arm at a time, nothing else running, every compose action single-service `--no-deps`,
@@ -188,15 +189,26 @@ SciFact bge-base baseline (5,183 / 19,967, 768 dims, API at defaults, §9 row 7)
    `ingest.py --drop … --chunk-max-chars 2048 --chunk-step 1792`; expect 5,183 / 6,587; snapshot;
    clear the `BenchmarkDocument` schema row; `benchmark-query --config-label sci-2048` (multiplier 5);
    `similar_arms.py --query-prefix "Represent this sentence for searching relevant passages: "`;
-   `report.py --run <dir>/runs --baseline …/scifact-bge-base-2026-09-04/runs/bge-base.chunks.trec`.
+   then three `report.py` invocations, one per purpose: rule 7.1(a) — `report.py --qrels qrels.trec
+   --baseline …/scifact-bge-base-2026-09-04/runs/bge-base.chunks.trec --run <dir>/runs/sci-2048.chunks.trec`
+   (family of 1); rule 7.3 — `report.py --qrels qrels.trec --baseline <dir>/runs/head-raw.similar.trec
+   --run <dir>/runs/centroid-raw.similar.trec` (family of 1); and `report.py --qrels qrels.trec --run
+   <dir>/runs` with no baseline for the reported-only scores.
 2. **`fs-2048`.** Copy the slice's `beir/`; write `qrels.trec` (query-level, as the earlier FreshStack
-   runs did) and `qrels.nugget.trec`; ingest at 2048/1792; expect 6,000 / 18,626; snapshot; schema row;
+   runs did) and `qrels.nugget.trec`; ingest at 2048/1792; expect 6,000 / 18,622; snapshot; schema row;
    `benchmark-query --config-label fs-2048-l070 --chunk-budget-multiplier 11`; then for λ in
    {0.50, 0.85, 1.00}: recreate `iverson-api` with both env vars at λ (`--no-deps`), confirm via
    `docker inspect`, `benchmark-query --config-label fs-2048-l<λ>`; restore the API to defaults;
-   `similar_arms.py`; `report.py --qrels --nugget-qrels --baseline fs-2048-l070.chunks.trec`.
-3. **`fs-512`.** As step 2 at 512/448 (expect 64,763 chunks), labels `fs-512-l<λ>`, plus the window
-   comparison `report.py --baseline fs-512-l070.chunks.trec --run fs-2048-l070.chunks.trec`.
+   `similar_arms.py`; then three `report.py` invocations, one per purpose: rule 7.2 — `report.py
+   --qrels qrels.trec --nugget-qrels qrels.nugget.trec --baseline fs-2048-l070.similar.trec --run
+   fs-2048-l050.similar.trec --run fs-2048-l085.similar.trec --run fs-2048-l100.similar.trec` (family
+   of 3 per measure); rule 7.3 — `report.py --qrels qrels.trec --baseline head-raw.similar.trec --run
+   centroid-raw.similar.trec` (family of 1); and `report.py --qrels qrels.trec --nugget-qrels
+   qrels.nugget.trec --run <dir>/runs` with no baseline for the reported-only scores and the diversity
+   means.
+3. **`fs-512`.** As step 2 at 512/448 (expect 64,735 chunks), labels `fs-512-l<λ>` and the same three
+   invocations, plus the window comparison for rule 7.1(b): `report.py --qrels qrels.trec --baseline
+   fs-512-l070.chunks.trec --run fs-2048-l070.chunks.trec` (family of 1).
 4. **Restore** the SciFact bge-base baseline and the API at defaults (migration Task 7 step 5).
 5. **Gate document** `docs/plans/2026-09-GATE-tier1-defaults.md`: arms table, every compare block
    verbatim, the diversity means per λ, the three verdicts (§7), the box state at close.
@@ -212,16 +224,21 @@ and of the R@50 delta must both exceed −0.02. (a) `sci-2048` vs `bge-base` (M1
 reported, not gated.
 
 ### 7.2 λ rule (from the FreshStack sweeps, both arms)
-- **`LambdaSimilar`**: the λ with the highest α-nDCG@10 on `.similar`, if that λ beats 0.70 on α-nDCG@10
-  with Holm p_adj < 0.05 on at least one arm and is not significantly worse on the other; otherwise, if no
-  λ separates from 0.70 on α-nDCG@10 on either arm, **1.00** — the R@50 price is measured and the
-  benefit is not. Ties between qualifying values go to the larger λ.
+- **`LambdaSimilar`**: every λ ∈ {0.50, 0.85, 1.00} is evaluated against the same test — it *qualifies*
+  if it beats 0.70 on α-nDCG@10 on `.similar` with Holm p_adj < 0.05 on at least one FreshStack arm and
+  is not significantly worse than 0.70 on the other. If any λ qualifies, the **largest qualifying λ**
+  becomes the default. If none qualifies, the default is **1.00** — the R@50 price is measured and the
+  benefit is not — *unless* λ = 1.00 itself is significantly worse than 0.70 on α-nDCG@10 on either arm,
+  in which case **0.70 stays**. (Ben, 2026-09-06: options (b) and (b) of CDR-1 §3.1.) The Holm family
+  for these tests is the three λ values against 0.70 within one endpoint on one arm — the `report.py`
+  invocation §6 gives per arm — never the directory-wide sweep.
 - **`LambdaChunks`**: **1.00** if λ 1.00 vs 0.70 changes the mean distinct parents in the top-10 chunk
   hits by less than 1.0 on both arms; otherwise 0.70 stays. α-nDCG on the collapsed `.chunks` ranking is
   reported but cannot see chunk-level MMR and does not decide.
 
 ### 7.3 Representation rule
-Raw `centroid-raw.similar` vs raw `head-raw.similar` on `fs-2048`, `fs-512` and `sci-2048`. If the
+Raw `centroid-raw.similar` vs raw `head-raw.similar` on `fs-2048`, `fs-512` and `sci-2048`, each arm's
+comparison its own `report.py` invocation with a family of one (§6). If the
 centroid is better on both nDCG@10 and R@50 with Holm p_adj < 0.05 on both FreshStack arms and its CI
 lower bounds exceed −0.02 on SciFact, the gate document recommends a follow-up spec that makes
 `SearchSimilar` search `<property>_centroid` for chunked properties. Anything else is recorded and closed.
@@ -248,7 +265,7 @@ lower bounds exceed −0.02 on SciFact, the gate document recommends a follow-up
 |---|---|---|
 | 1 | λ consumers | `ResultDiversifier.cs:77-78` only; compose `:442-443` (api only); two Vector test files; no Api mock of `Diversify` |
 | 2 | FreshStack 6k slice composition | angular 1,228 / godot 848 / langchain 2,309 / laravel 1,224 / yolo 391 docs; 129 + 99 + 203 + 184 + 57 = 672 queries; `qrels.tsv` (nugget) present for all five topics |
-| 3 | slice chunk counts | 2048/1792 → 18,626 (3.10/doc); 512/448 → 64,763 (10.79/doc); the `freshstack-chunk512-2026-08-30` run was the **2048-character** window (its 18,622 chunks) |
+| 3 | slice chunk counts | 2048/1792 → 18,626 raw, **18,622 kept** (4 whitespace-only windows dropped by `ingest_document`, `ingest.py:594`; 3.10/doc); 512/448 → 64,763 raw, **64,735 kept** (28 dropped; 10.79/doc); the `freshstack-chunk512-2026-08-30` run was the **2048-character** window (its sidecar's 18,622 reconciles) |
 | 4 | `ChunkBudgetGuard` at 10.79/doc | multiplier 5 reaches 23 documents → REFUSED; minimum multiplier 11 |
 | 5 | FreshStack query-run duration | ≈ 30–35 min per `benchmark-query` (672 queries; the 2026-08-30 sweep's file times) |
 | 6 | α-nDCG provider | `ir_measures.alpha_nDCG@10` needs `pyndeval`; not in `python-libs`; `pip install --target` fails: `x86_64-linux-gnu-gcc` absent (Python 3.14.4, source-only wheel); `read_trec_qrels` keeps the iteration column |
