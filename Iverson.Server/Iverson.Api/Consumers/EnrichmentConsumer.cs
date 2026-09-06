@@ -158,9 +158,20 @@ public sealed class EnrichmentConsumer(
             var columns = await GenerateAsync(schema, sourceText, ev.Key, ct);
             if (columns.Count == 0)
             {
+                // Every target was skipped (an extraction holding no parseable JSON object, or a
+                // reply that was all whitespace). There is nothing to write back and nothing to
+                // republish, but the pass ran to completion, so its outcome IS the enrichment
+                // result for this source+specification hash: record the state row, exactly as a
+                // partial pass records one that already covers its skipped column. Without it,
+                // every later event for the object — and every ReconcileTypeAsync replay — re-ran
+                // the same temperature-0 generation and failed the same way. A changed source
+                // text, an edited hint or a new target changes the hash and re-enriches, as always;
+                // a transient failure still throws past this point and records nothing.
                 logger.LogWarning(
-                    "[Enrichment] Generated no values for {Type}:{Key} — no writeback, no state row.",
+                    "[Enrichment] Generated no values for {Type}:{Key} — no writeback; state row recorded so this source text and specification are not retried.",
                     schema.TypeName.SanitizeForLog(), ev.Key);
+                await txRunner.ExecuteInTransactionAsync(tx =>
+                    state.UpsertAsync(tx, tenantValue, schema.TypeName, ev.Key, hash, DateTimeOffset.UtcNow));
                 return;
             }
 

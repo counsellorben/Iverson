@@ -102,6 +102,12 @@ public class EnrichmentConsumerTests
         ]
     };
 
+    // The same Article with the Extracted column as its only enrichment target.
+    private static SchemaDescriptor ExtractedOnlyArticle() => EnrichedArticle() with
+    {
+        EnrichmentTargets = [new EnrichmentTarget("Extracted", EnrichmentKind.Extracted, "the author's stated conclusion")]
+    };
+
     // A pre-2026-07-17 _iverson_schema row for Article: exactly what RegisterAsync would have
     // written, minus the `tenantColumn` key, which did not exist before 63a577a. This is the only
     // way a tenant-less descriptor can reach a consumer now that SchemaDescriptor.TenantColumn is
@@ -449,6 +455,51 @@ public class EnrichmentConsumerTests
         written.Should().NotContainKey(
             "Extracted", "extraction with no parseable JSON must be skipped, not fail the whole object");
         await _state.ReceivedWithAnyArgs().UpsertAsync(
+            default!, default!, default!, default!, default!, default);
+    }
+
+    // When the Extracted column is the type's ONLY target, skipping it leaves nothing to write —
+    // and the consumer used to return without a state row, so every later event for the object
+    // (and every ReconcileTypeAsync replay) re-ran the same temperature-0 generation and failed
+    // the same way, forever. A generation pass that ran to completion IS the enrichment result
+    // for this source+specification hash, empty or not: record it, exactly as the mixed case
+    // above records a hash that already covers its skipped column, so the object is generated
+    // again only when its source text or its specification changes.
+    [Fact]
+    public async Task HandleUpdated_WhenEveryTargetIsSkipped_WritesTheStateRowWithoutAWritebackOrARepublish()
+    {
+        await _registry.RegisterAsync(ExtractedOnlyArticle());
+        _enrichment.GenerateJsonAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Throws(new InvalidOperationException("no parseable JSON object in reply"));
+
+        var sut = BuildSut();
+        var act = async () => await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        await _state.Received(1).UpsertAsync(
+            Arg.Any<IDbTransactionContext>(), Tenant, "Article", Key, Arg.Any<string>(), Arg.Any<DateTimeOffset>());
+        await _entities.DidNotReceiveWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!);
+        await _outboxWriter.DidNotReceiveWithAnyArgs().EnqueueUpdateOutboxRowAsync(
+            default!, default, default!, default!, default!);
+        await _outboxPublisher.DidNotReceiveWithAnyArgs().PublishAsync(
+            default, default!, default!, default!, default, default, default, default!, default);
+        _txCalls.Should().Equal(["STATE_UPSERT"], "no column update, so no tenant scope is entered either");
+    }
+
+    [Fact]
+    public async Task HandleUpdated_AfterEveryTargetWasSkipped_DoesNotRetryTheSameSourceAndSpecification()
+    {
+        _enrichment.GenerateJsonAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Throws(new InvalidOperationException("no parseable JSON object in reply"));
+        var hash = await CaptureHashAsync(ExtractedOnlyArticle());
+
+        await _registry.RegisterAsync(ExtractedOnlyArticle());
+        _state.GetHashAsync(Tenant, "Article", Key).Returns(hash);
+
+        await BuildSut().HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+
+        await _enrichment.DidNotReceiveWithAnyArgs().GenerateJsonAsync(default!, default);
+        await _state.DidNotReceiveWithAnyArgs().UpsertAsync(
             default!, default!, default!, default!, default!, default);
     }
 
