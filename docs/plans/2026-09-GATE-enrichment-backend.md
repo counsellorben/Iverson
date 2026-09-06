@@ -139,7 +139,7 @@ TGI's `/info` at the start of its pass: `Qwen/Qwen2.5-1.5B-Instruct 3072 3584` (
 | 2 | `tgi.p95_wall_s < 120` | 527.387 | — | **FAIL** |
 | 3 | `tgi.failed == 0 and tgi.empty == 0` | failed=5, empty=5 | — | **FAIL** |
 | 4 | `tgi.extraction_parse_ok == 5` | 5 | — | **PASS** |
-| 5 | `tgi.min_mem_available_bytes > 500e6` and no OOM kill | 1,294,192,640 B (1.29 GB); OOM=false | — | **PASS** (qualified — see "Box observations": iowait 24–47 % and swap fully committed at 4095/4096 MB were concurrent conditions during this same pass, per ruling R8) |
+| 5 | `tgi.min_mem_available_bytes > 500e6` and no OOM kill | 1,294,192,640 B (1.29 GB); OOM=false | — | **PASS** (qualified — see "Box observations": iowait 24–47 % and swap fully committed at 4095/4096 MB were concurrent conditions during this same pass — recorded here as the qualitative answer to "does 1.5B fit beside the query tier") |
 
 Three of five criteria fail. Per spec §6.4 ("all five" required to pass), the gate does not pass.
 
@@ -179,7 +179,7 @@ names what performs the Phase C′-relevant checks instead.
 `iverson-worker` (which the pre-measurement step stopped) was restarted along with
 `iverson-starrocks`, `iverson-kafka`, `iverson-zookeeper`, `iverson-jaeger`, `iverson-prometheus` via
 `docker compose up -d` from the worktree's `Iverson.Server`. `iverson-tgi` came up too — it is now a
-default compose service after this task's Step 1 — but the restore pushed the box back into a load
+default compose service at that point (the final-review fix wave later gated it behind `--profile tgi`, so a fresh `up` no longer starts it) — but the restore pushed the box back into a load
 spike (1-minute load average 53.28, exceeding the 20 guard from this task's instructions), so
 `iverson-tgi` was stopped again (`docker stop iverson-tgi`, SIGKILL after a 10 s SIGTERM timeout).
 `MemAvailable` recovered to 4.19 GB immediately after.
@@ -285,7 +285,7 @@ Deferred by Ben's 2026-09-05 ruling (spec §6.1); not scheduled here. If pursued
 - `Iverson.Server/Iverson.LoadTest/scripts/enrich_bench.py` is reusable as-is — it already accepts
   an arbitrary `--backend name=base_url=model=container` for the run, and its script header
   documents the exact invocation shape.
-- The `tgi` compose service definition (`Iverson.Server/docker-compose.yml`) is reusable as-is: swap
+- The `tgi` compose service definition (`Iverson.Server/docker-compose.yml`) is reusable as-is (it is behind a profile: `docker compose --profile tgi up -d tgi`): swap
   its `--model-id` to `Qwen/Qwen2.5-3B-Instruct` and size `--max-input-tokens`/`--max-total-tokens`
   for the larger model, or run a second TGI instance alongside it.
 - The measurement itself: `enrich_bench.py --backend

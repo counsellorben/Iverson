@@ -45,8 +45,8 @@ public sealed class EnrichmentConsumer(
     // Cut the source text, not the assembled prompt: three prompts lead with their instruction and
     // the extraction prompt trails with its hint, so a cut on the prompt would drop one of them —
     // this way the instruction and the extraction hint always survive. Head-preserving and
-    // deterministic. 8,000 characters is ~2,000 tokens; plus the instruction that fits Ollama
-    // qwen2.5:3b's 4,096-token window, so the backend never silently truncates from the head the
+    // deterministic. 8,000 characters is ~2,000 tokens, which together with the instruction fits
+    // Ollama qwen2.5:3b's 4,096-token window, so the backend never silently truncates from the head the
     // way Ollama otherwise does, and it also stays under TGI's --max-input-tokens 3072 should TGI
     // return as the enrichment backend. Applied before ComputeHash so the loop-prevention hash
     // covers what was actually sent. SciFact's longest abstract is 5,253 characters, so the cap
@@ -297,12 +297,13 @@ public sealed class EnrichmentConsumer(
                     }
                     catch (InvalidOperationException ex)
                     {
-                        // GenerateJsonAsync throws when the reply holds no parseable JSON object.
-                        // Skip only this column — the object's other targets (and its already-
-                        // generated Summary/Keywords) must still be written (spec §4: "nothing is
-                        // stored for that column").
+                        // GenerateJsonAsync throws InvalidOperationException when the reply holds no
+                        // parseable JSON object — and also when the backend's reply is not the expected
+                        // chat-completions shape (the exception carries which). Skip only this column —
+                        // the object's other targets (and its already-generated Summary/Keywords) must
+                        // still be written (spec §4: "nothing is stored for that column").
                         logger.LogWarning(ex,
-                            "[Enrichment] Extraction for {Type}:{Key} column {Column} produced no parseable JSON object; column skipped",
+                            "[Enrichment] Extraction for {Type}:{Key} column {Column} failed (no parseable JSON object, or an unexpected reply shape — see exception); column skipped",
                             schema.TypeName.SanitizeForLog(), key, target.ColumnName);
                         generated = null;
                     }
