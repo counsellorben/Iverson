@@ -1,6 +1,6 @@
 # Proposed code changes from the retrieval experiments
 
-**Status: preliminary.** ArguAna is still in flight and may add or remove items — in particular
+**Status: SUPERSEDED 2026-09-06** by `docs/2026-09-06-ranked-changes-after-retrieval-experiments.md`, which restates every item against the four gate verdicts (items 1, 3, 4 and 5 below have shipped; item 6 was refuted). Kept for its evidence tables. Original status: **preliminary.** ArguAna is still in flight and may add or remove items — in particular
 anything about `SearchSimilar`, whose only clean test is that run. Nothing here has been through
 `thorough-brainstorming`; this is the input to that, not a substitute for it.
 
