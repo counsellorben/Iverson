@@ -70,10 +70,17 @@ timed out"` — the script's own `urllib` client gave up at its 600 s socket tim
 (`enrich_bench.py:102`), which is 5× `EnrichmentServiceOptions.Timeout`'s production default (2
 minutes / 120 s, `EnrichmentServiceOptions.cs:9`). These are not TGI HTTP errors, and they say nothing
 about the `Extraction` parse rule — the failures are all `Summary`/`Keywords` prompts, and all five
-`Extraction` prompts in the same run succeeded and parsed (`extraction_parse_ok: 5`). The prompts that
-timed out were the ~2,000-token-prefill `Summary`/`Keywords` prompts (8,000-character source text) —
-consistent with the pattern of per-prompt walls growing from ~150–200 s (the first `ChunkContext`
-prompts) to 250–530 s as the run progressed under throttling (see below).
+`Extraction` prompts in the same run succeeded and parsed (`extraction_parse_ok: 5`). The mechanism is
+**decode length, not prompt size**: the 75 selected SciFact abstracts are 441–5,253 characters (mean
+1,488) — none reaches the `text[:8000]` cap the script applies before building the prompt, and the
+five timed-out sources themselves are 5,253 / 2,886 / 1,441 / 2,943 / 1,355 characters, two of them
+below the set's own mean. At TGI's measured ~0.223 tok/s under this run's throttling, completed
+neighbouring prompts that happened to generate long enough replies already sat at the edge of the 600 s
+window: `Summary` 2 took 561.9 s for 101 tokens, `Summary` 8 took 572.3 s for 105 tokens, and
+`Keywords` 3 took 589.95 s for 108 tokens — all under 600 s only because their completions stopped
+short of `max_tokens 256`. Any generation whose decode ran longer toward that 256-token ceiling was
+positioned to cross 600 s regardless of how long its source text was, which is what happened to the
+five failed rows.
 
 ## Box observations
 
@@ -110,9 +117,9 @@ are recorded as measured; they are not used to adjust the gate's fixed threshold
 | TGI (Qwen2.5-1.5B-Instruct, `results.json`) | 285.527 (n=50) | 490.369 (n=6/10) | 380.951 (n=9/10) | 344.839 (n=5/5) | 527.387 | 0.223 | 5 | 5 | 5/5 | 5.65 GB | 1.29 GB |
 | Ollama (qwen2.5:3b, `ollama-rerun/results.json`) | 95.011 (n=50) | 113.611 (n=10) | 64.343 (n=10) | 72.269 (n=5) | 129.658 | 0.848 | 0 | 0 | 5/5 | 2.63 GB | 3.28 GB |
 
-TGI's `Summary`/`Keywords` `n` counts are out of 10 each because 4 of those 20 rows are the 600 s
-client timeouts discussed above; their wall times are excluded from the kind mean (the script only
-averages non-`None` walls).
+TGI's `Summary`/`Keywords` `n` counts are out of 10 each because 5 of those 20 rows (`Summary` 0, 5, 6,
+7 and `Keywords` 7 — 4 + 1) are the 600 s client timeouts discussed above; their wall times are
+excluded from the kind mean (the script only averages non-`None` walls).
 
 TGI's `/info` at the start of its pass: `Qwen/Qwen2.5-1.5B-Instruct 3072 3584` (`model_id`,
 `max_input_tokens`, `max_total_tokens`) — matching the compose command's `--max-input-tokens 3072
