@@ -189,3 +189,110 @@ Final container list (14, matching the pre-measurement set — `tgi` excluded by
 `iverson-redis`, `iverson-starrocks`, `iverson-tei-embed`, `iverson-worker`, `iverson-zookeeper` — all
 healthy or running. No Qdrant or Postgres data was touched; no `docker compose down`, no volume
 removal, no `stack.py` invocation.
+
+## End state (Phase C′)
+
+Recorded 2026-09-06, Task 9′. Summarizes what Tasks 2–8 already landed (unchanged, not reverted by
+this task), what this task additionally verified, and what a future cloud measurement of the deferred
+3B candidate would need.
+
+### What ships on this branch, unchanged
+
+- The `ollama` compose service and its `ollama-init` sidecar remain, `ollama-init` pulling only
+  `qwen2.5:3b`. The `ollama` Helm subchart remains, its pull loop reduced to
+  `global.generativeModel` (an Ollama id, `qwen2.5:3b`).
+- `Enrichment__BaseUrl` stays `http://ollama:11434` (compose) / `http://<release>-ollama:11434`
+  (Helm); `EnrichmentServiceOptions` defaults stay Ollama's (`BaseUrl = "http://localhost:11434"`,
+  `ModelId = "qwen2.5:3b"`).
+- The `tgi` compose service (Qwen2.5-1.5B-Instruct) and the Terraform `tei` pool added by earlier
+  tasks land as written and are not reverted; the `ollama → tgi` rename this branch would have made
+  on a PASS does not happen.
+- The Phase B enrichment port — the backend-neutral `/v1/chat/completions` client
+  (`Iverson.Embeddings/EnrichmentService.cs`) and its `MaxSourceChars` cap — is unchanged.
+
+### What Task 9′ verified: the ported client against Ollama, for real
+
+Task 8's Ollama rows exercised the ported client via `enrich_bench.py`, which talks the same
+`/v1/chat/completions` route directly — not through `iverson-worker`. Nothing on this branch had
+rebuilt the `iverson-api`/`iverson-worker` image since Task 7's port, so the compose worker was still
+running the pre-port `/api/generate` build. This task rebuilt and restarted it
+(`docker compose build iverson-api && docker compose up -d iverson-worker iverson-api`), confirmed
+both containers recreated on the new image
+(`docker inspect … --format '{{.State.StartedAt}} {{.Image}}'` matched the freshly built image ID,
+and `docker logs … | grep 'EmbeddingService initialized'` printed on both), and drove one real
+enrichment through the full path: HTTP → gRPC → Kafka → `EnrichmentConsumer` →
+`EnrichmentService` → Ollama.
+
+The trigger was a throwaway `EnrichSmoke` type (`[IversonEmbedding] Body`, `[IversonSummary] Summary`,
+`[IversonExtracted("the main finding")] Finding`) registered and written from a scratch console
+(`/tmp/.../scratchpad/enrich-smoke/`, never committed), authenticated with the client-credentials
+service identity (`dev-iverson-loadtest-client-id`, scopes `schema_admin tenant_id_loadtest`) plus an
+acting-user token for the `iverson-loadtest-bypass-user` identity (group `iverson-loadtest-bypass`,
+tenant `tenant_bypass`) — `EnrichSmoke` declares no `[IversonAuthorization]`-shaped rule of its own
+(no such client attribute exists; row/field authorization is opt-in via
+`SchemaRegistrar.RegisterAllAsync`'s `authorizationByTypeName` parameter), and
+`RowFieldAuthorizationEvaluatorTests.Evaluate_NoAuthorizationRules_ReturnsDenied` pins that omitting
+it denies every write regardless of tenant claim — so the scratch console registered `EnrichSmoke`
+with a bypass `RowPermission` for that role, matching the identity above.
+
+The first generation attempt (cold: Ollama had not yet loaded `qwen2.5:3b`) exceeded
+`EnrichmentServiceOptions.Timeout`'s 120s default and failed client-side
+(`TaskCanceledException`/`HttpClient.Timeout`) — consistent with this run's box being under load
+(a concurrent `docker compose build iverson-api` had just finished, and `iverson-postgres` briefly
+entered crash recovery mid-run: `database system was not properly shut down; automatic recovery in
+progress`, self-resolved in under 6 seconds) and with the gate's own measured Ollama summary mean of
+113.611s under calmer conditions. `EnrichmentConsumer`'s failure path is best-effort (no state row
+written, no retry scheduled), so the row was retried once via `UpdateMappedAsync` with unchanged
+source text — the model was warm this time, and both generations succeeded:
+
+```
+info: System.Net.Http.HttpClient.iverson.enrichment.ClientHandler[101]
+      Received HTTP response headers after 21223.9385ms - 200
+info: Iverson.Api.Consumers.EnrichmentConsumer[0]
+      [Enrichment] Enriched 2 column(s) for EnrichSmoke:01a0760b-84fe-7c0d-bdec-a8c3548d9b6c
+```
+
+Ollama's own access log for the same window (`docker logs iverson-ollama`):
+
+```
+[GIN] 2026/09/06 - 09:34:44 | 200 | 21.152745675s |      10.89.0.84 | POST     "/v1/chat/completions"
+[GIN] 2026/09/06 - 09:36:09 | 200 |         1m25s |      10.89.0.84 | POST     "/v1/chat/completions"
+```
+
+The stored row (`SELECT "Summary", "Finding" FROM enrich_smokes WHERE "Id" = …`) carried real
+generated text, not an error string or an empty value: a one-sentence `Summary` and a `Finding`
+JSON object with a `mainFinding` key, both on-topic for the smoke's source text, under
+`__TenantId = 'tenant_bypass'`. The type's schema row and Qdrant collections were cleaned up
+afterwards exactly as Task 10 Step 3 specifies (`DELETE FROM public._iverson_schema WHERE type_name =
+'EnrichSmoke'`, and a scan for `enrich_smoke*` Qdrant collections — none existed, for the unrelated
+reason below).
+
+**Observation, not fixed (out of scope for this task):** every `entity.created`/`entity.updated`
+event for the `EnrichSmoke` key also dispatched to `IntelligenceStoreConsumer` (group
+`iverson.consumer.intelligence`, a different consumer than `EnrichmentConsumer`), which threw
+`IndexOutOfRangeException` in `ExtractString`/`FetchAuthoritativeOwnerValueAsync`, exhausted its 3
+dispatch attempts, and routed the message to the DLQ. This is why no `enrich_smoke*` Qdrant
+collection was ever created — `EnrichSmoke`'s `[IversonEmbedding] Body` never made it into Qdrant —
+and is unrelated to enrichment or to this task's Ollama-vs-TGI question; it reproduces with any
+throwaway type this shape registers via a bypass `RowPermission` and no `OwnerField`. Left for a
+separate investigation.
+
+### What a future cloud measurement of the 3B candidate would need
+
+Deferred by Ben's 2026-09-05 ruling (spec §6.1); not scheduled here. If pursued:
+
+- `Iverson.Server/Iverson.LoadTest/scripts/enrich_bench.py` is reusable as-is — it already accepts
+  an arbitrary `--backend name=base_url=model=container` for the run, and its script header
+  documents the exact invocation shape.
+- The `tgi` compose service definition (`Iverson.Server/docker-compose.yml`) is reusable as-is: swap
+  its `--model-id` to `Qwen/Qwen2.5-3B-Instruct` and size `--max-input-tokens`/`--max-total-tokens`
+  for the larger model, or run a second TGI instance alongside it.
+- The measurement itself: `enrich_bench.py --backend
+  ollama=http://localhost:11434=qwen2.5:3b=iverson-ollama --backend
+  tgi=http://localhost:8092=Qwen/Qwen2.5-3B-Instruct=iverson-tgi` on an AMX-capable cloud node —
+  `c7i.2xlarge` or equivalent (matching `deploy/terraform/modules/cluster-aws/variables.tf`'s
+  `ollama_instance_type` default, sized for the 3B model's memory footprint; `tei_instance_type`
+  defaults to the smaller `c7i.xlarge`) — where this box's documented 15W sustained-load throttling
+  (`project-local-embedding-throughput.md`, `project-intel-igpu-unavailable-in-wsl2.md`) does not
+  apply and the spec §9 isolated-probe throughput figures (TGI ~1.6 tok/s, Ollama-native ~6.9 tok/s)
+  are more likely to hold.
