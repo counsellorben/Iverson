@@ -16,8 +16,9 @@ Three production defaults sit on evidence that does not cover them:
   turns into 2048/1792 characters. Every gate verdict to date (bge-base's pass, the reranker's fail, the
   multivector's fail) was measured at 512/448 characters, the only window with a baseline. The default
   every fresh deployment gets is the one window with no measurement under the shipped model.
-- **MMR λ.** One value (0.70) serves both RPCs. Diversification off costs `SearchSimilar` 9 % (NFCorpus)
-  and 12.8 % (FreshStack) of R@50, replicated; on `SearchChunks` the benchmark sees nothing — but only
+- **MMR λ.** One value (0.70) serves both RPCs. Diversification *on* (λ 0.70 versus 1.00) costs
+  `SearchSimilar` 9 % (NFCorpus) and 12.8 % (FreshStack) of R@50, replicated — turning it off recovers
+  that recall; on `SearchChunks` the benchmark sees nothing — but only
   because the harness collapses chunks to documents before scoring. Production `SearchChunks` returns
   the chunk list itself, so the "neutral" finding is an artifact of the collapse, not evidence about what
   callers see. MMR's benefit has never been measured on either endpoint: BEIR-style qrels award nothing
