@@ -65,8 +65,16 @@ def test_trec_lines_match_trecrunwriter_format():
 
 
 def test_summarize_latency():
-    s = multivector.summarize_latency([5.0, 1.0, 3.0, 2.0, 4.0])
-    assert s == {"n": 5, "p50_ms": 3.0, "p95_ms": 5.0, "mean_ms": 3.0}
+    # Asymmetric sample (n=10) so mean != median and the p95 index is discriminating -- a
+    # symmetric sample lets mean->median and an index-formula change both survive undetected.
+    # sorted:            [1.0, 1.0, 1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 50.0, 100.0]
+    # index:               0    1    2    3    4    5    6    7    8      9
+    # pct(p) = ordered[min(n-1, int(round(p*(n-1))))], n-1 = 9:
+    #   p50: round(0.5*9)  = round(4.5) = 4 (banker's rounding, 4 is even) -> ordered[4] = 2.0
+    #   p95: round(0.95*9) = round(8.55) = 9                               -> ordered[9] = 100.0
+    # mean: (1+1+1+1+2+3+4+5+50+100)/10 = 168/10 = 16.8
+    s = multivector.summarize_latency([1.0, 1.0, 1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 50.0, 100.0])
+    assert s == {"n": 10, "p50_ms": 2.0, "p95_ms": 100.0, "mean_ms": 16.8}
 
 
 def test_summarize_latency_rejects_empty():
