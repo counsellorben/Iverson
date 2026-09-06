@@ -80,6 +80,30 @@ def test_locate_maps_unavailable_and_unfiltered_invalid_argument():
         locate(coord, "Doc", "Body", [("q", [])], k=5, fanout=4, trace_id="t")
 
 
+def test_locate_skips_a_persistently_invalid_query_and_keeps_the_others():
+    # §6 row 1: the filters were dropped and the retry recurred, so this ONE query is skipped
+    # (reported as empty to the model) — the session is not failed while another query works.
+    coord = MagicMock()
+    coord.search_chunks.side_effect = [
+        rpc_error(grpc.StatusCode.INVALID_ARGUMENT),        # q1, filtered
+        rpc_error(grpc.StatusCode.INVALID_ARGUMENT),        # q1, unfiltered retry
+        [chunk("A", "a1", 0.7)],                            # q2
+    ]
+    parents, empty = locate(coord, "Doc", "Body",
+                            [("q1", [ValidFilter("Source", "x")]), ("q2", [])],
+                            k=5, fanout=4, trace_id="t")
+    assert [p.key for p in parents] == ["A"]
+    assert empty == ["q1"]
+
+
+def test_locate_fails_the_session_when_every_query_is_rejected():
+    # §3.4 row 3 (masked chunk field) recurs on every query, so nothing is left to answer from.
+    coord = MagicMock()
+    coord.search_chunks.side_effect = rpc_error(grpc.StatusCode.INVALID_ARGUMENT)
+    with pytest.raises(RetrievalError):
+        locate(coord, "Doc", "Body", [("q1", []), ("q2", [])], k=5, fanout=4, trace_id="t")
+
+
 def entity(key, title="T", summary="S"):
     e = object.__new__(Doc)
     e.id, e.title, e.source, e.published_at, e.body, e.summary = key, title, "legal", "2025-11-02", "B", summary

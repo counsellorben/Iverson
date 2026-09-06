@@ -22,8 +22,11 @@ class RetrievalUnavailable(RetrievalError):
     """Embedding backend down (§6): fail the session; never answer without retrieval."""
 
 
-class NoAccessibleDocuments(RetrievalError):
-    """Every stage came back empty for this user (§3.4, §8)."""
+class QueryRejected(RetrievalError):
+    """`SearchChunks` was still `InvalidArgument` after the unfiltered retry (§6 row 1).
+
+    In `locate` this skips the one query; anywhere else (stage 2's top-up) it stays a session
+    failure, which is why it remains a `RetrievalError`."""
 
 
 @dataclass
@@ -61,13 +64,15 @@ def _search(coordinator, request: pb.SearchChunksRequest) -> list[pb.ChunkSearch
         code = err.code()
         if code == grpc.StatusCode.UNAVAILABLE:
             raise RetrievalUnavailable(err.details()) from err
-        if code == grpc.StatusCode.INVALID_ARGUMENT and request.filter:
-            log.warning("[locate] trace=%s InvalidArgument with filters; retrying unfiltered: %s",
-                        request.trace_id, err.details())
-            retry = pb.SearchChunksRequest()
-            retry.CopyFrom(request)
-            del retry.filter[:]
-            return _search(coordinator, retry)
+        if code == grpc.StatusCode.INVALID_ARGUMENT:
+            if request.filter:
+                log.warning("[locate] trace=%s InvalidArgument with filters; retrying unfiltered: %s",
+                            request.trace_id, err.details())
+                retry = pb.SearchChunksRequest()
+                retry.CopyFrom(request)
+                del retry.filter[:]
+                return _search(coordinator, retry)
+            raise QueryRejected(f"{code.name}: {err.details()}") from err
         raise RetrievalError(f"{code.name}: {err.details()}") from err
 
 
@@ -77,15 +82,29 @@ def locate(coordinator, type_name: str, chunk_property: str,
     """Stage 1 (§4.2): k×fanout chunks per query, grouped by parent, ranked by best chunk."""
     by_parent: dict[str, RankedParent] = {}
     empty_queries: list[str] = []
+    skipped = 0
     for query_text, filters in queries:
-        hits = _search(coordinator, chunks_request(type_name, chunk_property, query_text,
-                                                   k * fanout, filters, trace_id))
+        try:
+            hits = _search(coordinator, chunks_request(type_name, chunk_property, query_text,
+                                                       k * fanout, filters, trace_id))
+        except QueryRejected as err:
+            # §6 row 1: the unfiltered retry recurred, so this one query is skipped — it is
+            # reported to the model as an empty query and the remaining queries still run.
+            log.warning("[locate] trace=%s skipping query %r after unfiltered retry: %s",
+                        trace_id, query_text, err)
+            skipped += 1
+            empty_queries.append(query_text)
+            continue
         if not hits:
             empty_queries.append(query_text)
         for h in hits:
             p = by_parent.setdefault(h.parent_key, RankedParent(h.parent_key, h.score))
             p.best_score = max(p.best_score, h.score)      # max, not sum (§4.2)
             p.chunks.append((h.score, h.chunk_text))
+    if queries and skipped == len(queries):
+        # Every planned query was rejected — a masked chunk field or a misconfigured type
+        # (§3.4 row 3), which recurs on every query. That fails the session.
+        raise RetrievalError(f"SearchChunks was InvalidArgument for all {skipped} planned queries")
     for p in by_parent.values():
         p.chunks.sort(key=lambda c: c[0], reverse=True)
     ranked = sorted(by_parent.values(), key=lambda p: p.best_score, reverse=True)[:k]
