@@ -185,6 +185,28 @@ services:
       retries: 20
       start_period: 5m
 
+  # Generative backend under evaluation (spec docs/specs/2026-09-05-embedding-migration-phase2-design.md
+  # §3.7). Intel CPU image; bf16 weights; the token limits keep warm-up to ~10 minutes (the image
+  # defaults pre-allocate a 32k context and take twenty). HF_HUB_DISABLE_XET: the Hub's Xet download
+  # path fails from this box, the classic path works. First start: ~11 min download + ~10 min warm-up.
+  tgi:
+    image: ghcr.io/huggingface/text-generation-inference:3.3.4-intel-cpu
+    container_name: iverson-tgi
+    command: ["--model-id", "${GEN_MODEL_ID:-Qwen/Qwen2.5-1.5B-Instruct}", "--dtype", "bfloat16", "--max-input-tokens", "3072", "--max-total-tokens", "3584", "--max-batch-prefill-tokens", "3072"]
+    environment:
+      - HF_HUB_DISABLE_XET=1
+    shm_size: 1g
+    ports:
+      - "8092:80"
+    volumes:
+      - tgi_models:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 25m
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
     container_name: iverson-zookeeper
@@ -567,3 +589,4 @@ volumes:
   prometheus_data:
   reranker_models:
   tei_models:
+  tgi_models:
