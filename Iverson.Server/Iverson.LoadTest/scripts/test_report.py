@@ -177,3 +177,51 @@ def test_pair_and_baseline_are_mutually_exclusive(tmp_path, qrels_path, monkeypa
     with pytest.raises(SystemExit) as e:
         report.main()
     assert "--pair" in str(e.value) and "--baseline" in str(e.value)
+
+
+def test_score_block_is_complete_without_nugget_qrels(tmp_path, qrels_path, capsys, monkeypatch):
+    """A run with only q1 covered, scored against the 4-query qrels fixture, must print all
+    three base measures non-zero. This is the regression this task's split guards against a
+    consumed-generator bug in score_run (score_run must materialise read_trec_run's generator
+    ONCE and merge one calc_aggregate call per qrels group -- a second calc_aggregate over an
+    already-consumed generator silently scores an empty run as 0.0, spec A34's trap for the
+    --baseline section applies here too if score_run routed "by measure" without
+    materialising first). Needs no pyndeval: no --nugget-qrels is passed."""
+    run = tmp_path / "x.similar.trec"
+    write_run(run, [("q1", ["d1", "d2"])])
+    monkeypatch.setattr(sys, "argv", ["report.py", "--run", str(run), "--qrels", qrels_path])
+    report.main()
+    out = capsys.readouterr().out
+    for line in ("nDCG@10    0.2500", "R@50       0.2500", "AP         0.2500"):
+        assert line in out, out
+
+
+def test_alpha_ndcg_appears_only_with_nugget_qrels(tmp_path, qrels_path, capsys, monkeypatch):
+    pytest.importorskip("pyndeval")
+    run = tmp_path / "x.similar.trec"
+    write_run(run, [("q1", ["d1", "d2"])])
+    nugget = tmp_path / "qrels.nugget.trec"
+    nugget.write_text("q1 s1 d1 1\nq1 s2 d2 1\n")
+    monkeypatch.setattr(sys, "argv", ["report.py", "--run", str(run), "--qrels", qrels_path])
+    report.main()
+    assert "alpha_nDCG@10" not in capsys.readouterr().out
+    monkeypatch.setattr(sys, "argv", ["report.py", "--run", str(run), "--qrels", qrels_path,
+                                      "--nugget-qrels", str(nugget)])
+    report.main()
+    out = capsys.readouterr().out
+    # The whole block, so a consumed-generator bug that zeroes any later measure is caught in
+    # either call order: nDCG/R/AP score 0.25 on the 4-query fixture, α-nDCG 1.0 (both subtopics
+    # covered in the top 2).
+    for line in ("nDCG@10    0.2500", "R@50       0.2500", "AP         0.2500", "alpha_nDCG@10 1.0000"):
+        assert line in out, line
+
+
+def test_diversity_means_print_from_sidecar(tmp_path, qrels_path, capsys, monkeypatch):
+    run = tmp_path / "y.chunks.trec"
+    write_run(run, [("q1", ["d1"])])
+    (tmp_path / "y.chunks.diversity.json").write_text(
+        '{"label":"y","queries":1,"meanDistinctParentsAt10":7.5,"meanDistinctParentsAt50":31.0,"perQuery":{}}')
+    monkeypatch.setattr(sys, "argv", ["report.py", "--run", str(run), "--qrels", qrels_path])
+    report.main()
+    out = capsys.readouterr().out
+    assert "distinct parents @10  7.50" in out and "@50  31.00" in out
