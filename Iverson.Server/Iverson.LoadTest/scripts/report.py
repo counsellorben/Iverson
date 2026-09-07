@@ -16,7 +16,12 @@ Four things, in order, per invocation:
     2. ir_measures scoring -- nDCG@10, R@50, AP against a qrels file, one line per run, plus
        the run's build composite (read from its <config-label>.meta.json sidecar, written by
        BenchmarkQueryScenario -- see "Build identity" below) so a comparison across runs from
-       different binaries cannot pass unnoticed.
+       different binaries cannot pass unnoticed. With --nugget-qrels, alpha_nDCG@10 (pyndeval)
+       is added too, scored against the nugget/subtopic qrels instead of the query-level
+       qrels -- see freshstack_nugget_qrels.py for producing that file from FreshStack's
+       per-topic subtopic judgments. A *.chunks.trec run also prints its chunk-diversity
+       means (meanDistinctParentsAt10/50) when a <label>.chunks.diversity.json sidecar,
+       written by benchmark-query, sits beside it.
 
     3. Ingest throughput, read from --stats-path (ingest.py's <key-map-path>.stats.json
        sidecar, if given and present): documents, chunks, embed calls, embeds saved by the
@@ -30,18 +35,20 @@ Four things, in order, per invocation:
        existed falls back to the span for throughput, with a printed notice that the figure
        may include idle time.
 
-    4. Paired statistics against --baseline, if given: for each of the three measures above,
-       every other discovered run is compared to the baseline over the intersection of their
-       query sets -- delta, paired t-test, a seeded sign-flip permutation test, a 95% CI and
-       Cohen's d_z on the differences, the minimum detectable effect at 80% power, the count
-       of queries whose value actually changed, and a Holm-corrected p-value across the runs
-       compared within that measure. A SciFact centroid recall claim was once retracted after
-       a paired t-test on a distribution that was 98.3% exact zeros -- only 5 of 300 queries
-       had changed at all, which a sign-flip permutation test caught and the t-test's own
-       assumptions did not protect against. Below 10% changed queries this section prints a
-       banner saying so and naming the permutation p as the one to trust. With `--pair
-       RUN=BASELINE` (repeatable) the family is exactly the declared pairs, each checked for
-       pool invariance first; `--baseline` keeps the discover-everything behaviour.
+    4. Paired statistics against --baseline, if given: for each of the measures above --
+       three, or four with --nugget-qrels, since alpha_nDCG@10 gets its own compare block
+       like every other measure -- every other discovered run is compared to the baseline
+       over the intersection of their query sets -- delta, paired t-test, a seeded sign-flip
+       permutation test, a 95% CI and Cohen's d_z on the differences, the minimum detectable
+       effect at 80% power, the count of queries whose value actually changed, and a
+       Holm-corrected p-value across the runs compared within that measure. A SciFact
+       centroid recall claim was once retracted after a paired t-test on a distribution that
+       was 98.3% exact zeros -- only 5 of 300 queries had changed at all, which a sign-flip
+       permutation test caught and the t-test's own assumptions did not protect against.
+       Below 10% changed queries this section prints a banner saying so and naming the
+       permutation p as the one to trust. With `--pair RUN=BASELINE` (repeatable) the family
+       is exactly the declared pairs, each checked for pool invariance first; `--baseline`
+       keeps the discover-everything behaviour.
 
 Build identity: BenchmarkQueryScenario writes one <config-label>.meta.json sidecar per
 invocation, alongside its two run files, carrying a "composite" key -- a hash over every
@@ -58,12 +65,14 @@ reads more naturally than a separate --run-dir flag: "score these paths" stays o
 whether a path names a file or a directory of files, and multiple --run flags can still mix
 individual files with directories in one invocation.
 
-Not stdlib-only, unlike this directory's other scripts: ir_measures, numpy and scipy are the
-third-party imports this project permits (P3 of the parent plan; numpy/scipy back the paired
-statistics in section 4). They are reached through PYTHONPATH, never a site-packages install --
-this box is PEP 668 externally-managed with no working venv:
+Not stdlib-only, unlike this directory's other scripts: ir_measures, numpy, scipy and (for
+--nugget-qrels) pyndeval are the third-party imports this project permits (P3 of the parent
+plan; numpy/scipy back the paired statistics in section 4; pyndeval is ir_measures' provider
+for alpha_nDCG and is what the ImportError guard below sends the reader to install). They are
+reached through PYTHONPATH, never a site-packages install -- this box is PEP 668
+externally-managed with no working venv:
 
-    python3 -m pip install --target /path/to/libs ir_measures numpy scipy
+    python3 -m pip install --target /path/to/libs ir_measures numpy scipy pyndeval
 
     PYTHONPATH=/path/to/libs python3 \\
         Iverson.Server/Iverson.LoadTest/scripts/report.py \\
@@ -193,6 +202,41 @@ def load_build_composite(run_path):
     return data.get("composite")
 
 
+def diversity_sidecar_for(run_path):
+    """A .chunks.trec run's chunk-diversity sidecar path, or None for any other run --
+    Task 2's benchmark-query only writes <label>.chunks.diversity.json beside a *.chunks.trec
+    run, never beside a .similar.trec one. Derived from sidecar_path_for's own
+    <label>.meta.json (same run-name-to-label stripping, single source of truth) by swapping
+    its suffix, rather than re-deriving the label independently."""
+    if not run_path.endswith(CHUNKS_RUN_SUFFIX + ".trec"):
+        return None
+    meta_path = sidecar_path_for(run_path)
+    return meta_path[: -len(".meta.json")] + CHUNKS_RUN_SUFFIX + ".diversity.json"
+
+
+def load_diversity_means(run_path):
+    """(meanDistinctParentsAt10, meanDistinctParentsAt50) from the run's diversity sidecar, or
+    None when the run is not a .chunks.trec run, the sidecar does not exist, is not valid
+    JSON, or is missing either key -- treated the same as load_build_composite treats a
+    missing/corrupt build sidecar: this runs after scoring, so a bad sidecar must not discard
+    the scoring work, and must not raise either. A sidecar present but missing one of the two
+    keys returns None rather than a partial (value, None) tuple: print_scores prints both
+    lines together or neither, never one line with a formatted None in it."""
+    sidecar = diversity_sidecar_for(run_path)
+    if sidecar is None or not os.path.exists(sidecar):
+        return None
+    with open(sidecar, encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            return None
+    mean_at_10 = data.get("meanDistinctParentsAt10")
+    mean_at_50 = data.get("meanDistinctParentsAt50")
+    if mean_at_10 is None or mean_at_50 is None:
+        return None
+    return mean_at_10, mean_at_50
+
+
 # ── Step 1: structural checks ──────────────────────────────────────────────────────────
 
 def structural_check(path, qrels_query_ids=None):
@@ -277,20 +321,70 @@ def print_structural_check(path, check):
         print("  duplicate doc ids    none")
 
 
+def check_nugget_qrels_structure(nugget_qrels_path, nugget_qrels, qrels_path):
+    """Refuse a --nugget-qrels file with no subtopic structure -- the same class of
+    malformation section 1's structural_check exists to catch, just on the qrels side rather
+    than the run side. read_trec_qrels exposes the iteration column
+    (Qrel(query_id=..., doc_id=..., relevance=..., iteration='s1')); a genuine nugget file
+    carries a distinct iteration value per subtopic, while a query-level qrels file (the kind
+    --qrels expects) carries the same iteration value ("0") on every row. --qrels and
+    --nugget-qrels are one path segment apart in a typical run directory (qrels.trec vs
+    qrels.nugget.trec) and this script has no other way to tell them apart before alpha_nDCG
+    silently degenerates to one subtopic per query and prints a plausible-looking wrong
+    number."""
+    iterations = {row.iteration for row in nugget_qrels}
+    if len(iterations) <= 1:
+        sys.exit(
+            f"--nugget-qrels {nugget_qrels_path}: every row shares one iteration value "
+            f"({sorted(iterations)!r}) -- this looks like a query-level qrels file, not a "
+            f"nugget/subtopic file. alpha_nDCG needs more than one subtopic per query in the "
+            f"iteration column. Check that --qrels ({qrels_path}) and --nugget-qrels were not "
+            "swapped."
+        )
+
+
+def qrels_for(measure, qrels, nugget_qrels):
+    """alpha_nDCG (pyndeval, added to `measures` only when --nugget-qrels is given) scores
+    against the nugget/subtopic qrels; every other measure scores against the ordinary
+    query-level qrels. Single source of truth for that routing, shared by score_run (which
+    must materialise its run ONCE and group measures by this function's own return value --
+    see score_run's docstring) and the per-query / paired-statistics sites, which each call
+    read_trec_run afresh per invocation and so carry no consumed-generator risk."""
+    return nugget_qrels if str(measure).startswith("alpha_nDCG") else qrels
+
+
 # ── Step 2: scoring ─────────────────────────────────────────────────────────────────────
 
-def score_run(qrels, run_path, measures):
+def score_run(qrels, run_path, measures, nugget_qrels=None):
+    """Score one run against every measure in `measures`, against ONE materialised run.
+
+    ir_measures.read_trec_run returns a generator; a second calc_aggregate over the same
+    object scores an empty run as 0.0 with no error (the trap this module's --baseline
+    section already documents for the baseline run, run_paired_statistics below). Routing
+    "by measure" here without materialising first is exactly that defect, so the run is read
+    into a list once and calc_aggregate is called once per qrels group (qrels_for) -- base
+    measures against qrels, and alpha_nDCG@10, when present, against nugget_qrels -- with the
+    two results dicts merged into the one print_scores reads."""
     import ir_measures
 
-    run = ir_measures.read_trec_run(run_path)
-    return ir_measures.calc_aggregate(measures, qrels, run)
+    run = list(ir_measures.read_trec_run(run_path))
+    base_measures = [m for m in measures if qrels_for(m, qrels, nugget_qrels) is qrels]
+    results = dict(ir_measures.calc_aggregate(base_measures, qrels, run)) if base_measures else {}
+    nugget_measures = [m for m in measures if qrels_for(m, qrels, nugget_qrels) is not qrels]
+    if nugget_measures:
+        results.update(ir_measures.calc_aggregate(nugget_measures, nugget_qrels, run))
+    return results
 
 
-def print_scores(path, measures, results, composite=None):
+def print_scores(path, measures, results, composite=None, diversity=None):
     print(f"\n[scores] {path}")
     print(f"  {'build':10s} {composite if composite is not None else 'unknown'}")
     for measure in measures:
         print(f"  {str(measure):10s} {results[measure]:.4f}")
+    if diversity is not None:
+        mean_at_10, mean_at_50 = diversity
+        print(f"  distinct parents @10  {mean_at_10:.2f}")
+        print(f"  distinct parents @50  {mean_at_50:.2f}")
 
 
 # ── Step 3: ingest stats sidecar ───────────────────────────────────────────────────────
@@ -392,17 +486,20 @@ def holm_adjust(pvalues):
     return adjusted
 
 
-def per_query_values(qrels, run_path, measure):
+def per_query_values(qrels, run_path, measure, nugget_qrels=None):
     """{query_id: value} for one measure over one run, from ir_measures.iter_calc -- built as
     a measure OBJECT by the caller (see this module's CRITICAL docstring note), never via
-    parse_measure."""
+    parse_measure. nugget_qrels, when given, is used instead of qrels for alpha_nDCG (see
+    qrels_for) -- this function calls read_trec_run afresh each time, so there is no
+    consumed-generator risk in routing per-call like this, unlike score_run."""
     import ir_measures
 
     run = ir_measures.read_trec_run(run_path)
-    return {metric.query_id: metric.value for metric in ir_measures.iter_calc([measure], qrels, run)}
+    measure_qrels = qrels_for(measure, qrels, nugget_qrels)
+    return {metric.query_id: metric.value for metric in ir_measures.iter_calc([measure], measure_qrels, run)}
 
 
-def paired_comparison(baseline_values, run_path, qrels, measure):
+def paired_comparison(baseline_values, run_path, qrels, measure, nugget_qrels=None):
     """Pair baseline_values (already computed once per measure, by the caller) against
     run_path's own per-query values for the same measure, over the intersection of their
     query id sets. Returns None when the intersection is empty -- nothing to pair -- rather
@@ -416,7 +513,7 @@ def paired_comparison(baseline_values, run_path, qrels, measure):
     import numpy as np
     from scipy import stats as st
 
-    run_values = per_query_values(qrels, run_path, measure)
+    run_values = per_query_values(qrels, run_path, measure, nugget_qrels)
     common_ids = sorted(set(baseline_values) & set(run_values))
     n = len(common_ids)
     if n == 0:
@@ -530,13 +627,17 @@ def print_compare_block(baseline_path, run_path, measure, comp, holm_p_adj, fami
         print("     read the permutation p above, not the paired t p.")
 
 
-def run_paired_statistics(qrels, run_paths, baseline_path, measures):
+def run_paired_statistics(qrels, run_paths, baseline_path, measures, nugget_qrels=None):
     """The --baseline section. Excludes the baseline from the comparison set by absolute
     path -- resolve_run_paths itself stays untouched, since it also feeds the structural-check
     and scoring loops, which must still cover the baseline's own file. Without this exclusion
     here, the obvious `--baseline runs/reference.chunks.trec --run runs/` invocation compares
     the baseline against itself: t = nan, and the Holm family silently inflates by one,
-    weakening every other comparison's corrected p-value."""
+    weakening every other comparison's corrected p-value.
+
+    nugget_qrels, when given, lets alpha_nDCG@10 (present in `measures` only with
+    --nugget-qrels) route to the nugget qrels via qrels_for instead of qrels -- see
+    per_query_values and score_run's docstrings for the same routing rule."""
     import ir_measures
 
     baseline_abspath = os.path.abspath(baseline_path)
@@ -561,11 +662,11 @@ def run_paired_statistics(qrels, run_paths, baseline_path, measures):
     for measure in measures:
         baseline_values = {
             metric.query_id: metric.value
-            for metric in ir_measures.iter_calc([measure], qrels, baseline_run)
+            for metric in ir_measures.iter_calc([measure], qrels_for(measure, qrels, nugget_qrels), baseline_run)
         }
 
         comparisons = [
-            (run_path, paired_comparison(baseline_values, run_path, qrels, measure))
+            (run_path, paired_comparison(baseline_values, run_path, qrels, measure, nugget_qrels))
             for run_path in compare_paths
         ]
 
@@ -665,12 +766,18 @@ def check_pool(run_path, baseline_path):
         )
 
 
-def run_pair_statistics(qrels, pairs, measures):
+def run_pair_statistics(qrels, pairs, measures, nugget_qrels=None):
     """Like run_paired_statistics, but the family is EXACTLY the declared pairs -- each run
     against its own baseline -- and Holm runs once per measure over those pairs and nothing
     else (spec §7.2: A1-A0, A2-A0, A3-A0'; one construction at m = 3). Every pair passes
     check_pool before any statistic is computed. Baseline per-query values are materialised
-    once per distinct baseline per measure (Task 1's fix applies here by construction)."""
+    once per distinct baseline per measure (Task 1's fix applies here by construction).
+
+    nugget_qrels, when given, lets alpha_nDCG@10 (present in `measures` only with
+    --nugget-qrels) route to the nugget qrels via qrels_for instead of qrels -- the same
+    routing rule run_paired_statistics, per_query_values and score_run already apply. Without
+    it, this function's own baseline_values computation and its call into paired_comparison
+    both pass the query-level qrels for every measure, including alpha_nDCG@10."""
     import ir_measures
 
     for run_path, baseline_path in pairs:
@@ -682,13 +789,14 @@ def run_pair_statistics(qrels, pairs, measures):
     composites = {p: load_build_composite(p) for pair in pairs for p in pair}
 
     for measure in measures:
+        measure_qrels = qrels_for(measure, qrels, nugget_qrels)
         baseline_values = {
-            p: {m.query_id: m.value for m in ir_measures.iter_calc([measure], qrels, run)}
+            p: {m.query_id: m.value for m in ir_measures.iter_calc([measure], measure_qrels, run)}
             for p, run in baseline_runs.items()
         }
         comparisons = [
             (run_path, baseline_path,
-             paired_comparison(baseline_values[baseline_path], run_path, qrels, measure))
+             paired_comparison(baseline_values[baseline_path], run_path, qrels, measure, nugget_qrels))
             for run_path, baseline_path in pairs
         ]
         valid = [(r, b, c) for r, b, c in comparisons if c is not None]
@@ -721,6 +829,11 @@ def main():
         help="a TREC run file, or a directory of *.trec files; may be passed more than once",
     )
     ap.add_argument("--qrels", required=True, help="TREC qrels file")
+    ap.add_argument(
+        "--nugget-qrels", default=None,
+        help="TREC qrels with the nugget/subtopic id in the iteration column; adds "
+             "alpha_nDCG@10 (pyndeval) to every scored run",
+    )
     ap.add_argument(
         "--stats-path", default=None,
         help="ingest.py's <key-map-path>.stats.json sidecar; omit to skip the throughput report",
@@ -766,6 +879,8 @@ def main():
         sys.exit(f"--qrels {args.qrels}: not found")
     if args.baseline and not os.path.exists(args.baseline):
         sys.exit(f"--baseline {args.baseline}: not found")
+    if args.nugget_qrels and not os.path.exists(args.nugget_qrels):
+        sys.exit(f"--nugget-qrels {args.nugget_qrels}: not found")
 
     if args.pair and args.baseline:
         sys.exit("--pair and --baseline are mutually exclusive: --pair declares the family explicitly")
@@ -784,22 +899,33 @@ def main():
     qrels = list(ir_measures.read_trec_qrels(args.qrels))
     qrels_query_ids = {row.query_id for row in qrels}
 
+    # alpha_nDCG@10 (pyndeval) is added to `measures` only when --nugget-qrels is given, and
+    # is scored against nugget_qrels instead of qrels -- see qrels_for and score_run's own
+    # docstring for the single-materialisation rule this requires.
+    nugget_qrels = None
+    if args.nugget_qrels:
+        from ir_measures import alpha_nDCG
+
+        nugget_qrels = list(ir_measures.read_trec_qrels(args.nugget_qrels))
+        check_nugget_qrels_structure(args.nugget_qrels, nugget_qrels, args.qrels)
+        measures.append(alpha_nDCG @ 10)
+
     for path in run_paths:
         print_structural_check(path, structural_check(path, qrels_query_ids))
 
     for path in run_paths:
-        results = score_run(qrels, path, measures)
-        print_scores(path, measures, results, load_build_composite(path))
+        results = score_run(qrels, path, measures, nugget_qrels)
+        print_scores(path, measures, results, load_build_composite(path), load_diversity_means(path))
 
     stats = load_stats(args.stats_path)
     if stats is not None:
         print_stats(args.stats_path, stats)
 
     if args.baseline:
-        run_paired_statistics(qrels, run_paths, args.baseline, measures)
+        run_paired_statistics(qrels, run_paths, args.baseline, measures, nugget_qrels)
 
     if pairs:
-        run_pair_statistics(qrels, pairs, measures)
+        run_pair_statistics(qrels, pairs, measures, nugget_qrels)
 
 
 if __name__ == "__main__":

@@ -39,10 +39,12 @@ public sealed class ObjectSearchGrpcService(
     IntelligenceTenantScope tenantScope,
     IResultReranker reranker,
     IResultDiversifier diversifier,
+    IOptions<VectorRankingOptions> rankingOptions,
     IOptions<DecayOptions> decayOptions)
     : ObjectSearchService.ObjectSearchServiceBase
 {
     private readonly DecayOptions _decayOptions = decayOptions.Value;
+    private readonly VectorRankingOptions _ranking = rankingOptions.Value;
 
     // ── SQL Search ─────────────────────────────────────────────────────────────
 
@@ -299,7 +301,7 @@ public sealed class ObjectSearchGrpcService(
         columnLookup[schema.KeyColumn.Name.ToCamelCase()] = schema.KeyColumn;
         columnLookup["key"] = schema.KeyColumn;
 
-        foreach (var ranked in diversifier.Diversify(diversityCandidates, (int)topK))
+        foreach (var ranked in diversifier.Diversify(diversityCandidates, (int)topK, _ranking.LambdaSimilar))
         {
             if (!byId.TryGetValue(ranked.Id, out var r)) continue;
 
@@ -485,7 +487,7 @@ public sealed class ObjectSearchGrpcService(
                 chunkVectors.TryGetValue(r.Id, out var v) ? v : null))
             .ToList();
 
-        foreach (var ranked in diversifier.Diversify(diversityCandidates, (int)topK))
+        foreach (var ranked in diversifier.Diversify(diversityCandidates, (int)topK, _ranking.LambdaChunks))
         {
             if (!byId.TryGetValue(ranked.Id, out var r)) continue;
 

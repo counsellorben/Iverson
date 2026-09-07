@@ -75,7 +75,8 @@ public class ObjectSearchGrpcServiceTests
             _registry, _search, _vector, _resolver,
             NullLogger<ObjectSearchGrpcService>.Instance,
             _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
-            new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(Options.Create(new VectorRankingOptions())),
+            new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
             Options.Create(new DecayOptions()));
     }
 
@@ -2614,7 +2615,8 @@ public class ObjectSearchGrpcServiceTests
             NullLogger<ObjectSearchGrpcService>.Instance,
             _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
             new ResultReranker(Options.Create(new VectorRankingOptions())),
-            new ResultDiversifier(Options.Create(new VectorRankingOptions())),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
             Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }));
 
         var fakeVector = UnitVector();
@@ -2648,6 +2650,132 @@ public class ObjectSearchGrpcServiceTests
 
         written.Should().HaveCount(1);
         written[0].Score.Should().BeApproximately((float)expectedFused, 1e-4f);
+    }
+
+    // VectorRankingOptionsTests proves the diversifier honours whatever λ it is handed — it does
+    // NOT prove ObjectSearchGrpcService passes the CONFIGURED per-endpoint value through. Bind
+    // λ = 1.00 on ONE endpoint and assert that endpoint reduces to Take(topK) while the other
+    // still promotes the dissimilar candidate: a hard-coded 0.70 at either call site fails
+    // exactly one of these two tests.
+    [Fact]
+    public async Task SearchSimilar_UsesConfiguredLambdaSimilar_NotAHardCodedOne()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var queryVector = UnitVector(); // e0
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
+
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 1.00, new Dictionary<string, string> { ["body"] = "A" }),
+            new(2, 0.85, new Dictionary<string, string> { ["body"] = "B-near-duplicate" }),
+            new(3, 1.00, new Dictionary<string, string> { ["body"] = "C-dissimilar" }),
+        };
+        _vector.SearchNamedAsync("docs_test-tenant", "body_vector", queryVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var centroids = new Dictionary<ulong, float[]>
+        {
+            [1] = UnitVector(),           // A: e0
+            [2] = UnitVector(),           // B: e0 — near-duplicate of A (cosine ≈ 1.0)
+            [3] = OrthogonalUnitVector(), // C: e1 — dissimilar from A (cosine ≈ 0.0)
+        };
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)centroids);
+
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 1.00, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()));
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        // λ = 1.00 reduces to plain Take(2) over the fused-descending order: [A, B], not [A, C].
+        written.Should().HaveCount(2);
+        written[0].Data.Fields["Body"].StringValue.Should().Be("A");
+        written[1].Data.Fields["Body"].StringValue.Should().Be("B-near-duplicate");
+    }
+
+    [Fact]
+    public async Task SearchChunks_UsesConfiguredLambdaChunks_NotAHardCodedOne()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var queryVector = UnitVector(); // e0
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
+
+        var sharedParent = Guid.NewGuid().ToString();
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.95, new Dictionary<string, string> { ["text"] = "A",              ["parent_id"] = sharedParent }),
+            new(2, 0.90, new Dictionary<string, string> { ["text"] = "B-near-duplicate", ["parent_id"] = sharedParent }),
+            new(3, 0.85, new Dictionary<string, string> { ["text"] = "C-dissimilar",     ["parent_id"] = sharedParent }),
+        };
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var parentUlong = InvokeKeyToUlong(sharedParent);
+        _vector.RetrieveNamedVectorAsync(
+                   Arg.Is<string>(c => c == "articles_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
+               {
+                   [parentUlong] = UnitVector(), // same parent centroid (e0) for all three chunks
+               });
+        _vector.RetrieveNamedVectorAsync(
+                   Arg.Is<string>(c => c == "articles_chunks_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
+               {
+                   [1] = UnitVector(),           // A: e0
+                   [2] = UnitVector(),           // B: e0 — near-duplicate of A (cosine ≈ 1.0)
+                   [3] = OrthogonalUnitVector(), // C: e1 — dissimilar from A (cosine ≈ 0.0)
+               });
+
+        var sutLambdaChunksOne = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 1.00 }),
+            Options.Create(new DecayOptions()));
+
+        var (writer1, written1) = MakeStream<ChunkSearchResponse>();
+        await sutLambdaChunksOne.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 2 },
+            writer1, TestServerCallContext.Create());
+
+        // λ = 1.00 on Chunks reduces to plain Take(2) over the fused-descending order: [A, B].
+        written1.Should().HaveCount(2);
+        written1[0].ChunkText.Should().Be("A");
+        written1[1].ChunkText.Should().Be("B-near-duplicate");
+
+        var sutLambdaSimilarOne = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 1.00, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()));
+
+        var (writer2, written2) = MakeStream<ChunkSearchResponse>();
+        await sutLambdaSimilarOne.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 2 },
+            writer2, TestServerCallContext.Create());
+
+        // LambdaSimilar has no effect on SearchChunks: with LambdaChunks back at 0.70, the
+        // near-duplicate B is suppressed and C is promoted again, exactly as the un-configured
+        // fixture (SearchChunks_SuppressesNearDuplicatePassage_…) hand-computes.
+        written2.Should().HaveCount(2);
+        written2[0].ChunkText.Should().Be("A");
+        written2[1].ChunkText.Should().Be("C-dissimilar");
     }
 
     // ── Result diversification (MMR) ────────────────────────────────────────────

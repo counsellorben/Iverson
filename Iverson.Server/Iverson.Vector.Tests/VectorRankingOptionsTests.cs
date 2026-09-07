@@ -54,16 +54,16 @@ public sealed class VectorRankingOptionsTests
             new DiversifyCandidate(3, Score: 0.60, DiversityVector: new float[] { 0f, 1f })
         };
 
-        // Default Lambda = 0.70: MMR(B) = 0.7*0.95 - 0.3*1.0 = 0.365, MMR(C) = 0.7*0.60 = 0.42.
+        var diversifier = new ResultDiversifier();
+
+        // Lambda = 0.70: MMR(B) = 0.7*0.95 - 0.3*1.0 = 0.365, MMR(C) = 0.7*0.60 = 0.42.
         // C wins, so the default pick order is [1, 3].
-        var @default = new ResultDiversifier(Options.Create(new VectorRankingOptions()));
-        var defaultResults = @default.Diversify(candidates, topK: 2);
+        var defaultResults = diversifier.Diversify(candidates, topK: 2, lambda: 0.70);
         defaultResults.Select(r => r.Id).Should().ContainInOrder(1UL, 3UL);
 
         // Lambda = 0.99: MMR(B) = 0.99*0.95 - 0.01*1.0 = 0.9305, MMR(C) = 0.99*0.60 = 0.594.
         // B now wins, flipping the pick order to [1, 2].
-        var nonDefault = new ResultDiversifier(Options.Create(new VectorRankingOptions { Lambda = 0.99 }));
-        var nonDefaultResults = nonDefault.Diversify(candidates, topK: 2);
+        var nonDefaultResults = diversifier.Diversify(candidates, topK: 2, lambda: 0.99);
         nonDefaultResults.Select(r => r.Id).Should().ContainInOrder(1UL, 2UL);
     }
 
@@ -74,7 +74,7 @@ public sealed class VectorRankingOptionsTests
             ("WBase", "-0.1"),
             ("WCentroid", "0.45"),
             ("WDecay", "0.10"),
-            ("Lambda", "0.70"));
+            ("LambdaSimilar", "0.70"), ("LambdaChunks", "0.70"));
 
         var act = () => new ServiceCollection().AddVectorRanking(config);
 
@@ -88,7 +88,7 @@ public sealed class VectorRankingOptionsTests
             ("WBase", "0"),
             ("WCentroid", "0"),
             ("WDecay", "0"),
-            ("Lambda", "0.70"));
+            ("LambdaSimilar", "0.70"), ("LambdaChunks", "0.70"));
 
         var act = () => new ServiceCollection().AddVectorRanking(config);
 
@@ -96,13 +96,27 @@ public sealed class VectorRankingOptionsTests
     }
 
     [Fact]
-    public void AddVectorRanking_LambdaOutOfRange_Throws()
+    public void AddVectorRanking_LambdaSimilarOutOfRange_Throws()
     {
         var config = BuildConfig(
             ("WBase", "0.45"),
             ("WCentroid", "0.45"),
             ("WDecay", "0.10"),
-            ("Lambda", "1.5"));
+            ("LambdaSimilar", "1.5"), ("LambdaChunks", "0.70"));
+
+        var act = () => new ServiceCollection().AddVectorRanking(config);
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void AddVectorRanking_LambdaChunksOutOfRange_Throws()
+    {
+        var config = BuildConfig(
+            ("WBase", "0.45"),
+            ("WCentroid", "0.45"),
+            ("WDecay", "0.10"),
+            ("LambdaSimilar", "0.70"), ("LambdaChunks", "-0.1"));
 
         var act = () => new ServiceCollection().AddVectorRanking(config);
 
@@ -116,7 +130,7 @@ public sealed class VectorRankingOptionsTests
             ("WBase", "NaN"),
             ("WCentroid", "0.45"),
             ("WDecay", "0.10"),
-            ("Lambda", "0.70"));
+            ("LambdaSimilar", "0.70"), ("LambdaChunks", "0.70"));
 
         var act = () => new ServiceCollection().AddVectorRanking(config);
 
@@ -130,10 +144,30 @@ public sealed class VectorRankingOptionsTests
             ("WBase", "Infinity"),
             ("WCentroid", "0.45"),
             ("WDecay", "0.10"),
-            ("Lambda", "0.70"));
+            ("LambdaSimilar", "0.70"), ("LambdaChunks", "0.70"));
 
         var act = () => new ServiceCollection().AddVectorRanking(config);
 
         act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void AddVectorRanking_ObsoleteLambdaKey_Throws_NamingBothNewKeys()
+    {
+        var config = BuildConfig(("WBase", "0.45"), ("WCentroid", "0.45"), ("WDecay", "0.10"), ("Lambda", "0.70"));
+
+        var act = () => new ServiceCollection().AddVectorRanking(config);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*LambdaSimilar*").WithMessage("*LambdaChunks*");
+    }
+
+    [Fact]
+    public void AddVectorRanking_Defaults_AreSeventyPercentOnBothEndpoints()
+    {
+        var provider = new ServiceCollection().AddVectorRanking(BuildConfig()).BuildServiceProvider();
+        var opts = provider.GetRequiredService<IOptions<VectorRankingOptions>>().Value;
+        opts.LambdaSimilar.Should().Be(0.70);
+        opts.LambdaChunks.Should().Be(0.70);
     }
 }

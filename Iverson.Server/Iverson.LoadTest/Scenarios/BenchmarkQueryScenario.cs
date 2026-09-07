@@ -36,9 +36,10 @@ public sealed class BenchmarkQueryScenario(
     // SearchSimilar's top_k counts entities (50 results = 50 documents). SearchChunks' top_k counts
     // chunks and the server does not dedup by parent (spec A22), so a 50-chunk request would collapse
     // to well under 50 distinct documents after max-passage aggregation and understate Recall@50.
-    // This multiplier is fixed for the whole sweep (Global Constraint) — never varied per configuration.
+    // The multiplier is fixed for the whole sweep (Global Constraint) — never varied per
+    // configuration — but is a caller-supplied value (--chunk-budget-multiplier, default 5) rather
+    // than a compile-time constant, since a denser corpus (e.g. FreshStack) needs a higher one.
     private const int    DocumentBudget        = 50;
-    private const int    ChunkBudgetMultiplier = 5;
     private const string SimilarRunSuffix      = "similar";
     private const string ChunksRunSuffix       = "chunks";
 
@@ -110,7 +111,7 @@ public sealed class BenchmarkQueryScenario(
                             await File.ReadAllTextAsync(statsPath, ct), StatsJsonOptions)
                         ?? throw new InvalidOperationException($"{statsPath} could not be parsed.");
 
-            var r = ChunkBudgetGuard.Evaluate(stats.Documents, stats.Chunks, DocumentBudget, ChunkBudgetMultiplier);
+            var r = ChunkBudgetGuard.Evaluate(stats.Documents, stats.Chunks, DocumentBudget, flags.ChunkBudgetMultiplier);
             if (!r.Ok)
             {
                 // MinimumMultiplier is Ceiling(ChunksPerDocument), computed unconditionally -- when
@@ -118,16 +119,16 @@ public sealed class BenchmarkQueryScenario(
                 // missing "documents"/"chunks" count) that ceiling is nonsense (e.g. int.MinValue),
                 // so the "raise to" advice is suppressed rather than printed.
                 var advice = double.IsFinite(r.ChunksPerDocument) && r.ChunksPerDocument > 0
-                    ? $"Raise ChunkBudgetMultiplier to >= {r.MinimumMultiplier}."
+                    ? $"Raise --chunk-budget-multiplier to >= {r.MinimumMultiplier}."
                     : "The stats sidecar's document/chunk counts are unusable -- fix or regenerate it " +
-                      "rather than raising ChunkBudgetMultiplier.";
+                      "rather than raising --chunk-budget-multiplier.";
                 Console.Error.WriteLine(
                     $"""
                     REFUSING: chunk budget cannot reach DocumentBudget distinct documents.
 
                       corpus              {r.ChunksPerDocument:F2} chunks/doc  ({stats.Chunks:N0} chunks / {stats.Documents:N0} documents)
                       DocumentBudget      {DocumentBudget}
-                      ChunkBudgetMult     {ChunkBudgetMultiplier}
+                      ChunkBudgetMult     {flags.ChunkBudgetMultiplier}
                       chunk top_k         {r.ChunkTopK}
                       reachable documents ~{r.ReachableDocuments:F0}  (worst case: a document's chunks retrieved together)
 
@@ -206,6 +207,7 @@ public sealed class BenchmarkQueryScenario(
                 ["composite"]     = buildJson["composite"]?.DeepClone(),
                 ["assemblies"]    = buildJson["assemblies"]?.DeepClone(),
                 ["recordedAtUtc"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                ["chunkBudgetMultiplier"] = flags.ChunkBudgetMultiplier,
                 ["reranker"]      = rerankerInfo is null ? null : new JsonObject
                 {
                     ["baseUrl"]        = flags.RerankUrl,
@@ -253,6 +255,7 @@ public sealed class BenchmarkQueryScenario(
 
         var similarResults = new List<(string QueryId, IReadOnlyList<(string DocId, double Score)> Ranked)>();
         var chunksResults  = new List<(string QueryId, IReadOnlyList<(string DocId, double Score)> Ranked)>();
+        var diversity      = new List<(string QueryId, (int At10, int At50) Diversity)>();
 
         var done = 0;
         long failures = 0;
@@ -268,13 +271,15 @@ public sealed class BenchmarkQueryScenario(
             var headers  = new Metadata().WithActingUser(await identity.GetTokenAsync(ct));
 
             var similar = await RunSimilarAsync(query, headers, ct);
-            var chunks  = await RunChunksAsync(query, headers, keyMap, reranker, rerankInput, corpusText, ct);
+            var chunks  = await RunChunksAsync(
+                query, headers, keyMap, reranker, rerankInput, corpusText, flags.ChunkBudgetMultiplier, ct);
             failures += similar.Failed + chunks.Failed;
             foreach (var parentKey in chunks.Unresolved)
                 unresolvedParents.Add(parentKey);
 
             similarResults.Add((query.QueryId, similar.Ranked));
             chunksResults.Add((query.QueryId, chunks.Ranked));
+            diversity.Add((query.QueryId, chunks.Diversity));
 
             done++;
             if (done % 25 == 0)
@@ -289,6 +294,25 @@ public sealed class BenchmarkQueryScenario(
 
         Console.WriteLine($"[benchmark-query] Wrote {similarPath}");
         Console.WriteLine($"[benchmark-query] Wrote {chunksPath}");
+
+        // Chunk diversity is measured on the RAW SearchChunks hit list, before MaxPassageAggregator
+        // collapses it to documents (spec §3.3) — that collapse is the only place the caller-visible
+        // "how many distinct documents did the chunk list actually surface" number would otherwise be
+        // lost, so it is captured per-query inside RunChunksAsync and written here as its own sidecar.
+        var diversitySidecar = new JsonObject
+        {
+            ["label"]                   = flags.ConfigLabel,
+            ["queries"]                 = diversity.Count,
+            ["meanDistinctParentsAt10"] = diversity.Count == 0 ? 0 : diversity.Average(d => d.Diversity.At10),
+            ["meanDistinctParentsAt50"] = diversity.Count == 0 ? 0 : diversity.Average(d => d.Diversity.At50),
+            ["perQuery"] = new JsonObject(
+                diversity.Select(d => KeyValuePair.Create<string, JsonNode?>(
+                    d.QueryId,
+                    new JsonObject { ["at10"] = d.Diversity.At10, ["at50"] = d.Diversity.At50 }))),
+        };
+        var diversityPath = Path.Combine(flags.OutputDir, $"{flags.ConfigLabel}.chunks.diversity.json");
+        await File.WriteAllTextAsync(diversityPath, diversitySidecar.ToJsonString(SidecarWriteOptions), ct);
+        Console.WriteLine($"[benchmark-query] Wrote {diversityPath}");
 
         // A failed RPC contributes zero rows for that query, which the external scorer reads as a
         // score of 0 — indistinguishable from a genuine miss. The run files are written first (they
@@ -359,14 +383,14 @@ public sealed class BenchmarkQueryScenario(
         return (DocumentRanking.CollapseByDocId(results, DocumentBudget), failed);
     }
 
-    private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed, IReadOnlyList<string> Unresolved)> RunChunksAsync(
+    private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed, IReadOnlyList<string> Unresolved, (int At10, int At50) Diversity)> RunChunksAsync(
         CorpusQuery query, Metadata headers, IReadOnlyDictionary<string, string> keyMap,
         TeiRerankClient? reranker, RerankInput rerankInput, IReadOnlyDictionary<string, string>? corpusText,
-        CancellationToken ct)
+        int chunkBudgetMultiplier, CancellationToken ct)
     {
         var request = Query.Chunks<BenchmarkDocument>(d => d.Body)
             .Text(query.Text)
-            .TopK((uint)(DocumentBudget * ChunkBudgetMultiplier))
+            .TopK((uint)(DocumentBudget * chunkBudgetMultiplier))
             .Build();
 
         var chunks = new List<(string ParentKey, double Score, string Text)>();
@@ -383,11 +407,16 @@ public sealed class BenchmarkQueryScenario(
             failed = 1;
         }
 
+        // Diversity is measured on the RAW hit list in rank order, BEFORE MaxPassageAggregator
+        // collapses it below -- that collapse is the only place chunk-level parent diversity exists;
+        // counting after it would measure documents, not the caller-visible chunk diversity.
+        var diversity = ChunkDiversity.Count(chunks.Select(c => c.ParentKey).ToList());
+
         if (reranker is null)
         {
             // Control path: byte-identical to the pre-reranker harness.
             var aggregated = MaxPassageAggregator.Aggregate(chunks.Select(c => (c.ParentKey, c.Score)), keyMap, DocumentBudget);
-            return (aggregated.Ranked, failed, aggregated.UnresolvedParentKeys);
+            return (aggregated.Ranked, failed, aggregated.UnresolvedParentKeys, diversity);
         }
 
         // Spec §3.3: aggregate to DocumentBudget documents FIRST (the unit reranked is the document,
@@ -419,7 +448,7 @@ public sealed class BenchmarkQueryScenario(
 
         var scores   = await reranker.ScoreAsync(query.Text, inputs, ct);
         var rescored = winners.Ranked.Select((w, i) => (w.DocId, scores[i]));
-        return (DocumentRanking.CollapseByDocId(rescored, DocumentBudget), failed, winners.UnresolvedParentKeys);
+        return (DocumentRanking.CollapseByDocId(rescored, DocumentBudget), failed, winners.UnresolvedParentKeys, diversity);
     }
 
     private static List<CorpusQuery> LoadQueries(string corpusPath)
