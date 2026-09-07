@@ -161,7 +161,7 @@ In `ResultDiversifierTests.cs`: `private readonly ResultDiversifier _diversifier
     }
 ```
 
-In `ObjectSearchGrpcServiceTests.cs`, at the three `new ObjectSearchGrpcService(` sites (`:74`, `:2612`, and `DocumentTemplateValidationTests.cs:332`) and `ObjectSearchVectorIntegrationTests.cs:93`, replace `new ResultDiversifier(Options.Create(new VectorRankingOptions()))` with `new ResultDiversifier()` and append `Options.Create(new VectorRankingOptions())` as the argument **before** `Options.Create(new DecayOptions…)` (the new ctor parameter order in step 2). Then add the two wiring tests beside `SearchSimilar_UsesConfiguredHalfLife_NotAHardCodedOne` (`:2607`), each reusing the candidate fixture of the MMR promotion tests (`:2680` for SearchSimilar, `:3075` for SearchChunks), whose hand-computed 0.70 arithmetic promotes C over the near-duplicate B:
+In `ObjectSearchGrpcServiceTests.cs`, at the three `new ObjectSearchGrpcService(` sites (`:74`, `:2612`, and `DocumentTemplateValidationTests.cs:332`) and `ObjectSearchVectorIntegrationTests.cs:93`, replace `new ResultDiversifier(Options.Create(new VectorRankingOptions()))` with `new ResultDiversifier()` and append `Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 })` as the argument **before** `Options.Create(new DecayOptions…)` (the new ctor parameter order in step 2). The two values are pinned explicitly, not left to the defaults, because the MMR fixture tests those sites serve (`SearchSimilar_PromotesDissimilarCandidate_…` at `:2680`, `SearchChunks_SuppressesNearDuplicatePassage_…` at `:3075`) hand-compute their expectations at λ = 0.70 — a later default move (Task 8 step 2) must not be able to turn them red. Then add the two wiring tests beside `SearchSimilar_UsesConfiguredHalfLife_NotAHardCodedOne` (`:2607`), each reusing the candidate fixture of the MMR promotion tests (`:2680` for SearchSimilar, `:3075` for SearchChunks), whose hand-computed 0.70 arithmetic promotes C over the near-duplicate B:
 
 ```csharp
     // VectorRankingOptionsTests proves the diversifier honours whatever λ it is handed — it does
@@ -366,7 +366,7 @@ Nothing in this task is committed until this prints `ok` — the α-nDCG tests b
 ```python
 def test_alpha_ndcg_appears_only_with_nugget_qrels(tmp_path, qrels_path, capsys, monkeypatch):
     run = tmp_path / "x.similar.trec"
-    write_run(run, [("q1", "d1", 1, 0.9), ("q1", "d2", 2, 0.8)])
+    write_run(run, [("q1", ["d1", "d2"])])
     nugget = tmp_path / "qrels.nugget.trec"
     nugget.write_text("q1 s1 d1 1\nq1 s2 d2 1\n")
     monkeypatch.setattr(sys, "argv", ["report.py", "--run", str(run), "--qrels", qrels_path])
@@ -375,12 +375,16 @@ def test_alpha_ndcg_appears_only_with_nugget_qrels(tmp_path, qrels_path, capsys,
     monkeypatch.setattr(sys, "argv", ["report.py", "--run", str(run), "--qrels", qrels_path, "--nugget-qrels", str(nugget)])
     report.main()
     out = capsys.readouterr().out
-    assert "alpha_nDCG@10" in out and "1.0000" in out     # both subtopics covered in the top 2
+    # The whole block, so a consumed-generator bug that zeroes any later measure is caught in
+    # either call order: nDCG/R/AP score 0.25 on the 4-query fixture, α-nDCG 1.0 (both subtopics
+    # covered in the top 2).
+    for line in ("nDCG@10    0.2500", "R@50       0.2500", "AP         0.2500", "alpha_nDCG@10 1.0000"):
+        assert line in out, line
 
 
 def test_diversity_means_print_from_sidecar(tmp_path, qrels_path, capsys, monkeypatch):
     run = tmp_path / "y.chunks.trec"
-    write_run(run, [("q1", "d1", 1, 0.9)])
+    write_run(run, [("q1", ["d1"])])
     (tmp_path / "y.chunks.diversity.json").write_text(
         '{"label":"y","queries":1,"meanDistinctParentsAt10":7.5,"meanDistinctParentsAt50":31.0,"perQuery":{}}')
     monkeypatch.setattr(sys, "argv", ["report.py", "--run", str(run), "--qrels", qrels_path])
@@ -388,9 +392,9 @@ def test_diversity_means_print_from_sidecar(tmp_path, qrels_path, capsys, monkey
     out = capsys.readouterr().out
     assert "distinct parents @10  7.50" in out and "@50  31.00" in out
 ```
-(The `monkeypatch.setattr(sys, "argv", …)` + `report.main()` idiom is the file's existing way of driving the CLI in-process, `test_report.py:175-178`; `write_run`'s row tuples follow its existing signature.)
+(The `monkeypatch.setattr(sys, "argv", …)` + `report.main()` idiom is the file's existing way of driving the CLI in-process, `test_report.py:175-178`; `write_run(path, rows, tag)` takes `rows` as `[(qid, [docid, …])]` and generates ranks 1..n with descending scores itself, `test_report.py:25-30`.)
 
-- [ ] **Step 3: Implement in `report.py`.** Add `--nugget-qrels` (`help="TREC qrels with the nugget/subtopic id in the iteration column; adds alpha_nDCG@10 (pyndeval) to every scored run"`). In `main`, after the measures list: `if args.nugget_qrels: from ir_measures import alpha_nDCG; nugget_qrels = list(ir_measures.read_trec_qrels(args.nugget_qrels)); measures.append(alpha_nDCG@10)`. Because `score_run`/`per_query_values`/`run_paired_statistics` take one `qrels` list, route by measure: a helper `qrels_for(measure)` returns `nugget_qrels` when `str(measure).startswith("alpha_nDCG")` else `qrels`, used at every `calc_aggregate`/`iter_calc` call site (`:285`, `:402`, `:559-566`). Diversity: `diversity_sidecar_for(run_path)` = `sidecar_path_for(run_path)` with `.meta.json` → `.chunks.diversity.json` only when the run name ends `.chunks.trec`; when it exists, `print_scores` prints two extra lines `  distinct parents @10  {mean:.2f}` / `  distinct parents @50  {mean:.2f}`. Update the module docstring's measure list.
+- [ ] **Step 3: Implement in `report.py`.** Add `--nugget-qrels` (`help="TREC qrels with the nugget/subtopic id in the iteration column; adds alpha_nDCG@10 (pyndeval) to every scored run"`). In `main`, after the measures list: `if args.nugget_qrels: from ir_measures import alpha_nDCG; nugget_qrels = list(ir_measures.read_trec_qrels(args.nugget_qrels)); measures.append(alpha_nDCG@10)`. Because `score_run`/`per_query_values`/`run_paired_statistics` take one `qrels` list, route by qrels group — but never re-read a consumed generator: `ir_measures.read_trec_run` returns a generator, and a second `calc_aggregate` over it scores an empty run as 0.0 with no error (the A34 trap `report.py:553-558` already documents for the baseline). In `score_run` (`:282-286`): `run = list(ir_measures.read_trec_run(run_path))`, then merge the results of **one call per qrels group** — `calc_aggregate(base_measures, qrels, run)` and, when `nugget_qrels` is set, `calc_aggregate([alpha_nDCG@10], nugget_qrels, run)` — into the dict `print_scores` reads. At the per-query and paired-statistics sites (`per_query_values` `:402`, `run_paired_statistics` `:559-566`), which each call `read_trec_run` afresh per invocation, a helper `qrels_for(measure)` returning `nugget_qrels` when `str(measure).startswith("alpha_nDCG")` else `qrels` is sufficient. Diversity: `diversity_sidecar_for(run_path)` = `sidecar_path_for(run_path)` with `.meta.json` → `.chunks.diversity.json` only when the run name ends `.chunks.trec`; when it exists, `print_scores` prints two extra lines `  distinct parents @10  {mean:.2f}` / `  distinct parents @50  {mean:.2f}`. Update the module docstring's measure list.
 
 - [ ] **Step 4: `freshstack_nugget_qrels.py`** (stdlib, argparse, docstring in `sample_corpus.py`'s style):
 ```python
