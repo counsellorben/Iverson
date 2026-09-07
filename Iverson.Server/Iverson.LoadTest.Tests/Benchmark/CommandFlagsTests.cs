@@ -12,4 +12,13 @@ public class CommandFlagsTests
         CommandFlags.Parse(["--rerank-input", "document"]).RerankInput.Should().Be("document");
         CommandFlags.Parse([]).RerankInput.Should().Be("winning-chunk");
     }
+
+    // Mutation: a wrong default here silently changes every flag-less benchmark-query run's chunk
+    // top_k (DocumentBudget * ChunkBudgetMultiplier) without anyone passing the flag at all.
+    [Fact]
+    public void Parse_ChunkBudgetMultiplier_Parses_AndDefaultsToFive()
+    {
+        CommandFlags.Parse(["--chunk-budget-multiplier", "11"]).ChunkBudgetMultiplier.Should().Be(11);
+        CommandFlags.Parse([]).ChunkBudgetMultiplier.Should().Be(5);
+    }
 }
