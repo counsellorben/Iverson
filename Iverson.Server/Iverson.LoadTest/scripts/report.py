@@ -35,18 +35,20 @@ Four things, in order, per invocation:
        existed falls back to the span for throughput, with a printed notice that the figure
        may include idle time.
 
-    4. Paired statistics against --baseline, if given: for each of the three measures above,
-       every other discovered run is compared to the baseline over the intersection of their
-       query sets -- delta, paired t-test, a seeded sign-flip permutation test, a 95% CI and
-       Cohen's d_z on the differences, the minimum detectable effect at 80% power, the count
-       of queries whose value actually changed, and a Holm-corrected p-value across the runs
-       compared within that measure. A SciFact centroid recall claim was once retracted after
-       a paired t-test on a distribution that was 98.3% exact zeros -- only 5 of 300 queries
-       had changed at all, which a sign-flip permutation test caught and the t-test's own
-       assumptions did not protect against. Below 10% changed queries this section prints a
-       banner saying so and naming the permutation p as the one to trust. With `--pair
-       RUN=BASELINE` (repeatable) the family is exactly the declared pairs, each checked for
-       pool invariance first; `--baseline` keeps the discover-everything behaviour.
+    4. Paired statistics against --baseline, if given: for each of the measures above --
+       three, or four with --nugget-qrels, since alpha_nDCG@10 gets its own compare block
+       like every other measure -- every other discovered run is compared to the baseline
+       over the intersection of their query sets -- delta, paired t-test, a seeded sign-flip
+       permutation test, a 95% CI and Cohen's d_z on the differences, the minimum detectable
+       effect at 80% power, the count of queries whose value actually changed, and a
+       Holm-corrected p-value across the runs compared within that measure. A SciFact
+       centroid recall claim was once retracted after a paired t-test on a distribution that
+       was 98.3% exact zeros -- only 5 of 300 queries had changed at all, which a sign-flip
+       permutation test caught and the t-test's own assumptions did not protect against.
+       Below 10% changed queries this section prints a banner saying so and naming the
+       permutation p as the one to trust. With `--pair RUN=BASELINE` (repeatable) the family
+       is exactly the declared pairs, each checked for pool invariance first; `--baseline`
+       keeps the discover-everything behaviour.
 
 Build identity: BenchmarkQueryScenario writes one <config-label>.meta.json sidecar per
 invocation, alongside its two run files, carrying a "composite" key -- a hash over every
@@ -63,12 +65,14 @@ reads more naturally than a separate --run-dir flag: "score these paths" stays o
 whether a path names a file or a directory of files, and multiple --run flags can still mix
 individual files with directories in one invocation.
 
-Not stdlib-only, unlike this directory's other scripts: ir_measures, numpy and scipy are the
-third-party imports this project permits (P3 of the parent plan; numpy/scipy back the paired
-statistics in section 4). They are reached through PYTHONPATH, never a site-packages install --
-this box is PEP 668 externally-managed with no working venv:
+Not stdlib-only, unlike this directory's other scripts: ir_measures, numpy, scipy and (for
+--nugget-qrels) pyndeval are the third-party imports this project permits (P3 of the parent
+plan; numpy/scipy back the paired statistics in section 4; pyndeval is ir_measures' provider
+for alpha_nDCG and is what the ImportError guard below sends the reader to install). They are
+reached through PYTHONPATH, never a site-packages install -- this box is PEP 668
+externally-managed with no working venv:
 
-    python3 -m pip install --target /path/to/libs ir_measures numpy scipy
+    python3 -m pip install --target /path/to/libs ir_measures numpy scipy pyndeval
 
     PYTHONPATH=/path/to/libs python3 \\
         Iverson.Server/Iverson.LoadTest/scripts/report.py \\
@@ -315,6 +319,28 @@ def print_structural_check(path, check):
         )
     else:
         print("  duplicate doc ids    none")
+
+
+def check_nugget_qrels_structure(nugget_qrels_path, nugget_qrels, qrels_path):
+    """Refuse a --nugget-qrels file with no subtopic structure -- the same class of
+    malformation section 1's structural_check exists to catch, just on the qrels side rather
+    than the run side. read_trec_qrels exposes the iteration column
+    (Qrel(query_id=..., doc_id=..., relevance=..., iteration='s1')); a genuine nugget file
+    carries a distinct iteration value per subtopic, while a query-level qrels file (the kind
+    --qrels expects) carries the same iteration value ("0") on every row. --qrels and
+    --nugget-qrels are one path segment apart in a typical run directory (qrels.trec vs
+    qrels.nugget.trec) and this script has no other way to tell them apart before alpha_nDCG
+    silently degenerates to one subtopic per query and prints a plausible-looking wrong
+    number."""
+    iterations = {row.iteration for row in nugget_qrels}
+    if len(iterations) <= 1:
+        sys.exit(
+            f"--nugget-qrels {nugget_qrels_path}: every row shares one iteration value "
+            f"({sorted(iterations)!r}) -- this looks like a query-level qrels file, not a "
+            f"nugget/subtopic file. alpha_nDCG needs more than one subtopic per query in the "
+            f"iteration column. Check that --qrels ({qrels_path}) and --nugget-qrels were not "
+            "swapped."
+        )
 
 
 def qrels_for(measure, qrels, nugget_qrels):
@@ -740,12 +766,18 @@ def check_pool(run_path, baseline_path):
         )
 
 
-def run_pair_statistics(qrels, pairs, measures):
+def run_pair_statistics(qrels, pairs, measures, nugget_qrels=None):
     """Like run_paired_statistics, but the family is EXACTLY the declared pairs -- each run
     against its own baseline -- and Holm runs once per measure over those pairs and nothing
     else (spec §7.2: A1-A0, A2-A0, A3-A0'; one construction at m = 3). Every pair passes
     check_pool before any statistic is computed. Baseline per-query values are materialised
-    once per distinct baseline per measure (Task 1's fix applies here by construction)."""
+    once per distinct baseline per measure (Task 1's fix applies here by construction).
+
+    nugget_qrels, when given, lets alpha_nDCG@10 (present in `measures` only with
+    --nugget-qrels) route to the nugget qrels via qrels_for instead of qrels -- the same
+    routing rule run_paired_statistics, per_query_values and score_run already apply. Without
+    it, this function's own baseline_values computation and its call into paired_comparison
+    both pass the query-level qrels for every measure, including alpha_nDCG@10."""
     import ir_measures
 
     for run_path, baseline_path in pairs:
@@ -757,13 +789,14 @@ def run_pair_statistics(qrels, pairs, measures):
     composites = {p: load_build_composite(p) for pair in pairs for p in pair}
 
     for measure in measures:
+        measure_qrels = qrels_for(measure, qrels, nugget_qrels)
         baseline_values = {
-            p: {m.query_id: m.value for m in ir_measures.iter_calc([measure], qrels, run)}
+            p: {m.query_id: m.value for m in ir_measures.iter_calc([measure], measure_qrels, run)}
             for p, run in baseline_runs.items()
         }
         comparisons = [
             (run_path, baseline_path,
-             paired_comparison(baseline_values[baseline_path], run_path, qrels, measure))
+             paired_comparison(baseline_values[baseline_path], run_path, qrels, measure, nugget_qrels))
             for run_path, baseline_path in pairs
         ]
         valid = [(r, b, c) for r, b, c in comparisons if c is not None]
@@ -874,6 +907,7 @@ def main():
         from ir_measures import alpha_nDCG
 
         nugget_qrels = list(ir_measures.read_trec_qrels(args.nugget_qrels))
+        check_nugget_qrels_structure(args.nugget_qrels, nugget_qrels, args.qrels)
         measures.append(alpha_nDCG @ 10)
 
     for path in run_paths:
@@ -891,7 +925,7 @@ def main():
         run_paired_statistics(qrels, run_paths, args.baseline, measures, nugget_qrels)
 
     if pairs:
-        run_pair_statistics(qrels, pairs, measures)
+        run_pair_statistics(qrels, pairs, measures, nugget_qrels)
 
 
 if __name__ == "__main__":

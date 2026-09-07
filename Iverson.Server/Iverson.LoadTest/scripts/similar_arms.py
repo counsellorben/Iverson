@@ -46,19 +46,30 @@ def main():
     args = ap.parse_args()
 
     multivector.require_collection(args.object_collection)
-    with open(os.path.join(args.run_dir, "beir", "queries.jsonl"), encoding="utf-8") as f:
+    queries_path = os.path.join(args.run_dir, "beir", "queries.jsonl")
+    with open(queries_path, encoding="utf-8") as f:
         queries = [json.loads(line) for line in f if line.strip()]
+    if not queries:
+        sys.exit(f"no queries in {queries_path}")
     runs_dir = os.path.join(args.run_dir, "runs"); os.makedirs(runs_dir, exist_ok=True)
     lines = {label: [] for label in ARMS}
     try:
         for i, q in enumerate(queries, start=1):
             vec = ingest.embed(compose_query(args.query_prefix, q["text"]), args.model, "", args.embed_url)
+            # Build both arms' lines for this query before committing either -- if the second
+            # arm's search fails (HTTP error, or rank_hits' sys.exit on a short result), the
+            # first arm's already-written lines for this query must not be extended into
+            # `lines`, or the two finally-written .trec files end up covering different query
+            # sets: head-raw ahead of centroid-raw by however many queries failed mid-way.
+            query_lines = {}
             for label, vector_name in ARMS.items():
                 status, resp = ingest.qdrant_request("POST", f"/collections/{args.object_collection}/points/search", {
                     "vector": {"name": vector_name, "vector": vec}, "limit": DOCUMENT_BUDGET, "with_payload": ["docId"]})
                 if status != 200:
                     sys.exit(f"query {q['_id']} ({label}): HTTP {status} {resp}")
-                lines[label].extend(multivector.trec_lines(q["_id"], rank_hits(resp["result"], q["_id"], DOCUMENT_BUDGET), label))
+                query_lines[label] = multivector.trec_lines(q["_id"], rank_hits(resp["result"], q["_id"], DOCUMENT_BUDGET), label)
+            for label, rows in query_lines.items():
+                lines[label].extend(rows)
             if i % 50 == 0 or i == len(queries):
                 print(f"[similar_arms] {i}/{len(queries)} queries")
     finally:

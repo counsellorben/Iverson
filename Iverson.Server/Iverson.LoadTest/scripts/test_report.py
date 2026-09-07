@@ -235,6 +235,87 @@ def test_diversity_means_print_from_sidecar(tmp_path, qrels_path, capsys, monkey
     assert "distinct parents @10  7.50" in out and "@50  31.00" in out
 
 
+def test_pair_statistics_routes_alpha_ndcg_to_nugget_qrels(tmp_path, qrels_path, monkeypatch):
+    """--pair + --nugget-qrels must score alpha_nDCG@10 against the nugget qrels, not the
+    query-level qrels -- run_pair_statistics is the fourth consumer Task 3 missed (score_run,
+    per_query_values and run_paired_statistics were already fixed to route through qrels_for;
+    this function's own baseline_values computation, and its call into paired_comparison,
+    both used to pass the plain query-level qrels for every measure).
+
+    No pyndeval needed: actually computing alpha_nDCG requires it (not installed on this
+    box), so ir_measures.iter_calc is monkeypatched to intercept just the alpha_nDCG@10 call
+    and record which qrels OBJECT it was given, by identity, rather than really scoring it.
+    Against the unfixed run_pair_statistics (no nugget_qrels parameter, `qrels` used
+    unconditionally) this test fails: every recorded qrels object is the query-level `qrels`
+    fixture, never `nugget_qrels`."""
+    from ir_measures import alpha_nDCG, nDCG
+    import ir_measures
+
+    a0, a1, a2, a0p, a3 = _three_arm_family(tmp_path)
+
+    nugget_path = tmp_path / "qrels.nugget.trec"
+    nugget_path.write_text(
+        "q1 s1 d1 1\nq1 s2 d2 1\nq2 s1 d2 1\nq2 s2 d1 1\n"
+        "q3 s1 d3 1\nq3 s2 d1 1\nq4 s1 d4 1\nq4 s2 d2 1\n"
+    )
+    qrels = load_qrels(qrels_path)
+    nugget_qrels = load_qrels(str(nugget_path))
+
+    real_iter_calc = ir_measures.iter_calc
+    seen_qrels = []
+
+    def fake_iter_calc(measures, used_qrels, run):
+        if len(measures) == 1 and str(measures[0]).startswith("alpha_nDCG"):
+            seen_qrels.append(used_qrels)
+            run_list = list(run)
+            query_ids = sorted({row.query_id for row in run_list})
+            return [ir_measures.Metric(query_id=qid, measure=measures[0], value=1.0) for qid in query_ids]
+        return real_iter_calc(measures, used_qrels, run)
+
+    monkeypatch.setattr(ir_measures, "iter_calc", fake_iter_calc)
+
+    pairs = report.parse_pairs([f"{a1}={a0}"])
+    report.run_pair_statistics(qrels, pairs, [nDCG @ 10, alpha_nDCG @ 10], nugget_qrels)
+
+    assert seen_qrels, "alpha_nDCG@10 was never scored -- fake_iter_calc was never hit"
+    assert all(used is nugget_qrels for used in seen_qrels), (
+        "alpha_nDCG@10 must be routed to nugget_qrels, not the query-level qrels; "
+        f"saw {sum(1 for u in seen_qrels if u is qrels)} of {len(seen_qrels)} calls routed "
+        "to the wrong (query-level) qrels object"
+    )
+
+
+def test_nugget_qrels_with_no_subtopic_structure_is_refused(tmp_path, qrels_path, monkeypatch):
+    """A --nugget-qrels file where every row shares one iteration value looks exactly like a
+    query-level qrels file -- the operator's likeliest mistake is swapping --qrels and
+    --nugget-qrels, one path segment apart in a typical run directory. Refused before any
+    scoring, naming both flags."""
+    run = tmp_path / "x.similar.trec"
+    write_run(run, [("q1", ["d1", "d2"])])
+    bad_nugget = tmp_path / "qrels.nugget.trec"
+    write_qrels(bad_nugget, QRELS)  # iteration column is "0" on every row -- query-level, not nugget
+    monkeypatch.setattr(sys, "argv", ["report.py", "--run", str(run), "--qrels", qrels_path,
+                                      "--nugget-qrels", str(bad_nugget)])
+    with pytest.raises(SystemExit) as e:
+        report.main()
+    message = str(e.value)
+    assert "--nugget-qrels" in message and "--qrels" in message
+
+
+def test_nugget_qrels_with_subtopic_structure_is_accepted(tmp_path, qrels_path, monkeypatch):
+    """The mirror image of the refusal test: a genuine nugget file (more than one iteration
+    value across its rows) must not trip the structural check. Guarded on pyndeval since this
+    exercises the real scoring path through main(), not just the check itself."""
+    pytest.importorskip("pyndeval")
+    run = tmp_path / "x.similar.trec"
+    write_run(run, [("q1", ["d1", "d2"])])
+    good_nugget = tmp_path / "qrels.nugget.trec"
+    good_nugget.write_text("q1 s1 d1 1\nq1 s2 d2 1\n")
+    monkeypatch.setattr(sys, "argv", ["report.py", "--run", str(run), "--qrels", qrels_path,
+                                      "--nugget-qrels", str(good_nugget)])
+    report.main()  # must not raise
+
+
 def test_diversity_means_omitted_without_crashing_when_sidecar_missing_a_key(tmp_path, qrels_path, capsys, monkeypatch):
     """A sidecar that parses as JSON but is missing one of the two mean keys must not crash
     the whole report.py run -- print_scores must not destructure and format a None with
