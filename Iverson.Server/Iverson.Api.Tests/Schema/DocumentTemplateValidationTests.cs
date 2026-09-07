@@ -334,7 +334,8 @@ public class DocumentTemplateValidationTests
             NullLogger<ObjectSearchGrpcService>.Instance,
             actingUserAccessor, new RowFieldAuthorizationEvaluator(),
             new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
-            new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(Options.Create(new VectorRankingOptions())),
+            new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
             Options.Create(new DecayOptions()));
 
         var writer = Substitute.For<IServerStreamWriter<ChunkSearchResponse>>();

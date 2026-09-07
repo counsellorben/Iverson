@@ -438,9 +438,11 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - Otel__Endpoint=http://jaeger:4317
       - Embeddings__BaseUrl=http://tei-embed:80
-      # MMR lambda; 0.70 is VectorRankingOptions' default. The reranker evaluation's A0'/A3 arms run
-      # the API at 1.00 (spec §7.2):   VECTOR_RANKING_LAMBDA=1.00 docker compose up -d iverson-api
-      - VectorRanking__Lambda=${VECTOR_RANKING_LAMBDA:-0.70}
+      # MMR lambda per endpoint; 0.70 is VectorRankingOptions' default for both. The Tier 1 sweep
+      # recreates the API with both at one value, e.g.
+      #   VECTOR_RANKING_LAMBDA_SIMILAR=1.00 VECTOR_RANKING_LAMBDA_CHUNKS=1.00 docker compose up -d --no-deps iverson-api
+      - VectorRanking__LambdaSimilar=${VECTOR_RANKING_LAMBDA_SIMILAR:-0.70}
+      - VectorRanking__LambdaChunks=${VECTOR_RANKING_LAMBDA_CHUNKS:-0.70}
       # Must agree with tei-embed's served model (its --model-id, EMBED_MODEL_ID) and with the five
       # conformance fixtures' declared model: this is the deployment default types register under.
       # A mismatch fails loudly at first initialisation — the API's /info identity guard.
