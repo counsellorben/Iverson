@@ -163,11 +163,11 @@ public sealed class VectorRankingOptionsTests
     }
 
     [Fact]
-    public void AddVectorRanking_Defaults_AreSeventyPercentOnBothEndpoints()
+    public void AddVectorRanking_Defaults_AreGateVerdictPerEndpoint()
     {
         var provider = new ServiceCollection().AddVectorRanking(BuildConfig()).BuildServiceProvider();
         var opts = provider.GetRequiredService<IOptions<VectorRankingOptions>>().Value;
-        opts.LambdaSimilar.Should().Be(0.70);
+        opts.LambdaSimilar.Should().Be(1.00);
         opts.LambdaChunks.Should().Be(0.70);
     }
 }

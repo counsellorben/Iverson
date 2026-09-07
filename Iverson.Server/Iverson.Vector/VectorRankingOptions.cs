@@ -15,10 +15,12 @@ public sealed class VectorRankingOptions
     public double WCentroid { get; set; } = 0.45;
     public double WDecay    { get; set; } = 0.10;
 
-    // MMR λ per endpoint. Both 0.70 until the Tier 1 gate (docs/plans/2026-09-GATE-tier1-defaults.md)
-    // sets each by rule: SearchChunks returns the chunk list itself, so its λ is a caller-visible
-    // choice the document-level benchmark cannot see; SearchSimilar's measured R@50 price for
-    // diversification is 9–13 % (spec 2026-09-06-tier1-retrieval-defaults-design §1).
-    public double LambdaSimilar { get; set; } = 0.70;
+    // MMR λ per endpoint, set by the Tier 1 gate (docs/plans/2026-09-GATE-tier1-defaults.md, rule 7.2).
+    // SearchSimilar: 1.00. No λ beat 0.70 on α-nDCG@10 on either FreshStack arm and λ=1.00 was not
+    // worse, so the rule's none-qualify clause applies; λ=1.00 also buys R@50 (+0.0506 fs-2048,
+    // +0.0518 fs-512, both significant) at no measurable diversity cost.
+    // SearchChunks: 0.70. SearchChunks returns the chunk list itself, so λ is caller-visible: λ=1.00
+    // costs 1.44 (fs-2048) and 1.97 (fs-512) distinct parents in the top 10, past the rule's 1.0 bar.
+    public double LambdaSimilar { get; set; } = 1.00;
     public double LambdaChunks  { get; set; } = 0.70;
 }
