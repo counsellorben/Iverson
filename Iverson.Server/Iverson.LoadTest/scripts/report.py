@@ -212,9 +212,12 @@ def diversity_sidecar_for(run_path):
 
 def load_diversity_means(run_path):
     """(meanDistinctParentsAt10, meanDistinctParentsAt50) from the run's diversity sidecar, or
-    None when the run is not a .chunks.trec run, the sidecar does not exist, or it is not
-    valid JSON -- treated the same as load_build_composite treats a missing/corrupt build
-    sidecar: this runs after scoring, so a bad sidecar must not discard the scoring work."""
+    None when the run is not a .chunks.trec run, the sidecar does not exist, is not valid
+    JSON, or is missing either key -- treated the same as load_build_composite treats a
+    missing/corrupt build sidecar: this runs after scoring, so a bad sidecar must not discard
+    the scoring work, and must not raise either. A sidecar present but missing one of the two
+    keys returns None rather than a partial (value, None) tuple: print_scores prints both
+    lines together or neither, never one line with a formatted None in it."""
     sidecar = diversity_sidecar_for(run_path)
     if sidecar is None or not os.path.exists(sidecar):
         return None
@@ -223,7 +226,11 @@ def load_diversity_means(run_path):
             data = json.load(f)
         except json.JSONDecodeError:
             return None
-    return data.get("meanDistinctParentsAt10"), data.get("meanDistinctParentsAt50")
+    mean_at_10 = data.get("meanDistinctParentsAt10")
+    mean_at_50 = data.get("meanDistinctParentsAt50")
+    if mean_at_10 is None or mean_at_50 is None:
+        return None
+    return mean_at_10, mean_at_50
 
 
 # ── Step 1: structural checks ──────────────────────────────────────────────────────────

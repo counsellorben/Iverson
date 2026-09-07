@@ -181,12 +181,20 @@ def test_pair_and_baseline_are_mutually_exclusive(tmp_path, qrels_path, monkeypa
 
 def test_score_block_is_complete_without_nugget_qrels(tmp_path, qrels_path, capsys, monkeypatch):
     """A run with only q1 covered, scored against the 4-query qrels fixture, must print all
-    three base measures non-zero. This is the regression this task's split guards against a
-    consumed-generator bug in score_run (score_run must materialise read_trec_run's generator
-    ONCE and merge one calc_aggregate call per qrels group -- a second calc_aggregate over an
-    already-consumed generator silently scores an empty run as 0.0, spec A34's trap for the
-    --baseline section applies here too if score_run routed "by measure" without
-    materialising first). Needs no pyndeval: no --nugget-qrels is passed."""
+    three base measures present and non-zero -- catching a naive per-measure scoring loop
+    (one calc_aggregate call per measure, each re-reading or re-consuming the run) that
+    zeroes out every measure after the first. Needs no pyndeval: no --nugget-qrels is passed.
+
+    This does NOT exercise score_run's single-materialisation guarantee end to end: with no
+    --nugget-qrels, `nugget_measures` is empty and score_run makes exactly one
+    calc_aggregate call regardless of whether `run` was materialised first -- removing the
+    `list(...)` in score_run does not fail this test (verified directly: the whole
+    non-pyndeval suite in this file still passes with it removed). The two-qrels-group merge
+    that materialisation
+    actually protects -- base measures against qrels, alpha_nDCG@10 against nugget_qrels,
+    from the SAME read of the run -- is exercised only by
+    test_alpha_ndcg_appears_only_with_nugget_qrels below, which is pyndeval-gated and skips
+    today. That path is unverified until pyndeval is installed."""
     run = tmp_path / "x.similar.trec"
     write_run(run, [("q1", ["d1", "d2"])])
     monkeypatch.setattr(sys, "argv", ["report.py", "--run", str(run), "--qrels", qrels_path])
@@ -225,3 +233,20 @@ def test_diversity_means_print_from_sidecar(tmp_path, qrels_path, capsys, monkey
     report.main()
     out = capsys.readouterr().out
     assert "distinct parents @10  7.50" in out and "@50  31.00" in out
+
+
+def test_diversity_means_omitted_without_crashing_when_sidecar_missing_a_key(tmp_path, qrels_path, capsys, monkeypatch):
+    """A sidecar that parses as JSON but is missing one of the two mean keys must not crash
+    the whole report.py run -- print_scores must not destructure and format a None with
+    :.2f. Unreachable via Task 2's writer today (it always emits both keys), but
+    load_diversity_means's own docstring promises the same tolerance load_build_composite
+    gives a corrupt build sidecar, so this pins the chosen behaviour: omit both lines rather
+    than print a partial pair."""
+    run = tmp_path / "y.chunks.trec"
+    write_run(run, [("q1", ["d1"])])
+    (tmp_path / "y.chunks.diversity.json").write_text(
+        '{"label":"y","queries":1,"meanDistinctParentsAt10":7.5,"perQuery":{}}')
+    monkeypatch.setattr(sys, "argv", ["report.py", "--run", str(run), "--qrels", qrels_path])
+    report.main()
+    out = capsys.readouterr().out
+    assert "distinct parents" not in out
