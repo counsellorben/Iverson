@@ -144,6 +144,7 @@ places the default lives (§10 A17, A22):
 | `Iverson.Clients/DotNet/Iverson.Client.Attributes/IversonChunkAttribute.cs:10` | `maxTokens = 128, overlap = 16` |
 | `Iverson.Clients/TypeScript/src/annotations.ts:166` | `maxTokens = 128, overlap = 16` |
 | `Iverson.Clients/Go/iverson/tags.go:293-294` and the doc comments at `:168-171` | `128` / `16` |
+| `Iverson.Clients/Go/iverson_test/tags_test.go:202-206` (`TestInspectType_Chunk_Defaults`, which asserts the bare-tag defaults) | `128` / `16` |
 | `Iverson.Clients/Java/client/src/main/java/io/iverson/client/annotations/IversonChunk.java:18,21` | `default 128` / `default 16` |
 | `Iverson.Clients/Python/iverson_client/annotations.py:42-43,64-65` and `:154-155` (`iverson_chunk`'s own `max_tokens`/`overlap` defaults, the exported declaration helper, which pass through to `iverson_field` and bypass the other two sites) | `128` / `16` at all three sites |
 | `Iverson.Server/Iverson.Api/Schema/SchemaBuilder.cs:161-162` (the templated-document window fallback used whenever a registration leaves `DocumentMaxTokens`/`DocumentOverlap` at 0 — no client emits them, so it is the effective default for every type with a `DocumentTemplate`) | `128` / `16` (Ben, 2026-09-06: option (a) of CDR-2 §3.1) |
@@ -260,10 +261,12 @@ lower bounds exceed −0.02 on SciFact, the gate document recommends a follow-up
   sidecar.
 - `test_report.py`: α-nDCG appears only with `--nugget-qrels`; the diversity means print from a sidecar;
   a nugget qrels file with iteration = subtopic scores α-nDCG@10 on a hand-computable case.
-- Gated (§3.4, on a FAIL only): a `SchemaBuilder` test that a registration with `DocumentMaxTokens` /
-  `DocumentOverlap` at 0 derives a `Document` chunk descriptor of 128 / 16; the Python client's tests
-  that a bare `iverson_chunk()` carries 128 / 16; `IngestContractTests` regenerating a 512/448
-  `chunkWindow`.
+- Gated (§3.4, on a FAIL only): the existing `SchemaBuilderTests.cs:619-639`
+  (`…UnsetTokenFields_DefaultToFallbackValues`, asserting 512 / 64 today) retargeted so a registration
+  with `DocumentMaxTokens` / `DocumentOverlap` at 0 derives a `Document` chunk descriptor of 128 / 16;
+  the Python client's tests that a bare `iverson_chunk()` carries 128 / 16; the Go client's
+  `TestInspectType_Chunk_Defaults` (`tags_test.go:188-207`) retargeted to 128 / 16;
+  `IngestContractTests` regenerating a 512/448 `chunkWindow`.
 - `test_similar_arms.py`: TREC line format, the required prefix composition, fail-loud on an under-filled
   query. Request shapes are pinned by §9 rows 8–9.
 
@@ -301,7 +304,7 @@ lower bounds exceed −0.02 on SciFact, the gate document recommends a follow-up
 | A13 | SciFact 2048/1792 → 6,587 | §9 row 10 |
 | A14/A15 | live baseline; object points carry both vectors + `docId` | §9 row 7 |
 | A16 | contract has no query prefixes → `--query-prefix` required | §9 row 8; `EmbeddingPrefixes.cs:35` |
-| A17/A22 | the default lives at **sites**, not files: one each in the DotNet, TypeScript, Go and Java clients, **three** in the Python client (`annotations.py:42-43`, `:64-65`, and `iverson_chunk`'s own defaults at `:154-155`, which bypass the other two), the server's templated-document fallback `SchemaBuilder.cs:161-162` (no client emits `document_max_tokens`), `IngestContractTests.cs:75` (copied by design, comment `:40-43`) + the regenerated contract; `Article.cs:14` is an explicit pin | read; CDR-2 §2.1 and §3.1 |
+| A17/A22 | the default lives at **sites**, not files: one each in the DotNet, TypeScript, Go and Java clients, **three** in the Python client (`annotations.py:42-43`, `:64-65`, and `iverson_chunk`'s own defaults at `:154-155`, which bypass the other two), the server's templated-document fallback `SchemaBuilder.cs:161-162` (no client emits `document_max_tokens`), + the regenerated contract, **plus every test that asserts the default — three:** `IngestContractTests.cs:75` (copied by design, comment `:40-43`), `SchemaBuilderTests.cs:619-639` (asserts the 512/64 fallback), `Go iverson_test/tags_test.go:188-207` (asserts the bare-tag defaults); `Article.cs:14` is an explicit pin | read; CDR-2 §2.1 and §3.1; CDR-3 §2.1 |
 | A18 | the client standard does not state the default; conformance does not pin it | grep |
 | A19 | ≈ 30 min per FreshStack query run | §9 row 5 |
 | A20 | λ env on api only; no Helm entries | compose; `deploy/helm` grep |
