@@ -150,19 +150,21 @@ resource "azurerm_log_analytics_workspace" "this" {
 # is actually populated at apply time.
 #tfsec:ignore:azure-container-limit-authorized-ips
 resource "azurerm_kubernetes_cluster" "this" {
-  name                = var.cluster_name
-  location            = azurerm_resource_group.this.location
-  resource_group_name = azurerm_resource_group.this.name
-  dns_prefix          = var.cluster_name
-  kubernetes_version  = var.kubernetes_version
-  sku_tier            = "Standard"
+  name                   = var.cluster_name
+  location               = azurerm_resource_group.this.location
+  resource_group_name    = azurerm_resource_group.this.name
+  dns_prefix             = var.cluster_name
+  kubernetes_version     = var.kubernetes_version
+  sku_tier               = "Standard"
+  disk_encryption_set_id = azurerm_disk_encryption_set.data_volumes.id
 
   role_based_access_control_enabled = true
 
   default_node_pool {
-    name           = "general"
-    vm_size        = var.general_vm_size
-    vnet_subnet_id = azurerm_subnet.aks.id
+    name              = "general"
+    vm_size           = var.general_vm_size
+    kubelet_disk_type = "OS"
+    vnet_subnet_id    = azurerm_subnet.aks.id
     # enable_auto_scaling is the azurerm ~> 3.90 (v3.x) attribute name; a future
     # bump to azurerm ~> 4.x must rename this back to auto_scaling_enabled.
     enable_auto_scaling = true
@@ -215,6 +217,7 @@ resource "azurerm_kubernetes_cluster_node_pool" "pools" {
   name                  = each.key
   kubernetes_cluster_id = azurerm_kubernetes_cluster.this.id
   vm_size               = each.value.vm_size
+  kubelet_disk_type     = "OS"
   node_count            = each.value.count
   vnet_subnet_id        = azurerm_subnet.aks.id
 
