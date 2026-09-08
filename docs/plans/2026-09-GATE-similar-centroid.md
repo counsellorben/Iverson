@@ -195,7 +195,7 @@ leaky setting from a λ difference in the recorded runs. Both outcomes are recor
 | Arm | New binary's `head` run vs the recorded λ=1.00 run (build `9714c660b365fad1`) | Outcome |
 |---|---|---|
 | `fs-2048` | `fs2048-head` vs `fs-2048-l100.similar.trec` — **identical ordering** | **Confirms.** The setting is provably inert on the control path, and Task 1's refactor did not change head-retrieval behaviour. |
-| `fs-512` | `fs512-head` vs `fs-512-l100.similar.trec` — **362 of 67,200 positions differ (0.54 %)**, with a slightly different document set | **Non-diagnostic**, as pre-declared. |
+| `fs-512` | `fs512-head` vs `fs-512-l100.similar.trec` — **181 of 33,600 positions differ (0.54 %)**, with a slightly different document set | **Non-diagnostic**, as pre-declared. |
 
 Weigh the second against the first: a setting that leaked into the control path would have shown on
 `fs-2048` too, and it did not. A 0.54 % positional difference across two different builds is far
@@ -218,7 +218,8 @@ accepted.
 Retrieval always fetches the *other* named vector as the fused secondary signal
 (`ObjectSearchGrpcService.cs:265-275`), so under **both** settings the fused score is
 `0.45·cos(q, head) + 0.45·cos(q, centroid)` over the same two cosines. For any document present in
-both arms' retrieved pool, its final score is provably identical. Confirmed empirically: query 1's
+both arms' retrieved pool, its final score is identical up to float rounding, and empirically
+identical here. Confirmed empirically: query 1's
 top SciFact document scores **0.581890** in both arms.
 
 **The vectors themselves genuinely differ.** A real 4-chunk document in
@@ -241,7 +242,7 @@ measure is therefore a **recall** difference — and the density table shows exa
 R@50 grows monotonically with chunk density — 0.0000 → +0.0037 → +0.0045 — exactly as widening pool
 divergence predicts. **nDCG@10 stays pinned at zero regardless**, even on `fs-512` where 17.1 % of
 all ranked positions move. nDCG@10 reads the top 10, which is almost entirely shared candidates, so
-it cannot move at any density. Only the pool boundary at depth 50 can, and it does.
+it barely moves at any density. Only the pool boundary at depth 50 moves substantially, and it does.
 
 SciFact's null is additionally structural: 3,820 of its 5,183 documents (73.7 %) are single-chunk,
 and a single-chunk document's centroid equals its unit-normalized head vector, so it cannot move at
@@ -289,9 +290,11 @@ The fused path delivers roughly **0.4 % and 0 %** of the raw nDCG@10 effect and 
 the raw R@50 effect. The symmetric 0.45/0.45 fusion does not merely dilute the centroid's advantage
 — on ordering it erases it exactly, by construction, and no choice of retrieval vector can restore
 it while the weights stay equal. Rule 7.3's finding stands as a fact about the representations; this
-gate shows the current architecture cannot convert it, and that the lever is **WBase / WCentroid**,
-which spec §2 put out of scope. Any future attempt at rule 7.3's gain should start there, not at the
-retrieval vector.
+gate shows the current architecture cannot convert the ordering half of it. The ordering half of
+rule 7.3's gain is gated on **WBase / WCentroid**, which spec §2 placed out of scope, while the
+recall half remains gated on the retrieval vector per spec §1 — the R@50 gains measured above (`fs-2048`
++0.0037, `fs-512` +0.0045) came from that lever alone. Any future attempt needs both: neither lever
+by itself reaches rule 7.3's result.
 
 ## Consequences applied
 
