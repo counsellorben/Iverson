@@ -26,6 +26,11 @@ These are the same three directories the Tier 1 campaign wrote
 `meta.json`, six `.log` files and the three reports named above to them. No re-ingest occurred —
 each arm restored both collections from its snapshot directory, per spec §4.
 
+**Amendment 2026-09-08** (see "What the FAIL means"): two further reports were added beside the
+FreshStack run files — `report-fused-vs-raw.txt` (the fused head-retrieval arm paired against
+`head-raw` and `centroid-raw`) and `report-chunks-vs-similar-l100.txt` (the Tier 1 `.chunks` run
+paired against the Tier 1 `.similar` run at λ 1.00). No new API runs were made.
+
 ## Method
 
 Six query runs from one binary: three corpora × two settings (`head`, `centroid`). Per arm:
@@ -271,8 +276,8 @@ Spec §5:
 The rule is a conjunction over all six clauses. **Two fail — nDCG@10 on both FreshStack arms — so
 the verdict is FAIL.** `fs-2048` alone settles it; `fs-512` was run anyway (SDD Ruling 5) because a
 FAIL's whole value is the argument it licenses, and the 10.79 chunks/doc regime is what shows
-whether the masking worsens as pool divergence grows. It does not worsen; it is total at every
-density.
+whether the swap's ordering effect appears as pool divergence grows. It does not; it is zero at
+every density.
 
 ### What the FAIL means
 
@@ -286,15 +291,49 @@ head-vs-centroid measurement on these same two corpora:
 | `fs-2048` | **+0.0251** (p_adj 0.0004) | +0.0001 | **+0.0576** (p_adj 0.0002) | +0.0037 |
 | `fs-512` | **+0.0290** (p_adj 0.0006) | +0.0000 | **+0.0598** (p_adj 0.0002) | +0.0045 |
 
-The fused path delivers roughly **0.4 % and 0 %** of the raw nDCG@10 effect and **6 % and 8 %** of
-the raw R@50 effect. The symmetric 0.45/0.45 fusion does not merely dilute the centroid's advantage
-— on ordering it erases it exactly, by construction, and no choice of retrieval vector can restore
-it while the weights stay equal. Rule 7.3's finding stands as a fact about the representations; this
-gate shows the current architecture cannot convert the ordering half of it. The ordering half of
-rule 7.3's gain is gated on **WBase / WCentroid**, which spec §2 placed out of scope, while the
-recall half remains gated on the retrieval vector per spec §1 — the R@50 gains measured above (`fs-2048`
-+0.0037, `fs-512` +0.0045) came from that lever alone. Any future attempt needs both: neither lever
-by itself reaches rule 7.3's result.
+The fused path delivers roughly **0.4 % and 0 %** of the raw nDCG@10 *difference between retrieval
+vectors* and **6 % and 8 %** of the raw R@50 difference. The symmetric 0.45/0.45 fusion erases the
+retrieval-vector difference on ordering exactly, by construction: no choice of retrieval vector can
+change the fused score of a document both arms retrieve while the weights stay equal.
+
+#### Amendment 2026-09-08 — the masking is of the swap, not of the centroid's value
+
+The table above compares a delta to a delta and says nothing about where the fused path sits
+relative to the two raw representations. Measured directly (`report-fused-vs-raw.txt` in each
+FreshStack directory; same qrels, same 672 queries; the fused arm is `fs*-head.similar` at
+`LambdaSimilar` 1.00, the raw arms are Tier 1 rule 7.3's):
+
+| Arm | fused head-retrieval vs raw head | fused head-retrieval vs raw centroid | rule 7.3 raw gap |
+|---|---|---|---|
+| `fs-2048` nDCG@10 | **+0.0269** [+0.0187, +0.0350] p_adj 0.0002 | +0.0018 [−0.0072, +0.0108] n.s. | +0.0251 |
+| `fs-2048` R@50 | **+0.0506** [+0.0391, +0.0620] p_adj 0.0002 | −0.0070 [−0.0207, +0.0067] n.s. | +0.0576 |
+| `fs-512` nDCG@10 | **+0.0376** [+0.0288, +0.0464] p_adj 0.0002 | +0.0086 [−0.0018, +0.0191] n.s. | +0.0290 |
+| `fs-512` R@50 | **+0.0568** [+0.0443, +0.0692] p_adj 0.0002 | −0.0031 [−0.0164, +0.0102] n.s. | +0.0598 |
+
+The shipped path sits at the raw centroid's level on every measure and above the raw head by the
+full rule 7.3 gap. If the equal weights masked the centroid's advantage, the fused path would sit
+near the raw head; it sits at the raw centroid. The 0.45/0.45 fusion therefore **realises** rule
+7.3's gain rather than masking it, and what the symmetric weights erase is only the difference
+between retrieval vectors.
+
+This also bounds the weight lever. The fused score is a convex blend of the two cosines: at
+`WCentroid` = 0 the path is the raw head, and at `WBase` = 0 it is at most the raw centroid, since
+ranking the head's 4×-over-fetched pool by centroid cosine cannot exceed a centroid search of the
+whole collection. The shipped 0.45/0.45 point already ties that upper endpoint (n.s. on all
+measures, both arms). Any gain from re-weighting would have to be an interior bump above both
+endpoints, which is unmeasured for `SearchSimilar`; the one sweep the project has (`SearchChunks`
+over FreshStack, `centroid-weighting-proposal.md` §"The chunks-per-document schedule") found
+w = 0.500 and w = 0.667 within 0.0003 nDCG@10 of each other. **`WBase` / `WCentroid` is therefore
+not a measured lever for this gain either.** The residual R@50 gains from the retrieval swap
+(`fs-2048` +0.0037, `fs-512` +0.0045) are what remains after the over-fetch has recovered the rest,
+which is why they are an order of magnitude below the raw gap.
+
+Rule 7.3's finding stands as a fact about the two raw representations; the current architecture
+already converts it in full. The remaining `SearchSimilar`-vs-`SearchChunks` gap on long documents
+at `LambdaSimilar` 1.00 (`report-chunks-vs-similar-l100.txt`: `fs-2048` +0.0132 nDCG@10 / +0.0267
+R@50, both significant; `fs-512` +0.0099 n.s. / +0.0140 significant) is therefore attributable to
+the chunk-level max-passage signal, which no single object vector carries — whichever one is
+retrieved, and however the two are weighted.
 
 ## Consequences applied
 
