@@ -89,7 +89,7 @@ Newly introduced by this plan and verified at plan-write time against `56e0e4e`.
 | 4 | Signature | `_ranking` is a `VectorRankingOptions` field in scope in `SearchSimilar` | `ObjectSearchGrpcService.cs:47`; used at `:304` |
 | 5 | Signature | `EmptyVectors` is the shared empty default the plan reuses | `:751` definition; used at `:259`, `:453` |
 | 6 | File path | `ObjectSearchGrpcServiceTests.cs` is the home for vector-name assertions | 53 `SearchNamedAsync` occurrences there; none in the other Grpc test files |
-| 7 | Consumer impact | No existing test asserts the diversity vector's *source*; the one that mentions it covers the non-chunked null case, unchanged under the `head` default | `ObjectSearchGrpcServiceTests.cs:2845-2848` — `SearchSimilar_EmbeddingOnlyProperty_ResultsUnchangedFromFusedOrder` |
+| 7 | Consumer impact | Nothing existing breaks under the `head` default, because `useCentroidRetrieval` is false there and neither the retrieved name nor the retrieve count moves. Two tests do constrain the diversity vector, and both matter at Task 5's PASS branch (step 3a-bis) | `ObjectSearchGrpcServiceTests.cs:2845-2848` `SearchSimilar_EmbeddingOnlyProperty_ResultsUnchangedFromFusedOrder`; `:2873-2899` `SearchSimilar_Diversification_IssuesNoAdditionalRetrieve`, which asserts `Received(1)` on a chunked schema |
 | 8 | Consumer impact | The finiteness guard enumerates five doubles explicitly, so a new string property does not fall into it | `ServiceCollectionExtensions.cs:68-72` |
 | 9 | Code validity | `is not ("head" or "centroid")` compiles — `net10.0` | `Iverson.Vector.csproj:4` |
 | 10 | Command | Both test projects exist at the cited paths | `Iverson.Vector.Tests/Iverson.Vector.Tests.csproj`, `Iverson.Api.Tests/Iverson.Api.Tests.csproj` |
@@ -102,6 +102,10 @@ Newly introduced by this plan and verified at plan-write time against `56e0e4e`.
 | 17 | File path | The gate document path is free | `docs/plans/2026-09-GATE-similar-centroid.md` does not exist |
 | 18 | Sibling sweep | The per-arm command set (restore → clear schema row → recreate API → `benchmark-query` → `report.py`) is identical across all three arms; only multiplier, corpus path, snapshot dir and label differ | Rows 11–16 verified for all three arms, not one |
 | 19 | Command | Today's suite sizes, so Task 1 step 9 can detect a lost test | `dotnet test` run at `56e0e4e`: Vector 134/134, Api 878/878 |
+| 20 | Span check | The benchmarked property makes `centroidPossible` true — otherwise both arms emit identical runs and every report reads `delta 0.0000`, a campaign that silently measures nothing rather than failing | `BenchmarkDocument.cs:16-18` carries both `[IversonEmbedding]` and `[IversonChunk]` on `Body`; `BenchmarkQueryScenario.cs:344` searches `d => d.Body` |
+| 21 | Span check | `--config-label` determines the run and sidecar filenames Tasks 2-5 depend on, and the `tee` is the sole producer of the `.log` | `BenchmarkQueryScenario.cs:289` writes `{ConfigLabel}.similar.trec`, `:222` writes `{ConfigLabel}.meta.json`; the scenario writes no `.log` |
+| 22 | Span check | The chunk-budget refusal goes to stderr, so `2>&1` is load-bearing for the Global Constraint's grep | `BenchmarkQueryScenario.cs:125-127` uses `Console.Error.WriteLine` |
+| 23 | Span check | One `--run` file plus one `--baseline` yields a Holm family of exactly one per measure | `report.py:153-156` (a file `--run` is not expanded to its directory), `:643-652` (baseline excluded by path), `:678-681` (Holm applied across runs within each measure) |
 
 ---
 
@@ -192,12 +196,20 @@ defaults test that it is `"head"`.
      `body_vector`.
   2. chunked + `head` → `body_vector` retrieved, `body_centroid` fetched (today's behaviour).
   3. not chunked → `body_vector` retrieved regardless of the setting.
-  4. Diversity vector, asserted on **what reaches `DiversifyCandidate.DiversityVector`** — a
-     capturing `IResultDiversifier` fake, or distinct vector payloads per name. A name-level
-     assertion cannot pin this site: under `head` one retrieve serves both consumers, so it passes
-     whether the implementation feeds it the centroid or `null`. Two branches: under `centroid` at
-     λ = 0.70 the diversifier receives `body_centroid`; at λ = 1.00 it receives `body_vector` and no
-     second retrieve is issued.
+  4. Diversity vector, asserted on **what reaches `DiversifyCandidate.DiversityVector`**. A
+     name-level assertion cannot pin this site: under `head` one retrieve serves both consumers, so
+     it passes whether the implementation feeds it the centroid or `null`. Two branches, and they
+     need different instruments:
+     - **λ = 0.70 under `centroid`** — the diversifier receives `body_centroid`. Distinct vector
+       payloads per name work here, because at λ < 1 the two vectors genuinely reorder the output.
+     - **λ = 1.00 under `centroid`** — the diversifier receives `body_vector` and no second retrieve
+       is issued. A **capturing `IResultDiversifier` fake is required**: at λ = 1.00 `Select` emits
+       `ranked[index].Score`, the fused score rather than the MMR score, so output is byte-identical
+       whether the diversifier is fed `body_vector`, `body_centroid` or `null`, and any output-level
+       assertion passes whatever the implementation does. `Substitute.For<IResultDiversifier>()`
+       auto-substitutes the return type, so `:304`'s `foreach` iterates an empty list. Pair it with
+       `DidNotReceive().RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(),
+       "body_centroid")` for the no-second-retrieve half.
 
 - [ ] **Step 9: Run the suites.**
 ```bash
@@ -337,9 +349,11 @@ No commit.
 - Create: `docs/plans/2026-09-GATE-similar-centroid.md`
 - Modify (both outcomes): `Iverson.Server/Iverson.Vector/VectorRankingOptions.cs`,
   `Iverson.Server/Iverson.Vector/ServiceCollectionExtensions.cs`, `Iverson.Server/docker-compose.yml`,
-  `Iverson.Server/Iverson.Vector.Tests/VectorRankingOptionsTests.cs`
+  `Iverson.Server/Iverson.Vector.Tests/VectorRankingOptionsTests.cs`,
+  `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs`
 - Modify (PASS only): `Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs`,
-  `Iverson.Server/Iverson.Vector/IResultReranker.cs`, `Iverson.Server/Iverson.Vector/ResultReranker.cs`
+  `Iverson.Server/Iverson.Vector/IResultReranker.cs`, `Iverson.Server/Iverson.Vector/ResultReranker.cs`,
+  `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs`
 
 **Interfaces**
 - Consumes: `report-sci.txt`, `report-fs2048.txt`, `report-fs512.txt` and the two validity-check outcomes.
@@ -359,9 +373,27 @@ is true — `useCentroidRetrieval` becomes `centroidPossible`. Keep the λ-gated
 ships as part of the change. Rename `RerankCandidate.Centroid` to reflect that it holds the secondary
 vector, updating `ResultReranker` and its tests. Then delete the setting as in step 3b.
 
+- [ ] **Step 3a-bis (PASS only): repair the four existing tests the hard-code breaks.** Hard-coding
+centroid retrieval changes the retrieved name for every chunked property, so the four
+`DualAnnotatedSchema` stubs in `ObjectSearchGrpcServiceTests.cs` stop matching and NSubstitute returns
+an empty auto-substitute — every count and score assertion then fails silently rather than loudly.
+Re-point `_vector.SearchNamedAsync("docs_test-tenant", "body_vector", …)` to `"body_centroid"` at
+`:2530`, `:2674`, `:2821` and `:2887`. `SearchSimilar_Diversification_IssuesNoAdditionalRetrieve`
+(`:2873-2899`) fails a second way — the shared `_sut` runs at `LambdaSimilar = 0.70` (`:79`), which
+opens the λ-gated second retrieve and turns its `Received(1)` into 2 — so give it a per-test SUT at
+`LambdaSimilar = 1.00`, where "issues no additional retrieve" remains true.
+`ObjectSearchVectorIntegrationTests.cs` is unaffected: its `SearchSimilar` tests use `Article`/`Title`,
+which is embedding-only.
+
 - [ ] **Step 3b (both outcomes): delete the setting.** Remove `SimilarRetrievalVector`, its rejection
-check, its compose entry and its two options tests. On a FAIL, also revert Task 1 step 3–5's wiring so
-`SearchSimilar` retrieves by `headName` unconditionally.
+check, its compose entry, its two options tests in `VectorRankingOptionsTests.cs`, **and Task 1
+step 8's four tests in `ObjectSearchGrpcServiceTests.cs`**, whose cases 1, 2 and 4 set the property on
+a per-test `VectorRankingOptions` — leaving them in place turns the deletion into a C# compile error,
+so step 4 could not build under either outcome. Disposition: on **FAIL** delete all four, since they
+assert a setting and a code path that no longer exist, and also revert Task 1 step 3–5's wiring so
+`SearchSimilar` retrieves by `headName` unconditionally. On **PASS** drop cases 2 and 3's
+setting-dependence and rewrite cases 1 and 4 against the now-unconditional centroid retrieval and the
+λ-gated diversity vector.
 
 - [ ] **Step 4: Suites and commit.**
 ```bash
