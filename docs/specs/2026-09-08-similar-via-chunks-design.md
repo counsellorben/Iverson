@@ -97,7 +97,10 @@ of the following hold, and otherwise takes today's head path with no change:
    `(SchemaDescriptor, IReadOnlyList<SearchClause>, allowedFields)` and a `TryBuildChunksFilter`
    wrapper returns `false` where it would throw. `SearchChunks` keeps its throwing behaviour by
    calling the same function and rethrowing.
-4. Both point counts read successfully (§3.4) and the object count is positive.
+4. Both point counts read successfully (§3.4) and both are positive. A zero chunk count would give
+   `chunksPerDoc = 0` and a zero search limit, which Qdrant rejects; an empty chunks collection
+   is producible by ordinary ingest (`IntelligenceStoreConsumer.cs:175` creates it before the
+   blank-text guard at `:230`).
 
 Each failed condition on a *listed* type logs one `LogInformation` line,
 `[SearchSimilar] type={Type} not routed via chunks: {Reason}`, so an operator can see why a request
@@ -195,6 +198,7 @@ No new status codes.
 |---|---|
 | Count read throws on either collection | Fall back to the head path; logged reason `counts unavailable` |
 | Object count is 0 | Fall back; reason `empty object collection` |
+| Chunk count is 0 | Fall back; reason `empty chunks collection` |
 | Chunks collection `NotFound` at search | Helper returns empty; the stream is empty (as `SearchChunks`, `:419-424`) |
 | Centroid retrieve fails | Existing degrade: fusion without the centroid term, diversifier sees absent vectors |
 | Hydration `RpcException` | `Unavailable` with the message, the head path's code for a failed Qdrant call (`:217-218`) |
@@ -209,9 +213,11 @@ No ingest, no new rule. The served ranking must reproduce the harness's collapse
 
 1. Restore `freshstack-2048-qdrant-snapshots/` per its `RESTORE.md` (both collections, 6,000 and
    18,622 points).
-2. Rebuild `iverson-api` from the branch; start it with
-   `VectorRanking__SimilarViaChunksTypes__0=BenchmarkDocument` and `VectorRanking__LambdaChunks=1.00`
-   (the shipped `LambdaSimilar` 1.00 unchanged); confirm both with `docker inspect`.
+2. Rebuild `iverson-api` from the branch; start it from a shell with
+   `VectorRanking__SimilarViaChunksTypes__0=BenchmarkDocument` (passed through by name, §3.1) and
+   `VECTOR_RANKING_LAMBDA_CHUNKS=1.00` (the shell name `docker-compose.yml:446` reads; the shipped
+   `LambdaSimilar` 1.00 unchanged). `docker inspect` must show
+   `VectorRanking__SimilarViaChunksTypes__0=BenchmarkDocument` and `VectorRanking__LambdaChunks=1.00`.
 3. One `benchmark-query` with `--config-label fs2048-routed --chunk-budget-multiplier 4` into
    `freshstack-2048-2026-09-07/runs/`. `DocumentBudget` is 50 (`BenchmarkQueryScenario.cs:42`), so
    the run's `SearchChunks` requests 200 chunks and the server fetches 800 raw; the run's routed
@@ -222,7 +228,7 @@ No ingest, no new rule. The served ranking must reproduce the harness's collapse
    runs/fs2048-routed.similar.trec` → `report-routed.txt`. A second invocation against the Tier 1
    `fs-2048-l070.chunks.trec` is recorded for continuity only; its `BUILD MISMATCH` warning is
    expected and it is not the rule.
-5. Restore the box: `docker compose up -d --no-deps iverson-api` from a shell without the variable.
+5. Restore the box: `docker compose up -d --no-deps iverson-api` from a shell without either variable, so the box returns to λ_chunks 0.70 with routing off.
 
 ## 5. The rule
 
@@ -263,7 +269,7 @@ the constructor at `:74-79` with `SimilarViaChunksTypes` set per test:
 - Missing parent at hydration is skipped; stream has one fewer row.
 - Not routed, each asserting the object search ran and the chunks search did not: unlisted type;
   listed type with an embedded-only property; listed type with a non-EQUALS clause; with a scalar
-  column clause; with `FilterLogic` OR over two clauses; count read throwing; object count 0.
+  column clause; with `FilterLogic` OR over two clauses; count read throwing; object count 0; chunk count 0.
 - Ownership: a routed request with `OwnershipRequired` passes the owner condition in the chunks
   filter.
 - Field masking: a routed response masks a disallowed column and keeps `Key`.
@@ -302,6 +308,9 @@ Verified 2026-09-08 against `main` `6600810`.
 | A20 | A collection-scoped read key can read that collection's point count | Live probe (CDR round 1): `GET /collections/{name}` returned 200 with `points_count` under a token scoped to that collection and 403 under a token scoped to the other |
 | A21 | A chunk's `parent_id` and its parent's object point id agree under `KeyToUlong` | `IntelligenceStoreConsumer.cs:548` (object point id = `KeyToUlong(ev.Key)`) and `:310` (`parent_id` = `ev.Key`); the `SearchChunks` centroid retrieve at `ObjectSearchGrpcService.cs:431-444` already depends on it |
 | A22 | An empty-string list entry binds as one blank element, not as no entry | CDR round 1 empirical run, `Microsoft.Extensions.Configuration.Binder` 10.0.11, env and in-memory providers: `count=1 entries=['']` |
+| A23 | A value-less compose environment entry is omitted from the container when unset and passed through when set | CDR round 2 probe, Compose 2.40.3, `docker compose config` on a throwaway file: renders `null` unset, the value when set |
+| A24 | `RepeatedField<SearchClause>` satisfies the reshaped `IReadOnlyList<SearchClause>` parameter | `Google.Protobuf` 3.35.1 declares `RepeatedField<T> : IReadOnlyList<T>`; `IntelligenceFilterBuilder.Build` already takes the same interface from the same request field |
+| A25 | `freshstack-2048-2026-09-07/qrels.trec` holds exactly 672 query ids | Counted in CDR round 2; matches the 672 / 672 coverage every Tier 1 FreshStack report prints |
 
 ## Known issues
 
