@@ -89,6 +89,15 @@ public static class ServiceCollectionExtensions
             throw new InvalidOperationException(
                 $"{VectorRankingOptions.Section}:LambdaChunks must be in [0,1] (was {opts.LambdaChunks}).");
 
+        for (var i = 0; i < opts.SimilarViaChunksTypes.Count; i++)
+        {
+            var trimmed = opts.SimilarViaChunksTypes[i]?.Trim();
+            if (string.IsNullOrEmpty(trimmed))
+                throw new InvalidOperationException(
+                    $"{VectorRankingOptions.Section}:SimilarViaChunksTypes[{i}] is blank.");
+            opts.SimilarViaChunksTypes[i] = trimmed;
+        }
+
         services.AddSingleton(Options.Create(opts));
         services.AddSingleton<IResultReranker, ResultReranker>();
         services.AddSingleton<IResultDiversifier, ResultDiversifier>();

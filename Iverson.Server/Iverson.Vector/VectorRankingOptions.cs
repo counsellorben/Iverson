@@ -23,4 +23,9 @@ public sealed class VectorRankingOptions
     // costs 1.44 (fs-2048) and 1.97 (fs-512) distinct parents in the top 10, past the rule's 1.0 bar.
     public double LambdaSimilar { get; set; } = 1.00;
     public double LambdaChunks  { get; set; } = 0.70;
+
+    // Types whose SearchSimilar, for a chunked property, ranks documents by chunk retrieval with
+    // max-passage collapse instead of by the object vector. Empty by default. Enable per type after
+    // measuring the corpus: see docs/specs/2026-09-08-similar-via-chunks-design.md §1.
+    public List<string> SimilarViaChunksTypes { get; set; } = [];
 }
