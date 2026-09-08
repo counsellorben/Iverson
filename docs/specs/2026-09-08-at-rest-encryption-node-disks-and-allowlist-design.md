@@ -192,12 +192,30 @@ without persisting anything, so the denial is the success case and nothing is cr
 **Check 5 gains Azure and GCP variants** and stops being AWS-only. Azure: list the disks in
 the node resource group (the cluster resource exposes it as `node_resource_group`), filter
 to OS disks, and expect `encryption.type` of `EncryptionAtRestWithCustomerKey` and the
-same set id check 2 shows. GCP: for each node, describe its boot disk (named after the
-instance) and expect the same `diskEncryptionKey.kmsKeyName` check 3 already reads.
+same set id check 2 shows. Nothing in this repository establishes that AKS exposes each
+node's OS disk as a standalone disk resource in that group, and no Azure cluster exists to
+test it against: AKS agent pools are backed by scale sets, and A10 fixes the disk type
+only. The command ships as written and is verified at the first Azure apply. If it returns
+no rows, check 5's Azure variant must be re-derived against the agent pool's scale set
+before the runbook is handed to an auditor. GCP: for each node, describe its boot disk,
+which is named after the instance and lives in the zone that node's `spec.providerID`
+carries, and expect the same `diskEncryptionKey.kmsKeyName` check 3 already reads.
+
+**The front matter changes with them.** Two statements at the top of the runbook are edit
+sites, because the amendments above falsify one and bear on the other. The coverage
+paragraph says checks 1 and 3 have Azure and GCP equivalents while check 5 is AWS-only,
+and forwards the reader to the closing note these amendments replace; it is rewritten to
+say that checks 1, 3 and 5 all have Azure and GCP equivalents, with the forward reference
+dropped. The conventions paragraph says every command is runnable as written except one
+bracketed `<zone>` in check 3; sourcing check 5's GCP zone from `spec.providerID` keeps
+that sentence true, so it stands unchanged.
 
 **The closing paragraph** "AKS and GKE node OS disks are not covered by this runbook, and
 not by design" is replaced by one sentence stating that node disks are under the same key
-on all three clouds, so a single key reference should appear in every check.
+on all three clouds, so a single key reference should appear in every check. Its heading,
+`## What this evidence set does not cover`, is kept, and its body is repointed at the three
+surfaces the Scope section still excludes: AKS etcd Secrets, the AWS VPC flow-log group and
+the Azure Log Analytics workspace.
 
 ### 5. Greenfield
 
@@ -232,7 +250,7 @@ rebuild and the GKE change becomes node pool replacement.
 | A7 | azurerm `~> 3.90` supports cluster-level `disk_encryption_set_id` covering all pools | provider v3.90.0 docs: "The ID of the Disk Encryption Set which should be used for the Nodes and Volumes … Changing this forces a new resource" |
 | A8 | Cluster-to-set dependency creates no cycle | `modules/cluster-azure/main.tf:78-105`: the set depends on vault, key and access policy only; the sole resource referencing both is `azurerm_role_assignment.aks_data_volumes_des` at `:119` |
 | A9 | No pre-creation grant to the cluster identity is required | Microsoft BYOK docs: the create example passes `--node-osdisk-diskencryptionset-id` with default (system-assigned) identity; the Reader requirement is stated under data disks |
-| A10 | Node OS disks are managed disks, attestable per disk | azurerm docs: `os_disk_type` "Defaults to `Managed`"; no pool in `modules/cluster-azure/main.tf` sets it |
+| A10 | Node OS disks are managed disks | azurerm docs: `os_disk_type` "Defaults to `Managed`"; no pool in `modules/cluster-azure/main.tf` sets it. This fixes the disk type only. Whether each is enumerable as a standalone disk resource is not settled here and is deferred to the first Azure apply, per section 4 |
 | A11 | **Sharpened.** `emptyDir` lands on the OS disk | no pool sets `kubelet_disk_type`; azurerm docs: "Possible values are `OS` and `Temporary`", no default; AKS API `KubeletDiskType`: "Determines the placement of emptyDir volumes, container runtime data root, and Kubelet ephemeral storage", no default. Neither the CLI reference nor the docs source yielded a default, so section 2 declares `OS` |
 | A12 | Set and cluster share a region | `:80` and `:154` both `azurerm_resource_group.this.location`; Microsoft: "the DiskEncryptionSet is located in the same region as your AKS cluster" |
 | A13 | All three clouds run Kubernetes ≥ 1.30, where the policy API is v1 | `modules/cluster-{aws,azure,gcp}/variables.tf` default `"1.30"`; kubernetes.io: "Stable since Kubernetes v1.30" |
@@ -243,9 +261,9 @@ rebuild and the GKE change becomes node pool replacement.
 | A18 | **Dependents.** No PVC producer added since the first design | fresh grep of all chart templates: the same seven files as the first design's A16; nothing under `Iverson.LoadTest` |
 | A19 | The seven names are referenceable in the module | `modules/operators/outputs.tf` already references all seven `metadata[0].name` |
 | A20 | CI runs `terraform fmt -check` and `validate` per cloud | `.github/workflows/deploy-validate.yml:120-127`; `.gitlab-ci.yml:73-75` |
-| A21 | The node resource group is exposed and `az disk` reports encryption per disk | azurerm docs: `node_resource_group` "The auto-generated Resource Group which contains the resources for this Managed Kubernetes Cluster"; runbook check 3 already reads `encryption.type` and `encryption.diskEncryptionSetId` from `az disk show` |
-| A22 | GCP boot disks expose the same field check 3 reads | boot disks are persistent disks; check 3's `gcloud compute disks describe … diskEncryptionKey.kmsKeyName` applies |
-| A23 | The runbook sites the design edits exist | `docs/runbooks/at-rest-encryption-verification.md:136` check 4, `:153` check 5, `:186-188` closing paragraph |
+| A21 | The node resource group is exposed, and `az disk` reports encryption for the disks check 3 reads | azurerm docs: `node_resource_group` "The auto-generated Resource Group which contains the resources for this Managed Kubernetes Cluster"; runbook check 3 (`:118-125`) reads `encryption.type` and `encryption.diskEncryptionSetId` from `az disk show`, on CSI-provisioned data disks resolved from `kubectl get pv`. Those are a different producer than node OS disks; see A10 and section 4 |
+| A22 | GCP boot disks expose the same field check 3 reads, and the zone that command requires is on the node | boot disks are persistent disks; check 3's `gcloud compute disks describe … diskEncryptionKey.kmsKeyName` applies (runbook `:127-134`). The zone comes from `spec.providerID`, shaped `gce://<project>/<zone>/<instance>`, the same field check 5's AWS variant already parses at `:166` |
+| A23 | The runbook sites the design edits exist | `docs/runbooks/at-rest-encryption-verification.md:7-8` conventions paragraph, `:12-14` coverage paragraph, `:136` check 4, `:153` check 5, `:186` closing heading and `:188` its paragraph |
 | A24 | `docs/specs` needs a forced add | `.gitignore:51` `**/docs/specs/` |
 | A25 | helm `~> 2.14` installs a chart from a local path with no repository | provider v2.14.0 `release` docs: "Chart name to be installed. A path may be used."; example `chart = "./charts/example"` |
 | A26 | The module's existing releases are the shape to copy | `modules/operators/main.tf:21-56`: `helm_release` with `name`, `chart`, `namespace`, `set`, `depends_on` on the namespace |
