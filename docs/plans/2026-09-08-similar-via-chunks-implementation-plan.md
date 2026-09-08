@@ -110,7 +110,7 @@ Newly introduced by this plan and verified 2026-09-08 against `main` `f5105a9`:
 | P14 | Command | Test-count floors are recorded from a run on `main` before Task 1 rather than assumed | (no numeric claim made) |
 | P15 | Test convention | `QdrantIntegrationTests` uses `QdrantContainerFixture` exposing a real `IntelligenceVectorService` (`_svc`) and `IntelligenceCollectionManager` (`_mgr`) | `QdrantIntegrationTests.cs:13-48` |
 | P16 | Test convention | `BuildConfig(params (string Key, string Value)[])` prefixes `VectorRanking:` to each key — list entries bind as `SimilarViaChunksTypes:0` | `VectorRankingOptionsTests.cs:11-15` |
-| P17 | Test convention | Per-test `new ObjectSearchGrpcService(…)` with custom options exists to copy; a `SearchChunks` test stubs `body_vector` on `articles_chunks_test-tenant` with a `parent_id` payload; no existing test asserts the chunk limit `topK × 4` | `ObjectSearchGrpcServiceTests.cs:2613-2620`, `:1452-1456`; grep for a `40` limit assertion: none |
+| P17 | Test convention | Per-test `new ObjectSearchGrpcService(…)` with custom options exists to copy; a `SearchChunks` test stubs `body_vector` on `articles_chunks_test-tenant` with a `parent_id` payload; the chunk limit `topK × 4` is already asserted by `SearchChunks_OverFetchesFourTimesTopK_AndTrimsToTopK` | `ObjectSearchGrpcServiceTests.cs:2613-2620`, `:1452-1456`, `:2905-2926` (`CapturedLimit == 12` for `TopK = 3`; CIR round 1 corrected the plan's earlier "none") |
 | P18 | Ordering | Task 3 references nothing from Tasks 1–2; Task 4 references Task 1's methods, Task 2's list and Task 3's helpers; Tasks 1 and 2 touch disjoint files | By construction (file structure above) |
 | P19 | Command | `--corpus-path`, `--key-map-path`, `--output-dir`, `--config-label`, `--chunk-budget-multiplier` flags; `bench-env.sh`; `/build` on 8081; Qdrant dev key; `iverson-postgres` with user/db `iverson`; `_iverson_schema` table | `Program.cs:416-423`; `bench-env.sh` 329 B; `Program.cs:304`, compose `:436`; compose `:10`; compose `:31-36`; `SchemaRegistryRepository.cs:8` |
 | P20 | File path | The fs-2048 snapshot directory holds two `.snapshot` files with the `-6802952876034638` infix the restore loop splits on | `ls freshstack-2048-qdrant-snapshots/` |
@@ -119,7 +119,12 @@ Newly introduced by this plan and verified 2026-09-08 against `main` `f5105a9`:
 | P23 | Consumer impact | `BuildChunksFilter` has exactly one caller | `:361` |
 | P24 | File path | The ranked-changes document has a `### 3.` heading to add a line under | `docs/2026-09-06-…md:94` |
 | P25 | Command | The API logs at `Information` by default, so the "not routed" grep in Task 5 is meaningful | `Iverson.Api/appsettings.json:3-5` |
-| P26 | Test convention | No existing API test fixture has a property that is both embedded and chunked; Task 4 registers its own, in the shape of `:1119-1120` | `ObjectSearchGrpcServiceTests.cs:198-199,218-219,1057-1058,1119-1120` |
+| P26 | Test convention | `DualAnnotatedSchema()` registers type `Doc` with `Body` in both `VectorFields` and `ChunkFields`; Task 4 reuses it | `ObjectSearchGrpcServiceTests.cs:2466-2480`, used by six `SearchSimilar` tests (`:2537`, `:2697`, `:2835`, `:2894`, `:3053`); CIR round 1 corrected the plan's earlier claim that no such fixture existed |
+| P27 | Consumer impact | The fs-2048 snapshot's object point ids and chunk `parent_id` values, written by `ingest.py`, agree under `KeyToUlong` | `ingest.py:230` computes `int.from_bytes(uuid.UUID(key).bytes[8:16], "little")`, byte-for-byte `KeyToUlong`; `:588,:637,:648` write the object point at that id and `parent_id = key` on every chunk; CIR round 1 live probe retrieved an object point from a chunk's `parent_id` on the loaded snapshot |
+| P28 | Ordering | `benchmark-query` re-registers the `BenchmarkDocument` schema after Task 5 Step 1 deletes its row | `LoadTest/Program.cs:88-89,151-163` (`RegisterAllAsync` runs before the scenario) |
+| P29 | Command | `--chunk-budget-multiplier 4` passes `ChunkBudgetGuard` on the fs-2048 arm | `ChunkBudgetGuard.cs:29-41`: reachable = (50 × 4) / (18,622 / 6,000) = 64.4 ≥ 50 |
+| P30 | Ordering | Task 3 may leave `TryBuildChunksFilter` unreferenced until Task 4; no warnings-as-errors or code-style-in-build setting turns that into a build failure | CIR round 1: no `TreatWarningsAsErrors` / `EnforceCodeStyleInBuild` in the `Iverson.Api` project or any `Directory.Build.props` |
+| P31 | Code validity | The plan's code blocks compile against the real types | CIR round 1 scratch builds: Tasks 1–2 verbatim in a copy of `Iverson.Vector`, Task 4 verbatim plus Task 3's declared signatures in a copy of `Iverson.Api`; 0 errors (one pre-existing obsolete-API warning) |
 
 ## Tasks
 
@@ -356,20 +361,20 @@ over `pipeline.Fused`, and the stream loop unchanged.
 The head path calls it with the diversified results projected to `(r.Payload, ranked.FusedScore)`,
 skipping ids absent from `byId` as today's loop does.
 
-- [ ] **Step 4: One regression test.** In `ObjectSearchGrpcServiceTests`, copying the `SearchChunks`
-setup at `:1445-1456`: with `TopK = 10`, assert `_vector.Received(1).SearchNamedAsync("articles_chunks_test-tenant",
-"body_vector", Arg.Any<float[]>(), 40UL, Arg.Any<Filter>())` and that the streamed rows are unchanged.
+- [ ] **Step 4: No new test.** The chunk limit `topK × 4` is already asserted by
+`SearchChunks_OverFetchesFourTimesTopK_AndTrimsToTopK` (`:2905-2926`) and the streamed rows by
+`:1443-1467`; both must pass unchanged after the extraction.
 
 - [ ] **Step 5: Run the API suite.**
 ```bash
 cd /home/ben/repositories/Iverson
 dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj 2>&1 | tail -3
 ```
-Green; count ≥ Step 0's API floor + 1; no existing test modified.
+Green; count ≥ Step 0's API floor; no existing test modified.
 
 - [ ] **Step 6: Commit.**
 ```bash
-git add Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs
+git add Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs
 git commit -m "extract the chunk pipeline and the SearchSimilar response writer; no behaviour change
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
@@ -392,8 +397,7 @@ expression (`:228-229`) with a null check on it.
         var chunkDesc = schema.ChunkFields.FirstOrDefault(c =>
             string.Equals(c.PropertyName, vectorDesc.PropertyName, StringComparison.OrdinalIgnoreCase));
 
-        if (chunkDesc is not null
-            && _ranking.SimilarViaChunksTypes.Contains(schema.TypeName, StringComparer.OrdinalIgnoreCase)
+        if (_ranking.SimilarViaChunksTypes.Contains(schema.TypeName, StringComparer.OrdinalIgnoreCase)
             && await TrySearchSimilarViaChunksAsync(schema, chunkDesc, decision, request, queryVector, responseStream, context))
             return;
 
@@ -403,7 +407,7 @@ expression (`:228-229`) with a null check on it.
 - [ ] **Step 2: The routed method.** Returns `false`, having run no chunk search, on every fallback.
 ```csharp
     private async Task<bool> TrySearchSimilarViaChunksAsync(
-        SchemaDescriptor schema, ChunkDescriptor chunkDesc, AuthorizationDecision decision,
+        SchemaDescriptor schema, ChunkDescriptor? chunkDesc, AuthorizationDecision decision,
         SearchSimilarRequest request, float[] queryVector,
         IServerStreamWriter<SearchResponse> responseStream, ServerCallContext context)
     {
@@ -413,6 +417,10 @@ expression (`:228-229`) with a null check on it.
                 request.TypeName.SanitizeForLog(), reason);
             return false;
         }
+
+        // Spec §3.2 condition 2, owned here so a listed type with an unchunked property is logged.
+        if (chunkDesc is null)
+            return NotRouted("property is not chunked");
 
         // Spec §3.2 condition 3: the logic test lives here — BuildChunksFilter never reads it, and
         // SearchChunks (which must stay bit-for-bit) silently ANDs an OR request today.
@@ -500,25 +508,24 @@ expression (`:228-229`) with a null check on it.
 
 - [ ] **Step 3: Tests.** In `ObjectSearchGrpcServiceTests`, each test constructing its own service as
 `:2613-2620` does, with `Options.Create(new VectorRankingOptions { LambdaSimilar = 1.00, LambdaChunks = 0.70,
-SimilarViaChunksTypes = ["Article"] })`. No existing fixture has a property that is both embedded
-and chunked (`:218-219` embeds `Name` and chunks `Secret`; `:1119-1120` embeds `Title` and chunks
-`Body`), so register a schema for these tests in the shape of `:1119-1120` with
-`VectorFields = [new VectorDescriptor("Body", 1024, "snowflake-arctic-embed:s")]` and
-`ChunkFields = [new ChunkDescriptor("Body", 512, 64, "snowflake-arctic-embed:s", 1024)]`, requesting
-`Property = "Body"`. Stub
-`_vector.GetPointCountAsync("articles_test-tenant")` and `_vector.GetPointCountAsync("articles_chunks_test-tenant")`,
-`_vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", …)` returning chunk results with
+SimilarViaChunksTypes = ["Doc"] })`, and the existing `DualAnnotatedSchema()` fixture (`:2466-2480`,
+type `Doc`, `Body` both embedded and chunked; collections `docs_test-tenant` and
+`docs_chunks_test-tenant`), requesting `Property = "Body"`. Stub
+`_vector.GetPointCountAsync("docs_test-tenant")` and `_vector.GetPointCountAsync("docs_chunks_test-tenant")`,
+`_vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", …)` returning chunk results with
 `parent_id` payloads, `_vector.RetrieveNamedVectorAsync(…, "body_centroid")` returning an empty
-dictionary, and `_vector.RetrievePayloadAsync("articles_test-tenant", …)` returning payload dictionaries.
+dictionary, and `_vector.RetrievePayloadAsync("docs_test-tenant", …)` returning payload dictionaries.
   1. **Routed, density 13/10** (`ceil` → 2), `TopK = 10`: chunk search received with limit `80UL`;
-     `SearchNamedAsync("articles_test-tenant", …)` never called; `RetrievePayloadAsync` received with
+     `SearchNamedAsync("docs_test-tenant", …)` never called; `RetrievePayloadAsync` received with
      exactly the top-10 collapsed ids in order; streamed rows carry the collapsed scores in order.
   2. **Routed, density 108/10** (→ 11): limit `440UL`.
   3. **Collapse:** two chunks of one parent with scores 0.9 and 0.5 → the parent appears once with 0.9.
   4. **Missing parent at hydration:** `RetrievePayloadAsync` omits one selected id → stream has one row
      fewer; the others unchanged.
   5. **Not routed** (each asserting the object search ran and the chunk search did not): unlisted type;
-     listed type whose property is embedded but not chunked; a non-EQUALS clause; a scalar-column
+     listed type whose property is embedded but not chunked — this one also constructs its service
+     with `Substitute.For<ILogger<ObjectSearchGrpcService>>()` in place of `NullLogger` and asserts a
+     `LogInformation` call whose message contains `not routed via chunks`; a non-EQUALS clause; a scalar-column
      clause; `FilterLogic = SearchLogic.Or` over two clauses; `GetPointCountAsync` throwing
      `RpcException(Unavailable)`; object count 0; chunk count 0.
   6. **Ownership:** an owner-restricted principal → the chunk search's `Filter` contains the owner
