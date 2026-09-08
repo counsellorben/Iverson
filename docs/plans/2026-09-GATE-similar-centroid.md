@@ -240,7 +240,7 @@ measure is therefore a **recall** difference — and the density table shows exa
 | `fs-512` | 10.79 | +0.0000 (0 / 672) | **+0.0045** significant | 17.1 % |
 
 R@50 grows monotonically with chunk density — 0.0000 → +0.0037 → +0.0045 — exactly as widening pool
-divergence predicts. **nDCG@10 stays pinned at zero regardless**, even on `fs-512` where 17.1 % of
+divergence predicts. **nDCG@10 stays within +0.0001 of zero regardless**, even on `fs-512` where 17.1 % of
 all ranked positions move. nDCG@10 reads the top 10, which is almost entirely shared candidates, so
 it barely moves at any density. Only the pool boundary at depth 50 moves substantially, and it does.
 
