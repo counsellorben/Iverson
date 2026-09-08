@@ -60,18 +60,53 @@ numeric, so this needs its own comparison rather than riding the finiteness guar
 Compose gains `- VectorRanking__SimilarRetrievalVector=${VECTOR_RANKING_SIMILAR_RETRIEVAL:-head}`
 next to the two λ entries.
 
-Where the setting applies, the two names swap roles and nothing else moves:
+Where the setting applies, the retrieval and fusion names swap roles. The vector fetched at `:265`
+has **two** consumers, not one — it is the fusion input at `:274` and MMR's diversity vector at
+`:288` — so the three roles are stated separately:
 
-| `SimilarRetrievalVector` | retrieval vector (`:221` → `:246`) | secondary vector (`:265`, fused at WCentroid) |
-|---|---|---|
-| `head` (default, today's behaviour) | `<prop>_vector` | `<prop>_centroid` |
-| `centroid` | `<prop>_centroid` | `<prop>_vector` |
+| `SimilarRetrievalVector` | retrieval vector (`:221` → `:246`) | secondary vector (`:265`, fused at WCentroid) | MMR diversity vector (`:288`) |
+|---|---|---|---|
+| `head` (default, today's behaviour) | `<prop>_vector` | `<prop>_centroid` | `<prop>_centroid` |
+| `centroid` | `<prop>_centroid` | `<prop>_vector` | `<prop>_centroid` |
 
-Same single Qdrant round trip. Same `RetrieveVectorsOrDegradeAsync` degradation path — it already
-takes the vector name as a parameter (`:759-760`). Same fusion, decay, `LambdaSimilar` and
-`Take(topK)`. The `rerankIsIdentity` over-fetch (`:238-239`) keys off `centroidPossible` and
-`decayField`, both unchanged by the swap, and stays correct: whenever the swap applies,
-`centroidPossible` is true and the over-fetch is 4× either way.
+**The diversity vector stays the centroid under both settings.** Letting it swap would diversify by
+the one representation Qdrant did *not* match against, contradicting the reason `SearchChunks` gives
+for its own diversity vector at `:445-447` ("the same representation Qdrant matched the query
+against"), and it would diversify by the representation this spec argues is the weaker of the two.
+
+`LambdaSimilar` is 1.00 (`VectorRankingOptions.cs:24`), and at λ = 1.00 `Mmr` drops the similarity
+term entirely (`ResultDiversifier.cs:82-96`), so the diversity vector is never read and holding it
+fixed costs nothing in this campaign. It is not free in general: under `centroid`, retrieval no
+longer yields the centroid as a fetched vector, so a configured λ < 1 needs a second retrieve. The
+single-round-trip claim below is therefore conditional on λ = 1.00.
+
+One Qdrant round trip at λ = 1.00; two under `centroid` at λ < 1. Same
+`RetrieveVectorsOrDegradeAsync` degradation path for the *secondary* fetch — it already takes the
+vector name as a parameter (`:759-760`) — but see the retrieval asymmetry below, which that
+parameterisation does not cover. Same fusion, decay and `Take(topK)`. The `rerankIsIdentity`
+over-fetch (`:238-239`) keys off `centroidPossible` and `decayField`, both unchanged by the swap,
+and stays correct: whenever the swap applies, `centroidPossible` is true and the over-fetch is 4×
+either way.
+
+### Retrieval asymmetry: a missing centroid excludes rather than degrades
+
+Today a point carrying `<prop>_vector` with no `<prop>_centroid` is retrieved normally and merely
+loses the centroid term — the null branches at `:275`, `:288` and `ResultReranker.cs:21` exist for
+exactly this state. Under `centroid` the centroid becomes the retrieval vector, and a Qdrant point
+that does not carry a named vector is not in that vector's index, so it cannot be returned at all.
+The degradation path cannot rescue it, because the point never enters `results`.
+
+The writer produces that state deliberately: no centroid key when every chunk vector is
+zero-magnitude (`IntelligenceStoreConsumer.cs:302`), a silent drop on the documented
+delete-then-recreate race (`:365`, comment at `:361-364`), and a window between the head-vector
+upsert (`:161`) and the centroid write (`:380`) even on the happy path.
+
+**Accepted as a known consequence** (Ben, 2026-09-07), recorded in Known issues and in §6's PASS
+branch. The alternatives were weighed and rejected: making the centroid write unconditional
+reintroduces the NaN centroid that the `:302` guard exists to prevent, and falling back to head
+retrieval is not detectable in one round trip, since an excluded point leaves no trace to fall back
+from. The benchmark corpora contain no points in this state (`ingest.py:623-637` writes both vectors
+in one upsert), so **the gate cannot exercise it** — it is a design decision, not a measured one.
 
 `RerankCandidate.Centroid` becomes "the secondary vector" rather than literally a centroid. The
 field is a bare `float[]?` and `ResultReranker` only takes its cosine against the query, so nothing
@@ -83,18 +118,19 @@ its tests for an arm that may be reverted.
 `ingest.py`'s `compute_centroid` (`:267-275`) L2-normalizes each chunk vector and then averages, so a
 document with exactly one chunk has a centroid equal to the unit-normalized head vector. Under
 cosine distance that ranks identically to the head vector. The production writer takes the same
-shape (`IntelligenceStoreConsumer.cs:303`).
+shape (`IntelligenceStoreConsumer.cs:485-505`).
 
-The change therefore can only affect documents with two or more chunks. Measured on this campaign's
-own `sci-2048` corpus, **4,542 of 5,183 documents (87.6 %) have a body of 2,048 characters or fewer**
-and so yield exactly one chunk; the remaining 641 carry 2,045 of the arm's 6,587 chunks. That is why
-rule 7.3's SciFact comparison came out null — for seven documents in eight the two vectors it
-compared were the same vector — and it means SciFact's role in this gate is a guard on the mixed
-regime rather than a second chance at the win.
+The change therefore can only affect documents with two or more chunks. The single-chunk rule is
+`len(body) ≤ step`, **not** `≤ max_chars`: `split_into_chunks` advances by `start += step`
+(`ingest.py:240-258`), so at 2048/1792 a body of 1,793–2,048 characters yields two chunks, and
+`ingest.py:604` uses `len(body) <= step` as its own single-chunk test.
 
-(The multivector spec records 81 % / 6,219 chunks for this window. That figure disagrees with this
-campaign's measured 6,587 and is not used here; the numbers above are computed from the corpus and
-sidecar this gate will actually restore.)
+Replaying that chunker over this campaign's `sci-2048` corpus reproduces the arm's sidecar exactly
+(6,587 chunks; `embeds_saved` 3,820, which fires once per single-chunk document): **3,820 of 5,183
+documents (73.7 %) are single-chunk**, and the remaining **1,363 carry 2,767** of the arm's chunks.
+Roughly three documents in four cannot move — so rule 7.3's SciFact null is largely structural, and
+SciFact's role here is a guard on the mixed regime rather than a second chance at the win. Its
+movable minority is nonetheless substantial, which is part of why the arm is worth running.
 
 ## 4. The campaign
 
@@ -142,7 +178,9 @@ the centroid.
 
 ## 6. Consequences
 
-**On PASS** — hard-code centroid retrieval for chunked properties, delete `SimilarRetrievalVector`
+**On PASS** — the retrieval asymmetry in §3 ships with the change and is accepted, not fixed: a
+chunked point with no centroid becomes unreachable through `SearchSimilar`. Then hard-code centroid
+retrieval for chunked properties, delete `SimilarRetrievalVector`
 and its compose entry, rename `RerankCandidate.Centroid` to reflect that it holds the secondary
 vector, and record the verdict in `docs/plans/2026-09-GATE-similar-centroid.md`.
 
@@ -154,6 +192,9 @@ The setting does not survive this spec under either outcome.
 
 - Vector-name selection across three cases: chunked + `centroid` → retrieves `_centroid` and fetches
   `_vector`; chunked + `head` → today's names; not chunked → `_vector` regardless of the setting.
+- A fourth case pinning the diversity vector: under **both** settings the named vector reaching the
+  diversifier at `:288` is `<prop>_centroid`. None of the three cases above would catch a regression
+  here, because they assert on the retrieval and fusion names only.
 - `AddVectorRanking` throws on an unrecognised `SimilarRetrievalVector`, following the existing
   rejection tests at `VectorRankingOptionsTests.cs:71-137`.
 - The defaults test asserts `head`.
@@ -169,14 +210,14 @@ Verified 2026-09-07 against `main` `c27eb98`.
 |---|---|---|
 | A1 | `VectorRankingOptions` binds from section `VectorRanking` | `ServiceCollectionExtensions.cs:57-63` — `config.GetSection(...)`, `section.Bind(opts)` |
 | A2 | `AddVectorRanking` has a startup-validation site | `:58-95` — obsolete-key, finiteness, non-negativity, sum>0, two range checks. All numeric; a string needs its own check |
-| A3 | Compose binds `VectorRanking__*` | `docker-compose.yml:444-445`; confirmed live by `docker inspect` during the Tier 1 λ sweep |
+| A3 | Compose binds `VectorRanking__*` | `docker-compose.yml:445-446`; confirmed live by `docker inspect` during the Tier 1 λ sweep |
 | A4 | Retrieval name is `<prop>.ToSnakeCase() + "_vector"`, one `SearchNamedAsync` | `:221`, `:246` |
 | A5 | `centroidPossible` is exactly "embedded AND chunked" | `:228-229` over `schema.ChunkFields` |
 | A6 | `RetrieveVectorsOrDegradeAsync` takes the vector name as a parameter | `:759-760` |
-| A7 | `ResultReranker` treats the second vector generically | `RerankCandidate.cs:6` is `float[]? Centroid`; `ResultReranker.cs` only calls `CosineSimilarity` on it |
+| A7 | `ResultReranker` treats the second vector generically | `IResultReranker.cs:3-7` declares `float[]? Centroid`; `ResultReranker.cs:21,41` only length-checks it and takes its cosine |
 | A8 | The over-fetch logic stays correct under the swap | `:238-239` keys off `centroidPossible` and `decayField`, neither of which the swap changes |
 | A9 | `<prop>_vector` exists wherever the swap applies | `IntelligenceStoreConsumer.cs:139` writes it for every `[IversonEmbedding]` property; the swap requires `vectorDesc` from `schema.VectorFields`, so both vectors are present |
-| A10 | `<prop>_centroid` is on the object collection, same dimension | `IntelligenceStoreConsumer.cs:303`; `ingest.py:807` declares both at the probed dimension |
+| A10 | `<prop>_centroid` is on the object collection, same dimension | `IntelligenceStoreConsumer.cs:303` (call site), normalise-then-average at `:485-505`; `ingest.py:807` declares both at the probed dimension |
 | A11 | The benchmark collections really carry `body_centroid` | `ingest.py:807` creates both named vectors, `:625` writes the centroid — the benchmark corpus is ingested by `ingest.py`, not the consumer |
 | A12 | `benchmark-query` reaches `SearchSimilar` | `BenchmarkQueryScenario.cs:353` |
 | A13 | **Partly failed.** Recorded λ=1.00 runs are comparable, but `meta.json` does not record λ | Grep for `lambda` in `BenchmarkQueryScenario.cs` returns nothing; meta carries `composite` and `chunkBudgetMultiplier` only. Handled in §4 — the control is re-run, and the validity check is non-diagnostic on mismatch |
@@ -191,9 +232,13 @@ Verified 2026-09-07 against `main` `c27eb98`.
 
 ## Known issues
 
-- **SciFact is largely a null test.** Single-chunk documents have a centroid equal to their
-  normalized head vector, so the swap cannot change their ranking, and 87.6 % of the `sci-2048`
-  corpus is single-chunk. Only 641 of 5,183 documents can move at all. Ben chose (2026-09-07) to
-  keep the arm anyway: it is the only near-single-chunk guard available, its multi-chunk minority
-  still exercises the change, and it costs about eight minutes across both settings.
+- **SciFact is partly a null test.** Single-chunk documents have a centroid equal to their
+  normalized head vector, so the swap cannot change their ranking, and 73.7 % of the `sci-2048`
+  corpus is single-chunk. 1,363 of 5,183 documents can move. Ben chose (2026-09-07) to keep the arm:
+  it is the only near-single-chunk guard available, its multi-chunk minority is substantial, and it
+  costs about eight minutes across both settings.
+- **`SearchSimilar` under `centroid` cannot return a point that has a head vector but no centroid** —
+  it is excluded from retrieval, not degraded. Ben accepted this (2026-09-07); see §3's retrieval
+  asymmetry for the writer paths that produce the state and the rejected alternatives. The benchmark
+  corpora contain no such points, so the gate cannot measure the exposure.
 - **The validity check cannot diagnose a mismatch**, only confirm a match — see A13 and §4.
