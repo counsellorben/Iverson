@@ -220,9 +220,11 @@ resource "google_container_node_pool" "general" {
   # already contains the fix).
   #tfsec:ignore:google-gke-metadata-endpoints-disabled
   node_config {
-    machine_type    = var.general_machine_type
-    image_type      = "COS_CONTAINERD"
-    service_account = google_service_account.gke_nodes.email
+    machine_type      = var.general_machine_type
+    image_type        = "COS_CONTAINERD"
+    service_account   = google_service_account.gke_nodes.email
+    boot_disk_kms_key = google_kms_crypto_key.data_volumes.id
+
     workload_metadata_config {
       mode = "GKE_METADATA"
     }
@@ -259,9 +261,10 @@ resource "google_container_node_pool" "pools" {
   # already contains the fix).
   #tfsec:ignore:google-gke-metadata-endpoints-disabled
   node_config {
-    machine_type    = each.value.machine_type
-    image_type      = "COS_CONTAINERD"
-    service_account = google_service_account.gke_nodes.email
+    machine_type      = each.value.machine_type
+    image_type        = "COS_CONTAINERD"
+    service_account   = google_service_account.gke_nodes.email
+    boot_disk_kms_key = google_kms_crypto_key.data_volumes.id
 
     labels = {
       "iverson.io/node-pool" = each.key
