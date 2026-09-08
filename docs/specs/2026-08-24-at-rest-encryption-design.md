@@ -1,6 +1,11 @@
 # At-rest encryption for cloud data volumes
 
 **Status:** implemented and merged 2026-08-24 (commits `4c5823b`..`8638e81`, on origin/main). A seventh StorageClass, `iverson-tei`, was added afterwards in `8d4b1fa`; the counts of six below are as of this design, and the verification runbook covers all seven.
+**Superseded in part:** two exclusions recorded below were later closed by
+`docs/specs/2026-09-08-at-rest-encryption-node-disks-and-allowlist-design.md` — the AKS and
+GKE node-OS-disk exclusion in section 5, and the absence of an enforcement gate for the
+StorageClass allow-list noted at the end of this document. Read that design before treating
+either as still open.
 **Scope:** cloud production only (AWS / Azure / GCP via Helm + Terraform)
 **Driver:** compliance — a checkable control with auditable evidence
 
@@ -181,7 +186,9 @@ of ours.
 
 Azure and GCP need no equivalent: AKS and GKE node OS disks are encrypted by the platform by
 default, and bringing them under the same CMK is a separate decision this design does not
-take.
+take. **That decision was subsequently taken** — see the successor design named in this
+document's header, which puts both under the same customer-managed key and pins kubelet's
+disk placement on AKS so `emptyDir` lands on the encrypted OS disk.
 
 ### 6. Greenfield — no migration
 

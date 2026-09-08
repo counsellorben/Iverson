@@ -36,6 +36,10 @@ helm-template-kubeconform:
         helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" \
           | kubeconform -kubernetes-version 1.30.0 -summary -ignore-missing-schemas
       done
+    # helm lint only proves the rendered YAML parses; schema validation is what catches
+    # a misspelled ValidatingAdmissionPolicy field. No -ignore-missing-schemas: this
+    # chart renders only core kinds, so a missing schema means something is wrong.
+    - helm template pvc-storageclass-policy Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy | kubeconform -kubernetes-version 1.30.0 -summary
 
 security-audit:
   stage: validate
@@ -71,6 +75,9 @@ terraform-validate:
     matrix:
       - CLOUD: [aws, azure, gcp]
   script:
-    - terraform -chdir="Iverson.Server/deploy/terraform/$CLOUD" fmt -check
+    # -recursive over the whole tree rather than -chdir per cloud: fmt is not recursive
+    # by default, so a per-root check reads only that root's own .tf files and never the
+    # modules/ they call. Must stay ahead of init, which writes .tf into .terraform/.
+    - terraform fmt -check -recursive Iverson.Server/deploy/terraform
     - terraform -chdir="Iverson.Server/deploy/terraform/$CLOUD" init -backend=false
     - terraform -chdir="Iverson.Server/deploy/terraform/$CLOUD" validate

@@ -65,6 +65,16 @@ jobs:
             echo "::endgroup::"
           done
 
+      # helm lint only proves the rendered YAML parses. Schema validation is what
+      # catches a misspelled ValidatingAdmissionPolicy field, which lint cannot see.
+      # No -ignore-missing-schemas here: this chart renders only core Kubernetes
+      # kinds, so a missing schema means something is wrong and should fail.
+      - name: helm template | kubeconform the PVC StorageClass admission-policy chart
+        run: |
+          helm template pvc-storageclass-policy \
+            Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy \
+            | kubeconform -kubernetes-version 1.30.0 -summary
+
   security-audit:
     runs-on: ubuntu-latest
     steps:
@@ -120,8 +130,12 @@ jobs:
         with:
           terraform_version: "1.7.5"
 
+      # -recursive over the whole tree rather than -chdir per cloud: fmt is not
+      # recursive by default, so a per-root check reads only that root's own .tf
+      # files and never the modules/ they call, where most edits land. Must stay
+      # ahead of the init step below, which writes vendored .tf into .terraform/.
       - name: terraform fmt -check
-        run: terraform -chdir=Iverson.Server/deploy/terraform/${{ matrix.cloud }} fmt -check
+        run: terraform fmt -check -recursive Iverson.Server/deploy/terraform
 
       - name: terraform init (no backend)
         run: terraform -chdir=Iverson.Server/deploy/terraform/${{ matrix.cloud }} init -backend=false
