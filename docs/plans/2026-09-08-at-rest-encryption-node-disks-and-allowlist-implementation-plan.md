@@ -385,16 +385,19 @@ NODE_RG=$(az aks show --name "$CLUSTER" --resource-group "${CLUSTER}-rg" \
   --query nodeResourceGroup -o tsv)
 
 az disk list --resource-group "$NODE_RG" \
-  --query '[].{name:name,encryptionType:encryption.type,diskEncryptionSetId:encryption.diskEncryptionSetId}' \
+  --query "[?contains(name, 'OsDisk')].{name:name,encryptionType:encryption.type,diskEncryptionSetId:encryption.diskEncryptionSetId}" \
   -o table
 ```
 
-Expected: every row shows `EncryptionAtRestWithCustomerKey` and the same disk encryption set id
-check 2 shows. That group holds both the scale-set OS disks this check exists for and the
-CSI-provisioned data disks check 3 reads; both are under the same set, so a single expectation
-covers the listing. **If this returns no rows, the check is not satisfied and must be
+Expected: one row per node, each showing `EncryptionAtRestWithCustomerKey` and the same disk
+encryption set id check 2 shows. The name filter is what keeps this check independent of check 3:
+that resource group also holds the CSI-provisioned data disks check 3 already reads, and those
+carry the same set, so an unfiltered listing would pass on check 3's evidence without proving
+anything about node disks. **If this returns no rows, the check is not satisfied and must be
 re-derived against the agent pool's scale set** — see the design's section 4, which ships this
 command unverified by deliberate choice, because no Azure cluster existed when it was written.
+That includes the filter itself: if AKS names its OS disks differently, this returns nothing, and
+re-derivation is the correct response.
 
 **GCP equivalent.** A node's boot disk carries the instance's name and lives in the instance's
 zone; `spec.providerID` supplies both, in the form `gce://<project>/<zone>/<instance>`:
@@ -411,7 +414,7 @@ kubectl get nodes -o jsonpath='{range .items[*]}{.spec.providerID}{"\n"}{end}' \
 Expected: every line names a disk and the same key check 3 shows.
 ````
 
-- [ ] **Step 4: Repoint the closing section** (`:186-188`). Keep the `## What this evidence set does not cover` heading. Replace its body with:
+- [ ] **Step 4: Repoint the closing section.** Keep the `## What this evidence set does not cover` heading and delete the entire paragraph beneath it, the ten lines from `**AKS and GKE node OS disks are not covered by this runbook, and not by design.**` to the end of the file, replacing them with:
 
 ```
 Node disks are now under the same customer-managed key as PersistentVolumes on all three
