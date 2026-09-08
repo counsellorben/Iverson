@@ -23,4 +23,9 @@ public sealed class VectorRankingOptions
     // costs 1.44 (fs-2048) and 1.97 (fs-512) distinct parents in the top 10, past the rule's 1.0 bar.
     public double LambdaSimilar { get; set; } = 1.00;
     public double LambdaChunks  { get; set; } = 0.70;
+
+    // Temporary, for the gate in docs/specs/2026-09-07-similar-centroid-retrieval-design.md §5.
+    // "head" | "centroid" — which named vector SearchSimilar RETRIEVES by for a chunked property.
+    // Deleted once the gate rules; the winner is hard-coded.
+    public string SimilarRetrievalVector { get; set; } = "head";
 }

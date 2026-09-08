@@ -444,6 +444,7 @@ services:
       #   VECTOR_RANKING_LAMBDA_SIMILAR=0.85 VECTOR_RANKING_LAMBDA_CHUNKS=0.85 docker compose up -d --no-deps iverson-api
       - VectorRanking__LambdaSimilar=${VECTOR_RANKING_LAMBDA_SIMILAR:-1.00}
       - VectorRanking__LambdaChunks=${VECTOR_RANKING_LAMBDA_CHUNKS:-0.70}
+      - VectorRanking__SimilarRetrievalVector=${VECTOR_RANKING_SIMILAR_RETRIEVAL:-head}
       # Must agree with tei-embed's served model (its --model-id, EMBED_MODEL_ID) and with the five
       # conformance fixtures' declared model: this is the deployment default types register under.
       # A mismatch fails loudly at first initialisation — the API's /info identity guard.

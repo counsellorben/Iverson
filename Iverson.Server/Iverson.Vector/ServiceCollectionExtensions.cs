@@ -89,6 +89,11 @@ public static class ServiceCollectionExtensions
             throw new InvalidOperationException(
                 $"{VectorRankingOptions.Section}:LambdaChunks must be in [0,1] (was {opts.LambdaChunks}).");
 
+        if (opts.SimilarRetrievalVector is not ("head" or "centroid"))
+            throw new InvalidOperationException(
+                $"{VectorRankingOptions.Section}:SimilarRetrievalVector must be \"head\" or " +
+                $"\"centroid\" (was \"{opts.SimilarRetrievalVector}\").");
+
         services.AddSingleton(Options.Create(opts));
         services.AddSingleton<IResultReranker, ResultReranker>();
         services.AddSingleton<IResultDiversifier, ResultDiversifier>();

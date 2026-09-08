@@ -218,7 +218,6 @@ public sealed class ObjectSearchGrpcService(
                 $"Embedding service unavailable: {ex.Message}"));
         }
 
-        var vectorName     = vectorDesc.PropertyName.ToSnakeCase() + "_vector";
         var topK           = (ulong)Math.Max(1, (int)request.TopK);
         var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: false);
 
@@ -227,6 +226,17 @@ public sealed class ObjectSearchGrpcService(
         // embedding-only property there is no such named vector.
         var centroidPossible = schema.ChunkFields.Any(c =>
             string.Equals(c.PropertyName, vectorDesc.PropertyName, StringComparison.OrdinalIgnoreCase));
+
+        var snake        = vectorDesc.PropertyName.ToSnakeCase();
+        var headName     = snake + "_vector";
+        var centroidName = snake + "_centroid";
+
+        // Retrieval by centroid applies only where a centroid exists at all.
+        var useCentroidRetrieval = centroidPossible
+            && string.Equals(_ranking.SimilarRetrievalVector, "centroid", StringComparison.Ordinal);
+
+        var vectorName    = useCentroidRetrieval ? centroidName : headName;
+        var secondaryName = useCentroidRetrieval ? headName     : centroidName;
 
         var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
 
@@ -262,10 +272,23 @@ public sealed class ObjectSearchGrpcService(
             centroids = await RetrieveVectorsOrDegradeAsync(
                 collectionName,
                 results.Select(r => r.Id).ToList(),
-                vectorDesc.PropertyName.ToSnakeCase() + "_centroid",
+                secondaryName,
                 "SearchSimilar",
                 "re-ranking without the centroid signal");
         }
+
+        // The diversity vector stays the centroid where it is observable. Under centroid retrieval
+        // the fetched secondary is the head vector, so holding it costs a second retrieve — issued
+        // only at λ < 1, because at λ = 1.00 both Mmr branches reduce to lambda * Score and
+        // selection is bit-identical to Take(topK) whatever this holds.
+        var diversityVectors = centroids;
+        if (useCentroidRetrieval && _ranking.LambdaSimilar < 1.0 && results.Count > 0)
+            diversityVectors = await RetrieveVectorsOrDegradeAsync(
+                collectionName,
+                results.Select(r => r.Id).ToList(),
+                centroidName,
+                "SearchSimilar",
+                "diversifying without the centroid signal");
 
         var now = DateTimeOffset.UtcNow;
 
@@ -285,7 +308,7 @@ public sealed class ObjectSearchGrpcService(
             .Select(r => new DiversifyCandidate(
                 r.Id,
                 r.FusedScore,
-                centroids.TryGetValue(r.Id, out var v) ? v : null))
+                diversityVectors.TryGetValue(r.Id, out var v) ? v : null))
             .ToList();
 
         // Camel-cased descriptor name → descriptor, built once per request rather than per row.
