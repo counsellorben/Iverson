@@ -3957,4 +3957,60 @@ public class ObjectSearchGrpcServiceTests
             10,
             1.00);
     }
+
+    // Spec §3.6: a chunks collection that was never created (no writes yet) surfaces as Qdrant
+    // NotFound on the chunk search — SearchChunksFusedAsync's own catch turns that into an empty
+    // result set, and the routed method must still return true for an empty pipeline so the caller
+    // does NOT also run the head path against the object collection afterward.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_ChunksCollectionNotFound_ReturnsEmptyStream()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns<Task<IReadOnlyList<VectorSearchResult>>>(
+                   _ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        await _vector.DidNotReceive().RetrievePayloadAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>());
+        await _vector.DidNotReceive().SearchNamedAsync(
+            "docs_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+    }
+
+    // Spec §3.6: hydration failing with anything other than NotFound is a client-visible failure,
+    // not a silent degrade — the routed method must surface it as Unavailable, mirroring the head
+    // path's own "Vector store unavailable" contract.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_HydrationRpcException_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        const string parent = "parent-1";
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns<Task<IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>>>(
+                   _ => throw new RpcException(new Status(StatusCode.Internal, "boom")));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+    }
 }

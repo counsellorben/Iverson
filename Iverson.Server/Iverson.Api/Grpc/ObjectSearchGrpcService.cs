@@ -345,9 +345,9 @@ public sealed class ObjectSearchGrpcService(
             using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollection, readOnly: true)))
                 chunkCount = await vector.GetPointCountAsync(chunksCollection);
         }
-        catch (RpcException ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return NotRouted($"counts unavailable: {ex.Status.Detail}");
+            return NotRouted($"counts unavailable: {ex.Message.SanitizeForLog()}");
         }
         if (objectCount == 0) return NotRouted("empty object collection");
         if (chunkCount == 0)  return NotRouted("empty chunks collection");
@@ -359,7 +359,7 @@ public sealed class ObjectSearchGrpcService(
         var topK         = (ulong)Math.Max(1, (int)request.TopK);
         var chunksPerDoc = (ulong)Math.Ceiling((double)chunkCount / objectCount);
         var pipeline     = await SearchChunksFusedAsync(
-            schema, chunkDesc, decision, queryVector, filter, topK * chunksPerDoc * OverFetchFactor);
+            schema, chunkDesc, decision, queryVector, filter, topK * chunksPerDoc * OverFetchFactor, "SearchSimilar");
 
         // Spec §3.5.1: max-passage collapse. Rerank output is fused-descending (ResultReranker.cs:44-45),
         // so the first sighting of a parent is its best chunk; ties keep first-seen order.
@@ -530,7 +530,7 @@ public sealed class ObjectSearchGrpcService(
         // property carrying [IversonChunk], and SchemaBuilder writes a "<property>_centroid" named
         // vector on the object collection for every chunk field. The centroid signal is therefore
         // always possible, so the over-fetch stays exactly 4x with no ceiling.
-        var pipeline = await SearchChunksFusedAsync(schema, chunkDesc, decision, queryVector, filter, topK * OverFetchFactor);
+        var pipeline = await SearchChunksFusedAsync(schema, chunkDesc, decision, queryVector, filter, topK * OverFetchFactor, "SearchChunks");
 
         // The DIVERSITY vector for a chunk is the chunk's OWN vector — the same representation
         // Qdrant matched the query against — not its parent centroid, which is the re-rank signal
@@ -592,7 +592,7 @@ public sealed class ObjectSearchGrpcService(
 
     private async Task<ChunkPipeline> SearchChunksFusedAsync(
         SchemaDescriptor schema, ChunkDescriptor chunkDesc, AuthorizationDecision decision,
-        float[] queryVector, Filter? filter, ulong chunkLimit)
+        float[] queryVector, Filter? filter, ulong chunkLimit, string rpcName)
     {
         var vectorName       = chunkDesc.PropertyName.ToSnakeCase() + "_vector";
         var chunksCollection = tenantScope.ResolveCollectionName(schema.CollectionName!, decision.TenantValue, isChunks: true);
@@ -627,7 +627,7 @@ public sealed class ObjectSearchGrpcService(
             tenantScope.ResolveCollectionName(schema.CollectionName!, decision.TenantValue, isChunks: false),
             parentIds,
             chunkDesc.PropertyName.ToSnakeCase() + "_centroid",
-            "SearchChunks",
+            rpcName,
             "re-ranking without the centroid signal");
 
         var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
