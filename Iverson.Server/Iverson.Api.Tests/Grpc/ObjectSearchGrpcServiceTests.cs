@@ -3907,4 +3907,54 @@ public class ObjectSearchGrpcServiceTests
         written[0].Data.Fields.Should().ContainKey("Body");
         written[0].Data.Fields.Should().NotContainKey("Secret");
     }
+
+    // The other routed tests degrade the centroid signal to absent, which makes the diversification
+    // step unfalsifiable: with every DiversityVector null, MMR reduces to lambda * score and the
+    // argmax is the same for ANY positive lambda. This test pins both halves at the call site
+    // instead — a real parent centroid reaches the candidate, and the lambda handed to the
+    // diversifier is LambdaSimilar (1.00 here), not LambdaChunks (0.70). The substitute returns an
+    // empty selection, so nothing is hydrated or streamed; the assertion is on the call itself.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_DiversifiesOnTheParentCentroid_WithLambdaSimilar()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+
+        const string parent = "parent-1";
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>(), "body_centroid")
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
+               {
+                   [InvokeKeyToUlong(parent)] = OrthogonalUnitVector()
+               });
+
+        var diversifier = Substitute.For<IResultDiversifier>();
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            diversifier,
+            Options.Create(new VectorRankingOptions
+            {
+                LambdaSimilar         = 1.00,
+                LambdaChunks          = 0.70,
+                SimilarViaChunksTypes = ["Doc"]
+            }),
+            Options.Create(new DecayOptions()));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        diversifier.Received(1).Diversify(
+            Arg.Is<IReadOnlyList<DiversifyCandidate>>(l => l.Count == 1 && l[0].DiversityVector != null),
+            10,
+            1.00);
+    }
 }
