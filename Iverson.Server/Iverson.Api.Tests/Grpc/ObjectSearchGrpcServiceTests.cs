@@ -3628,8 +3628,9 @@ public class ObjectSearchGrpcServiceTests
                .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
                    ParentPayloads([parents[0], parents[2]]));
 
+        var log = Substitute.For<Microsoft.Extensions.Logging.ILogger<ObjectSearchGrpcService>>();
         var (writer, written) = MakeStream<SearchResponse>();
-        await RoutedSut().SearchSimilar(
+        await RoutedSut(log: log).SearchSimilar(
             new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
             writer, TestServerCallContext.Create());
 
@@ -3637,6 +3638,14 @@ public class ObjectSearchGrpcServiceTests
         written.Select(w => w.Score).Should().Equal(0.9f, 0.7f);
         written.Select(w => w.Data.Fields["Body"].StringValue).Should()
                .Equal("body-of-parent-1", "body-of-parent-3");
+        // The per-parent warning survives for a genuine individual miss — it is suppressed only
+        // when the whole object collection vanished (see the NotFound test).
+        log.Received(1).Log(
+            Microsoft.Extensions.Logging.LogLevel.Warning,
+            Arg.Any<Microsoft.Extensions.Logging.EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("missing at hydration")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     [Fact]
@@ -4056,9 +4065,10 @@ public class ObjectSearchGrpcServiceTests
             "docs_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
     }
 
-    // Spec §3.5.1: a fused chunk whose payload carries no parent_id (or an empty one) cannot be
-    // collapsed to a parent and must be dropped before hydration rather than crashing the request
-    // or being hydrated under a bogus key — one malformed chunk must not sink the whole response.
+    // Spec §3.5.1: a fused chunk whose payload carries no parent_id cannot be collapsed to a parent
+    // and must be dropped before hydration rather than crashing the request or being hydrated under
+    // a bogus key — one malformed chunk must not sink the whole response. (The guard's companion
+    // empty-string clause is not exercised here: ingest always writes a non-empty parent_id.)
     [Fact]
     public async Task SearchSimilar_RoutedViaChunks_ChunkMissingParentId_IsDroppedBeforeHydration()
     {
@@ -4121,7 +4131,7 @@ public class ObjectSearchGrpcServiceTests
         log.Received(1).Log(
             Microsoft.Extensions.Logging.LogLevel.Warning,
             Arg.Any<Microsoft.Extensions.Logging.EventId>(),
-            Arg.Any<object>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("object collection")),
             null,
             Arg.Any<Func<object, Exception?, string>>());
     }

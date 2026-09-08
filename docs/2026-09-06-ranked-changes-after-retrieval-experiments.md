@@ -117,7 +117,10 @@ ranking reproduces a same-binary collapsed chunk run within tolerance (nDCG@10 d
 The two run files came out byte-identical rather than merely close: both sides draw from the same raw
 candidate pool through the shared `SearchChunksFusedAsync` helper, and λ 1.00 reduces diversification to
 `Take(topK)`, so nothing downstream of the fused ranking can diverge — every one of the 672 queries held
-at least 50 distinct parents in its first 200 fused chunks, so the collapse never ran short either.
+at least 50 distinct parents in its first 200 fused chunks, so the collapse never ran short either. The
+run files, `report-routed.txt` and the run metadata are in
+`~/repositories/iverson-benchmark-corpora/freshstack-2048-2026-09-07/`; the parent count is a distinct-row
+count per query over `runs/fs2048-routed.chunks.trec`.
 
 ---
 
