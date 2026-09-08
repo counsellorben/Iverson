@@ -125,6 +125,9 @@ Newly introduced by this plan and verified 2026-09-08 against `main` `f5105a9`:
 | P29 | Command | `--chunk-budget-multiplier 4` passes `ChunkBudgetGuard` on the fs-2048 arm | `ChunkBudgetGuard.cs:29-41`: reachable = (50 × 4) / (18,622 / 6,000) = 64.4 ≥ 50 |
 | P30 | Ordering | Task 3 may leave `TryBuildChunksFilter` unreferenced until Task 4; no warnings-as-errors or code-style-in-build setting turns that into a build failure | CIR round 1: no `TreatWarningsAsErrors` / `EnforceCodeStyleInBuild` in the `Iverson.Api` project or any `Directory.Build.props` |
 | P31 | Code validity | The plan's code blocks compile against the real types | CIR round 1 scratch builds: Tasks 1–2 verbatim in a copy of `Iverson.Vector`, Task 4 verbatim plus Task 3's declared signatures in a copy of `Iverson.Api`; 0 errors (one pre-existing obsolete-API warning) |
+| P32 | Test convention | Fusion is the identity when no centroid or decay signal is present, so Task 4 tests 1 and 3 can assert raw chunk scores on the stream | `ResultReranker.cs:25-33` short-circuits to `BaseScore`; `DualAnnotatedSchema()` resolves no decay field (CIR round 2) |
+| P33 | Command | `docker compose` from a branch checkout joins the box's existing `iversonserver` project rather than creating a second one | No `name:` in `docker-compose.yml`, so the project name is the `Iverson.Server` basename in every checkout; `docker compose ls` shows one project whose recorded working dir is a since-deleted worktree (CIR round 2) |
+| P34 | Command | `report.py` materialises the baseline run before its per-measure loop, so the nDCG@10 and R@50 deltas in one invocation are both valid | `report.py:660` `list(...)` on the baseline; the earlier consumed-generator defect is fixed (CIR round 2) |
 
 ## Tasks
 
@@ -533,7 +536,7 @@ dictionary, and `_vector.RetrievePayloadAsync("docs_test-tenant", …)` returnin
   7. **Field masking:** a field-restricted principal → the routed response omits the disallowed column
      and keeps `Key`.
 
-- [ ] **Step 4: Run the API suite** (Task 3 Step 5 command). Green; count ≥ floor + 15.
+- [ ] **Step 4: Run the API suite** (Task 3 Step 5 command). Green; count ≥ floor + 14.
 
 - [ ] **Step 5: Commit.**
 ```bash
