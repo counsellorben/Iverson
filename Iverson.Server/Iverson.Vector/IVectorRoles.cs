@@ -18,6 +18,16 @@ public interface IVectorQueryService
         string collectionName,
         IReadOnlyList<ulong> ids,
         string vectorName);
+
+    /// <summary>Approximate point count of a collection (Qdrant collection info).</summary>
+    Task<ulong> GetPointCountAsync(string collectionName);
+
+    /// <summary>
+    /// Payload of each listed point, canonicalised to strings exactly as SearchNamedAsync does.
+    /// Ids with no point are absent from the result.
+    /// </summary>
+    Task<IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>> RetrievePayloadAsync(
+        string collectionName, IReadOnlyList<ulong> ids);
 }
 
 public interface IVectorSchemaManager

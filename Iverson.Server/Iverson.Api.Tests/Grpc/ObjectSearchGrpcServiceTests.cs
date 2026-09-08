@@ -3412,4 +3412,790 @@ public class ObjectSearchGrpcServiceTests
         written[0].Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
         written[0].Data.Fields.Should().ContainKey("Name");
     }
+
+    // ── SearchSimilar routed via chunks ─────────────────────────────────────────
+    //
+    // VectorRanking:SimilarViaChunksTypes routes SearchSimilar for a listed type out of the chunks
+    // collection: chunk search → fuse → max-passage collapse → document-level diversification →
+    // hydrate the surviving parents from the object collection. Every fallback condition must run
+    // the unmodified head path and issue NO chunk search at all.
+
+    // The routed tests bind LambdaSimilar = 1.00 so the document-level diversification reduces to a
+    // plain Take(topK) over the fused-descending order — the collapse and the hydration order are
+    // then exactly what the test hand-computes, with no MMR reordering in between.
+    private ObjectSearchGrpcService RoutedSut(
+        IEnumerable<string>? routedTypes = null,
+        Microsoft.Extensions.Logging.ILogger<ObjectSearchGrpcService>? log = null) =>
+        new(
+            _registry, _search, _vector, _resolver,
+            log ?? NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions
+            {
+                LambdaSimilar          = 1.00,
+                LambdaChunks           = 0.70,
+                SimilarViaChunksTypes  = (routedTypes ?? ["Doc"]).ToList()
+            }),
+            Options.Create(new DecayOptions()));
+
+    // DualAnnotatedSchema plus a metadata column, so a chunk-expressible EQUALS clause exists —
+    // the filter fallbacks can then isolate the operator rule and the logic rule one at a time
+    // from the "not a key or metadata column" rule.
+    private static SchemaDescriptor DualAnnotatedWithMetadataSchema() =>
+        DualAnnotatedSchema() with
+        {
+            ScalarColumns   = [new ColumnDescriptor("Body", "text", false), new ColumnDescriptor("Category", "text", true)],
+            MetadataColumns = ["Category"]
+        };
+
+    // DualAnnotatedSchema plus a TIMESTAMPTZ metadata column, so DecayFieldResolver resolves a
+    // decay field AND ChunkFields stays populated — the combination SearchChunks needs (unlike
+    // EmbeddingOnlyWithDecaySchema, which has no chunked property and so cannot reach SearchChunks
+    // at all: it throws InvalidArgument for lacking an [IversonChunk] annotation).
+    private static SchemaDescriptor DualAnnotatedWithDecaySchema() =>
+        DualAnnotatedSchema() with
+        {
+            ScalarColumns   = [new ColumnDescriptor("Body", "text", false), new ColumnDescriptor("PublishedAt", "TIMESTAMPTZ", true)],
+            MetadataColumns = ["PublishedAt"]
+        };
+
+    private void StubChunkDensity(ulong objectCount, ulong chunkCount)
+    {
+        _vector.GetPointCountAsync("docs_test-tenant").Returns(objectCount);
+        _vector.GetPointCountAsync("docs_chunks_test-tenant").Returns(chunkCount);
+    }
+
+    private static VectorSearchResult ChunkOf(ulong id, double score, string parentKey, string text) =>
+        new(id, score, new Dictionary<string, string> { ["text"] = text, ["parent_id"] = parentKey });
+
+    // Every routed test degrades the centroid signal to absent (empty retrieve), so the fused score
+    // is the raw chunk cosine — ResultReranker short-circuits to BaseScore when neither the centroid
+    // nor a decay signal is present, which keeps the expected scores hand-checkable.
+    private void StubNoCentroids() =>
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
+
+    private static Dictionary<ulong, IReadOnlyDictionary<string, string>> ParentPayloads(
+        IEnumerable<string> parentKeys) =>
+        parentKeys.ToDictionary(
+            InvokeKeyToUlong,
+            k => (IReadOnlyDictionary<string, string>)new Dictionary<string, string>
+            {
+                ["key"]  = k,
+                ["body"] = $"body-of-{k}"
+            });
+
+    private void StubObjectSearchReturns(params VectorSearchResult[] results) =>
+        _vector.SearchNamedAsync("docs_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.ToList().AsReadOnly());
+
+    // Every fallback must run the unmodified head path AND leave the chunks collection untouched:
+    // a fallback that had already issued the chunk search would have paid for it twice over.
+    private async Task AssertHeadPathRanAndChunksDidNotAsync()
+    {
+        await _vector.Received(1).SearchNamedAsync(
+            "docs_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+        await _vector.DidNotReceive().SearchNamedAsync(
+            "docs_chunks_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+    }
+
+    // 10 objects / 13 chunks → ceil(1.3) = 2 chunks per doc, so top_k = 10 asks Qdrant for
+    // 10 × 2 × 4 = 80 chunks. The object collection is never searched on the routed path.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_OverFetchesTopKTimesChunkDensityTimesOverFetch()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        var parents = Enumerable.Range(1, 12).Select(i => $"parent-{i}").ToList();
+        var chunks  = parents.Select((p, i) => ChunkOf((ulong)(i + 1), 0.99 - i * 0.01, p, $"c{i + 1}")).ToList();
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(chunks.AsReadOnly());
+
+        IReadOnlyList<ulong>? hydrated = null;
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Do<IReadOnlyList<ulong>>(ids => hydrated = ids))
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads(parents));
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await _vector.Received(1).SearchNamedAsync(
+            "docs_chunks_test-tenant", "body_vector", fakeVector, 80UL, Arg.Any<Filter>());
+        await _vector.DidNotReceive().SearchNamedAsync(
+            "docs_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+
+        hydrated.Should().Equal(parents.Take(10).Select(InvokeKeyToUlong));
+        written.Select(w => w.Score).Should().Equal(chunks.Take(10).Select(c => (float)c.Score));
+    }
+
+    // 10 objects / 108 chunks → ceil(10.8) = 11 chunks per doc: 10 × 11 × 4 = 440.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_HigherChunkDensity_ScalesTheChunkLimit()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 108);
+        StubNoCentroids();
+
+        var parents = new[] { "parent-1", "parent-2" };
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   ChunkOf(1, 0.90, parents[0], "c1"),
+                   ChunkOf(2, 0.80, parents[1], "c2")
+               }.AsReadOnly());
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads(parents));
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await _vector.Received(1).SearchNamedAsync(
+            "docs_chunks_test-tenant", "body_vector", fakeVector, 440UL, Arg.Any<Filter>());
+        written.Should().HaveCount(2);
+    }
+
+    // Max-passage collapse: a parent is represented by its BEST chunk only. The rerank output is
+    // fused-descending, so the first sighting of a parent is that best chunk and every later one
+    // is dropped — the document appears once, carrying 0.9 rather than 0.5.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_CollapsesParentToItsBestPassage()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        const string parent = "parent-1";
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   ChunkOf(1, 0.9, parent, "best"),
+                   ChunkOf(2, 0.5, parent, "worse")
+               }.AsReadOnly());
+
+        IReadOnlyList<ulong>? hydrated = null;
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Do<IReadOnlyList<ulong>>(ids => hydrated = ids))
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads([parent]));
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        hydrated.Should().Equal(InvokeKeyToUlong(parent));
+        written.Should().HaveCount(1);
+        written[0].Score.Should().Be(0.9f);
+    }
+
+    // A parent selected by diversification but absent from the hydration retrieve (deleted between
+    // the two round trips) is skipped, not streamed as an empty row — the surviving rows keep both
+    // their order and their scores.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_ParentMissingAtHydration_IsSkipped()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        var parents = new[] { "parent-1", "parent-2", "parent-3" };
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   ChunkOf(1, 0.9, parents[0], "c1"),
+                   ChunkOf(2, 0.8, parents[1], "c2"),
+                   ChunkOf(3, 0.7, parents[2], "c3")
+               }.AsReadOnly());
+        // parent-2 vanished between the chunk search and the hydration retrieve.
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
+                   ParentPayloads([parents[0], parents[2]]));
+
+        var log = Substitute.For<Microsoft.Extensions.Logging.ILogger<ObjectSearchGrpcService>>();
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut(log: log).SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written.Select(w => w.Score).Should().Equal(0.9f, 0.7f);
+        written.Select(w => w.Data.Fields["Body"].StringValue).Should()
+               .Equal("body-of-parent-1", "body-of-parent-3");
+        // The per-parent warning survives for a genuine individual miss — it is suppressed only
+        // when the whole object collection vanished (see the NotFound test).
+        log.Received(1).Log(
+            Microsoft.Extensions.Logging.LogLevel.Warning,
+            Arg.Any<Microsoft.Extensions.Logging.EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("missing at hydration")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task SearchSimilar_TypeNotListed_NotRoutedViaChunks()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(UnitVector());
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+        StubObjectSearchReturns();
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await RoutedSut(routedTypes: ["Other"]).SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await AssertHeadPathRanAndChunksDidNotAsync();
+        await _vector.DidNotReceive().GetPointCountAsync(Arg.Any<string>());
+    }
+
+    // A listed type whose SEARCHED property carries no [IversonChunk] has no chunk vectors to
+    // search — the fallback is owned by the routed method itself precisely so this case is logged
+    // rather than silently taking the head path.
+    [Fact]
+    public async Task SearchSimilar_ListedTypeWithUnchunkedProperty_NotRoutedViaChunks_AndLogsTheReason()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema() with { ChunkFields = [] });
+
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(UnitVector());
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+        StubObjectSearchReturns();
+
+        var log = Substitute.For<Microsoft.Extensions.Logging.ILogger<ObjectSearchGrpcService>>();
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await RoutedSut(log: log).SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await AssertHeadPathRanAndChunksDidNotAsync();
+        log.Received().Log(
+            Microsoft.Extensions.Logging.LogLevel.Information,
+            Arg.Any<Microsoft.Extensions.Logging.EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("not routed via chunks")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    // The chunks collection only carries EQUALS-expressible payload conditions, so a NOT_EQUALS
+    // clause the head path translates happily is not chunk-expressible — and the fallback fires
+    // BEFORE the point counts are read.
+    [Fact]
+    public async Task SearchSimilar_NonEqualsFilterClause_NotRoutedViaChunks()
+    {
+        await _registry.RegisterAsync(DualAnnotatedWithMetadataSchema());
+
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(UnitVector());
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+        StubObjectSearchReturns();
+
+        var request = new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Category", Operator = SearchOperator.NotEquals,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        await AssertHeadPathRanAndChunksDidNotAsync();
+        await _vector.DidNotReceive().GetPointCountAsync(Arg.Any<string>());
+    }
+
+    // "Body" is a scalar column but neither the key column nor a metadata column, so no chunk
+    // payload carries it — the clause cannot be expressed against the chunks collection at all.
+    [Fact]
+    public async Task SearchSimilar_ScalarColumnFilterClause_NotRoutedViaChunks()
+    {
+        await _registry.RegisterAsync(DualAnnotatedWithMetadataSchema());
+
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(UnitVector());
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+        StubObjectSearchReturns();
+
+        var request = new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Body", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        await AssertHeadPathRanAndChunksDidNotAsync();
+        await _vector.DidNotReceive().GetPointCountAsync(Arg.Any<string>());
+    }
+
+    // BuildChunksFilter ANDs every clause it accepts and never reads FilterLogic, so an OR request
+    // over two individually-expressible clauses would silently become an AND. The routed path tests
+    // the logic itself and falls back instead.
+    [Fact]
+    public async Task SearchSimilar_OrFilterLogicOverTwoClauses_NotRoutedViaChunks()
+    {
+        await _registry.RegisterAsync(DualAnnotatedWithMetadataSchema());
+
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(UnitVector());
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+        StubObjectSearchReturns();
+
+        var request = new SearchSimilarRequest
+        {
+            TypeName = "Doc", Property = "Body", Query = "q", TopK = 10, FilterLogic = SearchLogic.Or
+        };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Category", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Category", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "y" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        await AssertHeadPathRanAndChunksDidNotAsync();
+        await _vector.DidNotReceive().GetPointCountAsync(Arg.Any<string>());
+    }
+
+    // The chunk-density over-fetch cannot be computed without both counts, so an unreadable count
+    // degrades to the head path rather than failing the search.
+    [Fact]
+    public async Task SearchSimilar_PointCountUnavailable_NotRoutedViaChunks()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(UnitVector());
+        _vector.GetPointCountAsync("docs_test-tenant")
+               .Returns<ulong>(_ => throw new RpcException(new Status(StatusCode.Unavailable, "qdrant down")));
+        StubNoCentroids();
+        StubObjectSearchReturns();
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await AssertHeadPathRanAndChunksDidNotAsync();
+    }
+
+    // Density is chunks/objects — an empty object collection would divide by zero, and there is
+    // nothing to hydrate either way.
+    [Fact]
+    public async Task SearchSimilar_EmptyObjectCollection_NotRoutedViaChunks()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(UnitVector());
+        StubChunkDensity(objectCount: 0, chunkCount: 13);
+        StubNoCentroids();
+        StubObjectSearchReturns();
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await AssertHeadPathRanAndChunksDidNotAsync();
+    }
+
+    // A type whose chunks were never written (or were all deleted) has no passages to collapse —
+    // the head path still has the object vectors to search.
+    [Fact]
+    public async Task SearchSimilar_EmptyChunksCollection_NotRoutedViaChunks()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(UnitVector());
+        StubChunkDensity(objectCount: 10, chunkCount: 0);
+        StubNoCentroids();
+        StubObjectSearchReturns();
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await AssertHeadPathRanAndChunksDidNotAsync();
+    }
+
+    // Row authorization is applied to the CHUNK search on the routed path, exactly as
+    // SearchChunks_OwnershipRequired_MergesMatchKeywordConditionWithKeyFilter asserts for
+    // SearchChunks: chunk points carry the parent's owner value in their payload.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_OwnershipRequired_AddsMatchKeywordToTheChunkSearchFilter()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                "OwnerId",
+                new List<Iverson.Api.Schema.RowPermission> { new("other-bypass", true, true, true) },
+                [])
+        });
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        const string parent = "parent-1";
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads([parent]));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        var call = _vector.ReceivedCalls()
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
+            .Subject;
+        var captured = (Filter?)call.GetArguments()[4];
+        captured.Should().NotBeNull();
+        captured!.Must.Should().ContainSingle(c => c.Field.Key == "ownerId" && c.Field.Match.Keyword == "test-user");
+    }
+
+    // The routed rows go through the same response writer as the head path, so field masking still
+    // strips a disallowed column while the identity entry survives.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_RestrictedField_MaskedFromResponse_ButKeyEntrySurvives()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema() with
+        {
+            ScalarColumns = [new ColumnDescriptor("Body", "text", false), new ColumnDescriptor("Secret", "text", true)],
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission> { new("Secret", ["admin"], []) })
+        });
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        const string parent = "parent-1";
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
+                   new Dictionary<ulong, IReadOnlyDictionary<string, string>>
+                   {
+                       [InvokeKeyToUlong(parent)] = new Dictionary<string, string>
+                       {
+                           ["key"]    = parent,
+                           ["body"]   = "visible",
+                           ["secret"] = "hidden"
+                       }
+                   });
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Should().ContainKey("Id");   // the key entry, mapped to the key column
+        written[0].Data.Fields.Should().ContainKey("Body");
+        written[0].Data.Fields.Should().NotContainKey("Secret");
+    }
+
+    // The other routed tests degrade the centroid signal to absent, which makes the diversification
+    // step unfalsifiable: with every DiversityVector null, MMR reduces to lambda * score and the
+    // argmax is the same for ANY positive lambda. This test pins both halves at the call site
+    // instead — a real parent centroid reaches the candidate, and the lambda handed to the
+    // diversifier is LambdaSimilar (1.00 here), not LambdaChunks (0.70). The substitute returns an
+    // empty selection, so nothing is hydrated or streamed; the assertion is on the call itself.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_DiversifiesOnTheParentCentroid_WithLambdaSimilar()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+
+        const string parent = "parent-1";
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>(), "body_centroid")
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
+               {
+                   [InvokeKeyToUlong(parent)] = OrthogonalUnitVector()
+               });
+
+        var diversifier = Substitute.For<IResultDiversifier>();
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            diversifier,
+            Options.Create(new VectorRankingOptions
+            {
+                LambdaSimilar         = 1.00,
+                LambdaChunks          = 0.70,
+                SimilarViaChunksTypes = ["Doc"]
+            }),
+            Options.Create(new DecayOptions()));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        diversifier.Received(1).Diversify(
+            Arg.Is<IReadOnlyList<DiversifyCandidate>>(l => l.Count == 1 && l[0].DiversityVector != null),
+            10,
+            1.00);
+    }
+
+    // Spec §3.6: a chunks collection that was never created (no writes yet) surfaces as Qdrant
+    // NotFound on the chunk search — SearchChunksFusedAsync's own catch turns that into an empty
+    // result set, and the routed method must still return true for an empty pipeline so the caller
+    // does NOT also run the head path against the object collection afterward.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_ChunksCollectionNotFound_ReturnsEmptyStream()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns<Task<IReadOnlyList<VectorSearchResult>>>(
+                   _ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        await _vector.DidNotReceive().RetrievePayloadAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>());
+        await _vector.DidNotReceive().SearchNamedAsync(
+            "docs_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+    }
+
+    // Spec §3.6: hydration failing with anything other than NotFound is a client-visible failure,
+    // not a silent degrade — the routed method must surface it as Unavailable, mirroring the head
+    // path's own "Vector store unavailable" contract.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_HydrationRpcException_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        const string parent = "parent-1";
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns<Task<IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>>>(
+                   _ => throw new RpcException(new Status(StatusCode.Internal, "boom")));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+    }
+
+    // Spec §3.2 condition 1: the routed-types list (":224") is matched with
+    // StringComparer.OrdinalIgnoreCase — the operator's configured spelling need not match the
+    // schema's TypeName casing exactly. Every other routed test lists the exact spelling "Doc",
+    // so this is the only test that would fail if the comparer were narrowed to Ordinal.
+    [Fact]
+    public async Task SearchSimilar_RoutedTypesList_MatchesCaseInsensitively()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        const string parent = "parent-1";
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads([parent]));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await RoutedSut(routedTypes: ["doc"]).SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await _vector.Received(1).SearchNamedAsync(
+            "docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>());
+        await _vector.DidNotReceive().SearchNamedAsync(
+            "docs_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+    }
+
+    // Spec §3.5.1: a fused chunk whose payload carries no parent_id cannot be collapsed to a parent
+    // and must be dropped before hydration rather than crashing the request or being hydrated under
+    // a bogus key — one malformed chunk must not sink the whole response. (The guard's companion
+    // empty-string clause is not exercised here: ingest always writes a non-empty parent_id.)
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_ChunkMissingParentId_IsDroppedBeforeHydration()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        const string parent = "parent-1";
+        var withParent    = ChunkOf(1, 0.9, parent, "c1");
+        var withoutParent = new VectorSearchResult(2, 0.8, new Dictionary<string, string> { ["text"] = "c2" });
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { withParent, withoutParent }.AsReadOnly());
+
+        IReadOnlyList<ulong>? hydrated = null;
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Do<IReadOnlyList<ulong>>(ids => hydrated = ids))
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads([parent]));
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        hydrated.Should().Equal(InvokeKeyToUlong(parent));
+        written.Should().HaveCount(1);
+    }
+
+    // Spec §3.6: the object collection vanishing between the count read and hydration is ONE
+    // event, not one per selected parent — the per-parent "missing at hydration" warning must be
+    // suppressed in favour of a single warning naming the collection when RetrievePayloadAsync
+    // itself throws NotFound. The streamed result is unchanged either way (empty).
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_HydrationNotFound_LogsOneWarning_NotOnePerParent()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        var parents = Enumerable.Range(1, 3).Select(i => $"parent-{i}").ToList();
+        var chunks  = parents.Select((p, i) => ChunkOf((ulong)(i + 1), 0.9 - i * 0.1, p, $"c{i + 1}")).ToList();
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(chunks.AsReadOnly());
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns<Task<IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>>>(
+                   _ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
+
+        var log = Substitute.For<Microsoft.Extensions.Logging.ILogger<ObjectSearchGrpcService>>();
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut(log: log).SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        log.Received(1).Log(
+            Microsoft.Extensions.Logging.LogLevel.Warning,
+            Arg.Any<Microsoft.Extensions.Logging.EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("object collection")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    // The shared SearchChunksFusedAsync helper resolves the decay field and passes the configured
+    // half-life through for BOTH SearchChunks and the routed SearchSimilar — but the only test
+    // reaching a configured half-life exercised the SearchSimilar side
+    // (SearchSimilar_UsesConfiguredHalfLife_NotAHardCodedOne). This is the SearchChunks
+    // equivalent: two chunks whose ages are chosen so the configured 90-day half-life and the
+    // shipped 180-day default disagree on which one is fused higher — a hard-coded half-life at
+    // either call site would stream them in the wrong order.
+    [Fact]
+    public async Task SearchChunks_UsesConfiguredHalfLife_NotAHardCodedOne()
+    {
+        await _registry.RegisterAsync(DualAnnotatedWithDecaySchema());
+
+        const double halfLifeDays = 90.0;
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }));
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubNoCentroids();
+
+        // parent-old: high base score but published 330 days ago. Under the CONFIGURED 90-day
+        // half-life it decays to ~0.079 (falls behind); under the hard-coded 180-day default it
+        // only decays to ~0.281 (stays ahead). parent-fresh: lower base score, published now
+        // (decay 1.0 under either half-life) — the two orders disagree only because of which
+        // half-life reached DecayFor.
+        var now = DateTimeOffset.UtcNow;
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.90, new Dictionary<string, string>
+            {
+                ["text"]        = "old-but-relevant",
+                ["parent_id"]   = "parent-old",
+                ["publishedAt"] = now.AddDays(-330).ToString("O")
+            }),
+            new(2, 0.70, new Dictionary<string, string>
+            {
+                ["text"]        = "fresh-but-less-relevant",
+                ["parent_id"]   = "parent-fresh",
+                ["publishedAt"] = now.ToString("O")
+            })
+        };
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        // Under the configured 90-day half-life parent-fresh's decay advantage outweighs
+        // parent-old's base-score lead, so parent-fresh streams first. A hard-coded 180-day
+        // half-life would decay parent-old less, letting its base-score lead win instead — this
+        // order is only correct if the configured half-life reached DecayFor.
+        written.Should().HaveCount(2);
+        written.Select(w => w.ParentKey).Should().Equal("parent-fresh", "parent-old");
+    }
 }

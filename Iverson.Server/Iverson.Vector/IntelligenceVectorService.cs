@@ -174,6 +174,45 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
         return result;
     }
 
+    public async Task<ulong> GetPointCountAsync(string collectionName)
+    {
+        using var activity = Telemetry.Source.StartActivity("qdrant.point_count", ActivityKind.Client);
+        activity?.SetTag("db.system", "qdrant");
+        activity?.SetTag("qdrant.collection", collectionName);
+
+        var info = await client.GetCollectionInfoAsync(collectionName);
+
+        activity?.SetStatus(ActivityStatusCode.Ok);
+        return info.PointsCount;
+    }
+
+    public async Task<IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>> RetrievePayloadAsync(
+        string collectionName, IReadOnlyList<ulong> ids)
+    {
+        using var activity = Telemetry.Source.StartActivity("qdrant.retrieve_payload", ActivityKind.Client);
+        activity?.SetTag("db.system", "qdrant");
+        activity?.SetTag("qdrant.collection", collectionName);
+        activity?.SetTag("qdrant.id_count", ids.Count);
+
+        const int BatchSize = 512;   // same batch as RetrieveNamedVectorAsync
+
+        var result = new Dictionary<ulong, IReadOnlyDictionary<string, string>>();
+        foreach (var batch in ids.Chunk(BatchSize))
+        {
+            var points = await client.RetrieveAsync(
+                collectionName,
+                batch.Select(id => (PointId)id).ToList(),
+                withPayload: true,
+                withVectors: false);
+
+            foreach (var p in points)
+                result[p.Id.Num] = p.Payload.ToDictionary(kvp => kvp.Key, kvp => ToCanonicalString(kvp.Value));
+        }
+
+        activity?.SetStatus(ActivityStatusCode.Ok);
+        return result;
+    }
+
     public async Task DeleteAsync(string collectionName, ulong id)
     {
         using var activity = Telemetry.Source.StartActivity("qdrant.delete", ActivityKind.Client);

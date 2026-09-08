@@ -110,6 +110,18 @@ Phase 2 decision that leans on whole-document embeddings should re-measure," and
 3. **Accept.** Documents beyond 512 tokens rank by their opening; the `_centroid` signal still covers the
    whole document in the fusion. Reasonable for abstract-shaped corpora, unmeasured for anything else.
 
+**Update 2026-09-08.** The new `VectorRanking:SimilarViaChunksTypes` option routes `SearchSimilar` through
+chunk retrieval for listed types instead of the truncated head embedding; on the `fs-2048` arm the served
+ranking reproduces a same-binary collapsed chunk run within tolerance (nDCG@10 delta +0.0000, R@50 delta
++0.0000, both within ±0.005), so choice 2 above now has an operator-configurable alternative available.
+The two run files came out byte-identical rather than merely close: both sides draw from the same raw
+candidate pool through the shared `SearchChunksFusedAsync` helper, and λ 1.00 reduces diversification to
+`Take(topK)`, so nothing downstream of the fused ranking can diverge — every one of the 672 queries held
+at least 50 distinct parents in its first 200 fused chunks, so the collapse never ran short either. The
+run files, `report-routed.txt` and the run metadata are in
+`~/repositories/iverson-benchmark-corpora/freshstack-2048-2026-09-07/`; the parent count is a distinct-row
+count per query over `runs/fs2048-routed.chunks.trec`.
+
 ---
 
 ## Tier 2 — cheap re-measurements before a verdict is treated as final

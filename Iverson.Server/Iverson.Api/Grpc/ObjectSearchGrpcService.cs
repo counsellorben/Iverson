@@ -218,6 +218,13 @@ public sealed class ObjectSearchGrpcService(
                 $"Embedding service unavailable: {ex.Message}"));
         }
 
+        var chunkDesc = schema.ChunkFields.FirstOrDefault(c =>
+            string.Equals(c.PropertyName, vectorDesc.PropertyName, StringComparison.OrdinalIgnoreCase));
+
+        if (_ranking.SimilarViaChunksTypes.Contains(schema.TypeName, StringComparer.OrdinalIgnoreCase)
+            && await TrySearchSimilarViaChunksAsync(schema, chunkDesc, decision, request, queryVector, responseStream, context))
+            return;
+
         var vectorName     = vectorDesc.PropertyName.ToSnakeCase() + "_vector";
         var topK           = (ulong)Math.Max(1, (int)request.TopK);
         var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: false);
@@ -225,8 +232,7 @@ public sealed class ObjectSearchGrpcService(
         // The centroid signal only exists for a property that is BOTH embedded and chunked —
         // "<property>_centroid" is written on the object collection only for chunk fields. For an
         // embedding-only property there is no such named vector.
-        var centroidPossible = schema.ChunkFields.Any(c =>
-            string.Equals(c.PropertyName, vectorDesc.PropertyName, StringComparison.OrdinalIgnoreCase));
+        var centroidPossible = chunkDesc is not null;
 
         var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
 
@@ -288,6 +294,137 @@ public sealed class ObjectSearchGrpcService(
                 centroids.TryGetValue(r.Id, out var v) ? v : null))
             .ToList();
 
+        var rows = new List<(IReadOnlyDictionary<string, string> Payload, double Score)>();
+        foreach (var ranked in diversifier.Diversify(diversityCandidates, (int)topK, _ranking.LambdaSimilar))
+        {
+            if (byId.TryGetValue(ranked.Id, out var r))
+                rows.Add((r.Payload, ranked.FusedScore));
+        }
+
+        await WriteSimilarResponsesAsync(
+            schema, decision, rows, request.TraceId, responseStream, context.CancellationToken);
+    }
+
+    /// <summary>
+    /// Operator-selected routing: for a type listed in VectorRanking:SimilarViaChunksTypes, answer
+    /// SearchSimilar out of the chunks collection (search → fuse → max-passage collapse → diversify
+    /// → hydrate) instead of the object collection. Returns false, having run no chunk search, on
+    /// every fallback condition — the caller then runs the unmodified head path.
+    /// </summary>
+    private async Task<bool> TrySearchSimilarViaChunksAsync(
+        SchemaDescriptor schema, ChunkDescriptor? chunkDesc, AuthorizationDecision decision,
+        SearchSimilarRequest request, float[] queryVector,
+        IServerStreamWriter<SearchResponse> responseStream, ServerCallContext context)
+    {
+        bool NotRouted(string reason)
+        {
+            logger.LogInformation("[SearchSimilar] type={Type} not routed via chunks: {Reason}",
+                request.TypeName.SanitizeForLog(), reason);
+            return false;
+        }
+
+        // Spec §3.2 condition 2, owned here so a listed type with an unchunked property is logged.
+        if (chunkDesc is null)
+            return NotRouted("property is not chunked");
+
+        // Spec §3.2 condition 3: the logic test lives here — BuildChunksFilter never reads it, and
+        // SearchChunks (which must stay bit-for-bit) silently ANDs an OR request today.
+        if (request.Filter.Count > 1 && request.FilterLogic != SearchLogic.And)
+            return NotRouted("filter logic is not AND");
+        if (!TryBuildChunksFilter(schema, request.Filter, decision.AllowedFields, out var filter))
+            return NotRouted("filter is not chunk-expressible");
+
+        // Condition 4: both counts readable and positive.
+        var objectCollection = tenantScope.ResolveCollectionName(schema.CollectionName!, decision.TenantValue, isChunks: false);
+        var chunksCollection = tenantScope.ResolveCollectionName(schema.CollectionName!, decision.TenantValue, isChunks: true);
+        ulong objectCount, chunkCount;
+        try
+        {
+            using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(objectCollection, readOnly: true)))
+                objectCount = await vector.GetPointCountAsync(objectCollection);
+            using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollection, readOnly: true)))
+                chunkCount = await vector.GetPointCountAsync(chunksCollection);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return NotRouted($"counts unavailable: {ex.Message.SanitizeForLog()}");
+        }
+        if (objectCount == 0) return NotRouted("empty object collection");
+        if (chunkCount == 0)  return NotRouted("empty chunks collection");
+
+        filter = IntelligenceFilterBuilder.ApplyOwnership(
+            filter, decision.OwnershipRequired, schema.Authorization?.OwnerField?.ToCamelCase(), decision.OwnerValue);
+
+        // Spec §3.4: topK × ceil(chunks/doc) × the existing over-fetch.
+        var topK         = (ulong)Math.Max(1, (int)request.TopK);
+        var chunksPerDoc = (ulong)Math.Ceiling((double)chunkCount / objectCount);
+        var pipeline     = await SearchChunksFusedAsync(
+            schema, chunkDesc, decision, queryVector, filter, topK * chunksPerDoc * OverFetchFactor, "SearchSimilar");
+
+        // Spec §3.5.1: max-passage collapse. Rerank output is fused-descending (ResultReranker.cs:44-45),
+        // so the first sighting of a parent is its best chunk; ties keep first-seen order.
+        var byId      = ResultsById(pipeline.Results);
+        var seen      = new HashSet<ulong>();
+        var collapsed = new List<DiversifyCandidate>();
+        foreach (var fused in pipeline.Fused)
+        {
+            if (!byId.TryGetValue(fused.Id, out var r)) continue;
+            if (!r.Payload.TryGetValue("parent_id", out var parentKey) || string.IsNullOrEmpty(parentKey)) continue;
+            var parentId = IntelligenceStoreConsumer.KeyToUlong(parentKey);
+            if (!seen.Add(parentId)) continue;
+            collapsed.Add(new DiversifyCandidate(
+                parentId, fused.FusedScore,
+                pipeline.Centroids.TryGetValue(parentId, out var centroid) ? centroid : null));
+        }
+
+        // Spec §3.5.2: document-level diversification with LambdaSimilar on the centroid.
+        var selected = diversifier.Diversify(collapsed, (int)topK, _ranking.LambdaSimilar);
+
+        // Spec §3.5.3: hydrate the top parents from the object collection.
+        IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>> payloads =
+            new Dictionary<ulong, IReadOnlyDictionary<string, string>>();
+        var collectionVanished = false;
+        if (selected.Count > 0)
+        {
+            using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(objectCollection, readOnly: true)))
+            {
+                try
+                {
+                    payloads = await vector.RetrievePayloadAsync(objectCollection, selected.Select(s => s.Id).ToList());
+                }
+                catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+                {
+                    // The object collection vanished between the count read and hydration — one
+                    // event, not one per selected parent. Log it once here and suppress the
+                    // per-parent warning below so an empty response doesn't emit up to topK lines.
+                    collectionVanished = true;
+                    logger.LogWarning(
+                        "[SearchSimilar] object collection {Collection} not found at hydration; returning empty result",
+                        objectCollection.SanitizeForLog());
+                }
+                catch (RpcException ex)
+                {
+                    throw new RpcException(new Status(StatusCode.Unavailable, $"Vector store unavailable: {ex.Status.Detail}"));
+                }
+            }
+        }
+
+        // Spec §3.5.4 / §3.6: a parent missing at hydration is skipped and logged.
+        var rows = new List<(IReadOnlyDictionary<string, string> Payload, double Score)>();
+        foreach (var s in selected)
+        {
+            if (payloads.TryGetValue(s.Id, out var payload)) rows.Add((payload, s.FusedScore));
+            else if (!collectionVanished) logger.LogWarning("[SearchSimilar] parent {Id} missing at hydration; skipped", s.Id);
+        }
+        await WriteSimilarResponsesAsync(schema, decision, rows, request.TraceId, responseStream, context.CancellationToken);
+        return true;
+    }
+
+    private static async Task WriteSimilarResponsesAsync(
+        SchemaDescriptor schema, AuthorizationDecision decision,
+        IEnumerable<(IReadOnlyDictionary<string, string> Payload, double Score)> rows,
+        string traceId, IServerStreamWriter<SearchResponse> responseStream, CancellationToken ct)
+    {
         // Camel-cased descriptor name → descriptor, built once per request rather than per row.
         // Covers ScalarColumns and KeyColumn, plus the explicit "key" special case:
         // IntelligenceStoreConsumer.cs:417 writes the identity value under the literal payload key
@@ -301,12 +438,10 @@ public sealed class ObjectSearchGrpcService(
         columnLookup[schema.KeyColumn.Name.ToCamelCase()] = schema.KeyColumn;
         columnLookup["key"] = schema.KeyColumn;
 
-        foreach (var ranked in diversifier.Diversify(diversityCandidates, (int)topK, _ranking.LambdaSimilar))
+        foreach (var (payload, score) in rows)
         {
-            if (!byId.TryGetValue(ranked.Id, out var r)) continue;
-
             var protoStruct = new Struct();
-            foreach (var kvp in r.Payload)
+            foreach (var kvp in payload)
             {
                 if (columnLookup.TryGetValue(kvp.Key, out var col))
                     protoStruct.Fields[col.Name] = ConvertPayloadValue(kvp.Value, col.SqlType);
@@ -320,10 +455,10 @@ public sealed class ObjectSearchGrpcService(
                 new SearchResponse
                 {
                     Data    = protoStruct,
-                    Score   = (float)ranked.FusedScore,
-                    TraceId = request.TraceId
+                    Score   = (float)score,
+                    TraceId = traceId
                 },
-                context.CancellationToken);
+                ct);
         }
     }
 
@@ -358,7 +493,7 @@ public sealed class ObjectSearchGrpcService(
         Filter? filter;
         try
         {
-            filter = BuildChunksFilter(schema, request, decision.AllowedFields);
+            filter = BuildChunksFilter(schema, request.Filter, decision.AllowedFields);
         }
         catch (FilterTranslationException ex)
         {
@@ -399,48 +534,13 @@ public sealed class ObjectSearchGrpcService(
                 $"Embedding service unavailable: {ex.Message}"));
         }
 
-        var vectorName       = chunkDesc.PropertyName.ToSnakeCase() + "_vector";
-        var chunksCollection = tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: true);
-        var topK             = (ulong)Math.Max(1, (int)request.TopK);
+        var topK = (ulong)Math.Max(1, (int)request.TopK);
 
         // Unlike SearchSimilar, the identity gate can never fire here: SearchChunks only accepts a
         // property carrying [IversonChunk], and SchemaBuilder writes a "<property>_centroid" named
         // vector on the object collection for every chunk field. The centroid signal is therefore
         // always possible, so the over-fetch stays exactly 4x with no ceiling.
-        var fetchLimit = topK * OverFetchFactor;
-
-        IReadOnlyList<VectorSearchResult> results;
-        using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollection, readOnly: true)))
-        {
-            try
-            {
-                results = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, fetchLimit, filter);
-            }
-            catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
-            {
-                // Tenant's chunks collection was never created (no writes yet) — treat as empty
-                // result set rather than creating a collection just to search it. See design spec
-                // §"Reads against a tenant with no collection yet".
-                results = [];
-            }
-        }
-
-        // A chunk's centroid signal is its PARENT object's centroid, which lives on the object
-        // collection (not the chunks collection) under "<property>_centroid". Several chunks
-        // routinely share one parent, so the retrieve is batched over the DISTINCT parent ids.
-        var parentIds = results
-            .Select(r => r.Payload.TryGetValue("parent_id", out var p) ? p : null)
-            .Where(p => !string.IsNullOrEmpty(p))
-            .Select(p => IntelligenceStoreConsumer.KeyToUlong(p!))
-            .Distinct()
-            .ToList();
-
-        var centroids = await RetrieveVectorsOrDegradeAsync(
-            tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: false),
-            parentIds,
-            chunkDesc.PropertyName.ToSnakeCase() + "_centroid",
-            "SearchChunks",
-            "re-ranking without the centroid signal");
+        var pipeline = await SearchChunksFusedAsync(schema, chunkDesc, decision, queryVector, filter, topK * OverFetchFactor, "SearchChunks");
 
         // The DIVERSITY vector for a chunk is the chunk's OWN vector — the same representation
         // Qdrant matched the query against — not its parent centroid, which is the re-rank signal
@@ -451,36 +551,23 @@ public sealed class ObjectSearchGrpcService(
         // retrieve cannot change the returned set OR its order. Deliberately NOT gated on
         // pool > topK — MMR reorders even when the pool is exactly topK.
         var chunkVectors = EmptyVectors;
-        if (results.Count > 1 && topK > 1)
+        if (pipeline.Results.Count > 1 && topK > 1)
         {
             chunkVectors = await RetrieveVectorsOrDegradeAsync(
-                chunksCollection,
-                results.Select(r => r.Id).ToList(),
-                vectorName,
+                pipeline.ChunksCollection,
+                pipeline.Results.Select(r => r.Id).ToList(),
+                pipeline.VectorName,
                 "SearchChunks",
                 "selecting without the diversity signal");
         }
 
-        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
-        var now        = DateTimeOffset.UtcNow;
-
-        var candidates = results.Select(r =>
-        {
-            float[]? centroid = null;
-            if (r.Payload.TryGetValue("parent_id", out var parent) && !string.IsNullOrEmpty(parent))
-                centroids.TryGetValue(IntelligenceStoreConsumer.KeyToUlong(parent), out centroid);
-
-            return new RerankCandidate(
-                r.Id, r.Score, centroid, DecayFor(r, decayField, now, _decayOptions.HalfLifeDays));
-        }).ToList();
-
-        var byId = ResultsById(results);
+        var byId = ResultsById(pipeline.Results);
 
         // A candidate whose diversity vector is ABSENT contributes no similarity term and so takes
         // no penalty, which means it outranks an otherwise-equal candidate that has a vector and
         // any positive similarity. Accepted by design: substituting a value would break the
         // bit-exact Take(topK) degradation guarantee. See the design spec's Known issues.
-        var diversityCandidates = reranker.Rerank(queryVector, candidates)
+        var diversityCandidates = pipeline.Fused
             .Select(r => new DiversifyCandidate(
                 r.Id,
                 r.FusedScore,
@@ -504,6 +591,70 @@ public sealed class ObjectSearchGrpcService(
                 },
                 context.CancellationToken);
         }
+    }
+
+    private sealed record ChunkPipeline(
+        IReadOnlyList<VectorSearchResult>   Results,
+        IReadOnlyList<RerankedResult>       Fused,
+        IReadOnlyDictionary<ulong, float[]> Centroids,
+        string ChunksCollection,
+        string VectorName);
+
+    private async Task<ChunkPipeline> SearchChunksFusedAsync(
+        SchemaDescriptor schema, ChunkDescriptor chunkDesc, AuthorizationDecision decision,
+        float[] queryVector, Filter? filter, ulong chunkLimit, string rpcName)
+    {
+        var vectorName       = chunkDesc.PropertyName.ToSnakeCase() + "_vector";
+        var chunksCollection = tenantScope.ResolveCollectionName(schema.CollectionName!, decision.TenantValue, isChunks: true);
+
+        IReadOnlyList<VectorSearchResult> results;
+        using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollection, readOnly: true)))
+        {
+            try
+            {
+                results = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, chunkLimit, filter);
+            }
+            catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+            {
+                // Tenant's chunks collection was never created (no writes yet) — treat as empty
+                // result set rather than creating a collection just to search it. See design spec
+                // §"Reads against a tenant with no collection yet".
+                results = [];
+            }
+        }
+
+        // A chunk's centroid signal is its PARENT object's centroid, which lives on the object
+        // collection (not the chunks collection) under "<property>_centroid". Several chunks
+        // routinely share one parent, so the retrieve is batched over the DISTINCT parent ids.
+        var parentIds = results
+            .Select(r => r.Payload.TryGetValue("parent_id", out var p) ? p : null)
+            .Where(p => !string.IsNullOrEmpty(p))
+            .Select(p => IntelligenceStoreConsumer.KeyToUlong(p!))
+            .Distinct()
+            .ToList();
+
+        var centroids = await RetrieveVectorsOrDegradeAsync(
+            tenantScope.ResolveCollectionName(schema.CollectionName!, decision.TenantValue, isChunks: false),
+            parentIds,
+            chunkDesc.PropertyName.ToSnakeCase() + "_centroid",
+            rpcName,
+            "re-ranking without the centroid signal");
+
+        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
+        var now        = DateTimeOffset.UtcNow;
+
+        var candidates = results.Select(r =>
+        {
+            float[]? centroid = null;
+            if (r.Payload.TryGetValue("parent_id", out var parent) && !string.IsNullOrEmpty(parent))
+                centroids.TryGetValue(IntelligenceStoreConsumer.KeyToUlong(parent), out centroid);
+
+            return new RerankCandidate(
+                r.Id, r.Score, centroid, DecayFor(r, decayField, now, _decayOptions.HalfLifeDays));
+        }).ToList();
+
+        var fused = reranker.Rerank(queryVector, candidates);
+        return new ChunkPipeline(results, fused, centroids, chunksCollection, vectorName);
     }
 
     // ── Aggregation ────────────────────────────────────────────────────────────
@@ -868,14 +1019,14 @@ public sealed class ObjectSearchGrpcService(
             .ToHashSet(StringComparer.Ordinal);
 
     private static Filter? BuildChunksFilter(
-        SchemaDescriptor schema, SearchChunksRequest request, IReadOnlySet<string>? allowedFields)
+        SchemaDescriptor schema, IReadOnlyList<SearchClause> clauses, IReadOnlySet<string>? allowedFields)
     {
-        if (request.Filter.Count == 0) return null;
+        if (clauses.Count == 0) return null;
 
         var filter = new Filter();
         var timestampColumns = TimestampColumns(schema);
 
-        foreach (var clause in request.Filter)
+        foreach (var clause in clauses)
         {
             if (clause.Operator != SearchOperator.Equals || clause.ClauseType != SearchClauseType.Filter)
                 throw new RpcException(
@@ -912,6 +1063,19 @@ public sealed class ObjectSearchGrpcService(
         }
 
         return filter;
+    }
+
+    private static bool TryBuildChunksFilter(
+        SchemaDescriptor schema, IReadOnlyList<SearchClause> clauses, IReadOnlySet<string>? allowedFields,
+        out Filter? filter)
+    {
+        try
+        {
+            filter = BuildChunksFilter(schema, clauses, allowedFields);
+            return true;
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.InvalidArgument) { filter = null; return false; }
+        catch (FilterTranslationException)                                         { filter = null; return false; }
     }
 
     private static EngagementAggSpec ProtoToEngagementSpec(ProtoAggSpec proto) =>

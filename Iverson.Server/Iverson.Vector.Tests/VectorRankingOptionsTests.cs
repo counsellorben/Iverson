@@ -170,4 +170,44 @@ public sealed class VectorRankingOptionsTests
         opts.LambdaSimilar.Should().Be(1.00);
         opts.LambdaChunks.Should().Be(0.70);
     }
+
+    [Fact]
+    public void AddVectorRanking_SimilarViaChunksTypes_DefaultsToEmpty()
+    {
+        var provider = new ServiceCollection().AddVectorRanking(BuildConfig()).BuildServiceProvider();
+        var opts = provider.GetRequiredService<IOptions<VectorRankingOptions>>().Value;
+        opts.SimilarViaChunksTypes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AddVectorRanking_SimilarViaChunksTypes_BlankEntry_Throws()
+    {
+        var config = BuildConfig(("SimilarViaChunksTypes:0", ""));
+
+        var act = () => new ServiceCollection().AddVectorRanking(config);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*SimilarViaChunksTypes[0]*");
+    }
+
+    [Fact]
+    public void AddVectorRanking_SimilarViaChunksTypes_TrimsWhitespace()
+    {
+        var config = BuildConfig(("SimilarViaChunksTypes:0", "  BenchmarkDocument "));
+
+        var provider = new ServiceCollection().AddVectorRanking(config).BuildServiceProvider();
+        var opts = provider.GetRequiredService<IOptions<VectorRankingOptions>>().Value;
+
+        opts.SimilarViaChunksTypes.Should().ContainSingle().Which.Should().Be("BenchmarkDocument");
+    }
+
+    [Fact]
+    public void AddVectorRanking_SimilarViaChunksTypes_RoundTripsUnchanged()
+    {
+        var config = BuildConfig(("SimilarViaChunksTypes:0", "BenchmarkDocument"));
+
+        var provider = new ServiceCollection().AddVectorRanking(config).BuildServiceProvider();
+        var opts = provider.GetRequiredService<IOptions<VectorRankingOptions>>().Value;
+
+        opts.SimilarViaChunksTypes.Should().ContainSingle().Which.Should().Be("BenchmarkDocument");
+    }
 }
