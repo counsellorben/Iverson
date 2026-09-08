@@ -57,9 +57,11 @@ boot_disk_kms_key = google_kms_crypto_key.data_volumes.id
 ```
 
 The edit sites are `google_container_node_pool.general` (`modules/cluster-gcp/main.tf:201`)
-and `google_container_node_pool.pools` (`:244`). The cluster resource sets
-`remove_default_node_pool = true`, so its inline `node_config` never produces nodes and is
-not touched.
+and `google_container_node_pool.pools` (`:244`). The cluster resource declares no
+`node_config` of its own. It pairs `initial_node_count = 1` with
+`remove_default_node_pool = true` (`:153-154`), so GKE provisions one stock default-pool
+node during `terraform apply` and the provider deletes that pool immediately after. It
+carries no workload and is not an edit site.
 
 No new key and no new binding. The key already exists for the persistent disks
 (`modules/cluster-gcp/main.tf:73`), and its binding grants the Compute Engine service
@@ -79,8 +81,10 @@ disk_encryption_set_id = azurerm_disk_encryption_set.data_volumes.id
 ```
 
 This is cluster-level and applies to the OS disks of every agent pool. The provider
-defaults `os_disk_type` to Managed, so every node OS disk is a managed disk resource in
-the node resource group that `az disk` can attest per disk.
+defaults `os_disk_type` to Managed, so every node OS disk is a managed disk rather than an
+ephemeral one. Whether AKS also exposes each as a standalone disk resource in the node
+resource group — what check 5's Azure variant reads — is not settled here; section 4
+records the deferral and the follow-up if the command returns no rows.
 
 The pools gain one declared attribute, on `default_node_pool` and on
 `azurerm_kubernetes_cluster_node_pool.pools`:
@@ -241,7 +245,7 @@ rebuild and the GKE change becomes node pool replacement.
 
 | # | Assumption | Evidence |
 |---|---|---|
-| A1 | The GCP cluster's inline `node_config` is not a live pool | `modules/cluster-gcp/main.tf:153` `remove_default_node_pool = true`; the `general` pool is its own resource at `:201` |
+| A1 | The GCP cluster resource declares no `node_config`, so the two pool resources are the whole edit surface | `grep -n node_config modules/cluster-gcp/main.tf` returns only `:222` and `:261`, both inside the pool resources; `google_container_cluster.this` (`:134-199`) has none. `:153-154` pairs `remove_default_node_pool = true` with `initial_node_count = 1`, whose transient node is deleted along with the default pool |
 | A2 | Two node pool resources cover every GKE node | `:201` `general`, `:244` `pools` (`for_each` over seven); no other `google_container_node_pool` |
 | A3 | google `~> 5.30` supports `node_config.boot_disk_kms_key` | provider v5.30.0 `container_cluster` docs: "The Customer Managed Encryption Key used to encrypt the boot disk attached to each node in the node pool" |
 | A4 | The key id is in the format the attribute expects | same docs: `projects/…/locations/…/keyRings/…/cryptoKeys/…`, which is what `google_kms_crypto_key.id` yields |
@@ -276,8 +280,9 @@ Three assumptions changed the design:
   `kubelet_disk_type = "OS"` on the default pool and the extra pools. Two lines; the claim
   the runbook makes about node disks is then declared rather than assumed.
 - **A1 correction.** The design was presented as editing the cluster's inline `node_config`
-  plus the pools. The cluster removes its default pool; the `general` pool is a separate
-  resource. Two edit sites either way, but section 1 now names the right ones.
+  plus the pools. The cluster declares no `node_config` at all, and removes its default
+  pool; the `general` pool is a separate resource. Two edit sites either way, but section 1
+  now names the right ones.
 - **A14 falsified.** The policy was presented as applied through the Kubernetes provider.
   No pinned or available provider version can apply both policy and binding without a
   plan-time cluster dependency. Section 3 now applies it through a local chart and a Helm
