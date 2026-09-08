@@ -412,4 +412,41 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
         result[1UL].Should().BeEquivalentTo(new float[] { 0f, 1f, 0f, 0f });
         result[600UL].Should().BeEquivalentTo(new float[] { 1f, 0f, 0f, 0f });
     }
+
+    // ── GetPointCountAsync / RetrievePayloadAsync ──────────────────────────────
+
+    [Fact]
+    public async Task GetPointCountAsync_ReturnsNumberOfUpsertedPoints()
+    {
+        var name = UniqueName();
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
+
+        await _svc.UpsertAsync(name, 1UL, [1f, 0f, 0f, 0f], new Dictionary<string, object> { ["title"] = "one", ["rank"] = 1 });
+        await _svc.UpsertAsync(name, 2UL, [0f, 1f, 0f, 0f], new Dictionary<string, object> { ["title"] = "two", ["rank"] = 2 });
+        await _svc.UpsertAsync(name, 3UL, [0f, 0f, 1f, 0f], new Dictionary<string, object> { ["title"] = "three", ["rank"] = 3 });
+
+        var count = await _svc.GetPointCountAsync(name);
+
+        count.Should().Be(3UL);
+    }
+
+    [Fact]
+    public async Task RetrievePayloadAsync_ReturnsCanonicalisedPayload_AndOmitsMissingIds()
+    {
+        var name = UniqueName();
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
+
+        await _svc.UpsertAsync(name, 1UL, [1f, 0f, 0f, 0f], new Dictionary<string, object> { ["title"] = "one", ["rank"] = 1 });
+        await _svc.UpsertAsync(name, 2UL, [0f, 1f, 0f, 0f], new Dictionary<string, object> { ["title"] = "two", ["rank"] = 2 });
+        await _svc.UpsertAsync(name, 3UL, [0f, 0f, 1f, 0f], new Dictionary<string, object> { ["title"] = "three", ["rank"] = 3 });
+
+        var result = await _svc.RetrievePayloadAsync(name, [1UL, 3UL, 999UL]);
+
+        result.Should().HaveCount(2);
+        result.Should().ContainKey(1UL).WhoseValue.Should().Contain(new KeyValuePair<string, string>("title", "one"))
+            .And.Contain(new KeyValuePair<string, string>("rank", "1"));
+        result.Should().ContainKey(3UL).WhoseValue.Should().Contain(new KeyValuePair<string, string>("title", "three"))
+            .And.Contain(new KeyValuePair<string, string>("rank", "3"));
+        result.Should().NotContainKey(999UL);
+    }
 }
