@@ -1,6 +1,6 @@
 # At-rest encryption: AKS and GKE node disks, and a StorageClass admission gate
 
-**Status:** design approved, not implemented
+**Status:** implemented 2026-09-08 on branch `at-rest-node-disks` (commits `9869c64`..`bfa7fd3`), not yet merged to main. Section 4's Azure check-5 command ships deliberately unverified; the re-derivation obligation it names is still open until a real Azure apply.
 **Scope:** cloud production only (Azure / GCP Terraform, plus one cluster policy applied on all three clouds)
 **Driver:** compliance — closes three items the first at-rest design deliberately excluded
 **Predecessor:** `docs/specs/2026-08-24-at-rest-encryption-design.md`, shipped `4c5823b`..`8638e81`
