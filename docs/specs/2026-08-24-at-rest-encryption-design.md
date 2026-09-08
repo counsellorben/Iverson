@@ -1,6 +1,6 @@
 # At-rest encryption for cloud data volumes
 
-**Status:** design approved, not implemented
+**Status:** implemented and merged 2026-08-24 (commits `4c5823b`..`8638e81`, on origin/main). A seventh StorageClass, `iverson-tei`, was added afterwards in `8d4b1fa`; the counts of six below are as of this design, and the verification runbook covers all seven.
 **Scope:** cloud production only (AWS / Azure / GCP via Helm + Terraform)
 **Driver:** compliance — a checkable control with auditable evidence
 
