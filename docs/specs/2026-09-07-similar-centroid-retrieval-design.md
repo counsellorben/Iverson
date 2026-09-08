@@ -61,27 +61,39 @@ Compose gains `- VectorRanking__SimilarRetrievalVector=${VECTOR_RANKING_SIMILAR_
 next to the two λ entries.
 
 Where the setting applies, the retrieval and fusion names swap roles. The vector fetched at `:265`
-has **two** consumers, not one — it is the fusion input at `:274` and MMR's diversity vector at
+has **two** consumers, not one — it is the fusion input at `:275` and MMR's diversity vector at
 `:288` — so the three roles are stated separately:
 
 | `SimilarRetrievalVector` | retrieval vector (`:221` → `:246`) | secondary vector (`:265`, fused at WCentroid) | MMR diversity vector (`:288`) |
 |---|---|---|---|
 | `head` (default, today's behaviour) | `<prop>_vector` | `<prop>_centroid` | `<prop>_centroid` |
-| `centroid` | `<prop>_centroid` | `<prop>_vector` | `<prop>_centroid` |
+| `centroid`, λ = 1.00 | `<prop>_centroid` | `<prop>_vector` | `<prop>_vector` (inert — see below) |
+| `centroid`, λ < 1 | `<prop>_centroid` | `<prop>_vector` | `<prop>_centroid` (second retrieve) |
 
-**The diversity vector stays the centroid under both settings.** Letting it swap would diversify by
-the one representation Qdrant did *not* match against, contradicting the reason `SearchChunks` gives
-for its own diversity vector at `:445-447` ("the same representation Qdrant matched the query
+**Where the diversity vector is observable, it stays the centroid.** Letting it swap would diversify
+by the one representation Qdrant did *not* match against, contradicting the reason `SearchChunks`
+gives for its own diversity vector at `:445-447` ("the same representation Qdrant matched the query
 against"), and it would diversify by the representation this spec argues is the weaker of the two.
 
-`LambdaSimilar` is 1.00 (`VectorRankingOptions.cs:24`), and at λ = 1.00 `Mmr` drops the similarity
-term entirely (`ResultDiversifier.cs:82-96`), so the diversity vector is never read and holding it
-fixed costs nothing in this campaign. It is not free in general: under `centroid`, retrieval no
-longer yields the centroid as a fetched vector, so a configured λ < 1 needs a second retrieve. The
-single-round-trip claim below is therefore conditional on λ = 1.00.
+That guarantee is λ-gated because the centroid is not free to obtain under `centroid` retrieval.
+`:288` reads the dictionary populated by the single `RetrieveVectorsOrDegradeAsync` call at `:265`,
+which under `centroid` holds `<prop>_vector`, and there is no other source: `VectorSearchResult`
+carries `Id`, `Score` and `Payload` only (`IntelligenceVectorService.cs:136-140`) and
+`SearchNamedAsync` requests no vectors back (`:125-131`), so retrieval-by-centroid never hands the
+centroid to the caller. Holding it therefore costs a **second retrieve**, which this design issues
+only at λ < 1.
 
-One Qdrant round trip at λ = 1.00; two under `centroid` at λ < 1. Same
-`RetrieveVectorsOrDegradeAsync` degradation path for the *secondary* fetch — it already takes the
+At λ = 1.00 that second retrieve is skipped because the choice is inert **in the output**, not
+absent from the code: both branches of `Mmr` (`ResultDiversifier.cs:72-75`) reduce to
+`lambda * Score` when λ = 1.00, so selection is bit-identical to `Take(topK)` whatever the diversity
+vector holds. The vector is still read and cosined on every call — `Select` does both at
+`ResultDiversifier.cs:82` and `:96` regardless of λ — so "inert" is a statement about the result,
+not about whether the code touches it.
+
+`LambdaSimilar` is 1.00 (`VectorRankingOptions.cs:24`) and §4 holds it there throughout, so the
+campaign never issues the second retrieve and both arms run at one round trip.
+
+Same `RetrieveVectorsOrDegradeAsync` degradation path for the *secondary* fetch — it already takes the
 vector name as a parameter (`:759-760`) — but see the retrieval asymmetry below, which that
 parameterisation does not cover. Same fusion, decay and `Take(topK)`. The `rerankIsIdentity`
 over-fetch (`:238-239`) keys off `centroidPossible` and `decayField`, both unchanged by the swap,
@@ -93,7 +105,8 @@ either way.
 Today a point carrying `<prop>_vector` with no `<prop>_centroid` is retrieved normally and merely
 loses the centroid term — the null branches at `:275`, `:288` and `ResultReranker.cs:21` exist for
 exactly this state. Under `centroid` the centroid becomes the retrieval vector, and a Qdrant point
-that does not carry a named vector is not in that vector's index, so it cannot be returned at all.
+that does not carry a named vector is not in that vector's index, so it cannot be returned at all
+(A22 — this rests on Qdrant semantics rather than a verified line of Iverson code).
 The degradation path cannot rescue it, because the point never enters `results`.
 
 The writer produces that state deliberately: no centroid key when every chunk vector is
@@ -179,8 +192,12 @@ the centroid.
 ## 6. Consequences
 
 **On PASS** — the retrieval asymmetry in §3 ships with the change and is accepted, not fixed: a
-chunked point with no centroid becomes unreachable through `SearchSimilar`. Then hard-code centroid
-retrieval for chunked properties, delete `SimilarRetrievalVector`
+chunked point with no centroid becomes unreachable through `SearchSimilar`. The λ-gated second
+retrieve ships with it, since `LambdaSimilar` remains bound config and a deployment may set it below
+1.00; fetching both names in one retrieve (`vectorSelector` at `IntelligenceVectorService.cs:163` is
+already an array) would remove that extra round trip and is the better end state, but it widens a
+primitive shared with `SearchChunks` and is deliberately not done for an arm that may be reverted.
+Then hard-code centroid retrieval for chunked properties, delete `SimilarRetrievalVector`
 and its compose entry, rename `RerankCandidate.Centroid` to reflect that it holds the secondary
 vector, and record the verdict in `docs/plans/2026-09-GATE-similar-centroid.md`.
 
@@ -192,9 +209,13 @@ The setting does not survive this spec under either outcome.
 
 - Vector-name selection across three cases: chunked + `centroid` → retrieves `_centroid` and fetches
   `_vector`; chunked + `head` → today's names; not chunked → `_vector` regardless of the setting.
-- A fourth case pinning the diversity vector: under **both** settings the named vector reaching the
-  diversifier at `:288` is `<prop>_centroid`. None of the three cases above would catch a regression
-  here, because they assert on the retrieval and fusion names only.
+- A fourth case pinning the diversity vector, asserting on **what reaches
+  `DiversifyCandidate.DiversityVector`** rather than on which name was retrieved — a capturing
+  `IResultDiversifier` fake, or distinct vector payloads per name. A name-level assertion cannot pin
+  this site: under `head` one retrieve serves both consumers, so it passes whether the
+  implementation feeds `:288` the centroid or `null`. Two branches: under `centroid` at λ < 1 the
+  diversifier receives `<prop>_centroid`; at λ = 1.00 it receives `<prop>_vector` and no second
+  retrieve is issued.
 - `AddVectorRanking` throws on an unrecognised `SimilarRetrievalVector`, following the existing
   rejection tests at `VectorRankingOptionsTests.cs:71-137`.
 - The defaults test asserts `head`.
@@ -208,7 +229,7 @@ Verified 2026-09-07 against `main` `c27eb98`.
 
 | # | Assumption | Evidence |
 |---|---|---|
-| A1 | `VectorRankingOptions` binds from section `VectorRanking` | `ServiceCollectionExtensions.cs:57-63` — `config.GetSection(...)`, `section.Bind(opts)` |
+| A1 | `VectorRankingOptions` binds from section `VectorRanking` | `ServiceCollectionExtensions.cs:57` — `config.GetSection(...)`; `:65` — `section.Bind(opts)` (`:58-62` is the obsolete-`Lambda` throw) |
 | A2 | `AddVectorRanking` has a startup-validation site | `:58-95` — obsolete-key, finiteness, non-negativity, sum>0, two range checks. All numeric; a string needs its own check |
 | A3 | Compose binds `VectorRanking__*` | `docker-compose.yml:445-446`; confirmed live by `docker inspect` during the Tier 1 λ sweep |
 | A4 | Retrieval name is `<prop>.ToSnakeCase() + "_vector"`, one `SearchNamedAsync` | `:221`, `:246` |
@@ -216,7 +237,7 @@ Verified 2026-09-07 against `main` `c27eb98`.
 | A6 | `RetrieveVectorsOrDegradeAsync` takes the vector name as a parameter | `:759-760` |
 | A7 | `ResultReranker` treats the second vector generically | `IResultReranker.cs:3-7` declares `float[]? Centroid`; `ResultReranker.cs:21,41` only length-checks it and takes its cosine |
 | A8 | The over-fetch logic stays correct under the swap | `:238-239` keys off `centroidPossible` and `decayField`, neither of which the swap changes |
-| A9 | `<prop>_vector` exists wherever the swap applies | `IntelligenceStoreConsumer.cs:139` writes it for every `[IversonEmbedding]` property; the swap requires `vectorDesc` from `schema.VectorFields`, so both vectors are present |
+| A9 | `<prop>_vector` exists wherever the swap applies | `IntelligenceStoreConsumer.cs:139` writes it for each `[IversonEmbedding]` property whose extracted text is non-blank (`:137` filters the rest); the swap requires `vectorDesc` from `schema.VectorFields`. A point with a centroid but no head vector retrieves normally under `centroid` and merely degrades, so nothing rests on the stronger reading |
 | A10 | `<prop>_centroid` is on the object collection, same dimension | `IntelligenceStoreConsumer.cs:303` (call site), normalise-then-average at `:485-505`; `ingest.py:807` declares both at the probed dimension |
 | A11 | The benchmark collections really carry `body_centroid` | `ingest.py:807` creates both named vectors, `:625` writes the centroid — the benchmark corpus is ingested by `ingest.py`, not the consumer |
 | A12 | `benchmark-query` reaches `SearchSimilar` | `BenchmarkQueryScenario.cs:353` |
@@ -229,6 +250,8 @@ Verified 2026-09-07 against `main` `c27eb98`.
 | A19 | **Failed as stated.** Four name-derivation sites, not two | `:221`, `:265` (SearchSimilar) and `:402`, `:441` (SearchChunks — its secondary reads the **object** centroid). Only the first two move; §2 records this |
 | A20 | Existing tests survive a new defaulted property | Object initializers at `ObjectSearchGrpcServiceTests.cs:79`, `ObjectSearchVectorIntegrationTests.cs:94`, `DocumentTemplateValidationTests.cs:338` |
 | A21 | A rejection-test pattern exists to follow | `VectorRankingOptionsTests.cs:71-137` |
+| A22 | Qdrant excludes a point lacking the searched named vector from that vector's results | **Qdrant product semantics, not an Iverson code fact** — grep cannot settle it. The codebase does not contradict it: `SearchNamedAsync` passes `vectorName` straight to `client.SearchAsync` with no client-side filtering (`IntelligenceVectorService.cs:125-131`), and per-point vector presence is treated as optional elsewhere (`:167` skips a point whose vector map lacks the key; `IntelligenceStoreConsumer.cs:380` adds a named vector to an existing point). Risk is one-directional: if the claim is too strong, §3's accepted exclusion simply does not materialise and `SearchSimilar` returns more points, not fewer |
+| A23 | `RetrieveVectorsOrDegradeAsync` degrades rather than throws when a point lacks the requested named vector | `IntelligenceVectorService.cs:167` emits no dictionary entry; `ObjectSearchGrpcService.cs:275` reads `TryGetValue ? : null`; `ResultReranker.cs:21,25-33` short-circuits to `BaseScore` |
 
 ## Known issues
 
