@@ -233,7 +233,7 @@ encryption set id check 2 shows. The name filter is what keeps this check indepe
 that resource group also holds the CSI-provisioned data disks check 3 already reads, and those
 carry the same set, so an unfiltered listing would pass on check 3's evidence without proving
 anything about node disks. **If this returns no rows, the check is not satisfied and must be
-re-derived against the agent pool's scale set** — see the design's section 4, which ships this
+re-derived against the agent pool's scale set** — see section 4 of `docs/specs/2026-09-08-at-rest-encryption-node-disks-and-allowlist-design.md`, which ships this
 command unverified by deliberate choice, because no Azure cluster existed when it was written.
 That includes the filter itself: if AKS names its OS disks differently, this returns nothing, and
 re-derivation is the correct response.
@@ -246,7 +246,7 @@ kubectl get nodes -o jsonpath='{range .items[*]}{.spec.providerID}{"\n"}{end}' \
   | sed 's#^gce://##' \
   | while IFS=/ read -r project zone instance; do
       gcloud compute disks describe "$instance" --zone "$zone" \
-        --format='value(name,diskEncryptionKey.kmsKeyName)'
+        --format='value(name,diskEncryptionKey.kmsKeyName)' < /dev/null
     done
 ```
 
@@ -255,7 +255,7 @@ Expected: every line names a disk and the same key check 3 shows.
 ## What this evidence set does not cover
 
 Node disks are now under the same customer-managed key as PersistentVolumes on all three
-clouds, so one key reference should appear in every check above.
+clouds, so one key — or, on Azure, one disk encryption set — reference should appear in checks 1, 2, 3 and 5.
 
 Three surfaces remain outside this control, by decision rather than oversight: AKS etcd
 Secrets, which stay on a platform-managed key because bringing them under a customer key needs

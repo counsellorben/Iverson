@@ -229,6 +229,8 @@ resource "google_container_node_pool" "general" {
       mode = "GKE_METADATA"
     }
   }
+
+  depends_on = [google_kms_crypto_key_iam_binding.data_volumes]
 }
 
 locals {
@@ -280,4 +282,6 @@ resource "google_container_node_pool" "pools" {
       mode = "GKE_METADATA"
     }
   }
+
+  depends_on = [google_kms_crypto_key_iam_binding.data_volumes]
 }
