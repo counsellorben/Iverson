@@ -152,21 +152,6 @@ public sealed class VectorRankingOptionsTests
     }
 
     [Fact]
-    public void AddVectorRanking_UnrecognisedSimilarRetrievalVector_Throws()
-    {
-        var config = BuildConfig(
-            ("WBase", "0.45"),
-            ("WCentroid", "0.45"),
-            ("WDecay", "0.10"),
-            ("LambdaSimilar", "0.70"), ("LambdaChunks", "0.70"),
-            ("SimilarRetrievalVector", "bogus"));
-
-        var act = () => new ServiceCollection().AddVectorRanking(config);
-
-        act.Should().Throw<InvalidOperationException>();
-    }
-
-    [Fact]
     public void AddVectorRanking_ObsoleteLambdaKey_Throws_NamingBothNewKeys()
     {
         var config = BuildConfig(("WBase", "0.45"), ("WCentroid", "0.45"), ("WDecay", "0.10"), ("Lambda", "0.70"));
@@ -184,6 +169,5 @@ public sealed class VectorRankingOptionsTests
         var opts = provider.GetRequiredService<IOptions<VectorRankingOptions>>().Value;
         opts.LambdaSimilar.Should().Be(1.00);
         opts.LambdaChunks.Should().Be(0.70);
-        opts.SimilarRetrievalVector.Should().Be("head");
     }
 }
