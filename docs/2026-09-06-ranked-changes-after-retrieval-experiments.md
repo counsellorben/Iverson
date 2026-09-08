@@ -110,6 +110,11 @@ Phase 2 decision that leans on whole-document embeddings should re-measure," and
 3. **Accept.** Documents beyond 512 tokens rank by their opening; the `_centroid` signal still covers the
    whole document in the fusion. Reasonable for abstract-shaped corpora, unmeasured for anything else.
 
+**Update 2026-09-08.** The new `VectorRanking:SimilarViaChunksTypes` option routes `SearchSimilar` through
+chunk retrieval for listed types instead of the truncated head embedding; on the `fs-2048` arm the served
+ranking reproduces a same-binary collapsed chunk run within tolerance (nDCG@10 delta +0.0000, R@50 delta
++0.0000, both within ±0.005), so choice 2 above now has an operator-configurable alternative available.
+
 ---
 
 ## Tier 2 — cheap re-measurements before a verdict is treated as final
