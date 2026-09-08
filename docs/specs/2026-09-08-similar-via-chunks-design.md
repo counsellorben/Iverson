@@ -23,9 +23,10 @@ collapsed `.chunks` run against the `.similar` run at λ 1.00 in each arm
 | `fs-512` | 10.79 | +0.0099 [−0.0006, +0.0204] n.s. | **+0.0140** [+0.0009, +0.0272] p_adj 0.0342 | **+0.0087** p_adj 0.0442 |
 | `sci-2048` | 1.27 | +0.0008 n.s. | −0.0117 n.s. | −0.0019 p_adj 0.0010 |
 
-The collapsed `.chunks` run *is* this design: the harness requests chunks from `SearchChunks`,
-fuses them as the server does, and collapses to parents by maximum score
-(`MaxPassageAggregator.cs:31-56`). Serving that ranking from `SearchSimilar` is worth about a
+The collapsed `.chunks` run is the closest measurement of this design: the harness requests chunks
+from `SearchChunks`, the server fetches 4× that request, fuses and MMR-selects, and the harness
+collapses the returned chunks to parents by maximum score (`MaxPassageAggregator.cs:31-56`). The
+served path differs in the size of the pool it fuses (§5). Serving that ranking from `SearchSimilar` is worth about a
 hundredth of nDCG@10 and two to three hundredths of R@50 on a long-document corpus, and nothing on
 abstracts. It is therefore an **option an operator enables per type after measuring the corpus**,
 not a default.
@@ -42,7 +43,8 @@ configuration. Everything else keeps today's path unchanged.
 - Any proto or client change. The option is server configuration (Ben, 2026-09-08).
 - A cache or ceiling on the density read. Neither is shown to be needed; see Known issues.
 - Chunk-level diversification on the routed path. The collapse undoes it.
-- A new gate rule. The served ranking is one the harness has already measured; §4 reproduces it.
+- A new gate rule. §4 checks that the served ranking reproduces a same-binary collapsed chunk run
+  built over the same raw pool, within a tolerance.
 
 ## 3. The change
 
@@ -66,10 +68,13 @@ own comparison.
 `docker-compose.yml` gains, beside `:445-446` on `iverson-api`:
 
 ```yaml
-- VectorRanking__SimilarViaChunksTypes__0=${VECTOR_RANKING_SIMILAR_VIA_CHUNKS_0:-}
+- VectorRanking__SimilarViaChunksTypes__0
 ```
 
-An empty value binds no entry. The worker does not serve searches and gets nothing.
+Listed without a value, compose passes the variable through only when it is set in the launching
+shell and leaves it unset otherwise, so the default configuration binds no entry. The `${…:-}`
+form is not used: an empty string binds as one blank element (verified against the binder), which
+the check above would reject at startup. The worker does not serve searches and gets nothing.
 
 ### 3.2 The routing decision
 
@@ -83,10 +88,13 @@ of the following hold, and otherwise takes today's head path with no change:
    comparison, `SchemaRegistry.cs:11`).
 2. `schema.ChunkFields` has a descriptor for `vectorDesc.PropertyName` — the existing
    `centroidPossible` test, now also yielding the descriptor.
-3. The request filter is **chunk-expressible**: no clauses, or every clause is an EQUALS filter
-   clause on the key column or a metadata column, with `FilterLogic` AND (or a single clause). This
-   is exactly what `BuildChunksFilter` (`:870-905`) enforces for `SearchChunks`; it is reshaped to
-   take `(SchemaDescriptor, IReadOnlyList<SearchClause>, allowedFields)` and a `TryBuildChunksFilter`
+3. The request filter is **chunk-expressible**, tested in two steps. First, the logic:
+   `request.Filter.Count <= 1 || request.FilterLogic == SearchLogic.And`. `BuildChunksFilter`
+   never reads `filter_logic` (the file's only read is `:179`, on the object path) and `SearchChunks`
+   silently ANDs an OR request today, so the logic test must live here and not in the shared
+   function. Second, the clauses: every clause is an EQUALS filter clause on the key column or a
+   metadata column, which is what `BuildChunksFilter` (`:870-905`) enforces; it is reshaped to take
+   `(SchemaDescriptor, IReadOnlyList<SearchClause>, allowedFields)` and a `TryBuildChunksFilter`
    wrapper returns `false` where it would throw. `SearchChunks` keeps its throwing behaviour by
    calling the same function and rethrowing.
 4. Both point counts read successfully (§3.4) and the object count is positive.
@@ -202,37 +210,42 @@ No ingest, no new rule. The served ranking must reproduce the harness's collapse
 1. Restore `freshstack-2048-qdrant-snapshots/` per its `RESTORE.md` (both collections, 6,000 and
    18,622 points).
 2. Rebuild `iverson-api` from the branch; start it with
-   `VECTOR_RANKING_SIMILAR_VIA_CHUNKS_0=BenchmarkDocument` and the shipped λ values; confirm with
-   `docker inspect` that `VectorRanking__SimilarViaChunksTypes__0=BenchmarkDocument`.
-3. `benchmark-query` with `--config-label fs2048-routed --chunk-budget-multiplier 11` into
+   `VectorRanking__SimilarViaChunksTypes__0=BenchmarkDocument` and `VectorRanking__LambdaChunks=1.00`
+   (the shipped `LambdaSimilar` 1.00 unchanged); confirm both with `docker inspect`.
+3. One `benchmark-query` with `--config-label fs2048-routed --chunk-budget-multiplier 4` into
    `freshstack-2048-2026-09-07/runs/`. `DocumentBudget` is 50 (`BenchmarkQueryScenario.cs:42`), so
-   the routed `SearchSimilar` fetches 50 × 4 × 4 = 800 chunks per query at this arm's 3.10 chunks/doc.
-4. `report.py --qrels qrels.trec --baseline runs/fs-2048-l070.chunks.trec --run
-   runs/fs2048-routed.similar.trec` → `report-routed.txt`. The `BUILD MISMATCH` warning is expected
-   (different binary, as the Tier 1 rule 7.1(a) control) and recorded.
+   the run's `SearchChunks` requests 200 chunks and the server fetches 800 raw; the run's routed
+   `SearchSimilar` fetches 50 × 4 × 4 = 800 raw at this arm's 3.10 chunks/doc. `ChunkBudgetGuard`
+   passes (200 / 3.10 ≈ 64 ≥ 50). The run writes `fs2048-routed.chunks.trec` (the baseline) and
+   `fs2048-routed.similar.trec` (the path under test) from one binary.
+4. `report.py --qrels qrels.trec --baseline runs/fs2048-routed.chunks.trec --run
+   runs/fs2048-routed.similar.trec` → `report-routed.txt`. A second invocation against the Tier 1
+   `fs-2048-l070.chunks.trec` is recorded for continuity only; its `BUILD MISMATCH` warning is
+   expected and it is not the rule.
 5. Restore the box: `docker compose up -d --no-deps iverson-api` from a shell without the variable.
 
 ## 5. The rule
 
-> **PASS** if `fs2048-routed.similar` vs `fs-2048-l070.chunks` is within **±0.005** on both nDCG@10
+> **PASS** if `fs2048-routed.similar` vs `fs2048-routed.chunks` is within **±0.005** on both nDCG@10
 > and R@50 (point estimate), and the report's structural block shows 672 / 672 queries covered
 > with no duplicate doc ids.
 >
-> Anything else is a **FAIL**, and the branch does not merge until the cause is found. The
-> baseline's chunk-level MMR at λ 0.70 cannot explain a difference: the Tier 1 gate recorded its
-> collapsed metrics identical to λ 1.00 to four decimals.
+> Anything else is a **FAIL**, and the branch does not merge until the cause is found.
 
-A small non-zero delta is possible from the budget: the harness fetched 550 chunks per query
-(50 × 11), the routed path fetches 800, so the routed pool is a superset. That can only add
-documents below the harness's 550-chunk boundary, which is why the tolerance is symmetric but the
-sign is expected non-negative.
+The two rankings are fused on one binary over the same 800-chunk raw pool and differ only in what
+they collapse: the harness collapses the first 200 fused chunks (λ 1.00 selection) while the routed
+path collapses all 800. They agree wherever the first 200 fused chunks hold at least 50 distinct
+parents, so a non-zero delta locates queries where they do not. The Tier 1 `fs-2048-l070.chunks`
+run is not a valid reference for the rule: it was fused over a 2,200-chunk raw pool (550 requested
+× 4) and MMR-selected at λ 0.70 on a different binary, so neither pool contains the other.
 
 ## 6. Consequences
 
 - **PASS:** merge. `SimilarViaChunksTypes` stays empty by default; the ranked-changes document
   gains a line under item 3 recording that the option exists and what it is worth per corpus.
-- **FAIL:** the branch stays unmerged; the discrepancy is diagnosed against the harness pipeline
-  (`MaxPassageAggregator`, `ChunkDiversity`), which is the reference.
+- **FAIL:** the branch stays unmerged. Diagnosis starts with the budget — the routed raw pool
+  versus the pool the baseline fused, and the 200-versus-800 collapse boundary — and only then the
+  harness pipeline (`MaxPassageAggregator`, `ChunkDiversity`), which is the reference.
 
 The option is permanent, unlike `SimilarRetrievalVector`: its value is corpus-conditional, so the
 deployment decides.
@@ -286,6 +299,9 @@ Verified 2026-09-08 against `main` `6600810`.
 | A17 | Delete removes the object point before the chunks | `IntelligenceStoreConsumer.cs:553` then `:562` |
 | A18 | Both RPC preambles share one shape, so the branch after `SearchSimilar`'s is valid | `:133-158` and `:336-356` |
 | A19 | Ownership and metadata are on chunk points, so the chunk filter enforces the same rows | `IntelligenceStoreConsumer.cs:307-314`; `ObjectSearchGrpcService.cs:368-372` |
+| A20 | A collection-scoped read key can read that collection's point count | Live probe (CDR round 1): `GET /collections/{name}` returned 200 with `points_count` under a token scoped to that collection and 403 under a token scoped to the other |
+| A21 | A chunk's `parent_id` and its parent's object point id agree under `KeyToUlong` | `IntelligenceStoreConsumer.cs:548` (object point id = `KeyToUlong(ev.Key)`) and `:310` (`parent_id` = `ev.Key`); the `SearchChunks` centroid retrieve at `ObjectSearchGrpcService.cs:431-444` already depends on it |
+| A22 | An empty-string list entry binds as one blank element, not as no entry | CDR round 1 empirical run, `Microsoft.Extensions.Configuration.Binder` 10.0.11, env and in-memory providers: `count=1 entries=['']` |
 
 ## Known issues
 
