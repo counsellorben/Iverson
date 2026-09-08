@@ -198,3 +198,24 @@ resource "kubernetes_storage_class" "prometheus" {
   parameters          = var.storage_class_config.parameters
   volume_binding_mode = "WaitForFirstConsumer"
 }
+
+# The Kubernetes provider cannot apply this pair: 2.x has no policy resource,
+# 3.x adds a policy but no binding, and kubernetes_manifest needs API access at
+# plan time, which would break the single-pass apply every cloud root relies on.
+# A helm_release renders at apply, so the single pass survives.
+resource "helm_release" "pvc_storageclass_policy" {
+  name      = "pvc-storageclass-policy"
+  chart     = "${path.module}/charts/pvc-storageclass-policy"
+  namespace = kubernetes_namespace.iverson.metadata[0].name
+  values = [yamlencode({
+    allowedStorageClasses = [
+      kubernetes_storage_class.postgres.metadata[0].name,
+      kubernetes_storage_class.starrocks.metadata[0].name,
+      kubernetes_storage_class.qdrant.metadata[0].name,
+      kubernetes_storage_class.kafka.metadata[0].name,
+      kubernetes_storage_class.ollama.metadata[0].name,
+      kubernetes_storage_class.tei.metadata[0].name,
+      kubernetes_storage_class.prometheus.metadata[0].name,
+    ]
+  })]
+}

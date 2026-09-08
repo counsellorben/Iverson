@@ -1,0 +1,4 @@
+# Populated by the helm_release in modules/operators/main.tf from the
+# kubernetes_storage_class resources. Empty here so the chart never carries a
+# hand-written copy of the class names.
+allowedStorageClasses: []

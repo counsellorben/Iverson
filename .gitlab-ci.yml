@@ -18,6 +18,7 @@ helm-lint:
         echo "helm lint ($values.yaml)"
         helm lint Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml"
       done
+    - helm lint Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy
 
 helm-template-kubeconform:
   stage: validate

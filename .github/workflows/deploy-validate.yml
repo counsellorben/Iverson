@@ -34,6 +34,9 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: helm lint the PVC StorageClass admission-policy chart
+        run: helm lint Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy
+
   helm-template-kubeconform:
     runs-on: ubuntu-latest
     steps:
