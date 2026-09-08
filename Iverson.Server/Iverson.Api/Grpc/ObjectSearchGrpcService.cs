@@ -383,6 +383,7 @@ public sealed class ObjectSearchGrpcService(
         // Spec §3.5.3: hydrate the top parents from the object collection.
         IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>> payloads =
             new Dictionary<ulong, IReadOnlyDictionary<string, string>>();
+        var collectionVanished = false;
         if (selected.Count > 0)
         {
             using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(objectCollection, readOnly: true)))
@@ -391,7 +392,16 @@ public sealed class ObjectSearchGrpcService(
                 {
                     payloads = await vector.RetrievePayloadAsync(objectCollection, selected.Select(s => s.Id).ToList());
                 }
-                catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound) { }
+                catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+                {
+                    // The object collection vanished between the count read and hydration — one
+                    // event, not one per selected parent. Log it once here and suppress the
+                    // per-parent warning below so an empty response doesn't emit up to topK lines.
+                    collectionVanished = true;
+                    logger.LogWarning(
+                        "[SearchSimilar] object collection {Collection} not found at hydration; returning empty result",
+                        objectCollection.SanitizeForLog());
+                }
                 catch (RpcException ex)
                 {
                     throw new RpcException(new Status(StatusCode.Unavailable, $"Vector store unavailable: {ex.Status.Detail}"));
@@ -404,7 +414,7 @@ public sealed class ObjectSearchGrpcService(
         foreach (var s in selected)
         {
             if (payloads.TryGetValue(s.Id, out var payload)) rows.Add((payload, s.FusedScore));
-            else logger.LogWarning("[SearchSimilar] parent {Id} missing at hydration; skipped", s.Id);
+            else if (!collectionVanished) logger.LogWarning("[SearchSimilar] parent {Id} missing at hydration; skipped", s.Id);
         }
         await WriteSimilarResponsesAsync(schema, decision, rows, request.TraceId, responseStream, context.CancellationToken);
         return true;

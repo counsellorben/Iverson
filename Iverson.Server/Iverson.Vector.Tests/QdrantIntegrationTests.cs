@@ -449,4 +449,16 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
             .And.Contain(new KeyValuePair<string, string>("rank", "3"));
         result.Should().NotContainKey(999UL);
     }
+
+    [Fact]
+    public async Task RetrievePayloadAsync_ReturnsEmptyDictionary_WhenIdsListIsEmpty()
+    {
+        var name = UniqueName();
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
+
+        var act = async () => await _svc.RetrievePayloadAsync(name, []);
+
+        var result = await act.Should().NotThrowAsync();
+        result.Subject.Should().BeEmpty();
+    }
 }

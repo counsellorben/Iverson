@@ -3450,6 +3450,17 @@ public class ObjectSearchGrpcServiceTests
             MetadataColumns = ["Category"]
         };
 
+    // DualAnnotatedSchema plus a TIMESTAMPTZ metadata column, so DecayFieldResolver resolves a
+    // decay field AND ChunkFields stays populated — the combination SearchChunks needs (unlike
+    // EmbeddingOnlyWithDecaySchema, which has no chunked property and so cannot reach SearchChunks
+    // at all: it throws InvalidArgument for lacking an [IversonChunk] annotation).
+    private static SchemaDescriptor DualAnnotatedWithDecaySchema() =>
+        DualAnnotatedSchema() with
+        {
+            ScalarColumns   = [new ColumnDescriptor("Body", "text", false), new ColumnDescriptor("PublishedAt", "TIMESTAMPTZ", true)],
+            MetadataColumns = ["PublishedAt"]
+        };
+
     private void StubChunkDensity(ulong objectCount, ulong chunkCount)
     {
         _vector.GetPointCountAsync("docs_test-tenant").Returns(objectCount);
@@ -4012,5 +4023,169 @@ public class ObjectSearchGrpcServiceTests
 
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+    }
+
+    // Spec §3.2 condition 1: the routed-types list (":224") is matched with
+    // StringComparer.OrdinalIgnoreCase — the operator's configured spelling need not match the
+    // schema's TypeName casing exactly. Every other routed test lists the exact spelling "Doc",
+    // so this is the only test that would fail if the comparer were narrowed to Ordinal.
+    [Fact]
+    public async Task SearchSimilar_RoutedTypesList_MatchesCaseInsensitively()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        const string parent = "parent-1";
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads([parent]));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await RoutedSut(routedTypes: ["doc"]).SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await _vector.Received(1).SearchNamedAsync(
+            "docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>());
+        await _vector.DidNotReceive().SearchNamedAsync(
+            "docs_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+    }
+
+    // Spec §3.5.1: a fused chunk whose payload carries no parent_id (or an empty one) cannot be
+    // collapsed to a parent and must be dropped before hydration rather than crashing the request
+    // or being hydrated under a bogus key — one malformed chunk must not sink the whole response.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_ChunkMissingParentId_IsDroppedBeforeHydration()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        const string parent = "parent-1";
+        var withParent    = ChunkOf(1, 0.9, parent, "c1");
+        var withoutParent = new VectorSearchResult(2, 0.8, new Dictionary<string, string> { ["text"] = "c2" });
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { withParent, withoutParent }.AsReadOnly());
+
+        IReadOnlyList<ulong>? hydrated = null;
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Do<IReadOnlyList<ulong>>(ids => hydrated = ids))
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads([parent]));
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        hydrated.Should().Equal(InvokeKeyToUlong(parent));
+        written.Should().HaveCount(1);
+    }
+
+    // Spec §3.6: the object collection vanishing between the count read and hydration is ONE
+    // event, not one per selected parent — the per-parent "missing at hydration" warning must be
+    // suppressed in favour of a single warning naming the collection when RetrievePayloadAsync
+    // itself throws NotFound. The streamed result is unchanged either way (empty).
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_HydrationNotFound_LogsOneWarning_NotOnePerParent()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+
+        var parents = Enumerable.Range(1, 3).Select(i => $"parent-{i}").ToList();
+        var chunks  = parents.Select((p, i) => ChunkOf((ulong)(i + 1), 0.9 - i * 0.1, p, $"c{i + 1}")).ToList();
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(chunks.AsReadOnly());
+        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns<Task<IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>>>(
+                   _ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
+
+        var log = Substitute.For<Microsoft.Extensions.Logging.ILogger<ObjectSearchGrpcService>>();
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut(log: log).SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        log.Received(1).Log(
+            Microsoft.Extensions.Logging.LogLevel.Warning,
+            Arg.Any<Microsoft.Extensions.Logging.EventId>(),
+            Arg.Any<object>(),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    // The shared SearchChunksFusedAsync helper resolves the decay field and passes the configured
+    // half-life through for BOTH SearchChunks and the routed SearchSimilar — but the only test
+    // reaching a configured half-life exercised the SearchSimilar side
+    // (SearchSimilar_UsesConfiguredHalfLife_NotAHardCodedOne). This is the SearchChunks
+    // equivalent: two chunks whose ages are chosen so the configured 90-day half-life and the
+    // shipped 180-day default disagree on which one is fused higher — a hard-coded half-life at
+    // either call site would stream them in the wrong order.
+    [Fact]
+    public async Task SearchChunks_UsesConfiguredHalfLife_NotAHardCodedOne()
+    {
+        await _registry.RegisterAsync(DualAnnotatedWithDecaySchema());
+
+        const double halfLifeDays = 90.0;
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }));
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubNoCentroids();
+
+        // parent-old: high base score but published 330 days ago. Under the CONFIGURED 90-day
+        // half-life it decays to ~0.079 (falls behind); under the hard-coded 180-day default it
+        // only decays to ~0.281 (stays ahead). parent-fresh: lower base score, published now
+        // (decay 1.0 under either half-life) — the two orders disagree only because of which
+        // half-life reached DecayFor.
+        var now = DateTimeOffset.UtcNow;
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.90, new Dictionary<string, string>
+            {
+                ["text"]        = "old-but-relevant",
+                ["parent_id"]   = "parent-old",
+                ["publishedAt"] = now.AddDays(-330).ToString("O")
+            }),
+            new(2, 0.70, new Dictionary<string, string>
+            {
+                ["text"]        = "fresh-but-less-relevant",
+                ["parent_id"]   = "parent-fresh",
+                ["publishedAt"] = now.ToString("O")
+            })
+        };
+        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        // Under the configured 90-day half-life parent-fresh's decay advantage outweighs
+        // parent-old's base-score lead, so parent-fresh streams first. A hard-coded 180-day
+        // half-life would decay parent-old less, letting its base-score lead win instead — this
+        // order is only correct if the configured half-life reached DecayFor.
+        written.Should().HaveCount(2);
+        written.Select(w => w.ParentKey).Should().Equal("parent-fresh", "parent-old");
     }
 }
