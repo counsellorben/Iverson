@@ -125,16 +125,20 @@ Newly introduced by this plan and verified at plan-write time.
 | 12 | Code validity | A subchart template can read `.Values.global.*` | `charts/admin-ui/templates/ingress.yaml:14,18` already reads `.Values.global.ingressHost` |
 | 13 | Code validity | Go TLS needs no new module — `credentials` is part of the existing grpc dependency | `Go/go.mod:6` — `google.golang.org/grpc v1.83.1` |
 | 14 | Code validity | The admin-ui image already has a runtime hook: `/docker-entrypoint.d/40-admin-ui-config.sh` | `Iverson.AdminUI/Dockerfile:25-26` — extend this, do not introduce `/etc/nginx/templates` |
-| 15 | Code validity | Patched SSH.NET exists past GHSA-q939-rpr3-3284 | nuget flat-container index: `2024.0.0 … 2026.0.0` |
-| 16 | Consumer impact | **`oidcAuthority` lives in SIX places, not the four the spec named** — also `values-local.yaml:142` and the subchart default `charts/admin-ui/values.yaml:13` | `grep -rn oidcAuthority` across the chart |
-| 17 | Consumer impact | Python: the agent already passes `use_tls=tls` explicitly; **seven test call sites rely on the default** | `__main__.py:72,75` explicit; `test_auth.py:148,191,220,250,266`, `test_conformance_driver.py:122` implicit |
-| 18 | Consumer impact | TS: 12 non-generated call sites; some pass `false` explicitly (`sample/main.ts:22`, `conformance/driver.ts:356`), others rely on the default | grep of `new IversonClient(` |
-| 19 | Consumer impact | Go: the default applies only when `opts` is empty; both conformance sites pass `WithInsecure()` explicitly | `coordinator.go:79-83`; `conformance/main.go:462,741` |
-| 20 | Consumer impact | .NET: two `AddIversonClient` callers | `DotNet/Iverson.Client.Sample/Program.cs:34`; `Iverson.LoadTest/Program.cs:127` |
-| 21 | Consumer impact | **`test_retrieval.py:144-152` asserts on token budgets** that adding delimiters will shift | `render_context(ctx, budget_tokens=260)` and `=60` assertions |
-| 22 | Ordering | T9 consumes `global.externalScheme` (T2); T3's flag governs redirect URIs in T2's file — both forward, no cycle | Spec §3 Tasks 2, 3, 9 |
-| 23 | Ordering | T8's new disabled health check is referenced by no other task | Only `Program.cs` T8 step registers it |
-| 24 | Cross-cutting | `docs/plans/` is **gitignored** (`.gitignore:49`) yet 60 plans are tracked → commit needs `git add -f` | `git check-ignore -v` on the plan path |
+| 15 | Code validity | GHSA-q939-rpr3-3284 (CVE-2026-48798) affects SSH.NET **`<= 2025.1.0`**; **first patched in `2026.0.0`** | GitHub advisory API: `vulnerable_version_range: <= 2025.1.0`, `first_patched_version: 2026.0.0` |
+| 16 | Code validity | Testcontainers `4.15.0` is the latest stable and depends on SSH.NET `2026.0.0`; `3.9.0` depends on `2023.0.0` | nuspec diff of both versions from the nuget flat container |
+| 17 | Code validity | Testcontainers `4.15.0` targets `net10.0` directly | nuspec `<group targetFramework>`: netstandard2.0/2.1, net8.0, net9.0, **net10.0** |
+| 18 | Consumer impact | The Testcontainers API surface in use is the modern fluent form 4.x preserved — no `TestcontainersBuilder<T>`, `INetwork` or endpoint-auth config | grep across `Iverson.Server/`: `ContainerBuilder` ×7, `IContainer` ×7, `PostgreSqlBuilder`/`Container` ×6, `KafkaBuilder`/`Container` ×1 |
+| 19 | File path | Six `Testcontainers*` `PackageReference` lines across the four test projects | `Iverson.Api.Tests.csproj:23,24,25`; `Iverson.Sql.Tests.csproj:22`; `Iverson.StarRocks.Tests.csproj:18`; `Iverson.Vector.Tests.csproj:23` |
+| 20 | Consumer impact | **`oidcAuthority` lives in SIX places, not the four the spec named** — also `values-local.yaml:142` and the subchart default `charts/admin-ui/values.yaml:13` | `grep -rn oidcAuthority` across the chart |
+| 21 | Consumer impact | Python: the agent already passes `use_tls=tls` explicitly; **seven test call sites rely on the default** | `__main__.py:72,75` explicit; `test_auth.py:148,191,220,250,266`, `test_conformance_driver.py:122` implicit |
+| 22 | Consumer impact | TS: 12 non-generated call sites; some pass `false` explicitly (`sample/main.ts:22`, `conformance/driver.ts:356`), others rely on the default | grep of `new IversonClient(` |
+| 23 | Consumer impact | Go: the default applies only when `opts` is empty; both conformance sites pass `WithInsecure()` explicitly | `coordinator.go:79-83`; `conformance/main.go:462,741` |
+| 24 | Consumer impact | .NET: two `AddIversonClient` callers | `DotNet/Iverson.Client.Sample/Program.cs:34`; `Iverson.LoadTest/Program.cs:127` |
+| 25 | Consumer impact | **`test_retrieval.py:144-152` asserts on token budgets** that adding delimiters will shift | `render_context(ctx, budget_tokens=260)` and `=60` assertions |
+| 26 | Ordering | T9 consumes `global.externalScheme` (T2); T3's flag governs redirect URIs in T2's file — both forward, no cycle | Spec §3 Tasks 2, 3, 9 |
+| 27 | Ordering | T8's new disabled health check is referenced by no other task | Only `Program.cs` T8 step registers it |
+| 28 | Cross-cutting | `docs/plans/` is **gitignored** (`.gitignore:49`) yet 60 plans are tracked → commit needs `git add -f` | `git check-ignore -v` on the plan path |
 
 **Deferred to task time** (need a live service, per spec §5): whether StarRocks requires `AllowPublicKeyRetrieval` (T8); the Authentik pagination envelope (T10); whether Authentik already emits `Access-Control-Allow-Origin` (T2); whether StarRocks *executes* the HAVING reference (T6 — severity only, the fix is identical either way).
 
@@ -510,9 +514,30 @@ git commit -m "bound the trace relay body and fail loudly on an unknown authenti
 - Modify: `.gitlab-ci.yml:26-28,47-51`
 - Modify: `.github/workflows/codeql.yml`, `.github/workflows/deploy-validate.yml`
 
-- [ ] **Step 1: Pin SSH.NET past the advisory in all four test projects.** `2023.0.0` (GHSA-q939-rpr3-3284, High) arrives transitively via `Testcontainers 3.9.0`. There is no `Directory.Packages.props`, so add a direct `<PackageReference Include="SSH.NET" Version="2024.0.0" />` to each of the four test `.csproj` files. Prefer the minimal jump past the advisory over a Testcontainers 4.x upgrade, which is a breaking change to test infrastructure and out of proportion to a test-only issue.
+- [ ] **Step 1: Upgrade Testcontainers 3.9.0 → 4.15.0 in all four test projects.** Bump all six `PackageReference` lines:
 
-- [ ] **Step 2: Confirm the advisory is cleared and nothing broke.** `dotnet list Iverson.slnx package --vulnerable --include-transitive` should report no vulnerable packages, and the .NET suite must still pass — the pin overrides what Testcontainers expects, so a runtime break would show up here.
+```
+Iverson.Api.Tests.csproj:23   Testcontainers.PostgreSql
+Iverson.Api.Tests.csproj:24   Testcontainers
+Iverson.Api.Tests.csproj:25   Testcontainers.Kafka
+Iverson.Sql.Tests.csproj:22   Testcontainers.PostgreSql
+Iverson.StarRocks.Tests.csproj:18   Testcontainers
+Iverson.Vector.Tests.csproj:23   Testcontainers
+```
+
+  **This reverses the spec's stated preference, on evidence the spec did not have.** Spec §3 Task 11 says to pin SSH.NET directly and avoid a 4.x upgrade, reasoning that the pin is "the minimal jump past the advisory." There is no minimal jump: GHSA-q939-rpr3-3284 / CVE-2026-48798 affects **`<= 2025.1.0`** and is first patched in **2026.0.0**. So the direct-pin route requires the same 2023→2026 jump, but onto a host built against 2023.0.0 that upstream never tests, whereas Testcontainers 4.15.0 *ships* SSH.NET 2026.0.0 as its own tested dependency.
+
+  The upgrade is also smaller than the spec assumed. The API surface in use is already the modern fluent form 4.x preserved — `ContainerBuilder` (7 sites), `IContainer` (7), `PostgreSqlBuilder`/`PostgreSqlContainer` (6), `KafkaBuilder`/`KafkaContainer` (1) — with no `TestcontainersBuilder<T>`, no `INetwork`/`NetworkBuilder`, and no custom endpoint auth config. 4.15.0 targets `net10.0` directly.
+
+  No direct `SSH.NET` `PackageReference` is added; the transitive resolution does the work.
+
+- [ ] **Step 2: Confirm the advisory is cleared and nothing broke.** `dotnet list Iverson.slnx package --vulnerable --include-transitive` must report no vulnerable packages in any project, and the full .NET suite must pass — **including the integration tests**, which are the ones that actually construct containers and so are the only place a 4.x behavioural change surfaces. Run them explicitly rather than relying on the `Category!=Integration` filter used elsewhere in this plan:
+
+```bash
+TESTCONTAINERS_RYUK_DISABLED=true dotnet test Iverson.slnx --filter 'Category=Integration'
+```
+
+  The known local fragility is container contention from per-class `IClassFixture` containers; treat a failure there as a fixture issue to investigate, not automatically as a 4.x incompatibility.
 
 - [ ] **Step 3: Verify CI downloads before executing them.** `.gitlab-ci.yml` pipes kubeconform, kube-score and tfsec release archives straight into `tar`/`chmod +x` with no integrity check. Pin each to a published SHA-256 and verify before extraction.
 
@@ -525,7 +550,7 @@ git add Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj \
         Iverson.Server/Iverson.StarRocks.Tests/Iverson.StarRocks.Tests.csproj \
         Iverson.Server/Iverson.Vector.Tests/Iverson.Vector.Tests.csproj \
         .gitlab-ci.yml .github/workflows
-git commit -m "pin ssh.net past the advisory and verify ci tool downloads"
+git commit -m "upgrade testcontainers to clear the ssh.net advisory and verify ci tool downloads"
 ```
 
 ---
