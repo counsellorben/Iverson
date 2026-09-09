@@ -171,6 +171,46 @@ public class DocumentRankingTests
         result.Select(r => r.DocId).Should().BeEquivalentTo(new[] { "doc-1", "doc-2" });
     }
 
+    // The rank-50 boundary is exactly where beta changes the scored document set, so a tie
+    // STRADDLING the limit is the untested edge closest to the gate: which of two equally-scored
+    // documents survives Take(limit) decides what gets scored at all. CollapseByDocIdWithTail
+    // populates its dictionary in input order and OrderByDescending is stable, so the survivor is
+    // the one whose first chunk appeared first in the input -- pinned here, not changed.
+    [Fact]
+    public void CollapseByDocIdWithTail_TieStraddlingTheLimit_KeepsTheFirstSeenDocument()
+    {
+        // doc-a and doc-b have identical chunk multisets, so their augmented scores are the same
+        // double exactly -- the tie does not depend on floating-point luck. doc-top outranks both.
+        var scored = new[]
+        {
+            ("doc-a",   0.5), ("doc-a", 0.2),
+            ("doc-b",   0.5), ("doc-b", 0.2),
+            ("doc-top", 0.9),
+        };
+
+        var result = DocumentRanking.CollapseByDocIdWithTail(scored, limit: 2, beta: 0.5);
+
+        result.Should().Equal(("doc-top", 0.9), ("doc-a", 0.5 + 0.5 * 0.2));
+    }
+
+    [Fact]
+    public void CollapseByDocIdWithTail_TieStraddlingTheLimit_FollowsInputOrder_NotDocIdOrder()
+    {
+        // Same inputs as above with doc-b's chunks first. If the survivor were chosen by doc id (or
+        // by anything other than first appearance) this would still return doc-a and the test above
+        // would pass for the wrong reason.
+        var scored = new[]
+        {
+            ("doc-b",   0.5), ("doc-b", 0.2),
+            ("doc-a",   0.5), ("doc-a", 0.2),
+            ("doc-top", 0.9),
+        };
+
+        var result = DocumentRanking.CollapseByDocIdWithTail(scored, limit: 2, beta: 0.5);
+
+        result.Should().Equal(("doc-top", 0.9), ("doc-b", 0.5 + 0.5 * 0.2));
+    }
+
     [Fact]
     public void CollapseByDocIdWithTail_BetaZero_EqualsCollapseByDocId()
     {
