@@ -1,9 +1,12 @@
 # Chunk-Coverage Signal, Phase 1 — Gate Verdict
 
-Recorded 2026-09-09 from the `chunk-coverage-phase1` worktree at HEAD `7463d6c`
+Measurements recorded 2026-09-09 from the `chunk-coverage-phase1` worktree at HEAD `7463d6c`
 (`add tail_stats.py: in-pool tail depth and the tail-score level s`), which carries Tasks 1–4 of
 `docs/plans/2026-09-09-chunk-coverage-phase1-implementation-plan.md`. The design is
 `docs/specs/2026-09-08-chunk-coverage-signal-design.md`; Phase 1's purpose is set by its §2 and §3.
+The prerequisite recorded at the end of this document refers to `--scores-path`, which was added
+later on the same branch (`6fe3014`) in response to the whole-branch review — after the HEAD named
+above, which is why that HEAD does not contain it. No measurement here depends on it.
 
 Phase 1 measures `s` and derives the ladder's two endpoints from it. It does not select the
 ladder and it does not score any β ≠ 0 arm — the spec was corrected twice for calibrating β against

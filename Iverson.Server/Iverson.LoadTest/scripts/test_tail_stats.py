@@ -243,8 +243,36 @@ def test_main_exits_on_a_run_keymap_mismatch(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", [
         "tail_stats.py", "--hits", str(hits_path), "--run", str(run_path), "--keymap", str(keymap_path),
     ])
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         tail_stats.main()
+    # Assert the MESSAGE, not just that it exited. With the scope check removed this fixture still
+    # raises SystemExit -- the scoped set is empty, so `s` is None and the script exits one branch
+    # later for an unrelated reason. Only the message distinguishes the two, so only the message
+    # falsifies the call site at tail_stats.py:245.
+    assert "recovered 0 of the run file's 2 rows" in str(exc.value)
+
+
+def test_main_exits_on_a_PARTIAL_run_keymap_mismatch(tmp_path, monkeypatch):
+    """The sharp case: the dump covers SOME of the run file's rows, so `s` is perfectly computable
+    and every downstream exit is bypassed. Without the scope check the script prints a confident,
+    wrong s over the surviving intersection -- which is the whole failure this check exists to stop.
+    The all-or-nothing fixture above cannot catch a regression here; this one can."""
+    hits_path = tmp_path / "l.chunks.hits.tsv"
+    run_path = tmp_path / "l.chunks.trec"
+    keymap_path = tmp_path / "keymap.json"
+
+    # pA resolves correctly to d1 and has a real tail, so s is well defined over the intersection.
+    # The run file also names d2, which no dump row can reach -- 1 of 2 rows recovered.
+    write_hits(hits_path, [("q1", "pA", 1, 0.9), ("q1", "pA", 2, 0.5)])
+    write_run(run_path, [("q1", [("d1", 0.9), ("d2", 0.8)])])
+    write_keymap(keymap_path, {"pA": "d1"})
+
+    monkeypatch.setattr(sys, "argv", [
+        "tail_stats.py", "--hits", str(hits_path), "--run", str(run_path), "--keymap", str(keymap_path),
+    ])
+    with pytest.raises(SystemExit) as exc:
+        tail_stats.main()
+    assert "recovered 1 of the run file's 2 rows" in str(exc.value)
 
 
 # ── span_rank1_to_rank50 / median_top10_adjacent_gap ────────────────────────────────────

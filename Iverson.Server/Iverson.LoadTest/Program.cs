@@ -288,8 +288,8 @@ switch (command)
                                      augmented score at this --beta, UNTRUNCATED (no top-50 cut) and at
                                      full round-trippable precision, as `queryId<TAB>docId<TAB>score`.
                                      Spec §6's ordering check differences score_beta - score_0 over the
-                                     beta arm's top 50, ~35% of which have no score_0 in a top-50
-                                     F6-formatted run file. Omitting the flag changes nothing:
+                                     beta arm's top 50, many of which have no score_0 at all in a
+                                     top-50 truncated, F6-formatted run file. Omitting the flag changes nothing:
                                      <config-label>.chunks.trec is byte-identical either way.
             """);
         break;

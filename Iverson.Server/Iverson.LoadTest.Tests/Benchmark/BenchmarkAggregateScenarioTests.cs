@@ -693,6 +693,89 @@ public class BenchmarkAggregateScenarioTests
 
     // The branch's central deliverable is a byte-identity on this file. A new opt-in output must not
     // perturb it in either direction.
+    [Theory]
+    // Every path this command reads or writes. `--scores-path` is opened with append:false, so aiming
+    // it at any of these TRUNCATES that file. Pointing it at the dump destroyed a multi-hour pool
+    // artefact and still exited 0 with a success-shaped sidecar, which is how it reached review.
+    [InlineData("hits")]
+    [InlineData("keymap")]
+    [InlineData("runfile")]
+    [InlineData("sidecar")]
+    public async Task RunAsync_ScoresPathCollidingWithAnotherOfItsOwnFiles_RefusesBeforeWritingAnything(
+        string collideWith)
+    {
+        var poolDir = TempDir("collide-pool");
+        var outDir = TempDir("collide-out");
+        try
+        {
+            var keyMapPath = Path.Combine(poolDir, "keymap.json");
+            await KeyMap.SaveAsync(new Dictionary<string, string> { ["k1"] = "doc1" }, keyMapPath);
+
+            var hitsPath = Path.Combine(poolDir, "pool.chunks.hits.tsv");
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9), ("q1", "k1", 2, 0.4));
+            await WritePoolSidecarAsync(Path.Combine(poolDir, "pool.meta.json"), composite: "abc123");
+
+            var hitsBefore = await File.ReadAllBytesAsync(hitsPath);
+            var keyMapBefore = await File.ReadAllBytesAsync(keyMapPath);
+
+            var scoresPath = collideWith switch
+            {
+                "hits" => hitsPath,
+                "keymap" => keyMapPath,
+                "runfile" => Path.Combine(outDir, "arm.chunks.trec"),
+                "sidecar" => Path.Combine(outDir, "arm.meta.json"),
+                _ => throw new ArgumentOutOfRangeException(nameof(collideWith)),
+            };
+
+            var act = async () => await new BenchmarkAggregateScenario().RunAsync(
+                Flags(keyMapPath, hitsPath, outDir, configLabel: "arm", beta: 0.0358,
+                      scoresPath: scoresPath));
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+
+            // Refused BEFORE any write: the inputs are untouched and the output directory is empty.
+            // Without the guard the "hits" case rewrites the dump as a scores TSV and exits 0.
+            (await File.ReadAllBytesAsync(hitsPath)).Should().Equal(hitsBefore);
+            (await File.ReadAllBytesAsync(keyMapPath)).Should().Equal(keyMapBefore);
+            Directory.GetFileSystemEntries(outDir).Should().BeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(poolDir, recursive: true);
+            Directory.Delete(outDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_ScoresPathIsADirectory_RefusesBeforeWritingAnything()
+    {
+        var poolDir = TempDir("scoresdir-pool");
+        var outDir = TempDir("scoresdir-out");
+        try
+        {
+            var keyMapPath = Path.Combine(poolDir, "keymap.json");
+            await KeyMap.SaveAsync(new Dictionary<string, string> { ["k1"] = "doc1" }, keyMapPath);
+            var hitsPath = Path.Combine(poolDir, "pool.chunks.hits.tsv");
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9), ("q1", "k1", 2, 0.4));
+            await WritePoolSidecarAsync(Path.Combine(poolDir, "pool.meta.json"), composite: "abc123");
+
+            // Previously this wrote the run file, then threw UnauthorizedAccessException on the scores
+            // write -- leaving a run file with no sidecar to disown it, the exact shape the beta guard
+            // exists to prevent.
+            var act = async () => await new BenchmarkAggregateScenario().RunAsync(
+                Flags(keyMapPath, hitsPath, outDir, configLabel: "arm", beta: 0.0358,
+                      scoresPath: poolDir));
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+            Directory.GetFileSystemEntries(outDir).Should().BeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(poolDir, recursive: true);
+            Directory.Delete(outDir, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task RunAsync_ScoresPath_LeavesTheRunFileByteIdentical()
     {

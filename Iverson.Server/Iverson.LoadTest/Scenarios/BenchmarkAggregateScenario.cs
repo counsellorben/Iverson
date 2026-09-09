@@ -75,6 +75,39 @@ public sealed class BenchmarkAggregateScenario
             throw new InvalidOperationException("--beta must be finite and non-negative.");
         }
 
+        // Checked HERE for the same reason the beta guard above is: --scores-path is an operator-supplied
+        // path opened with append:false, so aiming it at an input or at the run file TRUNCATES that file.
+        // Pointing it at the pool dump destroys a multi-hour artefact and still exits 0 with a
+        // success-shaped sidecar. Phase 2 invokes this in a loop where --hits-path and --scores-path sit
+        // two lines apart in the same command, which is exactly where a copy-paste lands.
+        if (!string.IsNullOrWhiteSpace(flags.ScoresPath))
+        {
+            var scoresFull = Path.GetFullPath(flags.ScoresPath);
+            var collisions = new (string Path, string What)[]
+            {
+                (Path.Combine(flags.OutputDir, $"{flags.ConfigLabel}.chunks.trec"), "the run file it would write"),
+                (Path.Combine(flags.OutputDir, $"{flags.ConfigLabel}.meta.json"),   "the sidecar it would write"),
+                (flags.HitsPath, "the chunk-hit dump it reads"),
+                (flags.KeyMapPath, "the key map it reads"),
+            };
+            foreach (var (other, what) in collisions)
+            {
+                if (string.IsNullOrWhiteSpace(other)) continue;
+                if (!string.Equals(scoresFull, Path.GetFullPath(other), StringComparison.Ordinal)) continue;
+                Console.Error.WriteLine(
+                    $"REFUSING: --scores-path '{flags.ScoresPath}' is {what} -- writing there would " +
+                    "destroy that file. Give --scores-path a path of its own.");
+                throw new InvalidOperationException("--scores-path collides with another of this command's files.");
+            }
+
+            if (Directory.Exists(scoresFull))
+            {
+                Console.Error.WriteLine(
+                    $"REFUSING: --scores-path '{flags.ScoresPath}' is a directory, not a file.");
+                throw new InvalidOperationException("--scores-path is a directory.");
+            }
+        }
+
         // Derived from --hits-path, NOT --config-label: the pool run's own sidecar sits beside the pool
         // run's own label, which may differ from this replay's --config-label (Phase 2's β arms carry
         // different labels against the same pool), and the identity check (Task 5) runs at the pool's
@@ -196,9 +229,11 @@ public sealed class BenchmarkAggregateScenario
             {
                 var chunks = group.Select(h => (h.ParentKey, h.Score));
                 // int.MaxValue, not DocumentBudget: spec section 6 differences score_beta - score_0 over
-                // the beta arm's top 50, and at parity beta ~35% of those documents fall outside the
+                // the beta arm's top 50, and a substantial share of those documents fall outside the
                 // beta=0 arm's own top 50 -- exactly the documents the tail term promoted. Truncating
                 // here would silently narrow that check to the intersection of the two top-50 sets.
+                // (The size of that share is a property of the corpus and the beta; it has not been
+                // measured, and no number belongs in this comment until it has been.)
                 scores.Add((group.Key, MaxPassageAggregator.Aggregate(chunks, keyMap, int.MaxValue, flags.Beta).Ranked));
             }
             await WriteScoresAsync(flags.ScoresPath, scores, ct);
