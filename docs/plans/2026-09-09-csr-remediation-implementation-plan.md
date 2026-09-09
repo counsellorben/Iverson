@@ -43,6 +43,8 @@ Project-wide rules every task must hold to. Values are verbatim from the spec.
 | Helm render | `helm template iverson Iverson.Server/deploy/helm/iverson -f <values-file>` | repo root |
 | Helm schema | `… \| kubeconform -kubernetes-version 1.30.0 -summary -ignore-missing-schemas` | repo root |
 
+**The `Category!=Integration` filter still requires a Docker daemon.** Only four classes carry `[Trait("Category", "Integration")]`, while 14 files construct containers, so ten container-constructing classes fall inside the "non-integration" run. The two filters do not partition the suite the way their names suggest. This is consistent on both sides of the baseline, so it does not invalidate it — but do not read a green "non-integration" run as evidence that no containers were needed.
+
 Testcontainers note: prefix integration runs with `TESTCONTAINERS_RYUK_DISABLED=true` if the environment inherits it; Ryuk is enabled as of 2026-09-02.
 
 ---
@@ -71,7 +73,7 @@ Testcontainers note: prefix integration runs with `TESTCONTAINERS_RYUK_DISABLED=
 - `Iverson.Clients/Python/iverson_client/core.py`, `TypeScript/src/core.ts` (T4)
 - `Iverson.Clients/Go/iverson/coordinator.go`, `Java/client/src/main/java/io/iverson/client/core/IversonClient.java`, `DotNet/Iverson.Client.Core/ServiceCollectionExtensions.cs` (T5)
 - `Iverson.Agents/Python/iverson_agent/session.py`, `retrieval.py` (T7)
-- `Iverson.AdminUI/docker-entrypoint.sh`, `nginx.conf` (T9)
+- `Iverson.AdminUI/docker-entrypoint.sh`, `nginx.conf`, `Dockerfile` (T9)
 - `.gitlab-ci.yml`, `.github/workflows/{codeql,deploy-validate}.yml`, four test `.csproj` (T11)
 
 **Test**
@@ -113,7 +115,7 @@ Newly introduced by this plan and verified at plan-write time.
 |---|---|---|---|
 | 1 | File path | All 29 modified paths exist exactly as cited | Bulk existence check: 29/29 `ok`, plus 6 values files, 4 test `.csproj`, 2 workflows |
 | 2 | File path | `DisabledEngagementStoreHealthCheck.cs` does not already exist | `ls` returned no such file |
-| 3 | Command | .NET non-integration filter | `[Trait("Category", "Integration")]` at `ObjectSearchVectorIntegrationTests.cs:53` → `--filter 'Category!=Integration'` |
+| 3 | Command | .NET non-integration filter exists, but **the trait does not partition the suite**: only 4 classes carry it while 14 files construct containers | `[Trait("Category", "Integration")]` at `ObjectSearchVectorIntegrationTests.cs:53`, `RegisterSchemaAuthorizationIntegrationTests.cs:198`, `PipelineIntegrationTests.cs:7`, `TenantIsolationIntegrationTests.cs:16` — four total; `Iverson.Sql.Tests` and `Iverson.Vector.Tests` have none |
 | 4 | Command | Both Python suites run bare `pytest` | `[tool.pytest.ini_options] testpaths = ["tests"]` in both `pyproject.toml` files |
 | 5 | Command | TS `npm test` = `typecheck && vitest run`; AdminUI = `vitest run` | `TypeScript/package.json:16`; `AdminUI/package.json:8` |
 | 6 | Command | Go = `go test ./...`; Java = Maven | `Go/go.mod` (module, go 1.25.0); `Java/client/pom.xml` present |
@@ -124,14 +126,14 @@ Newly introduced by this plan and verified at plan-write time.
 | 11 | Code validity | `IHttpMaxRequestBodySizeFeature` exists for `net10.0`; `RequestSizeLimitAttribute` does **not** (MVC-only) | `Microsoft.AspNetCore.App.Ref/10.0.12/ref/net10.0/Microsoft.AspNetCore.Http.Features.dll` |
 | 12 | Code validity | A subchart template can read `.Values.global.*` | `charts/admin-ui/templates/ingress.yaml:14,18` already reads `.Values.global.ingressHost` |
 | 13 | Code validity | Go TLS needs no new module — `credentials` is part of the existing grpc dependency | `Go/go.mod:6` — `google.golang.org/grpc v1.83.1` |
-| 14 | Code validity | The admin-ui image already has a runtime hook: `/docker-entrypoint.d/40-admin-ui-config.sh` | `Iverson.AdminUI/Dockerfile:25-26` — extend this, do not introduce `/etc/nginx/templates` |
+| 14 | Code validity | The admin-ui image has a runtime hook at `/docker-entrypoint.d/40-admin-ui-config.sh`, **but it cannot write the nginx config without a Dockerfile change** | Hook at `Iverson.AdminUI/Dockerfile:25-26`. `nginx.conf` has no template twin, and `Dockerfile:24` copies it root-owned under `USER root` while the container runs as uid 101 (`:27`) — so Task 9 must add placeholders to the file and `--chown=101:101` the COPY |
 | 15 | Code validity | GHSA-q939-rpr3-3284 (CVE-2026-48798) affects SSH.NET **`<= 2025.1.0`**; **first patched in `2026.0.0`** | GitHub advisory API: `vulnerable_version_range: <= 2025.1.0`, `first_patched_version: 2026.0.0` |
 | 16 | Code validity | Testcontainers `4.15.0` is the latest stable and depends on SSH.NET `2026.0.0`; `3.9.0` depends on `2023.0.0` | nuspec diff of both versions from the nuget flat container |
 | 17 | Code validity | Testcontainers `4.15.0` targets `net10.0` directly | nuspec `<group targetFramework>`: netstandard2.0/2.1, net8.0, net9.0, **net10.0** |
 | 18 | Consumer impact | The Testcontainers API surface in use is the modern fluent form 4.x preserved — no `TestcontainersBuilder<T>`, `INetwork` or endpoint-auth config | grep across `Iverson.Server/`: `ContainerBuilder` ×7, `IContainer` ×7, `PostgreSqlBuilder`/`Container` ×6, `KafkaBuilder`/`Container` ×1 |
 | 19 | File path | Six `Testcontainers*` `PackageReference` lines across the four test projects | `Iverson.Api.Tests.csproj:23,24,25`; `Iverson.Sql.Tests.csproj:22`; `Iverson.StarRocks.Tests.csproj:18`; `Iverson.Vector.Tests.csproj:23` |
 | 20 | Consumer impact | **`oidcAuthority` lives in SIX places, not the four the spec named** — also `values-local.yaml:142` and the subchart default `charts/admin-ui/values.yaml:13` | `grep -rn oidcAuthority` across the chart |
-| 21 | Consumer impact | Python: the agent already passes `use_tls=tls` explicitly; **seven test call sites rely on the default** | `__main__.py:72,75` explicit; `test_auth.py:148,191,220,250,266`, `test_conformance_driver.py:122` implicit |
+| 21 | Consumer impact | Python: the agent already passes `use_tls=tls` explicitly; **seven test call sites rely on the default** | `__main__.py:72,75` explicit; `test_auth.py:29,148,191,220,250,266`, `test_conformance_driver.py:122` implicit. `:29` monkeypatches `grpc.secure_channel` and asserts only the dialled address, so it passes under either default |
 | 22 | Consumer impact | TS: 12 non-generated call sites; some pass `false` explicitly (`sample/main.ts:22`, `conformance/driver.ts:356`), others rely on the default | grep of `new IversonClient(` |
 | 23 | Consumer impact | Go: the default applies only when `opts` is empty; both conformance sites pass `WithInsecure()` explicitly | `coordinator.go:79-83`; `conformance/main.go:462,741` |
 | 24 | Consumer impact | .NET: two `AddIversonClient` callers | `DotNet/Iverson.Client.Sample/Program.cs:34`; `Iverson.LoadTest/Program.cs:127` |
@@ -139,6 +141,11 @@ Newly introduced by this plan and verified at plan-write time.
 | 26 | Ordering | T9 consumes `global.externalScheme` (T2); T3's flag governs redirect URIs in T2's file — both forward, no cycle | Spec §3 Tasks 2, 3, 9 |
 | 27 | Ordering | T8's new disabled health check is referenced by no other task | Only `Program.cs` T8 step registers it |
 | 28 | Cross-cutting | `docs/plans/` is **gitignored** (`.gitignore:49`) yet 60 plans are tracked → commit needs `git add -f` | `git check-ignore -v` on the plan path |
+| 29 | Consumer impact | **Java**: exactly one caller of the `(host, port, …)` constructors outside the client's own tests — `Java/sample/.../Main.java:50`, against `localhost:5000` | Conformance `Driver.java:170,637` and both Java test classes use the `(channel, …)` constructors and are unaffected |
+| 30 | Code validity | `helm template` resolves subcharts from `charts/<name>/`, not the stale committed `charts/*.tgz` beside them | Verified empirically both ways: the directory wins, and the render also succeeds with every `.tgz` removed |
+| 31 | Consumer impact | `ServiceCollectionExtensionsTests.cs:27,46` survive Task 8's registration swap | Both exercise the `engagementEnabled: true` default, so both still resolve `EngagementHealthChecker` |
+| 32 | Consumer impact | Task 3's gating leaves no dangling `!Find` from an ungated blueprint entry to a gated one | Enumerated every `!Find` in `blueprints-configmap-service-clients.yaml`; none crosses the gate boundary |
+| 33 | Command | The local toolchain the "no CI" constraint depends on is present | `helm 3.16.4`, `kubeconform`, `kubectl`, `docker`, `dotnet 10.0.112` all available |
 
 **Deferred to task time** (need a live service, per spec §5): whether StarRocks requires `AllowPublicKeyRetrieval` (T8); the Authentik pagination envelope (T10); whether Authentik already emits `Access-Control-Allow-Origin` (T2); whether StarRocks *executes* the HAVING reference (T6 — severity only, the fix is identical either way).
 
@@ -300,7 +307,7 @@ git commit -m "gate test identities and legacy tenant seeding behind an explicit
 
 - [ ] **Step 2: Flip the Python default** to `use_tls: bool = True`. It is the third positional parameter, so callers passing it positionally are unaffected.
 
-- [ ] **Step 3: Update the seven Python call sites that rely on the default.** `test_auth.py:148,191,220,250,266` and `test_conformance_driver.py:122` construct clients with no `use_tls`; add explicit `use_tls=False` wherever the test intends plaintext. `iverson_agent/__main__.py:72,75` already pass `use_tls=tls` and need no change.
+- [ ] **Step 3: Update the seven Python call sites that rely on the default.** `test_auth.py:29,148,191,220,250,266` and `test_conformance_driver.py:122` construct clients with no `use_tls`; add explicit `use_tls=False` wherever the test intends plaintext. `iverson_agent/__main__.py:72,75` already pass `use_tls=tls` and need no change.
 
 - [ ] **Step 4: Flip the TypeScript default** to `useTls: boolean = true` and update the call sites that relied on the old default (`tests/schema-registrar.test.ts:772`, `tests/core.test.ts:128`, and any of the 12 non-generated sites not already passing `false`). `sample/main.ts:22` and `conformance/driver.ts:356` already pass `false` explicitly.
 
@@ -321,6 +328,7 @@ git commit -m "default the python and typescript clients to tls"
 - Modify: `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/IversonClient.java:46-78`
 - Modify: `Iverson.Clients/DotNet/Iverson.Client.Core/ServiceCollectionExtensions.cs:87-99`
 - Modify: `Iverson.Clients/DotNet/Iverson.Client.Sample/Program.cs:34`, `Iverson.Server/Iverson.LoadTest/Program.cs:127`
+- Modify: `Iverson.Clients/Java/sample/src/main/java/io/iverson/sample/Main.java:50`
 
 - [ ] **Step 1: Go — default to TLS when no dial options are supplied.** `coordinator.go:81` currently falls back to `grpc.WithInsecure()` when `opts` is empty; make the fallback `grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{}))`. `credentials` ships with the existing `google.golang.org/grpc v1.83.1`; no new module. Both conformance sites already pass `WithInsecure()` explicitly and are unaffected.
 
@@ -330,9 +338,11 @@ git commit -m "default the python and typescript clients to tls"
 
 - [ ] **Step 4: Update the two `AddIversonClient` callers** — `DotNet/Iverson.Client.Sample/Program.cs:34` and `Iverson.Server/Iverson.LoadTest/Program.cs:127` — to pass the plaintext opt-in, since both target local h2c endpoints.
 
-- [ ] **Step 5: Run the three suites.** `go test ./...`; `mvn test`; `dotnet test Iverson.slnx --filter 'Category!=Integration'`.
+- [ ] **Step 5: Retarget the Java sample.** `Java/sample/src/main/java/io/iverson/sample/Main.java:50` calls the `(host, port, CallCredentials, String)` constructor against `"localhost", 5000` — a plaintext h2c dev endpoint — so after Step 2 it builds a TLS channel there and every RPC fails `UNAVAILABLE`. Point it at the named plaintext factory Step 2 introduces. **The gate will not catch this**: `Java/pom.xml:17-19` puts `sample` in the reactor so `mvn test` compiles it, but the constructor signature is unchanged (only its behaviour), so compilation succeeds and no test exercises `Main`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Run the three suites.** `go test ./...`; `mvn test`; `dotnet test Iverson.slnx --filter 'Category!=Integration'`.
+
+- [ ] **Step 7: Commit**
 ```bash
 git add Iverson.Clients/Go Iverson.Clients/Java Iverson.Clients/DotNet Iverson.Server/Iverson.LoadTest/Program.cs
 git commit -m "default the go, java and dotnet clients to tls"
@@ -348,7 +358,7 @@ git commit -m "default the go, java and dotnet clients to tls"
 
 - [ ] **Step 1: Rewrite the three pinned tests and add negative tests (TDD).**
   - `BuildGroupBy_HavingPropertyWithBacktick_EscapesEmbeddedBacktick` (`:2064`) passes `Property = "evil\`alias"` and asserts escaping. That property is neither an alias nor a column, so it must now be **rejected**; rewrite the assertion accordingly. `EscapeIdentifier` becomes defence-in-depth rather than the primary control.
-  - `BuildHaving_PrefixOverload_UsesPrefix` (`:2619`) calls the four-argument overload — update for the new signature.
+  - `BuildHaving_PrefixOverload_UsesPrefix` (`:2631`) passes the optional fourth argument `paramPrefix` — update for the new signature. (There is no separate four-argument overload: `BuildHaving` is a single method whose fourth parameter, `paramPrefix = "h"`, is optional.)
   - `BuildHaving_VectorSimilarClause_ThrowsInvalidArgument` (`:2659`) calls the three-argument form. Its `VectorClause()` sets `Property = "Name"`, which is neither an alias nor an authorized column in that fixture, so the rewrite must pin that the `VectorSimilar` guard at `:617-620` still fires **ahead of** the new validation at `:622`.
   - Add negative tests mirroring the existing GROUP BY / ORDER BY authorization tests, so all four clause families stay in lockstep.
 
@@ -357,7 +367,9 @@ git commit -m "default the go, java and dotnet clients to tls"
 - [ ] **Step 3: Pass the alias sets at both call sites.** They differ and must be explicit, not inferred:
   - `BuildAggregate` (`:262`) — the fixed set `{bucket_key, doc_count, metric_val}`
   - `BuildGroupBy` (`:380`) — `request.Metrics.Select(m => m.Name)` plus the GROUP BY key columns (already authorized)
-  - `StarRocksPipelineBuilder` (`:518`) already pre-validates via `RequireColumn` against `metricAliases` — leave it unchanged.
+  - `StarRocksPipelineBuilder` (`:518-519`) — **pass the `metricAliases` it already computes** (built at `:203`, used by `RequireColumn` at `:205`) plus its column resolver.
+
+  **All three call sites are updated; the new parameters are required.** `BuildHaving` is one method with an optional fourth parameter, not two overloads, so there is no way to change it for two callers and leave the third alone: required parameters break `StarRocksPipelineBuilder`'s compile (and `Iverson.StarRocks` with it, so Step 4 never runs), while defaulted parameters would let that path keep compiling with the new authorization gate silently skipped. Updating all three also means no HAVING path reaches the builder ungated — the pipeline's existing `RequireColumn` pre-validation becomes redundant defence rather than the only gate on that route.
 
 - [ ] **Step 4: Run the .NET suite.** `dotnet test Iverson.slnx --filter 'Category!=Integration'`
 
@@ -443,20 +455,27 @@ git commit -m "fail closed on missing connection strings and stop shipping dev c
 ### Task 9: Security headers
 
 **Files:**
-- Modify: `Iverson.AdminUI/nginx.conf`, `Iverson.AdminUI/docker-entrypoint.sh`
+- Modify: `Iverson.AdminUI/nginx.conf`, `Iverson.AdminUI/docker-entrypoint.sh`, `Iverson.AdminUI/Dockerfile:24`
 - Modify: `charts/admin-ui/templates/deployment.yaml`, `charts/admin-ui/templates/ingress.yaml`
 - Modify: `charts/api/templates/ingress.yaml`
 
 **Interfaces:**
 - Consumes: `global.externalScheme` (Task 2).
 
-- [ ] **Step 1: Add the header block to `nginx.conf`** — `X-Frame-Options: DENY`, CSP `frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a `Content-Security-Policy` of `default-src 'self'` plus `connect-src 'self' ${OIDC_AUTHORITY}`, and `Strict-Transport-Security` emitted only when the scheme is `https`. Check whether the Vite build emits inline styles requiring `style-src 'self' 'unsafe-inline'`.
+- [ ] **Step 1: Add the header block to `nginx.conf`** — `X-Frame-Options: DENY`, CSP `frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a `Content-Security-Policy` of `default-src 'self'` plus `connect-src 'self' ${OIDC_ORIGIN}`, and `Strict-Transport-Security` emitted only when the scheme is `https`. Check whether the Vite build emits inline styles requiring `style-src 'self' 'unsafe-inline'`.
 
-- [ ] **Step 2: Substitute the two parameters at container start.** Helm cannot reach `nginx.conf` — it is `COPY`'d into the image at build time and no ConfigMap is mounted over it. Extend the **existing** hook `Iverson.AdminUI/docker-entrypoint.sh` (already installed as `/docker-entrypoint.d/40-admin-ui-config.sh`) to `envsubst` `${OIDC_AUTHORITY}` and a new `${EXTERNAL_SCHEME}` into the nginx config, exactly as it already does for `config.js`. Do not introduce a second mechanism.
+  **`connect-src` takes an ORIGIN, not the authority URL.** A CSP source expression carrying a path is a *path restriction*: `${OIDC_AUTHORITY}` is `<scheme>://authentik.<ingressHost>/application/o/iverson-api/`, so using it verbatim would permit only requests under that path. Authentik's token endpoint is `/application/o/token/` — a **sibling** of `/application/o/iverson-api/`, not a child — so discovery would succeed while the authorization-code exchange was blocked, and login would fail in *every* environment, not just the cloud ones. Use the scheme-and-host origin only.
+
+- [ ] **Step 2: Substitute the two parameters at container start.** Helm cannot reach `nginx.conf` — it is `COPY`'d into the image at build time and no ConfigMap is mounted over it. Extend the **existing** hook `Iverson.AdminUI/docker-entrypoint.sh` (already installed as `/docker-entrypoint.d/40-admin-ui-config.sh`) to `envsubst` `${OIDC_ORIGIN}` and a new `${EXTERNAL_SCHEME}` into the nginx config.
+
+  **Two image-level changes are required first, and neither is optional.** The `config.js` flow works because Vite emits a `config.js.template` *source* alongside its destination, both under a directory `Dockerfile:19-20` chowns to uid 101. The nginx config has neither property:
+
+  1. **`nginx.conf` is not a template.** Add the `${OIDC_ORIGIN}` / `${EXTERNAL_SCHEME}` placeholders to the file itself and have the hook `envsubst` it **in place** — one file, one server block. Do not add `/etc/nginx/templates/`: a second rendered file in `conf.d/` alongside the shipped `default.conf` would leave two server blocks both binding `:8080`.
+  2. **uid 101 cannot currently write it.** `Dockerfile:24` runs `COPY … /etc/nginx/conf.d/default.conf` under `USER root` with no `--chown`, so the file lands root-owned while the container runs as uid 101 (`Dockerfile:27`; the pod also pins `runAsUser: 101` at `charts/admin-ui/templates/deployment.yaml:34-35`). An in-place write fails EACCES, and since `docker-entrypoint.sh:2` is `set -eu` and the base entrypoint runs `/docker-entrypoint.d/*.sh` under `set -e`, that aborts startup and the pod crash-loops before nginx binds — the same failure the Dockerfile's own comment at `:10-17` records for `/usr/share/nginx/html`. Make the COPY `--chown=101:101`, or add a `RUN chown 101:101` mirroring `Dockerfile:20`.
 
   The authority is a **different origin** from the console (`authentik.<ingressHost>` vs `<ingressHost>`) and the OIDC flow calls it cross-origin for discovery, token exchange and JWKS — a CSP that cannot name it breaks login everywhere but the environment the image was built for.
 
-- [ ] **Step 3: Wire `EXTERNAL_SCHEME`** into `charts/admin-ui/templates/deployment.yaml` from `{{ .Values.global.externalScheme }}`.
+- [ ] **Step 3: Wire `EXTERNAL_SCHEME` and `OIDC_ORIGIN`** into `charts/admin-ui/templates/deployment.yaml`, from `{{ .Values.global.externalScheme }}` and `"{{ .Values.global.externalScheme }}://authentik.{{ .Values.global.ingressHost }}"` respectively. The origin is composed in the chart from the same two values that already build `OIDC_AUTHORITY` in Task 2, so no URL parsing happens in shell.
 
 - [ ] **Step 4: Add the per-controller Ingress annotations.** There is no portable response-header annotation, so each class gets its own answer:
 
@@ -475,7 +494,7 @@ git commit -m "fail closed on missing connection strings and stop shipping dev c
 
 - [ ] **Step 7: Commit**
 ```bash
-git add Iverson.AdminUI/nginx.conf Iverson.AdminUI/docker-entrypoint.sh \
+git add Iverson.AdminUI/nginx.conf Iverson.AdminUI/docker-entrypoint.sh Iverson.AdminUI/Dockerfile \
         Iverson.Server/deploy/helm/iverson/charts/admin-ui/templates \
         Iverson.Server/deploy/helm/iverson/charts/api/templates/ingress.yaml
 git commit -m "serve security headers from the admin ui and mirror them per ingress controller"
@@ -531,11 +550,13 @@ Iverson.Vector.Tests.csproj:23   Testcontainers
 
   No direct `SSH.NET` `PackageReference` is added; the transitive resolution does the work.
 
-- [ ] **Step 2: Confirm the advisory is cleared and nothing broke.** `dotnet list Iverson.slnx package --vulnerable --include-transitive` must report no vulnerable packages in any project, and the full .NET suite must pass — **including the integration tests**, which are the ones that actually construct containers and so are the only place a 4.x behavioural change surfaces. Run them explicitly rather than relying on the `Category!=Integration` filter used elsewhere in this plan:
+- [ ] **Step 2: Confirm the advisory is cleared and nothing broke.** `dotnet list Iverson.slnx package --vulnerable --include-transitive` must report no vulnerable packages in any project, and the **whole solution unfiltered** must pass — the container-constructing tests are the only place a 4.x behavioural change surfaces, and they are spread across traited and untraited classes alike:
 
 ```bash
-TESTCONTAINERS_RYUK_DISABLED=true dotnet test Iverson.slnx --filter 'Category=Integration'
+TESTCONTAINERS_RYUK_DISABLED=true dotnet test Iverson.slnx
 ```
+
+  **Do not narrow this with `--filter 'Category=Integration'`.** Only four classes repo-wide carry `[Trait("Category", "Integration")]`, while 14 files construct containers — and `Iverson.Sql.Tests` and `Iverson.Vector.Tests`, two of the four projects this step upgrades, have **none**. That filter would run nothing in them, so the Postgres and Qdrant container paths would never be exercised on 4.15.0. If a narrower run is wanted for iteration speed, target the four projects by path instead.
 
   The known local fragility is container contention from per-class `IClassFixture` containers; treat a failure there as a fixture issue to investigate, not automatically as a 4.x incompatibility.
 
