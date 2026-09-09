@@ -21,6 +21,7 @@ Copied from the spec. Every task holds to these.
 - **The new aggregator must be a NEW function, not a modification of `CollapseByDocId`** (spec §3 item 1). `CollapseByDocId` is shared with the `SearchSimilar` same-`DocId` dedup path (`BenchmarkQueryScenario.cs:383`); changing it would silently alter `SearchSimilar` run files, which have no chunks and no tail.
 - **Existing outputs must stay byte-unchanged.** `<label>.chunks.trec`, `<label>.similar.trec`, `<label>.meta.json` and `<label>.chunks.diversity.json` must be identical to what today's harness writes, or Phase 2 and every prior run stop being comparable.
 - **Chunk-budget multiplier is 11** on every arm (spec §7, B18) — not the harness default of 5.
+- **`LambdaChunks` = 1.00** on the pool run (spec §4:139 — "the primary arms run at `LambdaChunks` = 1.00, MMR off, the unconfounded test"). The shipped default is 0.70 (`docker-compose.yml:446`), and at 0.70 MMR *re-selects* the pool rather than re-ordering it (`ObjectSearchGrpcService.cs:543`, `:577`), evicting a document's own 2nd–4th chunks — the exact quantity Phase 1 measures. Getting this wrong does not fail loudly; it returns a plausibly shallow histogram.
 
 ## File Structure
 
@@ -87,6 +88,9 @@ Newly introduced by this plan and verified at plan-write time (2026-09-09).
 | P18 | Sibling sweep (flags) | `--config-label`, `--output-dir`, `--key-map-path` exist with those exact spellings; `--beta` and `--hits-path` do not exist | `grep -oE '"--[a-z-]+"' Program.cs` — full flag set enumerated, no collision |
 | P19 | Sibling sweep (file naming) | The `{ConfigLabel}.{suffix}` convention holds for `.meta.json`, `.similar.trec`, `.chunks.trec`, `.chunks.diversity.json`, so `.chunks.hits.tsv` fits it | `BenchmarkQueryScenario.cs:222`, `:289`, `:290`, `:313` |
 | P20 | File path / command | Task 5's restore targets exist and the counts it checks are the recorded ones: `freshstack-2048-qdrant-snapshots/` holds both `.snapshot` files, its own `RESTORE.md` points at `../scifact-512-qdrant-snapshots/RESTORE.md` for the loop and at `../freshstack-2048-2026-09-07/keymap.json` for the key map | `ls` of the snapshot dir; `RESTORE.md:1-4`; `keymap.json.stats.json` records `documents: 6000`, `chunks: 18622` |
+| P21 | Consumer impact | The pool run's `LambdaChunks` must be 1.00, and nothing in the harness records or checks it | Spec `:139` requires 1.00; `docker-compose.yml:446` defaults to 0.70; `.meta.json` records `chunkBudgetMultiplier` but no λ (`BenchmarkQueryScenario.cs:204-220`) — hence the explicit verification in Task 5 Step 2a |
+| P22 | Code validity | The dump's score column must round-trip exactly, or the β = 0 identity check fails on near-ties | Scores are `float32` (`ObjectSearchGrpcService.cs:589`), ULP ≈ 6×10⁻⁸ near 0.7; on `fs-2048-l100.chunks.trec` 153 adjacent pairs share an `F6` value, 20 of them between unrelated documents — distinct values, not exact ties |
+| P23 | Signature | `DocumentBudget` is `private const` on `BenchmarkQueryScenario` and not reachable from a second scenario | `BenchmarkQueryScenario.cs:42` — `private const int DocumentBudget = 50;`. Task 3 declares its own, with the β = 0 identity check as the drift detector |
 
 ## Tasks
 
@@ -94,10 +98,12 @@ Newly introduced by this plan and verified at plan-write time (2026-09-09).
 
 **Files:**
 - Modify: `Iverson.Server/Iverson.LoadTest/Benchmark/DocumentRanking.cs`
+- Modify: `Iverson.Server/Iverson.LoadTest/Benchmark/MaxPassageAggregator.cs`
 - Test: `Iverson.Server/Iverson.LoadTest.Tests/Benchmark/DocumentRankingTests.cs`
+- Test: `Iverson.Server/Iverson.LoadTest.Tests/Benchmark/MaxPassageAggregatorTests.cs`
 
 **Interfaces:**
-- Produces: `DocumentRanking.CollapseByDocIdWithTail(scored, limit, beta)` — consumed by Task 3.
+- Produces: `DocumentRanking.CollapseByDocIdWithTail(scored, limit, beta)` and `MaxPassageAggregator.Aggregate(chunks, keyMap, limit, beta)` — both consumed by Task 3.
 
 - [ ] **Step 1: Write the failing tests** in `DocumentRankingTests.cs`, alongside the existing 8. Cover, at minimum: a document with 5 chunks sums only its 2nd–4th (cap at 3); a document with 2 chunks sums only its 2nd; a single-chunk document scores exactly its max at every β; ordering is by the augmented score, not the max; `limit` truncates after collapsing, not before; and **`beta == 0` returns a result equal to `CollapseByDocId`'s on the same input**.
 
@@ -141,11 +147,23 @@ public static IReadOnlyList<(string DocId, double Score)> CollapseByDocIdWithTai
 }
 ```
 
-- [ ] **Step 3: Run the tests.** `dotnet test Iverson.Server/Iverson.LoadTest.Tests/Iverson.LoadTest.Tests.csproj`
+- [ ] **Step 3: Add a β-aware overload to `MaxPassageAggregator`**, so the offline scenario gets key-map resolution and unresolved-parent handling without duplicating either:
 
-- [ ] **Step 4: Commit**
+```csharp
+public static ChunkAggregation Aggregate(
+    IEnumerable<(string ParentKey, double Score)> chunks,
+    IReadOnlyDictionary<string, string> keyMap,
+    int limit,
+    double beta)
+```
+
+It resolves exactly as the existing overload does, then calls `DocumentRanking.CollapseByDocIdWithTail(resolved, limit, beta)`. **The existing 2-tuple overload delegates to it at `beta: 0`**, so there is one resolution rule and one unresolved-parent rule; `CollapseByDocId` is untouched, and the β = 0 path still reaches it structurally through Step 2's short-circuit. Add a test asserting the 3-arg overload and the 4-arg overload at `beta: 0` return equal results on the same input.
+
+- [ ] **Step 4: Run the tests.** `dotnet test Iverson.Server/Iverson.LoadTest.Tests/Iverson.LoadTest.Tests.csproj`
+
+- [ ] **Step 5: Commit**
 ```bash
-git add Iverson.Server/Iverson.LoadTest/Benchmark/DocumentRanking.cs Iverson.Server/Iverson.LoadTest.Tests/Benchmark/DocumentRankingTests.cs
+git add Iverson.Server/Iverson.LoadTest/Benchmark/DocumentRanking.cs Iverson.Server/Iverson.LoadTest/Benchmark/MaxPassageAggregator.cs Iverson.Server/Iverson.LoadTest.Tests/Benchmark/DocumentRankingTests.cs Iverson.Server/Iverson.LoadTest.Tests/Benchmark/MaxPassageAggregatorTests.cs
 git commit -m "add a tail-sum collapse beside max-passage, bit-identical at beta 0"
 ```
 
@@ -160,7 +178,7 @@ git commit -m "add a tail-sum collapse beside max-passage, bit-identical at beta
 - Consumes: the per-query `List<(string ParentKey, double Score, string Text)>` at `BenchmarkQueryScenario.cs:396`.
 - Produces: `<label>.chunks.hits.tsv` — consumed by Tasks 3, 4 and 5.
 
-- [ ] **Step 1: Write the failing tests.** The writer emits a header row `queryId\tparentKey\trank\tscore`; ranks are 1-based and per query; rows preserve the order they were supplied in; scores are formatted `F6` with `CultureInfo.InvariantCulture` (matching `TrecRunWriter.cs:31`); an empty hit list yields a header-only file.
+- [ ] **Step 1: Write the failing tests.** The writer emits a header row `queryId\tparentKey\trank\tscore`; ranks are 1-based and per query; rows preserve the order they were supplied in; scores are written **round-trip, not display-formatted** — `score.ToString(CultureInfo.InvariantCulture)`, which is shortest-round-trippable on .NET Core 3.0+ (`"R"` or `"G17"` also work), and exact here because the value originates as a widened `float32`; an empty hit list yields a header-only file. **Do not use `F6`.** The dump is machine-read intermediate state, not a scored artefact, so it has no reason to share `TrecRunWriter`'s display precision — and `F6` would collapse genuinely distinct near-tied scores into exact ties, whose order then falls back to insertion and breaks the β = 0 byte identity for reasons unrelated to the aggregator.
 
 - [ ] **Step 2: Write `ChunkHitDumpWriter`**, mirroring `TrecRunWriter`'s shape — a static class with `WriteAsync(string path, IEnumerable<(string QueryId, IReadOnlyList<(string ParentKey, double Score)> Hits)>, CancellationToken)`. Create the directory if absent, as `TrecRunWriter` does.
 
@@ -184,7 +202,7 @@ git commit -m "dump raw chunk hits per query so beta can be replayed offline"
 - Consumes: `CollapseByDocIdWithTail` (Task 1); `<label>.chunks.hits.tsv` (Task 2).
 - Produces: `<label>.chunks.trec` and `<label>.meta.json` in `--output-dir` — consumed by Task 5's identity check and by Phase 2.
 
-- [ ] **Step 1: Add the flags and the helper to `Program.cs`.** `--beta` (default `0`) and `--hits-path` (default `""`) on `CommandFlags`. `StrFlag`/`IntFlag` exist but no `double` helper does (P9), so add:
+- [ ] **Step 1: Add the flags and the helper to `Program.cs`.** `--beta` (default `0`) and `--hits-path` (default `""`) on `CommandFlags`. `StrFlag`/`IntFlag` exist but no `double` helper does (P9). Add `using System.Globalization;` to `Program.cs`'s using block — it is **not** an implicit using for a console `net10.0` project and the snippet below does not compile without it — and put the helper **on `CommandFlags`, beside `StrFlag` and `IntFlag`**, which are `private static` there and unreachable from elsewhere:
 
 ```csharp
 static double DblFlag(string[] args, string name, double fallback)
@@ -202,7 +220,13 @@ static double DblFlag(string[] args, string name, double fallback)
 
 - [ ] **Step 3: Add the dispatch case and help text**, beside `benchmark-query`.
 
-- [ ] **Step 4: Write `BenchmarkAggregateScenario`.** It reads the hits TSV and `keymap.json`, groups hits by `QueryId`, resolves each `ParentKey` through the key map — **reusing `MaxPassageAggregator`'s resolution and unresolved-parent handling rather than reimplementing it** (spec §3 item 3) — applies `CollapseByDocIdWithTail(resolved, DocumentBudget, beta)` per query, and writes the run file through `TrecRunWriter.WriteAsync` with `--config-label` as the run tag.
+- [ ] **Step 4: Write `BenchmarkAggregateScenario`.** It reads the hits TSV and `keymap.json`, groups hits by `QueryId`, and calls `MaxPassageAggregator.Aggregate(hits, keyMap, DocumentBudget, beta)` — the β-aware overload Task 1 adds — so key-map resolution and unresolved-parent handling have exactly one implementation. It then writes the run file through `TrecRunWriter.WriteAsync` with `--config-label` as the run tag.
+
+  **Truncation limit:** declare `private const int DocumentBudget = 50;` on `BenchmarkAggregateScenario`, matching `BenchmarkQueryScenario.cs:42` — that one is `private const` and not reachable from here. The duplication is deliberate and self-checking: if the two drift, the β = 0 identity check in Task 5 Step 3 fails, because a different truncation limit produces a different run file.
+
+  **Guards:** refuse an empty `--key-map-path` or `--hits-path` up front with a clear message, matching the `benchmark-query` guards at `BenchmarkQueryScenario.cs:62-81`. Both default to `""` (`Program.cs:418`) and `KeyMap.LoadAsync` has no emptiness guard (`KeyMap.cs:23-27`), so an omitted flag currently surfaces as a bare file-not-found rather than the missing argument it is.
+
+  **Row order is load-bearing and must be preserved end to end.** Read the hits in file order; group with LINQ `GroupBy`, which preserves both key first-appearance order and within-group element order; **do not sort at any point**; emit queries in the dump's first-appearance order, not sorted `QueryId` order. Exact score ties break by insertion order inside `CollapseByDocId`'s dictionary (`DocumentRanking.cs:32-44`), so the in-run tie order *is* the Qdrant stream order — any reordering here fails the β = 0 byte identity while looking like an aggregator defect. Add a test asserting that two documents with **equal** scores appear in the output in the order their hits appeared in the dump, so this constraint is falsifiable before Task 5 depends on it.
 
   **Sidecar:** copy `composite` from the pool run's sidecar, located by **deriving from `--hits-path`** (replace the `.chunks.hits.tsv` suffix with `.meta.json`), not from `--config-label`. That derivation is what makes both callers work: the identity check runs at the pool's own label in a different directory, while Phase 2's β arms carry different labels against the same pool. Record the aggregator's own build under a separate key; `report.py` reads only `composite` (`:184-202`), so the second key is documentation, not an enforced check.
 
@@ -250,9 +274,11 @@ git commit -m "add tail_stats.py: in-pool tail depth and the tail-score level s"
 
 - [ ] **Step 1: Restore FreshStack-2048.** Use the curl upload loop in `~/repositories/iverson-benchmark-corpora/scifact-512-qdrant-snapshots/RESTORE.md` against `freshstack-2048-qdrant-snapshots/`. **Verify 6,000 object and 18,622 chunk points before running anything** — a short restore silently understates every measure.
 
-- [ ] **Step 2: Run the pool query run** at `--chunk-budget-multiplier 11` (Global Constraints — the default of 5 is wrong for this arm, and `ChunkBudgetGuard` exists to catch that class of error), with `--config-label fs2048-pool` and `--key-map-path` pointing at `freshstack-2048-2026-09-07/keymap.json`.
+- [ ] **Step 2a: Set λ and restart the API.** `VECTOR_RANKING_LAMBDA_CHUNKS=1.00 docker compose up -d --no-deps iverson-api` (the restart form `docker-compose.yml:444` documents). **Then verify it took effect** — `docker compose exec iverson-api env | grep VectorRanking__LambdaChunks` must print `1.00`. The harness cannot observe the server's λ and `.meta.json` does not record it, so a silent restart failure is indistinguishable from success and would invalidate the run without any visible error.
 
-- [ ] **Step 3: Run the β = 0 identity check.** `benchmark-aggregate --beta 0 --hits-path <pool dir>/fs2048-pool.chunks.hits.tsv --config-label fs2048-pool --output-dir <a DIFFERENT directory>`, then require byte identity against the in-run file:
+- [ ] **Step 2b: Run the pool query run** at `--chunk-budget-multiplier 11` (Global Constraints — the default of 5 is wrong for this arm, and `ChunkBudgetGuard` exists to catch that class of error), with `--config-label fs2048-pool` and `--key-map-path` pointing at `freshstack-2048-2026-09-07/keymap.json`.
+
+- [ ] **Step 3: Run the β = 0 identity check.** `benchmark-aggregate --beta 0 --hits-path <pool dir>/fs2048-pool.chunks.hits.tsv --key-map-path <corpus>/freshstack-2048-2026-09-07/keymap.json --config-label fs2048-pool --output-dir <a DIFFERENT directory>`, then require byte identity against the in-run file. The key map must be **the same one Step 2b used** — a different key map resolves parents differently, silently changing the run file and failing the diff for a reason that has nothing to do with the aggregator:
 
 ```bash
 diff <pool-dir>/fs2048-pool.chunks.trec <check-dir>/fs2048-pool.chunks.trec && echo "IDENTITY OK"
