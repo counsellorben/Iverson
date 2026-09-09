@@ -27,13 +27,14 @@ Project-wide rules every task must hold to. Values are verbatim from the spec.
 ### Pre-flight (before Task 1)
 
 - [ ] Create the worktree, then immediately run `git merge main --ff-only` inside it. Worktrees branch from `origin/main`, and `main` carries unpushed commits; skipping this loses them.
-- [ ] Establish the suite baseline on `main` (see "Suite commands" below) and record it, so a pre-existing failure is not misattributed to this work.
+- [ ] Establish the suite baseline on `main` (see "Suite commands" below) and record it, so a pre-existing failure is not misattributed to this work. **Record both .NET rows** — the filtered run *and* the unfiltered `TESTCONTAINERS_RYUK_DISABLED=true dotnet test Iverson.slnx` — because Task 11 Step 2 gates on the unfiltered one, and the four traited classes have no baseline otherwise.
 
 ### Suite commands (verified — see assumptions C1–C8)
 
 | Suite | Command | Working directory |
 |---|---|---|
 | .NET (non-integration) | `dotnet test Iverson.slnx --filter 'Category!=Integration'` | repo root |
+| .NET (whole solution) | `TESTCONTAINERS_RYUK_DISABLED=true dotnet test Iverson.slnx` | repo root |
 | Python agent | `pytest` | `Iverson.Agents/Python` |
 | Python client | `pytest` | `Iverson.Clients/Python` |
 | TypeScript client | `npm test` (runs `typecheck && vitest run`) | `Iverson.Clients/TypeScript` |
@@ -43,7 +44,7 @@ Project-wide rules every task must hold to. Values are verbatim from the spec.
 | Helm render | `helm template iverson Iverson.Server/deploy/helm/iverson -f <values-file>` | repo root |
 | Helm schema | `… \| kubeconform -kubernetes-version 1.30.0 -summary -ignore-missing-schemas` | repo root |
 
-**The `Category!=Integration` filter still requires a Docker daemon.** Only four classes carry `[Trait("Category", "Integration")]`, while 14 files construct containers, so ten container-constructing classes fall inside the "non-integration" run. The two filters do not partition the suite the way their names suggest. This is consistent on both sides of the baseline, so it does not invalidate it — but do not read a green "non-integration" run as evidence that no containers were needed.
+**The `Category!=Integration` filter still requires a Docker daemon.** Only four classes carry `[Trait("Category", "Integration")]`, while 12 files construct containers — and only two of those twelve are traited — so ten container-constructing classes fall inside the "non-integration" run. The two filters do not partition the suite the way their names suggest. This is consistent on both sides of the baseline, so it does not invalidate it — but do not read a green "non-integration" run as evidence that no containers were needed.
 
 Testcontainers note: prefix integration runs with `TESTCONTAINERS_RYUK_DISABLED=true` if the environment inherits it; Ryuk is enabled as of 2026-09-02.
 
@@ -113,9 +114,9 @@ Newly introduced by this plan and verified at plan-write time.
 
 | # | Category | Assumption | Evidence |
 |---|---|---|---|
-| 1 | File path | All 29 modified paths exist exactly as cited | Bulk existence check: 29/29 `ok`, plus 6 values files, 4 test `.csproj`, 2 workflows |
+| 1 | File path | All 32 modified paths exist exactly as cited — but `Iverson.Server/Iverson.Api/appsettings.Development.json` exists **only as an untracked, gitignored file**, which Task 8 Step 1 now un-ignores and commits | Bulk existence check: 32/32 `ok`, plus 6 values files, 4 test `.csproj`, 2 workflows; `git ls-files Iverson.Server/Iverson.Api/` returns only `appsettings.json`, and `git check-ignore -v` → `.gitignore:54:appsettings.*.json` |
 | 2 | File path | `DisabledEngagementStoreHealthCheck.cs` does not already exist | `ls` returned no such file |
-| 3 | Command | .NET non-integration filter exists, but **the trait does not partition the suite**: only 4 classes carry it while 14 files construct containers | `[Trait("Category", "Integration")]` at `ObjectSearchVectorIntegrationTests.cs:53`, `RegisterSchemaAuthorizationIntegrationTests.cs:198`, `PipelineIntegrationTests.cs:7`, `TenantIsolationIntegrationTests.cs:16` — four total; `Iverson.Sql.Tests` and `Iverson.Vector.Tests` have none |
+| 3 | Command | .NET non-integration filter exists, but **the trait does not partition the suite**: only 4 classes carry it while 12 files construct containers, and only 2 of those 12 are traited | `[Trait("Category", "Integration")]` at `ObjectSearchVectorIntegrationTests.cs:53`, `RegisterSchemaAuthorizationIntegrationTests.cs:198`, `PipelineIntegrationTests.cs:7`, `TenantIsolationIntegrationTests.cs:16` — four total; `Iverson.Sql.Tests` and `Iverson.Vector.Tests` have none |
 | 4 | Command | Both Python suites run bare `pytest` | `[tool.pytest.ini_options] testpaths = ["tests"]` in both `pyproject.toml` files |
 | 5 | Command | TS `npm test` = `typecheck && vitest run`; AdminUI = `vitest run` | `TypeScript/package.json:16`; `AdminUI/package.json:8` |
 | 6 | Command | Go = `go test ./...`; Java = Maven | `Go/go.mod` (module, go 1.25.0); `Java/client/pom.xml` present |
@@ -123,7 +124,7 @@ Newly introduced by this plan and verified at plan-write time.
 | 8 | Signature | `use_tls`/`useTls` is the **third positional** parameter in both Python and TS constructors | `core.py:828`; `core.ts:810` |
 | 9 | Signature | `IEngagementStoreHealthCheck` has exactly two members: `CheckHealthAsync()`, `IsHealthyAsync()` | `IEngagementStoreRoles.cs:11-15` |
 | 10 | Signature | `AddStarRocks(connectionString, EngagementResilienceOptions, engagementEnabled)`; `Engagement:Enabled` defaults **true** | `Program.cs:166-180`; `ServiceCollectionExtensions.cs:8-11` |
-| 11 | Code validity | `IHttpMaxRequestBodySizeFeature` exists for `net10.0`; `RequestSizeLimitAttribute` does **not** (MVC-only) | `Microsoft.AspNetCore.App.Ref/10.0.12/ref/net10.0/Microsoft.AspNetCore.Http.Features.dll` |
+| 11 | Code validity | `IHttpMaxRequestBodySizeFeature` exists for `net10.0`; `RequestSizeLimitAttribute` also ships in the same ref pack but is **MVC-only** — it takes effect through the MVC filter pipeline and has no effect on a minimal-API `MapPost` | `Microsoft.AspNetCore.App.Ref/10.0.12/ref/net10.0/Microsoft.AspNetCore.Http.Features.dll`; `RequestSizeLimitAttribute` in `ref/net10.0/Microsoft.AspNetCore.Mvc.Core.dll` |
 | 12 | Code validity | A subchart template can read `.Values.global.*` | `charts/admin-ui/templates/ingress.yaml:14,18` already reads `.Values.global.ingressHost` |
 | 13 | Code validity | Go TLS needs no new module — `credentials` is part of the existing grpc dependency | `Go/go.mod:6` — `google.golang.org/grpc v1.83.1` |
 | 14 | Code validity | The admin-ui image has a runtime hook at `/docker-entrypoint.d/40-admin-ui-config.sh`, **but it cannot write the nginx config without a Dockerfile change** | Hook at `Iverson.AdminUI/Dockerfile:25-26`. `nginx.conf` has no template twin, and `Dockerfile:24` copies it root-owned under `USER root` while the container runs as uid 101 (`:27`) — so Task 9 must add placeholders to the file and `--chown=101:101` the COPY |
@@ -145,7 +146,9 @@ Newly introduced by this plan and verified at plan-write time.
 | 30 | Code validity | `helm template` resolves subcharts from `charts/<name>/`, not the stale committed `charts/*.tgz` beside them | Verified empirically both ways: the directory wins, and the render also succeeds with every `.tgz` removed |
 | 31 | Consumer impact | `ServiceCollectionExtensionsTests.cs:27,46` survive Task 8's registration swap | Both exercise the `engagementEnabled: true` default, so both still resolve `EngagementHealthChecker` |
 | 32 | Consumer impact | Task 3's gating leaves no dangling `!Find` from an ungated blueprint entry to a gated one | Enumerated every `!Find` in `blueprints-configmap-service-clients.yaml`; none crosses the gate boundary |
-| 33 | Command | The local toolchain the "no CI" constraint depends on is present | `helm 3.16.4`, `kubeconform`, `kubectl`, `docker`, `dotnet 10.0.112` all available |
+| 33 | Command | Every toolchain the nine Suite commands depend on is present and version-compatible | `helm 3.16.4`, `kubeconform v0.8.0`, `kubectl v1.36.2`, `docker` (a podman 5.7.0 shim), `dotnet 10.0.112`, `pytest 9.1.1`, `node v22.16.0` with `node_modules` populated in both `Iverson.Clients/TypeScript` and `Iverson.AdminUI`, `mvn 3.9.9` on Temurin JDK 21.0.5 (matches `Java/pom.xml`'s `java.version 21`), and `go` — binary 1.22.12, but `GOTOOLCHAIN=auto` resolves `go.mod`'s `go 1.25.0` and `go list ./...` succeeds |
+| 34 | Consumer impact | Task 3's `Tenancy__SeedLegacyTenants` wiring does not need to reach the worker Deployment, which runs the same seeding loop | the api's `SeedIfMissingAsync` is idempotent and covers local/laptop; the cloud profiles want the flag off for both roles, so no worker-side wiring is required |
+| 35 | Consumer impact | The four `BuildAggregate`/`BuildGroupBy` HAVING tests beyond the three Task 6 pins all filter on in-alias-set properties and stay green under the new gate | swept in CIR round 2; the pipeline-route tests are the exception, and Task 6's Test list now names them |
 
 **Deferred to task time** (need a live service, per spec §5): whether StarRocks requires `AllowPublicKeyRetrieval` (T8); the Authentik pagination envelope (T10); whether Authentik already emits `Access-Control-Allow-Origin` (T2); whether StarRocks *executes* the HAVING reference (T6 — severity only, the fix is identical either way).
 
@@ -354,7 +357,8 @@ git commit -m "default the go, java and dotnet clients to tls"
 
 **Files:**
 - Modify: `Iverson.Server/Iverson.StarRocks/StarRocksQueryBuilder.cs:262,380,604-624`
-- Test: `Iverson.Server/Iverson.StarRocks.Tests/StarRocksQueryBuilderTests.cs:2064,2619,2659`
+- Modify: `Iverson.Server/Iverson.StarRocks/StarRocksPipelineBuilder.cs:452,475-484,518-519`
+- Test: `Iverson.Server/Iverson.StarRocks.Tests/StarRocksQueryBuilderTests.cs:2064,2619,2659`, `StarRocksPipelineBuilderTests.cs:366`, `PipelineIntegrationTests.cs:74,86`
 
 - [ ] **Step 1: Rewrite the three pinned tests and add negative tests (TDD).**
   - `BuildGroupBy_HavingPropertyWithBacktick_EscapesEmbeddedBacktick` (`:2064`) passes `Property = "evil\`alias"` and asserts escaping. That property is neither an alias nor a column, so it must now be **rejected**; rewrite the assertion accordingly. `EscapeIdentifier` becomes defence-in-depth rather than the primary control.
@@ -367,7 +371,9 @@ git commit -m "default the go, java and dotnet clients to tls"
 - [ ] **Step 3: Pass the alias sets at both call sites.** They differ and must be explicit, not inferred:
   - `BuildAggregate` (`:262`) — the fixed set `{bucket_key, doc_count, metric_val}`
   - `BuildGroupBy` (`:380`) — `request.Metrics.Select(m => m.Name)` plus the GROUP BY key columns (already authorized)
-  - `StarRocksPipelineBuilder` (`:518-519`) — **pass the `metricAliases` it already computes** (built at `:203`, used by `RequireColumn` at `:205`) plus its column resolver.
+  - `StarRocksPipelineBuilder` (`:518-519`) — **the step's own output aliases are not in scope at this call site.** `metricAliases` is a local of `ValidateStepAndComputeOutput` (`:116-277`, declared `:203`), while the call sits in `EmitStep` (`:475-609`); and `emitted` does not yet contain this step, because `Build` appends it at `:455`, *after* the `EmitStep` call at `:452`. Add an alias-set parameter to `EmitStep` and forward `byName[step.Name].Columns` from `Build` at `:452` — that is exactly the `output` map `metricAliases` was copied from. Do **not** substitute `input.Columns`: those are the *previous* CTE's projection, and gating on them rejects `StarRocksPipelineBuilderTests.cs:366`, which filters on `Property = "articles"` — the step's own `MetricSpec.Name`.
+
+    **This route gates on alias membership alone.** `EmitStep` has no `EngagementQuerySchema` and no `tableMap`, and `registry` is a lookup by *type* name that returns `null` for a CTE step name, so `IsFieldAllowed` cannot run here. `authz` is in scope at `:483` if the exception shape needs it. Read "plus its column resolver" in the two rows above as applying to those two call sites only.
 
   **All three call sites are updated; the new parameters are required.** `BuildHaving` is one method with an optional fourth parameter, not two overloads, so there is no way to change it for two callers and leave the third alone: required parameters break `StarRocksPipelineBuilder`'s compile (and `Iverson.StarRocks` with it, so Step 4 never runs), while defaulted parameters would let that path keep compiling with the new authorization gate silently skipped. Updating all three also means no HAVING path reaches the builder ungated — the pipeline's existing `RequireColumn` pre-validation becomes redundant defence rather than the only gate on that route.
 
@@ -378,7 +384,10 @@ git commit -m "default the go, java and dotnet clients to tls"
 - [ ] **Step 6: Commit**
 ```bash
 git add Iverson.Server/Iverson.StarRocks/StarRocksQueryBuilder.cs \
-        Iverson.Server/Iverson.StarRocks.Tests/StarRocksQueryBuilderTests.cs
+        Iverson.Server/Iverson.StarRocks/StarRocksPipelineBuilder.cs \
+        Iverson.Server/Iverson.StarRocks.Tests/StarRocksQueryBuilderTests.cs \
+        Iverson.Server/Iverson.StarRocks.Tests/StarRocksPipelineBuilderTests.cs \
+        Iverson.Server/Iverson.StarRocks.Tests/PipelineIntegrationTests.cs
 git commit -m "authorize having clause properties against aliases and allowed fields"
 ```
 
@@ -415,7 +424,8 @@ git commit -m "key the agent schema cache on the token and delimit retrieved doc
 
 **Files:**
 - Create: `Iverson.Server/Iverson.StarRocks/DisabledEngagementStoreHealthCheck.cs`
-- Modify: `Iverson.Server/Iverson.Api/appsettings.json`, `appsettings.Development.json`
+- Modify: `Iverson.Server/Iverson.Api/appsettings.json`, `appsettings.Development.json` (untracked today; Step 1 un-ignores it)
+- Modify: `.gitignore:54-55`, `Iverson.Server/Iverson.Api/Iverson.Api.csproj`
 - Modify: `Iverson.Server/Iverson.Api/Program.cs:163-180`
 - Modify: `Iverson.Server/Iverson.StarRocks/ServiceCollectionExtensions.cs`
 - Modify: `Iverson.Server/docker-compose.yml:459,544`
@@ -424,6 +434,10 @@ git commit -m "key the agent schema cache on the token and delimit retrieved doc
 - [ ] **Step 1: Move the dev credentials out of the shipped image.** Delete both connection strings from `appsettings.json` and put the dev values in `appsettings.Development.json`. The `??` fallbacks in `Program.cs` are dead code today precisely because `appsettings.json` supplies the values — the credentials ship inside the container image.
 
   **The .NET test host loads `appsettings.Development.json`** (Mvc.Testing sets the environment to Development), **and `Engagement:Enabled` defaults `true` there**, so the StarRocks string must land in that file too or `Iverson.Api.Tests` will throw at startup after Step 3.
+
+  **That file is gitignored and untracked today.** `.gitignore:54` is `appsettings.*.json`, with only `appsettings.json` re-included at `:55` — so `git ls-files` does not know it, and a plain `git add` stages every other path, exits 1, and lets the following `git commit` succeed *without* the credentials file. Add `!appsettings.Development.json` immediately after `.gitignore:55` and commit the file with the localhost dev values; it is the only `appsettings.*.json` in the repository, so the negation re-includes exactly one path. Without this the plan's own worktree never has the file at all, and after Step 3 a fresh clone cannot start the API or run `Iverson.Api.Tests`.
+
+  **Then stop the SDK publishing it:** add `<Content Remove="appsettings.Development.json" />` to an `ItemGroup` in `Iverson.Api.csproj`. `Dockerfile:13` is `COPY . .` and `.dockerignore` names only `.vs`, `.git`, `.gitignore`, `bin`, `obj`, `*.user`, `.idea` and `node_modules` — so a now-committed overlay would ship in every image built from this tree, and the move would close nothing.
 
 - [ ] **Step 2: Give compose an explicit Postgres string.** compose runs `ASPNETCORE_ENVIRONMENT=Production` and currently relies on `appsettings.json` for `ConnectionStrings__Postgres`; add it explicitly to both API services. (compose already sets `ConnectionStrings__StarRocks`.)
 
@@ -443,7 +457,8 @@ git commit -m "key the agent schema cache on the token and delimit retrieved doc
 
 - [ ] **Step 7: Commit**
 ```bash
-git add Iverson.Server/Iverson.Api/appsettings.json Iverson.Server/Iverson.Api/appsettings.Development.json \
+git add -f Iverson.Server/Iverson.Api/appsettings.json Iverson.Server/Iverson.Api/appsettings.Development.json \
+        .gitignore Iverson.Server/Iverson.Api/Iverson.Api.csproj \
         Iverson.Server/Iverson.Api/Program.cs Iverson.Server/Iverson.StarRocks Iverson.Server/docker-compose.yml \
         Iverson.Server/deploy/helm/iverson/charts/api/templates/deployment.yaml \
         Iverson.Server/deploy/helm/iverson/charts/worker/templates/deployment.yaml
@@ -470,7 +485,15 @@ git commit -m "fail closed on missing connection strings and stop shipping dev c
 
   **Two image-level changes are required first, and neither is optional.** The `config.js` flow works because Vite emits a `config.js.template` *source* alongside its destination, both under a directory `Dockerfile:19-20` chowns to uid 101. The nginx config has neither property:
 
-  1. **`nginx.conf` is not a template.** Add the `${OIDC_ORIGIN}` / `${EXTERNAL_SCHEME}` placeholders to the file itself and have the hook `envsubst` it **in place** — one file, one server block. Do not add `/etc/nginx/templates/`: a second rendered file in `conf.d/` alongside the shipped `default.conf` would leave two server blocks both binding `:8080`.
+  1. **`nginx.conf` is not a template.** Add the `${OIDC_ORIGIN}` / `${EXTERNAL_SCHEME}` placeholders to the file itself and have the hook rewrite it through a temp file — one file, one server block:
+
+     ```sh
+     envsubst '${OIDC_ORIGIN} ${EXTERNAL_SCHEME}' \
+       < /etc/nginx/conf.d/default.conf > /etc/nginx/conf.d/default.conf.tmp \
+       && mv /etc/nginx/conf.d/default.conf.tmp /etc/nginx/conf.d/default.conf
+     ```
+
+     **Both halves of that command are mandatory, not stylistic.** The SHELL-FORMAT argument is required because `nginx.conf:18` is `try_files $uri $uri/ /index.html;` — a bare `envsubst` substitutes *every* `$NAME` it sees and replaces unset ones with the empty string, turning that line into `try_files  / /index.html;`. That is exactly the deep-link 404 the file's own header comment exists to prevent, and its named victim is `/callback`, so OIDC login would break. The temp file is required because `envsubst … < f > f` opens `f` for writing and truncates it before `envsubst` reads a byte, leaving a zero-length `default.conf`; the base image's `nginx.conf` includes `conf.d/*.conf` and defines no server of its own, so nginx would bind nothing on 8080 and the pod's `readinessProbe` would never pass. The existing hook's restricted form is safe only because `config.js.template` contains no other `$` references — "extend the existing hook" does not carry that constraint over to a file that does. Do not add `/etc/nginx/templates/`: a second rendered file in `conf.d/` alongside the shipped `default.conf` would leave two server blocks both binding `:8080`.
   2. **uid 101 cannot currently write it.** `Dockerfile:24` runs `COPY … /etc/nginx/conf.d/default.conf` under `USER root` with no `--chown`, so the file lands root-owned while the container runs as uid 101 (`Dockerfile:27`; the pod also pins `runAsUser: 101` at `charts/admin-ui/templates/deployment.yaml:34-35`). An in-place write fails EACCES, and since `docker-entrypoint.sh:2` is `set -eu` and the base entrypoint runs `/docker-entrypoint.d/*.sh` under `set -e`, that aborts startup and the pod crash-loops before nginx binds — the same failure the Dockerfile's own comment at `:10-17` records for `/usr/share/nginx/html`. Make the COPY `--chown=101:101`, or add a `RUN chown 101:101` mirroring `Dockerfile:20`.
 
   The authority is a **different origin** from the console (`authentik.<ingressHost>` vs `<ingressHost>`) and the OIDC flow calls it cross-origin for discovery, token exchange and JWKS — a CSP that cannot name it breaks login everywhere but the environment the image was built for.
@@ -509,7 +532,7 @@ git commit -m "serve security headers from the admin ui and mirror them per ingr
 - Modify: `Iverson.Server/Iverson.Api/Tenancy/IdpAdminClient.cs:57-101`
 - Test: `Iverson.Server/Iverson.Api.Tests/`
 
-- [ ] **Step 1: Bound the relay body.** Set a maximum request body size on `/v1/traces` via `IHttpMaxRequestBodySizeFeature` (verified present for `net10.0`; `RequestSizeLimitAttribute` is MVC-only and not available here). This is the half that addresses the unbounded-relay finding.
+- [ ] **Step 1: Bound the relay body.** Set a maximum request body size on `/v1/traces` via `IHttpMaxRequestBodySizeFeature` (verified present for `net10.0`; `RequestSizeLimitAttribute` ships in the same ref pack but is MVC-only — it runs through the MVC filter pipeline and has no effect on a minimal-API `MapPost`). This is the half that addresses the unbounded-relay finding.
 
 - [ ] **Step 2: Allow-list both content types.** Accept `application/json` **and** `application/x-protobuf`. Do **not** restrict to protobuf alone: the endpoint's only consumer is the admin UI's browser OTel SDK, which sends JSON (`JsonTraceSerializer`, hardcoded `Content-Type: application/json`, and no `-proto` exporter is a dependency). A protobuf-only restriction would 415 every export silently. Correct the endpoint's comment, which asserts protobuf and is the source of the error.
 
@@ -556,9 +579,9 @@ Iverson.Vector.Tests.csproj:23   Testcontainers
 TESTCONTAINERS_RYUK_DISABLED=true dotnet test Iverson.slnx
 ```
 
-  **Do not narrow this with `--filter 'Category=Integration'`.** Only four classes repo-wide carry `[Trait("Category", "Integration")]`, while 14 files construct containers — and `Iverson.Sql.Tests` and `Iverson.Vector.Tests`, two of the four projects this step upgrades, have **none**. That filter would run nothing in them, so the Postgres and Qdrant container paths would never be exercised on 4.15.0. If a narrower run is wanted for iteration speed, target the four projects by path instead.
+  **Do not narrow this with `--filter 'Category=Integration'`.** Only four classes repo-wide carry `[Trait("Category", "Integration")]`, while 12 files construct containers — and `Iverson.Sql.Tests` and `Iverson.Vector.Tests`, two of the four projects this step upgrades, have **none**. That filter would run nothing in them, so the Postgres and Qdrant container paths would never be exercised on 4.15.0. If a narrower run is wanted for iteration speed, target the four projects by path instead.
 
-  The known local fragility is container contention from per-class `IClassFixture` containers; treat a failure there as a fixture issue to investigate, not automatically as a 4.x incompatibility.
+  The known local fragility is container contention from per-class `IClassFixture` containers. **Compare against the unfiltered baseline recorded in Pre-flight:** only a test that was green on `main` and is red on 4.15.0 is evidence of a 4.x incompatibility; one already red on `main` is a fixture issue. Without that comparison this step cannot tell the two apart — and the four traited classes, which the filtered baseline never runs, are precisely the ones this step exists to exercise.
 
 - [ ] **Step 3: Verify CI downloads before executing them.** `.gitlab-ci.yml` pipes kubeconform, kube-score and tfsec release archives straight into `tar`/`chmod +x` with no integrity check. Pin each to a published SHA-256 and verify before extraction.
 
