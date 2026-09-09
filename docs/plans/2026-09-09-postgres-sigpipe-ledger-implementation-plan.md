@@ -312,6 +312,21 @@ done
 docker exec iverson-postgres psql -U iverson -c "SELECT pg_reload_conf()"
 ```
 
+## Operating the watch
+
+The instrumentation only produces evidence for backends that actually run: with 18 of 19
+`iverson-*` containers `Exited` and only `iverson-postgres` up, most of spec §6's decision tree is
+unreachable (no `authentik` row can ever appear, and a crash could only land on row 1 or row 2). All
+four historical crashes happened with the stack up, so bring the containers a crash needs back up
+individually:
+```bash
+docker start <name>
+```
+**Never** a tier-wide `docker compose up` — 12 of the 19 containers were created from working
+directories that no longer exist, and it would recreate them (Global Constraints, spec §4.4).
+
+`containers.csv` holding a single container is the signal that this has not been done.
+
 ## Tasks NOT in this plan
 
 Inherited from the spec's non-goals (§2), preserved in its form:
