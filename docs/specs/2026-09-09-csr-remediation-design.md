@@ -53,7 +53,7 @@ One git worktree off `main`, **11 SDD tasks**, per-task review between each, fin
 
 Delete the four `/probe/*` endpoints from `Program.cs` (:345, :351, :357, :363). They have **zero consumers** anywhere in the repository; `/health` already aggregates the same four backend checks.
 
-Replace the api Ingress rule (`path: /`, `pathType: Prefix`) with eight rules:
+Replace the api Ingress rule (`path: /`, `pathType: Prefix`) with seven rules:
 
 | Path | Type | Purpose |
 |---|---|---|
@@ -64,13 +64,14 @@ Replace the api Ingress rule (`path: /`, `pathType: Prefix`) with eight rules:
 | `/iverson.TenantLifecycleGrpcService` | Prefix | gRPC service |
 | `/iverson.TenantAdminGrpcService` | Prefix | gRPC service |
 | `/v1/traces` | Prefix | The admin UI's same-origin OTLP relay |
-| `/admin` | Prefix | The three Operator-gated REST endpoints — see below |
 
 One rule per service, **not** a single `/iverson.` prefix. Kubernetes `pathType: Prefix` matches element-wise on `/`-split path segments, so `/iverson.` does not match the first element of `/iverson.ObjectSearchService/Search`. `aws-load-balancer-controller` and the GCE ingress honour that contract and would 404 every gRPC call; ingress-nginx matches by plain string prefix and would not — so the single-prefix form passes in kind while failing on AWS and GCP, invisibly to every test §4 plans. A new service costs one rule, which is a chart edit either way.
 
 **Whichever form is used must be validated against a non-nginx ingress class**, because kind (`className: "nginx"`) cannot exercise the difference.
 
-`/admin` is included deliberately. `POST /admin/reconcile/{typeName}`, `GET /admin/dlq` and `POST /admin/dlq/{id}/replay` sit on the same port 8080 and are published today by the `/` prefix. They are already `RequireAuthorization("Operator")` — the same gate the design leaves in place for the gRPC services — and they are live: `docs/runbooks/chunk-collection-cleanup-2026-07.md:25` instructs an operator to `curl -X POST http://<api-host>/admin/reconcile/{TypeName}`, and `iverson-admin-automation` is documented as "CI/automation calling `/admin/*`". Dropping them would make that runbook instruct a 404.
+**`/admin` is deliberately NOT in the allow-list, and the three REST endpoints become in-cluster-only.** `POST /admin/reconcile/{typeName}`, `GET /admin/dlq` and `POST /admin/dlq/{id}/replay` cannot be published on this Ingress, because the **admin-ui Ingress already owns `/admin(/|$)(.*)` on the same host** — `api.ingress.host` and `global.ingressHost` are the same string in every values file, and `<ingressHost>/admin/` is where the console lives and is its `matching_mode: strict` OIDC redirect and logout URI. Two Ingress objects claiming overlapping paths on one host resolve controller-specifically, which is the same cross-controller divergence the gRPC rules above exist to avoid.
+
+Nothing is lost by this, because those endpoints are **not reachable through the Ingress today either**: `/admin/...` already routes to the admin-ui Service, where the `rewrite-target: /$2` annotation strips the prefix and `try_files $uri $uri/ /index.html` returns the SPA. The operator-facing documentation is what is actually wrong, and Task 1 fixes it: update `docs/runbooks/chunk-collection-cleanup-2026-07.md:25` (currently `curl -X POST http://<api-host>/admin/reconcile/{TypeName}`), the operator message in `Iverson.Api/Reconciliation/ReconciliationService.cs`, and `docs/user-management-and-security.md:440` (`iverson-admin-automation` … "CI/automation calling `/admin/*`") to name the in-cluster access path (`kubectl port-forward` / `exec`) instead.
 
 `/health`, `/health/live`, `/build` and `/metrics` stay exactly where they are and keep `AllowAnonymous`. Once the Ingress stops publishing `/`, they are unreachable from outside regardless of port, and in-cluster access is already constrained by the default-deny NetworkPolicies.
 
@@ -99,7 +100,9 @@ value: "{{ .Values.global.externalScheme }}://authentik.{{ .Values.global.ingres
 
 Every environment's authority already follows that shape, so `global.ingressHost` is sufficient and the per-environment entry becomes redundant.
 
-`cors-allow-origin` is an ingress-nginx-only annotation, so covering it on the cloud classes is part of §3.1's per-controller work rather than a separate decision.
+**The Authentik CORS annotations are settled by experiment, not by templating.** `cors-allow-origin` is an ingress-nginx-only annotation on the **Authentik** Ingress — a third Ingress object whose class values (`values-aws.yaml:142`, `values-azure.yaml:135`, `values-gcp.yaml:136`) appear nowhere in Task 9's per-controller table, and whose origin is the Authentik service, not the admin-ui container Task 9 modifies. So on `alb` and `gce` there is no producer for this header at all.
+
+Before templating anything, verify against the compose Authentik whether its OAuth2 token and JWKS responses already carry `Access-Control-Allow-Origin` for a registered redirect-URI origin. If they do, **drop the four ingress-nginx CORS annotations** rather than templating them — the header has no cloud half to assign and the scheme fix is confined to the other two sites. If they do not, name the Authentik-side mechanism (an Authentik configuration key, or a per-class rewrite on the authentik Ingress) as explicit Task 2 scope. This is the third experiment-settled item in this spec, alongside Task 8's `AllowPublicKeyRetrieval` check and Task 10's pagination check.
 
 Stating the scheme once removes the mismatch between the app's origin and the registered redirect URI, which would otherwise fail strict matching the moment TLS is enabled.
 
@@ -165,10 +168,11 @@ The alias sets differ per call site and must be passed explicitly, not inferred:
 | `BuildGroupBy` (:380) | `request.Metrics.Select(m => m.Name)`, plus the GROUP BY key columns (already authorized) |
 | `StarRocksPipelineBuilder` (:518) | Already pre-validated via `RequireColumn` against `metricAliases`; unchanged |
 
-**Two existing tests change:**
+**Three existing tests change:**
 
 - `BuildGroupBy_HavingPropertyWithBacktick_EscapesEmbeddedBacktick` (`StarRocksQueryBuilderTests.cs:2064`) passes `Property = "evil\`alias"` and asserts the escaping. That property is neither an alias nor a column, so it will now be rejected. Rewrite it to assert rejection. `EscapeIdentifier` remains as defence-in-depth rather than the primary control.
 - `BuildHaving_PrefixOverload_UsesPrefix` (:2619) calls the four-argument overload and needs updating for the new signature.
+- `BuildHaving_VectorSimilarClause_ThrowsInvalidArgument` (:2659) calls the three-argument form and stops compiling on the signature change. It also needs an ordering guarantee the other two do not: its `VectorClause()` sets `Property = "Name"`, which is neither an alias of the statement under test nor an authorized column in that fixture, so the rewrite must pin that the `VectorSimilar` guard (`StarRocksQueryBuilder.cs:617-620`) still fires **ahead of** the new alias/column validation at `:622` — as it does today.
 
 Add negative tests mirroring the existing GROUP BY / ORDER BY authorization tests, so all four clause families stay in lockstep.
 
@@ -197,10 +201,10 @@ Changes:
 2. Add an explicit `ConnectionStrings__Postgres` to compose, which runs `ASPNETCORE_ENVIRONMENT=Production` and currently relies on `appsettings.json` for it. (compose already sets `ConnectionStrings__StarRocks`.)
 3. Replace the `??` fallbacks with behaviour that actually fails closed. **Deleting a `??` yields `null`, not a fail-closed startup** — and for StarRocks that null is swallowed, because `EngagementHealthChecker.CheckHealthAsync` wraps the connection in `try/catch` and returns `Unhealthy`, which `ReadinessPolicy.Evaluate` then ignores when engagement is disabled. So:
    - **Postgres** is always required: `cfg.GetConnectionString("Postgres") ?? throw new InvalidOperationException(...)`.
-   - **StarRocks** is required only when engagement is on. Throw when `Engagement:Enabled` is true and the string is missing; skip the registration (or register the disabled path) when it is false.
-4. Remove `AllowPublicKeyRetrieval=true` from all three locations — `appsettings.json`, `charts/api/templates/deployment.yaml:92`, and both compose services — and **verify the StarRocks connection still works** against compose. If StarRocks genuinely requires it, restore it and document why in the task report. This is the one item settled by experiment rather than by design.
+   - **StarRocks** is required only when engagement is on. Throw when `Engagement:Enabled` is true and the string is missing. When it is false, **still register the disabled path — do not skip `AddStarRocks`.** `AddStarRocks` registers five things and only `IEngagementStoreSearchService` is branch-aware; `IEngagementStoreQueryExecutor`, `IEngagementStoreEntityStore`, `EngagementRepository` and `IEngagementStoreHealthCheck` are unconditional. `/health` takes `IEngagementStoreHealthCheck` as a handler parameter and the api Deployment's `readinessProbe` polls `/health`, so skipping the registration would leave the probe unresolvable and the pod permanently un-Ready on exactly the `engagementEnabled: false` profile this clause exists to protect. `EngagementStoreConsumer` is a second unconditional consumer, of `IEngagementStoreEntityStore`. Add a disabled `IEngagementStoreHealthCheck` mirroring the existing `DisabledEngagementStoreSearchService`, so `/health` returns the `"disabled"` branch it already has at `Program.cs:330` without ever constructing an `EngagementHealthChecker` over a null connection string.
+4. Remove `AllowPublicKeyRetrieval=true` from all **four** configuration locations — `appsettings.json`, `charts/api/templates/deployment.yaml:92`, `charts/worker/templates/deployment.yaml:85` (a character-identical copy of the api's), and both compose services — and **verify the StarRocks connection still works** against compose. The experiment's verdict applies to api and worker together: if StarRocks genuinely requires the flag, restore it in both and document why in the task report. This is one of three items settled by experiment rather than by design.
 
-**The `engagementEnabled: false` profile is the reason step 3 is split.** `ConnectionStrings__StarRocks` is emitted only inside `{{- if .Values.global.engagementEnabled }}` in both `charts/api/templates/deployment.yaml:85-93` and `charts/worker/templates/deployment.yaml:78-84`, and `values-laptop.yaml:13` sets `engagementEnabled: false`. That profile is carried today by the very fallback this task removes — dead code only while `appsettings.json` still holds the value. Removing both without tying StarRocks to `Engagement:Enabled` would flow `null` into `AddStarRocks`, which takes a non-nullable `string` on a `<Nullable>enable</Nullable>` project.
+**The `engagementEnabled: false` profile is the reason step 3 is split.** `ConnectionStrings__StarRocks` is emitted only inside `{{- if .Values.global.engagementEnabled }}` in both `charts/api/templates/deployment.yaml:85-93` and `charts/worker/templates/deployment.yaml:78-85`, and `values-laptop.yaml:13` sets `engagementEnabled: false`. That profile is carried today by the very fallback this task removes — dead code only while `appsettings.json` still holds the value. Removing both without tying StarRocks to `Engagement:Enabled` would flow `null` into `AddStarRocks`, which takes a non-nullable `string` on a `<Nullable>enable</Nullable>` project.
 
 The five real connection-string sources are therefore: `appsettings.json`, `appsettings.Development.json`, compose, the Helm api/worker deployments, and the `values-laptop.yaml` profile that deliberately supplies no StarRocks string at all.
 
@@ -286,6 +290,9 @@ The Python client suite is called out separately because it is the one Task 4 is
 | Admin UI loads no external origins | `index.html` — only `config.js` and the bundled entry point |
 | `.NET` insecure flag is unconditional | `ServiceCollectionExtensions.cs:93` inside `AttachCredentials` |
 | HAVING field-authz gap is real | Probe test during the review: GROUP BY and ORDER BY rejected an unauthorized field; HAVING emitted `HAVING \`Rating\` > @h0` |
+| The .NET test host loads `appsettings.Development.json` | `Microsoft.AspNetCore.Mvc.Testing` sets the host environment to `Development`, and `Iverson.Api.csproj` is `Microsoft.NET.Sdk.Web`, so both `appsettings*.json` are content-copied and read by `AuthTestWebApplicationFactory`. Task 8 step 1 therefore keeps `Iverson.Api.Tests` alive — **but `Engagement:Enabled` defaults true there, so the StarRocks connection string must land in that file too** |
+| Task 3's blueprint gating does not break pod admission | `charts/authentik/templates/secret-service-clients.yaml` renders the Secrets unconditionally, so the api Deployment's `secretKeyRef`s still resolve when the blueprint entries are gated off |
+| Java TLS needs no new dependency | `grpc-netty-shaded` (`Java/client/pom.xml:22`) bundles its own TLS provider, so Task 5's TLS-by-default constructors add no dependency |
 
 **Wrong or under-specified — design changed:**
 
@@ -294,7 +301,7 @@ The Python client suite is called out separately because it is the one Task 4 is
 | compose and Helm both set both connection strings | `appsettings.json` carries them; the `Program.cs` fallbacks are dead code; compose sets only StarRocks; Helm also sets `AllowPublicKeyRetrieval=true` | **Task 8 redesigned** |
 | Three cloud values files | `values-laptop.yaml` also exists (six total) | Task 2/3 coverage widened |
 | Six client SDKs | Five: DotNet, Go, Java, Python, TypeScript (`Common` is protos) | Task 4/5 scope corrected |
-| No existing test pins HAVING behaviour | Two do (`:2064`, `:2619`) | Task 6 includes rewriting them |
+| No existing test pins HAVING behaviour | **Three** do (`:2064`, `:2619`, `:2659`) | Task 6 includes rewriting all three |
 | No agent test pins `_user_key` | `test_session.py:243-251` does | Task 7 includes replacing it |
 | A central package-version file exists | None; no `Directory.Packages.props` | Task 11 pins in 4 projects |
 | CI runs the test suites | It does not | Done-criteria state the local-only gate |
