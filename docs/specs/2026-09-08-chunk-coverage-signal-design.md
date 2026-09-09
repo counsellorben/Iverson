@@ -24,26 +24,38 @@ the distribution is wide, and 46.0 % of FreshStack-2048 documents carry four or 
 score(doc) = max_chunk + β · Σ(up to the next 3 highest chunk scores of that doc)
 ```
 
-Sweep **β ∈ {0, 0.003, 0.008, 0.02, 0.05}**.
-
 - **β = 0 must reproduce today's ranking bit-for-bit.** `max + 0.0 · tail` is exactly `max` in IEEE
   arithmetic for finite tails, but the implementation must not rely on that incidentally — it
   short-circuits, matching the discipline already in `ResultReranker` (which short-circuits its
   weighted mean to preserve ordering bit-for-bit) and `ResultDiversifier` (which reduces to
-  `Take(topK)` at λ = 1.00). The baseline arm's validity depends on this.
-- **The tail is capped at 3 chunks.** Uncapped, the term is dominated by document length. Fused
-  chunk scores on the primary arm span 0.5770–0.8552 (`fs-2048-l100.chunks.trec`), so a 20-chunk
-  document sums to ~14 against a max of ~0.85, and β would be measuring length rather than coverage.
-- **Calibration is against the score *spread*, not the score level.** What decides rank is the gap
-  between documents, and that is two orders of magnitude below the level: on the primary arm the whole
-  rank-1 → rank-50 span is 0.0747 (mean; 0.0701 median) and the median top-10 adjacent gap is 0.00236.
-  Because pooled chunk scores are bounded well away from zero (min 0.5770), each tail chunk
-  contributes a near-constant β·s ≈ β·0.72 — so β must be set from the gap scale or the term
-  degenerates into a count of tail chunks. **β ≈ 0.003** makes one tail chunk worth about one median
-  top-10 gap: a genuine tie-break arm. **β ≈ 0.035** makes a full 3-chunk tail worth about the entire
-  top-50 span: the parity arm this section previously believed β = 0.35 to be. The swept range spans
-  tie-break to parity. The term multiplies *fused* chunk scores (`ResultReranker.cs:36-52`), not raw
-  cosines.
+  `Take(topK)` at λ = 1.00). This is a **requirement on code that does not yet exist**, not a verified
+  fact, so it is stated here rather than in §8. It is discharged after implementation by the check §3
+  already specifies: an offline β = 0 reconstruction must equal the in-run `.chunks.trec` byte for
+  byte. That identity is the whole reason §3 puts the aggregator in one shared C# function rather
+  than a second implementation.
+- **The tail is capped at 3 chunks.** Uncapped, the term is dominated by document length rather than
+  coverage. The term multiplies *fused* chunk scores (`ResultReranker.cs:36-52`), not raw cosines.
+
+**β is not fixed in this spec.** It is derived in Phase 1 from the measured pool, because the quantity
+it multiplies — the score of a document's 2nd–4th *pooled* chunks — appears in no artefact that exists
+today. `*.chunks.trec` is the collapsed document ranking (one maximum per document, truncated at rank
+50, `DocumentRanking.cs:40-44`), so it holds no tail chunk scores at all; earlier drafts of this spec
+twice mistook its rank-50 truncation edge (0.5770) for a floor on chunk scores.
+
+Phase 1 reports, from the dump: the **in-pool tail-depth histogram** (how many top-50 documents have
+2, 3, 4 or more pooled chunks) and the **tail-score level `s`** (mean score of a document's 2nd–4th
+pooled chunks). Phase 2 sets the ladder from the ranking's own decision scale, measured on the same
+arm:
+
+- **tie-break** β = median top-10 adjacent gap ÷ `s`
+- **parity** β = (rank-1 → rank-50 span) ÷ (3 · `s`)
+
+with three intermediate values, log-spaced, and **β = 0 as the baseline endpoint**. The ladder spans
+tie-break to parity inclusive and does **not** extend past parity: beyond it the term degenerates into
+a count of tail chunks, and §6's "opposite conclusion" rule would misread a loss from count-ranking as
+evidence about coverage. Using the document-level constants (span 0.0747, median gap 0.00236) with a
+placeholder `s` = 0.72 gives tie-break ≈ 0.003 and parity ≈ 0.035 — **indicative only, to be
+recomputed from the measured `s`.**
 
 ## 3. Where it is computed
 
@@ -54,10 +66,14 @@ Sweep **β ∈ {0, 0.003, 0.008, 0.02, 0.05}**.
    not a modification.** `CollapseByDocId` serves two distinct callers — chunk collapse *and*
    same-`DocId` entity dedup on the `SearchSimilar` path — and changing it would silently alter
    `SearchSimilar` run files, which have no chunks and no tail.
-2. A raw-chunk-hit dump in `BenchmarkQueryScenario`. The `chunks` list at `:396` is local and only
-   its aggregated output is written; the existing `.chunks.diversity.json` sidecar records parent
-   keys and counts but not scores. Raw `(ParentKey, Score)` hits in rank order are not persisted
-   today, and every β is reconstructible from them.
+2. **A raw-chunk-hit dump in `BenchmarkQueryScenario`.** One record per hit:
+   **`(QueryId, ParentKey, Score)`, in per-query rank order.** The `chunks` list at `:396` is rebuilt
+   per query inside `RunChunksAsync`, so query identity exists in memory and only needs naming.
+   `QueryId` is not optional — `TrecRunWriter.WriteAsync` requires it per ranked list
+   (`TrecRunWriter.cs:12-16`), and aggregation is per-query, so an unpartitioned dump would fuse one
+   document's chunks across different queries, which is the specified rule at no β. The existing
+   `.chunks.diversity.json` sidecar records parent keys and counts but not scores; raw hits are not
+   persisted today.
 
 3. **A `benchmark-aggregate` command** (`Program.cs` dispatch, beside `benchmark-query`). Reads the
    dump plus `keymap.json`, applies the new aggregator at a `--beta` flag, and writes
@@ -66,10 +82,23 @@ Sweep **β ∈ {0, 0.003, 0.008, 0.02, 0.05}**.
    what makes the β = 0 identity check a test of the shipping code rather than of a second
    implementation; a Python reimplementation would additionally have to reproduce `keyMap` resolution
    and unresolved-parent exclusion (`MaxPassageAggregator.cs:50-53`), truncation *after* collapse
-   (`DocumentRanking.cs:40-44`) and the first-seen tie rule (`:36`).
+   (`DocumentRanking.cs:40-44`) and the first-seen tie rule (`:36`). **Build attribution:** the
+   command cannot perform `benchmark-query`'s `GET /build` (`BenchmarkQueryScenario.cs:169-201`) and
+   stay offline, so it copies the pool run's `composite` into the sidecar — all β arms then agree and
+   no `BUILD UNKNOWN` / `BUILD MISMATCH` banner fires — and records the aggregator's own build under a
+   separate key. `report.py` reads only `composite` (`:184-202`), so that second key is documentation,
+   not an enforced check; it exists so a re-aggregation under a changed aggregator is distinguishable.
 
-**One query run per corpus serves every β.** The sweep is offline over the dumped hits, so β costs
-nothing after the run that produced the pool.
+**The work runs in two phases, because β cannot be calibrated before the pool is measured.**
+
+- **Phase 1 — measure.** Land items 1–3, then one FreshStack-2048 query run at multiplier 11. From its
+  dump, report the in-pool tail-depth histogram and the tail-score level `s` (§2). This is a run the
+  experiment needs regardless; it is ordering, not extra cost. It also discharges the one design
+  dependency no assumption covered — how deep the tail actually is *in the pool*, as opposed to in the
+  corpus.
+- **Phase 2 — calibrate and sweep.** Fix the β ladder from Phase 1's numbers per §2, then run the
+  remaining arms. **One query run per corpus serves every β**, since the sweep is offline over the
+  dumped hits.
 
 The byte-identity established for the routed `SearchSimilar` path
 (`2026-09-08-similar-via-chunks-design.md` §4) is a **max-passage** result and does not extend here.
@@ -117,9 +146,12 @@ corpus's own recorded window from its `keymap.json.stats.json`.
 SciFact is a correctness check, not evidence. The check is an **invariant on the aggregator, not a
 threshold on the corpus**: *a document contributing exactly one chunk to the pool must score
 identically at every β.* That is checkable per document, holds regardless of how many documents carry
-tails (26.3 % of SciFact documents do), and fails loudly on the real bug classes — an off-by-one in
-the tail slice, self-inclusion of the max in its own tail, or taking the tail in stream order rather
-than by score. **A violation means the aggregator is wrong**, and the sweep must not be interpreted
+tails (26.3 % of SciFact documents do), and fails loudly on the real bug classes reachable there — an
+off-by-one in the tail slice, or self-inclusion of the max in its own tail. **It cannot check the
+tail's ordering rule**: a one-chunk document has exactly one ordering, and at λ = 1.00 stream order
+equals fused-descending order (`ResultReranker.cs:59`, `ResultDiversifier.cs:71-75`), so a tail taken
+in stream order is byte-identical to a correct one on every primary arm. §6 carries the check that
+covers it. **A violation means the aggregator is wrong**, and the sweep must not be interpreted
 until it is explained. SciFact earns its place because 73.7 % single-chunk documents make violations
 most visible there, not because β is expected to leave the corpus unmoved.
 
@@ -127,6 +159,13 @@ Snapshots, keymaps and qrels are on disk for all four — restores plus one quer
 re-ingest.
 
 ## 6. Gate
+
+**Ordering check, on the λ = 0.70 arm.** Because stream order and score order coincide at λ = 1.00,
+the tail's ordering rule is only falsifiable where MMR reorders. On the FreshStack-2048 λ = 0.70 arm,
+for every document contributing ≥ 4 chunks to the pool, assert the tail term equals `β · Σ` of the
+2nd–4th **largest** chunk scores, recomputed independently from the dump. **This must pass before the
+confirmation arm is read as a gate result** — otherwise a stream-order bug presents exactly as "the
+finding does not survive the shipped configuration".
 
 **Primary: nDCG@10 on FreshStack-2048 at λ = 1.00**, baselined at β = 0, Holm-corrected across the
 four non-zero β values (family size 4). A β **qualifies** if its nDCG@10 delta against β = 0 is **positive** and Holm p_adj < 0.05. A
@@ -150,9 +189,11 @@ that cost belongs in the record even though it cannot veto.
 
 ## 7. What this cannot show
 
-Whether coverage helps at chunk budgets other than 250 (`DocumentBudget` 50 ×
-`--chunk-budget-multiplier` 5), and whether it interacts with the fusion weights. Both are held fixed.
-A null is therefore scoped to this budget and this triple.
+Whether coverage helps at chunk budgets other than **550** (`DocumentBudget` 50 ×
+`--chunk-budget-multiplier` 11), and whether it interacts with the fusion weights. Both are held
+fixed. A null is therefore scoped to this budget and this triple. The budget is not a nuisance
+parameter here: it determines how many of a document's 2nd–4th chunks are in the pool at all, which
+is the quantity the tail term reads.
 
 Whether a winning β transfers to the routed `SearchSimilar` path. That path collapses a larger pool
 which scales with the caller's `top_k` (`ObjectSearchGrpcService.cs:358-362`), so the available tail
@@ -168,7 +209,7 @@ Verified 2026-09-08 against the working tree and the corpora on disk.
 | B2 | The harness receives several chunks per parent | Diversity sidecars: 28.82 distinct parents per 50 chunks (`fs-2048` λ 1.00) = 1.74 per parent |
 | B3 | Chunk scores are server-fused and cross-document comparable | `BenchmarkQueryScenario.cs:402` stores `r.Score` as returned by `SearchChunks` |
 | B4 | Raw hits are discarded today | `chunks` at `:396` is local; only aggregated output reaches `TrecRunWriter` at `:293` |
-| B5 | Raw hits suffice to reconstruct any β | Aggregation reads only `(ParentKey, Score)` in rank order |
+| B5 | The dump's field set covers all three of its consumers | Aggregation reads `(ParentKey, Score)` in rank order; **run-file emission additionally requires `QueryId`** (`TrecRunWriter.cs:12-16`); Phase 1's histogram and tail-score level need per-query partitioning. `(QueryId, ParentKey, Score)` covers all three |
 | B6 | No server change is needed | `ObjectSearchGrpcService.cs:577-593` streams one `ChunkSearchResponse` per diversifier-selected chunk, with no parent collapse |
 | B7 | **FAILED.** The routed `.similar` byte-identity is a **max-passage** result and does **not** extend to a tail-sensitive aggregator | `2026-09-08-similar-via-chunks-design.md:241-244` — the paths agree "wherever the first 200 fused chunks hold at least 50 distinct parents", a max-only condition; routed pool sizing at `ObjectSearchGrpcService.cs:358-362`. Scope is now `SearchChunks` only (§3, §7) |
 | B8 | `LambdaChunks` is settable by env + restart | `docker-compose.yml:446`; line 444 documents the restart command |
@@ -181,12 +222,12 @@ Verified 2026-09-08 against the working tree and the corpora on disk.
 | B15 | `--baseline` Holm-corrects within each measure | `report.py:471` `holm_adjust`, `:620` prints family size |
 | B16 | `--pair` would reject these arms | `report.py:732` `check_pool` exits on any document-set change |
 | B17 | α-nDCG computes on FreshStack | `report.py` `--nugget-qrels`; nugget files present |
-| B18 | The chunk budget is 250 | `DocumentBudget` = 50 (`BenchmarkQueryScenario.cs:42`); `--chunk-budget-multiplier` default 5 (`Program.cs:423`) |
+| B18 | The chunk budget is **550** on every arm | `DocumentBudget` = 50 (`BenchmarkQueryScenario.cs:42`); multiplier 11 per §3.2, matching `fs-2048-l100.meta.json` (`chunkBudgetMultiplier: 11`) and the Tier 1 policy at `2026-09-GATE-tier1-defaults.md:35-38`. The harness default of 5 (`Program.cs:423`) is **not** what these arms use |
 | B19 | Adding a variant breaks no existing caller | `CollapseByDocId` has four production call sites (`MaxPassageAggregator.cs:56,75`; `BenchmarkQueryScenario.cs:383,451`) and 8 tests in `DocumentRankingTests.cs`. **`:383` is the `SearchSimilar` dedup path** — the shared use that forces the new-function requirement in §3 |
-| B20 | Every β member is handled, and β = 0 is bit-identical | Design requirement, §2; enforced by short-circuit |
 | B21 | All four corpora have keymap **and** qrels **and** snapshots | Checked together per corpus, not severally |
-| B22 | The tail term's scale relative to the scale the ranking is decided at | `fs-2048-l100.chunks.trec`: rank-1 → rank-50 span 0.0747 mean / 0.0701 median, median top-10 adjacent gap 0.00236, against β·0.72 per tail chunk |
-| B23 | Tail chunk scores are bounded away from zero, making each tail chunk a near-constant offset | Same file: min 0.5770, mean 0.7197, max 0.8552 |
+| B22 | The scale the ranking is decided at, on the primary arm | `fs-2048-l100.chunks.trec` (**document-level** maxima): rank-1 → rank-50 span 0.0747 mean / 0.0701 median, median top-10 adjacent gap 0.00236. Sound as ranking properties; says nothing about chunk scores |
+| B23 | **FAILED and replaced.** The tail-score level is **unmeasured** — no artefact holds raw chunk-hit scores | `fs-2048-l100.chunks.trec` holds one *maximum* per document, truncated at rank 50 (`DocumentRanking.cs:40-44`); its 0.5770 minimum is that truncation edge, not a chunk-score floor. Phase 1 measures `s` directly (§2, §3) |
+| B24 | `ChunkBudgetGuard` admits all four arms at multiplier 11, and would refuse FreshStack-512 at 5 | `ChunkBudgetGuard.cs:31-40` refuses when `topK / chunksPerDoc < DocumentBudget`. At multiplier 5: SciFact 196.7 ✓, FreshStack-2048 80.5 ✓, NFCorpus 61.7 ✓, FreshStack-512 **23.2 ✗** (`ChunkBudgetGuardTests.cs:14` asserts this case) |
 
 ## 9. Known issues, accepted
 
