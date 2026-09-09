@@ -67,8 +67,10 @@ disk to map a PID to anything. That is why four crashes have produced no diagnos
 
 ## 4. The mechanism
 
-**A `pg_stat_activity` identity ledger is the primary evidence. The log settings are a complement
-that closes its sampling gap.**
+**A `pg_stat_activity` identity ledger and three log settings are used together, but not split as
+primary and complement: §4.3 measures that, for client backends, the log settings are in practice
+the primary record, while the ledger's irreplaceable value is non-client backends and backends
+already open before instrumentation started.**
 
 The view states as data what a log-only approach must infer: `backend_type` names the process class
 outright, `client_addr`/`client_port` identify the peer, and `usename`/`datname` the principal.
@@ -77,8 +79,10 @@ which no `log_connections` setting can do.
 
 ### 4.1 The ledger (primary)
 
-A poller reads `pg_stat_activity` once per second and appends to a file **only rows whose
-`(pid, backend_start)` it has not already recorded**:
+A poller is configured to read `pg_stat_activity` once per second, but each tick pays `docker
+exec` plus `psql` startup: measured, the tick period is **~3 s** (median 2.89 s, mean 3.02 s, max
+5.75 s), not 1 s. It appends to a file **only rows whose `(pid, backend_start)` it has not already
+recorded**:
 
 ```
 now(), pid, backend_start, backend_type, usename, datname,
@@ -91,7 +95,8 @@ first sighting may be hours earlier. See §10.
 
 - **Append-on-new, not snapshot-per-tick.** Measured in a smoke test, 5 ticks produced 30 rows but
   only 10 distinct `(pid, backend_start)` pairs. At the observed fork rate (~34/min) the ledger grows
-  at roughly the fork rate — order 5 MB/day — instead of ~260 MB/day for full snapshots.
+  at roughly the fork rate — **~15 MB/day, measured with the stack down** — instead of ~260 MB/day
+  for full snapshots.
 - **`(pid, backend_start)`, not `pid` — and the composite key alone is not enough.** The operative
   hazard is not `pid_max` wraparound (that would take ~86 days at ~34 PIDs/min). It is that **the
   container has its own PID namespace**: the postmaster is PID 1 and its children are numbered from
@@ -136,6 +141,16 @@ settings close it for client backends, applied with `ALTER SYSTEM SET` + `SELECT
 | `log_connections` | `off` | `on` |
 | `log_disconnections` | `off` | `on` |
 
+**Measured, this is not a sampling-gap backstop for client backends — it is where their identity
+actually gets recorded.** Over a 28-minute window with the stack up, the ledger caught **zero**
+non-poller client backends: it missed all ~170 `pg_isready` healthcheck connections (§6 row 4, every
+10 s), each one shorter than a poll tick. The log caught every one, each stamped
+`application_name=pg_isready` — naming the healthcheck more precisely than a ledger row, which only
+records `usename`/`client_addr`, could. For client backends the log settings are, in practice, the
+primary record. The ledger's own value is what no `log_connections` setting can supply: non-client
+backends (it did capture a real `autovacuum worker`) and backends already open before instrumentation
+started.
+
 `log_connections` records a client backend's identity at connect time exactly, with no sampling gap.
 `%q` is intended to suppress the user/database portion for non-session processes, leaving postmaster
 and auxiliary lines unchanged. **This is not verified here** — confirming it needs `elog.c`, which the
@@ -143,12 +158,13 @@ container image does not ship — and nothing in this design rests on it: §5 an
 presence or absence of the connection lines and the ledger row, never on the prefix's shape. `%a` is omitted: nothing in the codebase or compose sets `Application Name`
 (§9 #14), so it would be empty for every client except the poller.
 
-**These are a complement, and their limitation is now tolerable rather than fatal.**
+**Their one remaining limitation is tolerable rather than fatal.**
 `log_connections` and `log_disconnections` are `superuser-backend`, not `sighup` (§9 #2), so they
 take effect only for connections established after the reload. In the log-primary design that forced
-a brittle stack-ordering precondition. Here, a backend they miss is still in the ledger, so the
-consequence is degraded redundancy rather than an unanswerable crash. Apply them whenever convenient;
-applying while the stack is down (its current state) simply maximises their coverage.
+a brittle stack-ordering precondition. Here, a backend they miss this way is a long-lived one that
+was already open before the reload — exactly the case the ledger does cover — so the consequence is
+degraded redundancy rather than an unanswerable crash. Apply them whenever convenient; applying while
+the stack is down (its current state) simply maximises their coverage.
 
 `log_line_prefix` is `sighup` and applies to every backend immediately, with no such caveat.
 
@@ -276,10 +292,10 @@ stopped state. **No settings were changed** and no poller was left running.
 
 ## 10. Known issues, accepted as out of scope
 
-- **The ledger's sampling gap.** A backend forking and dying inside one poll interval never appears
-  in it. §4.3's log settings close this for client backends established after their reload; a
-  short-lived **non-client** process in that window would be missed by both. Accepted: no mechanism
-  short of core dumps covers it.
+- **The ledger's sampling gap.** A backend forking and dying inside one poll tick — measured **~3 s**,
+  not the ~1 s `--interval` configures (§4.1) — never appears in it. §4.3's log settings close this
+  for client backends established after their reload; a short-lived **non-client** process in that
+  window would be missed by both. Accepted: no mechanism short of core dumps covers it.
 - **Crash-time statement attribution is out of scope.** The ledger's `state` and `query` describe the
   backend at first sighting, not at the crash. Obtaining the crash-time statement is a *different*
   mechanism — a second append keyed on `(pid, backend_start, query_start)`, at a storage cost this
