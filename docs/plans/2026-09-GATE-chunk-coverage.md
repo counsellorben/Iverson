@@ -9,7 +9,7 @@ Phase 1 measures. It does not calibrate β and it does not score any β ≠ 0 ar
 corrected twice for calibrating β against a quantity no artefact on disk contained, and this phase
 exists to produce that quantity first.
 
-**Verdict: Phase 2 is warranted.** 85.0 % of top-50 documents contribute a tail. The plan's stated
+**Verdict: Phase 2 is warranted.** 85.0 % of top-50 document slots contribute a tail. The plan's stated
 kill condition — "a histogram showing most top-50 documents contribute a single pooled chunk … ends
 the experiment" — is not met, and is not close to met.
 
@@ -80,9 +80,16 @@ identity-beta0/fs2048-pool.chunks.trec sha256 a676f5429c55f18cb83a8947e4db1511d7
 Byte identical, 3,246,319 bytes each. `CollapseByDocIdWithTail` at β = 0 reproduces
 `CollapseByDocId` exactly, and the dump captures everything the in-run aggregation consumed.
 
-This is the gate on Phase 2. Had it failed, no β result from the offline aggregator could have been
-trusted, because the aggregator would not reduce to shipped behaviour at β = 0. It passed, so
-Phase 2 can sweep β offline from this dump without re-running queries.
+This is the gate on Phase 2, but it is worth being exact about what it does and does not
+establish. `DocumentRanking.cs:61` short-circuits — `if (beta == 0) return CollapseByDocId(...)` —
+so this check *cannot* fail by the tail arithmetic being wrong; that path never executes at β = 0.
+What it actually tests is **dump, key-map, reader and writer fidelity**: that the offline path
+reconstructs the in-run ranking exactly from the persisted hits. That could genuinely have failed —
+a truncated dump, a mis-parsed score, a different parent resolution — and it did not.
+
+So "Phase 2 can sweep β offline from this dump" rests on this PASS *for the plumbing* plus Task 1's
+unit tests and the spec's §5/§6 checks *for the β ≠ 0 arithmetic*. This check exercises none of the
+latter.
 
 ## Measurement (Step 4)
 
@@ -104,7 +111,7 @@ three inputs, and that independent pass reproduced the script's 2/3/4+ counts ex
 | `s`, tail level, top-50 scoped | **0.695455** | 69,143 tail-chunk values |
 | `s`, tail level, pool-wide | 0.677898 | 182,685 tail-chunk values |
 | Rank-1 → rank-50 span (mean) | 0.074692 | 672 queries |
-| Median top-10 adjacent gap | 0.002355 | 672 queries |
+| Median top-10 adjacent gap | 0.002355 | 6,048 adjacent gaps across 672 queries |
 | **Tie-break β** = median gap / `s` | **0.003387** | |
 | **Parity β** = span / (3 · `s`) | **0.035800** | |
 
@@ -117,22 +124,54 @@ because it includes parents that never reach any top 50.
   recorded 0.0747 mean span and 0.00236 median top-10 gap from `fs-2048-l100.chunks.trec`, a
   different run. This run gives 0.074692 and 0.002355. The measurement is not an artefact of this
   run.
+- **λ = 1.00 is corroborated in-artifact, not only by the env check.** Step 2a warns that the
+  harness cannot observe the server's λ and `.meta.json` does not record it, so a silent restart
+  failure would be invisible. `runs/fs2048-pool.chunks.diversity.json` reports
+  `meanDistinctParentsAt10` = 6.665 and `meanDistinctParentsAt50` = 28.815, against spec §4's
+  recorded λ = 1.00 row of 6.67 / 28.82 and its λ = 0.70 row of 8.10 / 34.50. The run is
+  unambiguously the λ = 1.00 arm.
 - **CDR round 2's correction is confirmed quantitatively.** That round established the tail level
   was "strictly below 0.72 by an unmeasured amount" and that the spec's provisional parity of 0.0346
   rested on a file containing no tail chunks. Measured: `s` = 0.6955, parity = 0.0358. The direction
-  was right and the provisional figure was 3.9 % low.
-- **50.5 % at ≥ 4 pooled chunks is not the corpus-wide 46.0 %**, and the two must not be conflated.
-  The corpus figure is the share of *documents in the corpus* with ≥ 4 chunks; this is the share of
-  *retrieved top-50 slots* whose document put ≥ 4 chunks *in the 550-chunk pool*. Retrieved
-  documents are mildly biased toward multi-chunk documents — more chunks, more chances to be pooled
-  — and the 4.5-point gap is consistent with that. Neither number is evidence about the other.
+  was right and the provisional figure was 3.4 % low: with span 0.074692 and the placeholder
+  `s` = 0.72, provisional parity is 0.034580 against a measured 0.035800.
+- **50.5 % at ≥ 4 pooled chunks is not the corpus-wide 46.0 %**, and the two must not be
+  conflated. The corpus figure is the share of *documents in the corpus* with ≥ 4 chunks; this is
+  the share of *retrieved top-50 slots* whose document put ≥ 4 chunks *in the 550-chunk pool*. The
+  4.5-point gap between them is **not** a small effect — it is the net of two large ones, measured
+  rather than assumed (chunk counts from a faithful replay of `ingest.py:240` `split_into_chunks`
+  at 2048/1792, which reproduces the recorded 18,622 chunks and 26.6 % single-chunk share exactly):
+
+  | | Slots | Share of 33,600 |
+  |---|---|---|
+  | Document has ≥ 4 **corpus** chunks | 21,592 | 64.3 % |
+  | Document has ≥ 4 **pooled** chunks | 16,958 | 50.5 % |
+  | ≥ 4 corpus but < 4 pooled — truncated by the budget | 4,634 | 13.8 % |
+
+  Retrieval is biased toward multi-chunk documents by **+18.2 points** (64.3 % of retrieved slots
+  vs 46.0 % of corpus documents), and the 550-chunk budget gives **−13.8 points** back by not
+  pooling the whole tail. Net **+4.5**. Neither number is evidence about the other.
+
+  This matters for Phase 2 beyond the bookkeeping: **the budget is measurably truncating available
+  tail on 13.8 % of top-50 slots**, which is direct evidence for the spec §7 caveat that the chunk
+  budget is not a nuisance parameter — it determines how much of a document's tail exists to be
+  read at all.
 
 ## What this does and does not license
 
 **Licensed.** Phase 2 may proceed, and its β ladder is to be derived from `s` = 0.695455 — the
-measurement Phase 1 owed it. The two endpoints it needs are tie-break 0.003387 and parity 0.035800.
-The spec's provisional ladder {0, 0.003, 0.008, 0.02, 0.05} brackets both, so it survives the
-measurement; Phase 2 sets its own arms and this document does not set them.
+measurement Phase 1 owed it. The two endpoints it needs are **tie-break 0.003387** and
+**parity 0.035800**. Spec §2 requires the ladder to span tie-break to parity *inclusive* and to not
+extend past parity, because beyond parity the term degenerates into a count of tail chunks and §6's
+opposite-conclusion rule would misread a count-ranking loss as evidence about coverage. **So no
+Phase 2 arm may exceed 0.035800.** Phase 2 sets its own arms within that bound; this document does
+not set them.
+
+An earlier draft of this gate said the ladder {0, 0.003, 0.008, 0.02, 0.05} "survives the
+measurement". That was wrong twice over and is retracted here: that ladder is not in the spec — CDR
+round 2 (`23d1c59`) deleted it in favour of the derived construction — and its top arm of 0.05 sits
+40 % above the measured parity, which §2 forbids. The measurement **falsifies** that ladder rather
+than confirming it.
 
 **Not licensed.** Nothing here says the coverage signal *works*. Tail depth being available is a
 necessary condition for the signal to do anything at all, not evidence that it improves ranking.
