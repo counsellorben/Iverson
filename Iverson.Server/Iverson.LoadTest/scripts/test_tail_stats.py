@@ -56,6 +56,32 @@ def test_load_hits_exits_on_malformed_row(tmp_path):
         tail_stats.load_hits(str(p))
 
 
+def test_load_hits_exits_when_rank_disagrees_with_file_order(tmp_path):
+    """A dump that has been sorted, filtered or concatenated still parses row-by-row, and every
+    figure this script prints is derived from file order -- so the rank column is the only thing
+    that can catch it."""
+    p = tmp_path / "l.chunks.hits.tsv"
+    write_hits(p, [("q1", "pA", 1, 0.9), ("q1", "pB", 3, 0.5)])  # row 2 of q1 claims rank 3
+    with pytest.raises(SystemExit) as excinfo:
+        tail_stats.load_hits(str(p))
+    assert "rank 3" in str(excinfo.value)
+    assert ":3" in str(excinfo.value)  # the offending row number
+
+
+def test_load_hits_rank_is_per_query_not_per_file(tmp_path):
+    """Each query's ranks restart at 1; a per-file running rank would be wrong."""
+    p = tmp_path / "l.chunks.hits.tsv"
+    write_hits(p, [("q1", "pA", 1, 0.9), ("q1", "pB", 2, 0.5), ("q2", "pC", 1, 0.7)])
+    assert tail_stats.load_hits(str(p)) == [("q1", "pA", 0.9), ("q1", "pB", 0.5), ("q2", "pC", 0.7)]
+
+
+def test_load_hits_exits_on_non_integer_rank(tmp_path):
+    p = tmp_path / "l.chunks.hits.tsv"
+    p.write_text("queryId\tparentKey\trank\tscore\nq1\tpA\tx\t0.9\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        tail_stats.load_hits(str(p))
+
+
 def test_load_run_doc_ids_groups_by_query_in_file_order(tmp_path):
     p = tmp_path / "l.chunks.trec"
     write_run(p, [("q1", [("d1", 0.9), ("d2", 0.5)]), ("q2", [("d3", 0.7)])])
@@ -179,6 +205,48 @@ def test_pool_wide_figure_covers_every_parent_in_the_dump():
     assert pool_n == 2
 
 
+# ── check_scope_covers_run ───────────────────────────────────────────────────────────────
+
+def test_check_scope_covers_run_passes_when_every_run_row_is_recovered():
+    by_doc = {("q1", "d1"): [0.9, 0.5], ("q1", "d2"): [0.8], ("q1", "d3"): [0.4]}
+    run_by_query = {"q1": [("d1", 0.9), ("d2", 0.8)]}
+    scoped = tail_stats.scoped_to_run(by_doc, run_by_query)
+    tail_stats.check_scope_covers_run(scoped, run_by_query, "h", "r", "k")  # must not exit
+
+
+def test_check_scope_covers_run_exits_on_a_run_keymap_dump_mismatch():
+    """The wrong corpus's keymap.json still resolves every parentKey -- just to other documents --
+    so `unresolved` stays 0 and the intersection silently shrinks. Only the row-count equality
+    catches it."""
+    by_doc = {("q1", "other-1"): [0.9, 0.5], ("q1", "d1"): [0.8, 0.2]}
+    run_by_query = {"q1": [("d1", 0.9), ("d2", 0.8), ("d3", 0.7)]}  # 3 rows; only d1 is recoverable
+    scoped = tail_stats.scoped_to_run(by_doc, run_by_query)
+    assert len(scoped) == 1
+    with pytest.raises(SystemExit) as excinfo:
+        tail_stats.check_scope_covers_run(scoped, run_by_query, "hits.tsv", "run.trec", "keymap.json")
+    message = str(excinfo.value)
+    assert "1" in message and "3" in message      # both counts named
+    assert "keymap.json" in message               # and the likely culprit pointed at
+
+
+def test_main_exits_on_a_run_keymap_mismatch(tmp_path, monkeypatch):
+    """End to end: a keymap that maps the dump's parents to documents the run file never names.
+    `unresolved` is 0 throughout, and before this check the script printed a confident, wrong s."""
+    hits_path = tmp_path / "l.chunks.hits.tsv"
+    run_path = tmp_path / "l.chunks.trec"
+    keymap_path = tmp_path / "keymap.json"
+
+    write_hits(hits_path, [("q1", "pA", 1, 0.9), ("q1", "pA", 2, 0.5)])
+    write_run(run_path, [("q1", [("d1", 0.9), ("d2", 0.8)])])
+    write_keymap(keymap_path, {"pA": "wrong-corpus-doc"})  # valid JSON, wrong corpus
+
+    monkeypatch.setattr(sys, "argv", [
+        "tail_stats.py", "--hits", str(hits_path), "--run", str(run_path), "--keymap", str(keymap_path),
+    ])
+    with pytest.raises(SystemExit):
+        tail_stats.main()
+
+
 # ── span_rank1_to_rank50 / median_top10_adjacent_gap ────────────────────────────────────
 
 def test_span_rank1_to_rank50_is_the_mean_per_query_top_to_bottom_gap():
@@ -226,9 +294,11 @@ def test_main_prints_histogram_s_and_ladder_endpoints(tmp_path, monkeypatch, cap
     keymap_path = tmp_path / "keymap.json"
 
     write_hits(hits_path, [
+        # rank is 1..N per QUERY in supply order, exactly as ChunkHitDumpWriter writes it -- it does
+        # not restart per parentKey.
         ("q1", "pA", 1, 0.90), ("q1", "pA", 2, 0.50), ("q1", "pA", 3, 0.40), ("q1", "pA", 4, 0.30),
-        ("q1", "pB", 1, 0.80), ("q1", "pB", 2, 0.20),
-        ("q1", "pC", 1, 0.10),  # single-chunk document, never reaches top 50 -- pool-wide only
+        ("q1", "pB", 5, 0.80), ("q1", "pB", 6, 0.20),
+        ("q1", "pC", 7, 0.10),  # single-chunk document, never reaches top 50 -- pool-wide only
     ])
     write_run(run_path, [("q1", [("d1", 0.90), ("d2", 0.80)])])
     write_keymap(keymap_path, {"pA": "d1", "pB": "d2", "pC": "d3"})

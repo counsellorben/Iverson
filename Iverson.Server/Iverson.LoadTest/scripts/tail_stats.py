@@ -49,9 +49,14 @@ def load_keymap(path):
 def load_hits(path):
     """Parses <label>.chunks.hits.tsv (Task 2, ChunkHitDumpWriter): header
     `queryId\\tparentKey\\trank\\tscore`, tab-separated, one row per hit in per-query rank order.
-    Returns a list of (queryId, parentKey, score) in file order. `rank` is parsed only to detect
-    malformed rows -- file order already encodes it, and the dump is written unsorted (Task 2)."""
+    Returns a list of (queryId, parentKey, score) in file order.
+
+    `rank` is CHECKED, not discarded: every figure below is derived from file order, so a dump that
+    had been sorted, filtered or concatenated would otherwise read as valid and produce plausible
+    but wrong statistics. ChunkHitDumpWriter writes rank 1-based per query in supply order, so rank
+    must equal the count of rows seen so far for that query."""
     rows = []
+    rows_per_query = {}
     with open(path, encoding="utf-8") as f:
         header = f.readline()
         if not header:
@@ -63,7 +68,18 @@ def load_hits(path):
             fields = line.split("\t")
             if len(fields) != 4:
                 sys.exit(f"{path}:{lineno}: expected 4 tab-separated fields, got {len(fields)}: {line!r}")
-            query_id, parent_key, _rank, score = fields
+            query_id, parent_key, rank, score = fields
+            try:
+                rank = int(rank)
+            except ValueError:
+                sys.exit(f"{path}:{lineno}: non-integer rank {rank!r}")
+            expected_rank = rows_per_query.get(query_id, 0) + 1
+            rows_per_query[query_id] = expected_rank
+            if rank != expected_rank:
+                sys.exit(
+                    f"{path}:{lineno}: rank {rank} disagrees with file order (this is row "
+                    f"{expected_rank} of query {query_id!r}) -- the dump has been reordered or "
+                    f"edited, and every figure here is derived from file order")
             try:
                 score = float(score)
             except ValueError:
@@ -163,6 +179,31 @@ def scoped_to_run(by_doc, run_by_query):
     return {key: scores for key, scores in by_doc.items() if key in keep}
 
 
+def check_scope_covers_run(scoped, run_by_query, hits_path, run_path, keymap_path):
+    """Every row of the run file is a (query, doc) pair the run's own aggregation produced from this
+    dump through this key map, so scoping the dump to the run file must recover EVERY run row --
+    scoped size == run file row count, exactly.
+
+    Without this the script cannot tell a matched triple from a mismatched one. `--keymap` is a
+    separate argument from `--run`, and every corpus directory holds a file called exactly
+    `keymap.json`, so pointing at the wrong corpus's key map still resolves: `unresolved` stays 0
+    (its parent keys are all present, just mapped to other documents) and `scoped_to_run` quietly
+    intersects down to whatever the two populations happen to share. s was then computed over an
+    accidental intersection, and the ladder endpoints derived from it were wrong by an unknown
+    amount with nothing on screen to say so."""
+    run_rows = sum(len(rows) for rows in run_by_query.values())
+    if len(scoped) != run_rows:
+        sys.exit(
+            f"[tail_stats] scoping the dump to the run file recovered {len(scoped)} of the run "
+            f"file's {run_rows} rows -- they must be equal.\n"
+            f"  hits   {hits_path}\n"
+            f"  run    {run_path}\n"
+            f"  keymap {keymap_path}\n"
+            f"This is a run/keymap/dump mismatch: the run file was not produced from this dump "
+            f"through this key map. Check that all three come from the same benchmark-query run "
+            f"and the same corpus.")
+
+
 def span_rank1_to_rank50(run_by_query):
     """Mean, across queries with at least 2 ranked rows, of (rank-1 score - lowest-ranked score) --
     the per-query decision span the parity endpoint is built from (spec §2, spec B22's reported
@@ -201,6 +242,7 @@ def main():
         print(f"[tail_stats] {unresolved} dump row(s) had a parentKey absent from the key map -- excluded from every figure below")
 
     top50_by_doc = scoped_to_run(by_doc, run_by_query)
+    check_scope_covers_run(top50_by_doc, run_by_query, args.hits, args.run, args.keymap)
 
     hist = tail_depth_histogram(top50_by_doc)
     print("[tail_stats] in-pool tail-depth histogram (top-50 documents):")
