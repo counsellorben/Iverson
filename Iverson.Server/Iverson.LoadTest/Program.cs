@@ -282,7 +282,8 @@ switch (command)
               --hits-path <file>    benchmark-aggregate only: path to a benchmark-query run's
                                      <config-label>.chunks.hits.tsv dump to replay
               --beta <n>             benchmark-aggregate only: tail-sum weight passed to the aggregator
-                                     (default 0, which reproduces today's max-passage ranking exactly)
+                                     (default 0, which reproduces today's max-passage ranking exactly).
+                                     Must be finite and >= 0.
             """);
         break;
 }
@@ -468,8 +469,13 @@ public sealed class CommandFlags
         double d)
     {
         var raw = StrFlag(a, f, "");
+        // NumberStyles.Float ONLY -- deliberately NOT double.Parse(raw, CultureInfo) , whose implied
+        // style is Float | AllowThousands. Under InvariantCulture the comma is the GROUP separator, so
+        // "--beta 0,003" (a plausible typo, and correct in most European locales) parsed as 3.0 and
+        // produced a well-formed run file ~84x above the gate document's binding upper bound. With
+        // AllowThousands off it throws instead.
         return string.IsNullOrEmpty(raw)
             ? d
-            : double.Parse(raw, CultureInfo.InvariantCulture);
+            : double.Parse(raw, NumberStyles.Float, CultureInfo.InvariantCulture);
     }
 }

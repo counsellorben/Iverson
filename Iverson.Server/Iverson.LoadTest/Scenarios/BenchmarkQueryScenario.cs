@@ -348,6 +348,22 @@ public sealed class BenchmarkQueryScenario(
                 $"scored. First few: {string.Join(", ", unresolvedParents.Take(5))}. Either drop the " +
                 "tenant's Qdrant collections and re-ingest (clear-data does NOT touch Qdrant), or pass a " +
                 "key map covering every ingest the collection holds.");
+
+        // Only now -- past BOTH fail-loud checks -- does the sidecar gain the field that says this run
+        // finished. It is a SECOND write, deliberately not a move of the first one: the sidecar is
+        // written before the first query so a run that dies mid-flight still leaves its build
+        // attribution behind. Without this field a REFUSED run's outputs are byte-indistinguishable
+        // from an accepted run's -- same filenames, same composite, a self-consistent dump, and a
+        // beta=0 benchmark-aggregate replay of it passes the identity check. `queryCount` is what
+        // benchmark-aggregate checks the dump's distinct query id count against.
+        var completedSidecarPath = Path.Combine(flags.OutputDir, $"{flags.ConfigLabel}.meta.json");
+        var completedSidecar = JsonNode.Parse(await File.ReadAllTextAsync(completedSidecarPath, ct))
+            ?? throw new InvalidOperationException($"{completedSidecarPath} could not be re-parsed.");
+        completedSidecar["queryCount"] = queries.Count;
+        await File.WriteAllTextAsync(
+            completedSidecarPath, completedSidecar.ToJsonString(SidecarWriteOptions), ct);
+        Console.WriteLine(
+            $"[benchmark-query] Recorded queryCount={queries.Count:N0} in {completedSidecarPath}");
     }
 
     private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed)> RunSimilarAsync(

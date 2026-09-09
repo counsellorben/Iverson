@@ -31,6 +31,24 @@ public class CommandFlagsTests
         CommandFlags.Parse([]).Beta.Should().Be(0);
     }
 
+    // The comma is InvariantCulture's GROUP separator, and double.Parse(raw, IFormatProvider)
+    // implies NumberStyles.Float | AllowThousands -- so "--beta 0,003" used to parse as 3.0, ~84x
+    // the gate document's binding upper bound, and produced a well-formed run file. DblFlag must
+    // pass NumberStyles.Float explicitly so this throws instead.
+    [Fact]
+    public void Parse_Beta_WithAGroupSeparator_Throws_RatherThanParsingAsThreeThousand()
+    {
+        var act = () => CommandFlags.Parse(["--beta", "0,003"]);
+        act.Should().Throw<FormatException>();
+    }
+
+    [Fact]
+    public void Parse_Beta_StillAcceptsExponentAndSign()
+    {
+        CommandFlags.Parse(["--beta", "3.58e-2"]).Beta.Should().Be(0.0358);
+        CommandFlags.Parse(["--beta", "+0.0358"]).Beta.Should().Be(0.0358);
+    }
+
     [Fact]
     public void Parse_HitsPath_Parses_AndDefaultsToEmpty()
     {

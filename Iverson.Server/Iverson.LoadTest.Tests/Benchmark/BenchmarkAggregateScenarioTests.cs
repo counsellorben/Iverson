@@ -25,15 +25,18 @@ public class BenchmarkAggregateScenarioTests
         await File.WriteAllLinesAsync(path, lines);
     }
 
-    private static async Task WritePoolSidecarAsync(string path, string? composite)
+    private static async Task WritePoolSidecarAsync(
+        string path, string? composite, string? extraJson = null)
     {
-        var json = composite is null
-            ? "{}"
-            : $$"""{"composite":"{{composite}}"}""";
-        await File.WriteAllTextAsync(path, json);
+        var fields = new List<string>();
+        if (composite is not null) fields.Add("\"composite\":\"" + composite + "\"");
+        if (extraJson is not null) fields.Add(extraJson);
+        await File.WriteAllTextAsync(path, "{" + string.Join(",", fields) + "}");
     }
 
-    private static CommandFlags Flags(string keyMapPath, string hitsPath, string outputDir, string configLabel = ConfigLabel, double beta = 0) =>
+    private static CommandFlags Flags(
+        string keyMapPath, string hitsPath, string outputDir, string configLabel = ConfigLabel,
+        double beta = 0) =>
         new()
         {
             KeyMapPath  = keyMapPath,
@@ -342,6 +345,299 @@ public class BenchmarkAggregateScenarioTests
             var lines = await File.ReadAllLinesAsync(Path.Combine(dir, "beta05.chunks.trec"));
             // score = max(0.9) + 0.5 * tail(0.3) = 1.05
             lines.Should().Equal("q1 Q0 doc1 1 1.050000 beta05");
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    // ── F2: a beta that is not a finite, non-negative number ─────────────────────────────────
+
+    // NaN skips CollapseByDocIdWithTail's `beta == 0` short-circuit, scores every document NaN, and
+    // writes a complete-looking run file of NaN rows before System.Text.Json refuses NaN for the
+    // sidecar -- a poisoned run file with no sidecar to disown it. The refusal must land before any
+    // file is opened, which is what the empty-directory assertion pins.
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    [InlineData(-1.0)]
+    public async Task RunAsync_BetaNotFiniteOrNegative_RefusesBeforeWritingAnyFile(double beta)
+    {
+        var poolDir = TempDir("bad-beta-pool");
+        var outDir  = TempDir("bad-beta-out");
+        try
+        {
+            var keyMapPath = Path.Combine(poolDir, "keymap.json");
+            await KeyMap.SaveAsync(new Dictionary<string, string> { ["k1"] = "doc1" }, keyMapPath);
+
+            var hitsPath = Path.Combine(poolDir, "pool.chunks.hits.tsv");
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9), ("q1", "k1", 2, 0.3));
+            await WritePoolSidecarAsync(Path.Combine(poolDir, "pool.meta.json"), composite: "abc123");
+
+            var flags = Flags(keyMapPath, hitsPath, outDir, configLabel: "bad", beta: beta);
+            var act = () => new BenchmarkAggregateScenario().RunAsync(flags);
+            await act.Should().ThrowAsync<InvalidOperationException>();
+
+            Directory.GetFileSystemEntries(outDir).Should().BeEmpty(
+                "the beta guard must run before a single output file is opened");
+        }
+        finally
+        {
+            Directory.Delete(poolDir, recursive: true);
+            Directory.Delete(outDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_ValidPositiveBeta_StillWritesTheRunFile()
+    {
+        var dir = TempDir("good-beta");
+        try
+        {
+            var keyMapPath = Path.Combine(dir, "keymap.json");
+            await KeyMap.SaveAsync(new Dictionary<string, string> { ["k1"] = "doc1" }, keyMapPath);
+
+            var hitsPath = Path.Combine(dir, "pool.chunks.hits.tsv");
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9), ("q1", "k1", 2, 0.3));
+            await WritePoolSidecarAsync(Path.Combine(dir, "pool.meta.json"), composite: "abc123");
+
+            await new BenchmarkAggregateScenario().RunAsync(
+                Flags(keyMapPath, hitsPath, dir, configLabel: "ok", beta: 0.0358));
+
+            var lines = await File.ReadAllLinesAsync(Path.Combine(dir, "ok.chunks.trec"));
+            lines.Should().Equal("q1 Q0 doc1 1 0.910740 ok");  // 0.9 + 0.0358 * 0.3
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    // ── F1: a refused pool run's dump must not replay as if it were an accepted one ──────────
+
+    [Fact]
+    public async Task RunAsync_SidecarQueryCountDisagreesWithDump_Refuses()
+    {
+        var poolDir = TempDir("qc-mismatch-pool");
+        var outDir  = TempDir("qc-mismatch-out");
+        try
+        {
+            var keyMapPath = Path.Combine(poolDir, "keymap.json");
+            await KeyMap.SaveAsync(new Dictionary<string, string> { ["k1"] = "doc1" }, keyMapPath);
+
+            var hitsPath = Path.Combine(poolDir, "pool.chunks.hits.tsv");
+            // The dump holds 2 distinct query ids; the run that produced it declared 3.
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9), ("q2", "k1", 1, 0.8));
+            await WritePoolSidecarAsync(
+                Path.Combine(poolDir, "pool.meta.json"), composite: "abc123", extraJson: "\"queryCount\":3");
+
+            var act = () => new BenchmarkAggregateScenario()
+                .RunAsync(Flags(keyMapPath, hitsPath, outDir, configLabel: "incomplete"));
+            (await act.Should().ThrowAsync<InvalidOperationException>())
+                .WithMessage("*3*")   // the declared count
+                .WithMessage("*2*");  // and the dump's own
+
+            Directory.GetFileSystemEntries(outDir).Should().BeEmpty(
+                "an incomplete run's dump must not produce a scoreable run file at all");
+        }
+        finally
+        {
+            Directory.Delete(poolDir, recursive: true);
+            Directory.Delete(outDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_SidecarQueryCountMatchesDump_ProceedsWithoutWarning()
+    {
+        var dir = TempDir("qc-match");
+        var stderr = Console.Error;
+        var captured = new StringWriter();
+        try
+        {
+            Console.SetError(captured);
+
+            var keyMapPath = Path.Combine(dir, "keymap.json");
+            await KeyMap.SaveAsync(new Dictionary<string, string> { ["k1"] = "doc1" }, keyMapPath);
+
+            var hitsPath = Path.Combine(dir, "pool.chunks.hits.tsv");
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9), ("q2", "k1", 1, 0.8));
+            await WritePoolSidecarAsync(
+                Path.Combine(dir, "pool.meta.json"), composite: "abc123", extraJson: "\"queryCount\":2");
+
+            await new BenchmarkAggregateScenario()
+                .RunAsync(Flags(keyMapPath, hitsPath, dir, configLabel: "complete"));
+
+            File.Exists(Path.Combine(dir, "complete.chunks.trec")).Should().BeTrue();
+            captured.ToString().Should().NotContain("queryCount", "a verified dump warns about nothing");
+        }
+        finally
+        {
+            Console.SetError(stderr);
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // The accepted Phase 1 pool run predates the field, so this path must WARN and proceed -- if it
+    // refused, the branch's own byte-identity check could no longer be re-run.
+    [Fact]
+    public async Task RunAsync_SidecarWithoutQueryCount_WarnsButStillWritesTheRunFile()
+    {
+        var dir = TempDir("qc-absent");
+        var stderr = Console.Error;
+        var captured = new StringWriter();
+        try
+        {
+            Console.SetError(captured);
+
+            var keyMapPath = Path.Combine(dir, "keymap.json");
+            await KeyMap.SaveAsync(new Dictionary<string, string> { ["k1"] = "doc1" }, keyMapPath);
+
+            var hitsPath = Path.Combine(dir, "pool.chunks.hits.tsv");
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9));
+            await WritePoolSidecarAsync(Path.Combine(dir, "pool.meta.json"), composite: "abc123");
+
+            await new BenchmarkAggregateScenario()
+                .RunAsync(Flags(keyMapPath, hitsPath, dir, configLabel: "legacy"));
+
+            var lines = await File.ReadAllLinesAsync(Path.Combine(dir, "legacy.chunks.trec"));
+            lines.Should().Equal("q1 Q0 doc1 1 0.900000 legacy");
+
+            var warning = captured.ToString();
+            warning.Should().Contain("queryCount");
+            warning.Should().Contain(hitsPath, "the warning must name the dump it cannot verify");
+        }
+        finally
+        {
+            Console.SetError(stderr);
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // ── F4a: a reranked pool's .chunks.trec did not come from these raw scores ───────────────
+
+    [Fact]
+    public async Task RunAsync_PoolSidecarRecordsAReranker_Refuses()
+    {
+        var poolDir = TempDir("reranked-pool");
+        var outDir  = TempDir("reranked-out");
+        try
+        {
+            var keyMapPath = Path.Combine(poolDir, "keymap.json");
+            await KeyMap.SaveAsync(new Dictionary<string, string> { ["k1"] = "doc1" }, keyMapPath);
+
+            var hitsPath = Path.Combine(poolDir, "pool.chunks.hits.tsv");
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9));
+            await WritePoolSidecarAsync(
+                Path.Combine(poolDir, "pool.meta.json"),
+                composite: "abc123",
+                extraJson: "\"reranker\":{\"modelId\":\"bge-reranker-base\"}");
+
+            var act = () => new BenchmarkAggregateScenario()
+                .RunAsync(Flags(keyMapPath, hitsPath, outDir, configLabel: "rr"));
+            await act.Should().ThrowAsync<InvalidOperationException>();
+
+            Directory.GetFileSystemEntries(outDir).Should().BeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(poolDir, recursive: true);
+            Directory.Delete(outDir, recursive: true);
+        }
+    }
+
+    // BenchmarkQueryScenario writes "reranker": null on an un-reranked run -- that JSON null must
+    // read as "no reranker", exactly as an absent key does, or every real pool run is refused.
+    [Fact]
+    public async Task RunAsync_PoolSidecarWithExplicitNullReranker_Proceeds()
+    {
+        var dir = TempDir("null-reranker");
+        try
+        {
+            var keyMapPath = Path.Combine(dir, "keymap.json");
+            await KeyMap.SaveAsync(new Dictionary<string, string> { ["k1"] = "doc1" }, keyMapPath);
+
+            var hitsPath = Path.Combine(dir, "pool.chunks.hits.tsv");
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9));
+            await WritePoolSidecarAsync(
+                Path.Combine(dir, "pool.meta.json"), composite: "abc123", extraJson: "\"reranker\":null");
+
+            await new BenchmarkAggregateScenario()
+                .RunAsync(Flags(keyMapPath, hitsPath, dir, configLabel: "plain"));
+
+            File.Exists(Path.Combine(dir, "plain.chunks.trec")).Should().BeTrue();
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    // ── F4b: the parameter the whole result is scoped to ─────────────────────────────────────
+
+    [Fact]
+    public async Task RunAsync_CarriesChunkBudgetMultiplierThroughFromThePoolSidecar()
+    {
+        var dir = TempDir("cbm");
+        try
+        {
+            var keyMapPath = Path.Combine(dir, "keymap.json");
+            await KeyMap.SaveAsync(new Dictionary<string, string> { ["k1"] = "doc1" }, keyMapPath);
+
+            var hitsPath = Path.Combine(dir, "pool.chunks.hits.tsv");
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9));
+            await WritePoolSidecarAsync(
+                Path.Combine(dir, "pool.meta.json"), composite: "abc123",
+                extraJson: "\"chunkBudgetMultiplier\":11");
+
+            await new BenchmarkAggregateScenario()
+                .RunAsync(Flags(keyMapPath, hitsPath, dir, configLabel: "carried"));
+
+            var sidecar = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(dir, "carried.meta.json")))!;
+            sidecar["chunkBudgetMultiplier"]!.GetValue<int>().Should().Be(11);
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    // ── F4c: the dump's rank column is checked, not discarded ────────────────────────────────
+
+    // This reader rebuilds the ranking from FILE ORDER alone. A dump that had been sorted, filtered
+    // or concatenated used to read as valid and produce a plausible run file from the wrong order.
+    [Fact]
+    public async Task RunAsync_DumpRankDisagreesWithFileOrder_ThrowsNamingTheRow()
+    {
+        var dir = TempDir("bad-rank");
+        try
+        {
+            var keyMapPath = Path.Combine(dir, "keymap.json");
+            await KeyMap.SaveAsync(
+                new Dictionary<string, string> { ["k1"] = "doc1", ["k2"] = "doc2" }, keyMapPath);
+
+            var hitsPath = Path.Combine(dir, "pool.chunks.hits.tsv");
+            // Row 2 of q1 claims rank 3 -- a row between them was dropped, or the file was sorted.
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9), ("q1", "k2", 3, 0.5));
+            await WritePoolSidecarAsync(Path.Combine(dir, "pool.meta.json"), composite: "abc123");
+
+            var act = () => new BenchmarkAggregateScenario()
+                .RunAsync(Flags(keyMapPath, hitsPath, dir, configLabel: "reordered"));
+            (await act.Should().ThrowAsync<InvalidOperationException>())
+                .WithMessage("*:3:*");  // the 1-based row number of the offending line
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    [Fact]
+    public async Task RunAsync_DumpRankIsPerQuery_NotPerFile()
+    {
+        var dir = TempDir("per-query-rank");
+        try
+        {
+            var keyMapPath = Path.Combine(dir, "keymap.json");
+            await KeyMap.SaveAsync(new Dictionary<string, string> { ["k1"] = "doc1" }, keyMapPath);
+
+            var hitsPath = Path.Combine(dir, "pool.chunks.hits.tsv");
+            // q2's ranks restart at 1 -- a per-file running rank check would reject this valid dump.
+            await WriteHitsAsync(hitsPath, ("q1", "k1", 1, 0.9), ("q1", "k1", 2, 0.5), ("q2", "k1", 1, 0.7));
+            await WritePoolSidecarAsync(Path.Combine(dir, "pool.meta.json"), composite: "abc123");
+
+            await new BenchmarkAggregateScenario()
+                .RunAsync(Flags(keyMapPath, hitsPath, dir, configLabel: "perq"));
+
+            var lines = await File.ReadAllLinesAsync(Path.Combine(dir, "perq.chunks.trec"));
+            lines.Should().Equal("q1 Q0 doc1 1 0.900000 perq", "q2 Q0 doc1 1 0.700000 perq");
         }
         finally { Directory.Delete(dir, recursive: true); }
     }

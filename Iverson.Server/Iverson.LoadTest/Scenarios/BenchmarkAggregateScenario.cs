@@ -62,6 +62,19 @@ public sealed class BenchmarkAggregateScenario
             throw new InvalidOperationException("--config-label was not provided.");
         }
 
+        // Checked HERE, before a single file is opened. A NaN beta skips CollapseByDocIdWithTail's
+        // `beta == 0` short-circuit, scores every document NaN, writes a complete-looking run file of
+        // NaN rows, and only then fails when System.Text.Json refuses NaN for the sidecar -- leaving a
+        // poisoned run file with no sidecar to disown it. A negative beta is not a weighting the spec
+        // defines: it PENALISES a document for having more good chunks.
+        if (!double.IsFinite(flags.Beta) || flags.Beta < 0)
+        {
+            Console.Error.WriteLine(
+                $"REFUSING: --beta '{flags.Beta.ToString(CultureInfo.InvariantCulture)}' is not a finite, " +
+                "non-negative number -- the tail-sum weight must be finite and >= 0.");
+            throw new InvalidOperationException("--beta must be finite and non-negative.");
+        }
+
         // Derived from --hits-path, NOT --config-label: the pool run's own sidecar sits beside the pool
         // run's own label, which may differ from this replay's --config-label (Phase 2's β arms carry
         // different labels against the same pool), and the identity check (Task 5) runs at the pool's
@@ -95,6 +108,21 @@ public sealed class BenchmarkAggregateScenario
             throw new InvalidOperationException("pool sidecar had no composite for run attribution.");
         }
 
+        // The dump holds the RAW SearchChunks scores, captured before the cross-encoder rescored the
+        // max-passage winners -- so a reranked pool run's own .chunks.trec was built from reranker
+        // scores that never entered the dump. Replaying that dump does not reproduce the pool run at
+        // beta=0, and the two rankings are not comparable at any beta. BenchmarkQueryScenario writes
+        // this key as JSON null on an un-reranked run, which indexes to a null JsonNode exactly as an
+        // absent key does, so both non-reranked shapes pass.
+        if (poolSidecarJson["reranker"] is not null)
+        {
+            Console.Error.WriteLine(
+                $"REFUSING: {poolSidecarPath} records a reranker -- that run's .chunks.trec came from " +
+                "cross-encoder scores, while the dump holds the raw pre-rerank chunk scores. The replay " +
+                "would not be comparable to the pool run at any beta.");
+            throw new InvalidOperationException("pool sidecar records a reranker; the dump is pre-rerank.");
+        }
+
         var keyMap = await KeyMap.LoadAsync(flags.KeyMapPath, ct);
         Console.WriteLine($"[benchmark-aggregate] Loaded key map ({keyMap.Count:N0} entries) from {flags.KeyMapPath}");
 
@@ -106,6 +134,40 @@ public sealed class BenchmarkAggregateScenario
         // aggregator defect.
         var hits = await ReadHitsAsync(flags.HitsPath, ct);
         Console.WriteLine($"[benchmark-aggregate] Loaded {hits.Count:N0} chunk hit(s) from {flags.HitsPath}");
+
+        // A run that BenchmarkQueryScenario REFUSED (failed RPCs, or parent keys absent from the key
+        // map) still leaves a complete-looking dump behind, under exactly the filenames an accepted run
+        // uses and with the same composite -- and a beta=0 replay of it passes the identity check. The
+        // only thing on disk that separates the two is this field: BenchmarkQueryScenario writes
+        // `queryCount` into the sidecar ONLY after both of its fail-loud checks have passed.
+        var declaredQueryCount = poolSidecarJson["queryCount"]?.GetValue<int>();
+        var dumpQueryCount     = hits.Select(h => h.QueryId).Distinct(StringComparer.Ordinal).Count();
+        if (declaredQueryCount is { } declared)
+        {
+            if (declared != dumpQueryCount)
+            {
+                Console.Error.WriteLine(
+                    $"REFUSING: {poolSidecarPath} records queryCount={declared:N0}, but {flags.HitsPath} " +
+                    $"holds {dumpQueryCount:N0} distinct query id(s) -- the dump is from an incomplete " +
+                    "run and must not be replayed.");
+                throw new InvalidOperationException(
+                    $"pool sidecar queryCount ({declared}) does not match the dump's distinct query id " +
+                    $"count ({dumpQueryCount}) -- the dump is from an incomplete run.");
+            }
+        }
+        else
+        {
+            Console.Error.WriteLine(
+                "======================================================================\n" +
+                $"WARNING: {poolSidecarPath}\n" +
+                "has no \"queryCount\" -- it predates the run-completeness field, so this replay CANNOT\n" +
+                "verify that\n" +
+                $"  {flags.HitsPath}\n" +
+                "came from a run that finished. A run BenchmarkQueryScenario REFUSED leaves a dump that\n" +
+                "is indistinguishable from an accepted one. Confirm by hand that this dump is the\n" +
+                "accepted run's before scoring anything derived from it.\n" +
+                "======================================================================");
+        }
 
         var results = new List<(string QueryId, IReadOnlyList<(string DocId, double Score)> Ranked)>();
         var unresolvedParents = new HashSet<string>(StringComparer.Ordinal);
@@ -134,6 +196,10 @@ public sealed class BenchmarkAggregateScenario
             ["beta"]                = flags.Beta,
             ["hitsPath"]            = flags.HitsPath,
             ["recordedAtUtc"]       = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            // Carried through from the pool sidecar rather than recomputed: SearchChunks top_k is
+            // 50 x this, so it is the parameter the whole result is scoped to, and a replayed arm whose
+            // sidecar omits it cannot be compared to anything. Null when the pool sidecar lacks it.
+            ["chunkBudgetMultiplier"] = poolSidecarJson["chunkBudgetMultiplier"]?.DeepClone(),
         };
         var sidecarPath = Path.Combine(flags.OutputDir, $"{flags.ConfigLabel}.meta.json");
         await File.WriteAllTextAsync(sidecarPath, sidecar.ToJsonString(SidecarWriteOptions), ct);
@@ -175,18 +241,42 @@ public sealed class BenchmarkAggregateScenario
         var queryIdCol   = index["queryId"];
         var parentKeyCol = index["parentKey"];
         var scoreCol     = index["score"];
+        // Optional only so a dump written without the column stays readable; when it IS present it is
+        // checked, because it is the file's own record of the order this reader depends on.
+        var rankCol = index.TryGetValue("rank", out var rankIndex) ? rankIndex : -1;
 
         var hits = new List<(string QueryId, string ParentKey, double Score)>(lines.Length - 1);
+        var rowsPerQuery = new Dictionary<string, int>(StringComparer.Ordinal);
         for (var i = 1; i < lines.Length; i++)
         {
             ct.ThrowIfCancellationRequested();
             if (lines[i].Length == 0) continue;
 
-            var fields = lines[i].Split('\t');
+            var fields  = lines[i].Split('\t');
+            var queryId = fields[queryIdCol];
+
+            // ChunkHitDumpWriter writes `rank` 1-based per query in the order the hits were supplied,
+            // and this reader rebuilds the ranking from FILE ORDER alone -- it never sorts. Nothing used
+            // to check that the two agree, so a dump that had been sorted, filtered or concatenated read
+            // as valid and produced a plausible run file from the wrong order. Cross-check them.
+            rowsPerQuery.TryGetValue(queryId, out var rowsSoFar);
+            rowsPerQuery[queryId] = ++rowsSoFar;
+            if (rankCol >= 0)
+            {
+                if (!int.TryParse(fields[rankCol], NumberStyles.Integer, CultureInfo.InvariantCulture, out var rank))
+                    throw new InvalidOperationException(
+                        $"{path}:{i + 1}: rank '{fields[rankCol]}' is not an integer.");
+                if (rank != rowsSoFar)
+                    throw new InvalidOperationException(
+                        $"{path}:{i + 1}: rank {rank} disagrees with file order (this is row {rowsSoFar} " +
+                        $"of query '{queryId}') -- the dump has been reordered or edited, and this reader " +
+                        "rebuilds the ranking from file order alone.");
+            }
+
             hits.Add((
-                fields[queryIdCol],
+                queryId,
                 fields[parentKeyCol],
-                double.Parse(fields[scoreCol], CultureInfo.InvariantCulture)));
+                double.Parse(fields[scoreCol], NumberStyles.Float, CultureInfo.InvariantCulture)));
         }
 
         return hits;
