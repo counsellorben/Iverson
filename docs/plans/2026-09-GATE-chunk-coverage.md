@@ -5,9 +5,9 @@ Recorded 2026-09-09 from the `chunk-coverage-phase1` worktree at HEAD `7463d6c`
 `docs/plans/2026-09-09-chunk-coverage-phase1-implementation-plan.md`. The design is
 `docs/specs/2026-09-08-chunk-coverage-signal-design.md`; Phase 1's purpose is set by its §2 and §3.
 
-Phase 1 measures. It does not calibrate β and it does not score any β ≠ 0 arm — the spec was
-corrected twice for calibrating β against a quantity no artefact on disk contained, and this phase
-exists to produce that quantity first.
+Phase 1 measures `s` and derives the ladder's two endpoints from it. It does not select the
+ladder and it does not score any β ≠ 0 arm — the spec was corrected twice for calibrating β against
+a quantity no artefact on disk contained, and this phase exists to produce that quantity first.
 
 **Verdict: Phase 2 is warranted.** 85.0 % of top-50 document slots contribute a tail. The plan's stated
 kill condition — "a histogram showing most top-50 documents contribute a single pooled chunk … ends
@@ -179,5 +179,33 @@ necessary condition for the signal to do anything at all, not evidence that it i
 it in the right direction is exactly what Phase 2 measures and what this phase cannot anticipate.
 
 The scope limits in the plan's "Tasks NOT in this plan" and "Known issues inherited from spec" carry
-forward unchanged. In particular the deep-tail evidence remains 512-window only, so a Phase 2 null
-on FreshStack-2048 still cannot be triangulated against any deep-tail arm at the window that ships.
+forward **with one exception, below**. In particular the deep-tail evidence remains 512-window only,
+so a Phase 2 null on FreshStack-2048 still cannot be triangulated against any deep-tail arm at the
+window that ships.
+
+### One inherited caveat is refuted by this measurement
+
+Spec §9 and the plan both carry: *"The tail cap of 3 rarely binds on FreshStack-2048. At a mean of
+3.10 chunks per document the typical tail is 1–2 chunks; the cap binds for the 46.0 % with four or
+more."* **Do not carry that forward.** It is internally inconsistent on its face ("rarely binds …
+binds for the 46.0 %"), and it describes the wrong population: 46.0 % is a share of *corpus
+documents*, whereas ranking operates over *retrieved slots*. Measured here, **50.5 % of top-50 slots
+contribute ≥ 4 pooled chunks**, so the cap binds on the majority of the slots the ranking actually
+decides between.
+
+This matters for how a Phase 2 null is read. "The cap barely binds" would license "we never really
+tested a 3-chunk tail"; the measurement says the term is a full 3-chunk sum for most ranked slots,
+so a null is a null about the signal, not about an inactive cap.
+
+### Prerequisite for Phase 2: spec §6's ordering check needs the auxiliary scores file
+
+Spec §6 — the only falsifier of the tail's *ordering* rule, since §5's SciFact invariant explicitly
+cannot check it — requires `score_β − score_0` for every document in the β-arm's top 50 contributing
+≥ 4 chunks. The `.chunks.trec` run file cannot supply that: it is truncated at 50 documents and
+formatted to 6 decimal places, so at a parity-scale β a substantial share of exactly the documents
+the tail term *promoted* have no `score_0` row at all, and the check would silently degrade to the
+intersection while looking like it ran.
+
+`benchmark-aggregate --scores-path <file>` (added on this branch) writes an untruncated,
+full-precision per-document score file for this purpose; it is opt-in and leaves `.chunks.trec`
+byte-identical. **Phase 2 must run §6 from that file, not from the run file.**
