@@ -187,6 +187,24 @@ public sealed class BenchmarkAggregateScenario
         await TrecRunWriter.WriteAsync(runPath, results, flags.ConfigLabel, ct);
         Console.WriteLine($"[benchmark-aggregate] Wrote {runPath}");
 
+        // Opt-in, and a SEPARATE file: the run file above is written from `results` and is byte-identical
+        // whether or not --scores-path is passed, which is what keeps the beta=0 identity check meaningful.
+        if (!string.IsNullOrWhiteSpace(flags.ScoresPath))
+        {
+            var scores = new List<(string QueryId, IReadOnlyList<(string DocId, double Score)> Ranked)>();
+            foreach (var group in hits.GroupBy(h => h.QueryId))
+            {
+                var chunks = group.Select(h => (h.ParentKey, h.Score));
+                // int.MaxValue, not DocumentBudget: spec section 6 differences score_beta - score_0 over
+                // the beta arm's top 50, and at parity beta ~35% of those documents fall outside the
+                // beta=0 arm's own top 50 -- exactly the documents the tail term promoted. Truncating
+                // here would silently narrow that check to the intersection of the two top-50 sets.
+                scores.Add((group.Key, MaxPassageAggregator.Aggregate(chunks, keyMap, int.MaxValue, flags.Beta).Ranked));
+            }
+            await WriteScoresAsync(flags.ScoresPath, scores, ct);
+            Console.WriteLine($"[benchmark-aggregate] Wrote {flags.ScoresPath}");
+        }
+
         Directory.CreateDirectory(flags.OutputDir);
         var sidecar = new JsonObject
         {
@@ -280,6 +298,35 @@ public sealed class BenchmarkAggregateScenario
         }
 
         return hits;
+    }
+
+    /// <summary>
+    /// Writes the auxiliary <c>--scores-path</c> file: <c>queryId&lt;TAB&gt;docId&lt;TAB&gt;score</c>, one
+    /// row per (query, document), covering every document the query pooled rather than only its top 50,
+    /// and each score shortest-round-trippable rather than <see cref="TrecRunWriter"/>'s display-formatted
+    /// <c>F6</c> -- F6 puts +/-1e-6 of noise on every score, the same order as the differences spec
+    /// section 6 looks at. Query order and within-query score order match the run file's exactly.
+    /// </summary>
+    private static async Task WriteScoresAsync(
+        string path,
+        IEnumerable<(string QueryId, IReadOnlyList<(string DocId, double Score)> Ranked)> results,
+        CancellationToken ct)
+    {
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+
+        await using var writer = new StreamWriter(path, append: false);
+        await writer.WriteLineAsync("queryId\tdocId\tscore");
+        foreach (var (queryId, ranked) in results)
+        {
+            foreach (var (docId, score) in ranked)
+            {
+                ct.ThrowIfCancellationRequested();
+                await writer.WriteLineAsync(
+                    $"{queryId}\t{docId}\t{score.ToString(CultureInfo.InvariantCulture)}");
+            }
+        }
     }
 
     /// <summary>

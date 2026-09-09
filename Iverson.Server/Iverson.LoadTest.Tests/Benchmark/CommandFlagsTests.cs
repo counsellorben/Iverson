@@ -50,6 +50,13 @@ public class CommandFlagsTests
     }
 
     [Fact]
+    public void Parse_ScoresPath_Parses_AndDefaultsToEmpty()
+    {
+        CommandFlags.Parse(["--scores-path", "runs/a.scores.tsv"]).ScoresPath.Should().Be("runs/a.scores.tsv");
+        CommandFlags.Parse([]).ScoresPath.Should().Be("");
+    }
+
+    [Fact]
     public void Parse_HitsPath_Parses_AndDefaultsToEmpty()
     {
         CommandFlags.Parse(["--hits-path", "runs/a.chunks.hits.tsv"]).HitsPath.Should().Be("runs/a.chunks.hits.tsv");

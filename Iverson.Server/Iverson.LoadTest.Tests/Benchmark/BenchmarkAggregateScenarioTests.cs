@@ -36,7 +36,7 @@ public class BenchmarkAggregateScenarioTests
 
     private static CommandFlags Flags(
         string keyMapPath, string hitsPath, string outputDir, string configLabel = ConfigLabel,
-        double beta = 0) =>
+        double beta = 0, string scoresPath = "") =>
         new()
         {
             KeyMapPath  = keyMapPath,
@@ -44,6 +44,7 @@ public class BenchmarkAggregateScenarioTests
             OutputDir   = outputDir,
             ConfigLabel = configLabel,
             Beta        = beta,
+            ScoresPath  = scoresPath,
         };
 
     [Fact]
@@ -640,5 +641,92 @@ public class BenchmarkAggregateScenarioTests
             lines.Should().Equal("q1 Q0 doc1 1 0.900000 perq", "q2 Q0 doc1 1 0.700000 perq");
         }
         finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    // ── F5: the opt-in auxiliary scores file ─────────────────────────────────────────────────
+
+    // Spec section 6 differences score_beta - score_0 over the beta arm's top 50; at parity beta ~35%
+    // of those documents fall outside the beta=0 arm's own top 50, so a top-50-truncated file cannot
+    // answer it. This file is untruncated, and full-precision rather than F6 -- F6's +/-1e-6 is the
+    // same order as the differences being measured.
+    [Fact]
+    public async Task RunAsync_ScoresPath_WritesEveryDocumentAtFullPrecision_NotJustTheTopFifty()
+    {
+        var dir = TempDir("scores");
+        try
+        {
+            var keyMap = new Dictionary<string, string>();
+            var rows   = new List<(string, string, int, double)>();
+            // 52 documents, one chunk each, descending -- two more than DocumentBudget.
+            for (var i = 0; i < 52; i++)
+            {
+                keyMap[$"k{i}"] = $"doc{i:D2}";
+                rows.Add(("q1", $"k{i}", i + 1, 0.9 - i * 0.001));
+            }
+            // A 53rd document whose score needs more than F6 to survive a round trip.
+            keyMap["k-precise"] = "doc-precise";
+            rows.Add(("q1", "k-precise", 53, 0.1234567890123));
+
+            var keyMapPath = Path.Combine(dir, "keymap.json");
+            await KeyMap.SaveAsync(keyMap, keyMapPath);
+
+            var hitsPath = Path.Combine(dir, "pool.chunks.hits.tsv");
+            await WriteHitsAsync(hitsPath, rows.ToArray());
+            await WritePoolSidecarAsync(Path.Combine(dir, "pool.meta.json"), composite: "abc123");
+
+            var scoresPath = Path.Combine(dir, "arm.scores.tsv");
+            await new BenchmarkAggregateScenario().RunAsync(
+                Flags(keyMapPath, hitsPath, dir, configLabel: "arm", scoresPath: scoresPath));
+
+            var runLines = await File.ReadAllLinesAsync(Path.Combine(dir, "arm.chunks.trec"));
+            runLines.Should().HaveCount(50, "the run file is still truncated to DocumentBudget");
+
+            var scoreLines = await File.ReadAllLinesAsync(scoresPath);
+            scoreLines[0].Should().Be("queryId\tdocId\tscore");
+            scoreLines.Should().HaveCount(54, "header plus all 53 pooled documents, untruncated");
+            scoreLines[1].Should().Be("q1\tdoc00\t0.9");
+            scoreLines.Last().Should().Be("q1\tdoc-precise\t0.1234567890123",
+                "F6 would round this to 0.123457 -- the noise floor spec section 6 cannot afford");
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    // The branch's central deliverable is a byte-identity on this file. A new opt-in output must not
+    // perturb it in either direction.
+    [Fact]
+    public async Task RunAsync_ScoresPath_LeavesTheRunFileByteIdentical()
+    {
+        var poolDir = TempDir("identity-pool");
+        var withOut = TempDir("identity-without");
+        var withDir = TempDir("identity-with");
+        try
+        {
+            var keyMapPath = Path.Combine(poolDir, "keymap.json");
+            await KeyMap.SaveAsync(
+                new Dictionary<string, string> { ["k1"] = "doc1", ["k2"] = "doc2" }, keyMapPath);
+
+            var hitsPath = Path.Combine(poolDir, "pool.chunks.hits.tsv");
+            await WriteHitsAsync(
+                hitsPath,
+                ("q1", "k1", 1, 0.9), ("q1", "k1", 2, 0.4), ("q1", "k2", 3, 0.85),
+                ("q2", "k2", 1, 0.7), ("q2", "k1", 2, 0.65));
+            await WritePoolSidecarAsync(Path.Combine(poolDir, "pool.meta.json"), composite: "abc123");
+
+            await new BenchmarkAggregateScenario().RunAsync(
+                Flags(keyMapPath, hitsPath, withOut, configLabel: "arm", beta: 0.0358));
+            await new BenchmarkAggregateScenario().RunAsync(
+                Flags(keyMapPath, hitsPath, withDir, configLabel: "arm", beta: 0.0358,
+                      scoresPath: Path.Combine(withDir, "arm.scores.tsv")));
+
+            var without = await File.ReadAllBytesAsync(Path.Combine(withOut, "arm.chunks.trec"));
+            var with    = await File.ReadAllBytesAsync(Path.Combine(withDir, "arm.chunks.trec"));
+            with.Should().Equal(without);
+        }
+        finally
+        {
+            Directory.Delete(poolDir, recursive: true);
+            Directory.Delete(withOut, recursive: true);
+            Directory.Delete(withDir, recursive: true);
+        }
     }
 }

@@ -284,6 +284,13 @@ switch (command)
               --beta <n>             benchmark-aggregate only: tail-sum weight passed to the aggregator
                                      (default 0, which reproduces today's max-passage ranking exactly).
                                      Must be finite and >= 0.
+              --scores-path <file>  benchmark-aggregate only, opt-in: also write every document's
+                                     augmented score at this --beta, UNTRUNCATED (no top-50 cut) and at
+                                     full round-trippable precision, as `queryId<TAB>docId<TAB>score`.
+                                     Spec §6's ordering check differences score_beta - score_0 over the
+                                     beta arm's top 50, ~35% of which have no score_0 in a top-50
+                                     F6-formatted run file. Omitting the flag changes nothing:
+                                     <config-label>.chunks.trec is byte-identical either way.
             """);
         break;
 }
@@ -419,6 +426,7 @@ public sealed class CommandFlags
     public string RerankInput { get; init; } = RerankInputs.WinningChunkFlag;
     public int    ChunkBudgetMultiplier { get; init; } = 5;
     public string HitsPath    { get; init; } = "";
+    public string ScoresPath  { get; init; } = "";
     public double Beta        { get; init; }
 
     public static CommandFlags Parse(string[] args) => new()
@@ -438,6 +446,7 @@ public sealed class CommandFlags
         RerankInput = StrFlag(args, "--rerank-input", RerankInputs.WinningChunkFlag),
         ChunkBudgetMultiplier = IntFlag(args, "--chunk-budget-multiplier", 5),
         HitsPath    = StrFlag(args, "--hits-path",   ""),
+        ScoresPath  = StrFlag(args, "--scores-path", ""),
         Beta        = DblFlag(args, "--beta",        0),
     };
 
