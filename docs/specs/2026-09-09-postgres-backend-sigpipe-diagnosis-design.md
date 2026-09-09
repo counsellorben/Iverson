@@ -127,8 +127,10 @@ settings close it for client backends, applied with `ALTER SYSTEM SET` + `SELECT
 | `log_disconnections` | `off` | `on` |
 
 `log_connections` records a client backend's identity at connect time exactly, with no sampling gap.
-`%q` suppresses the user/database portion for non-session processes, so postmaster and auxiliary
-lines are unchanged. `%a` is omitted: nothing in the codebase or compose sets `Application Name`
+`%q` is intended to suppress the user/database portion for non-session processes, leaving postmaster
+and auxiliary lines unchanged. **This is not verified here** — confirming it needs `elog.c`, which the
+container image does not ship — and nothing in this design rests on it: §5 and §6 discriminate on the
+presence or absence of the connection lines and the ledger row, never on the prefix's shape. `%a` is omitted: nothing in the codebase or compose sets `Application Name`
 (§9 #14), so it would be empty for every client except the poller.
 
 **These are a complement, and their limitation is now tolerable rather than fatal.**
@@ -251,7 +253,8 @@ stopped state. **No settings were changed** and no poller was left running.
 | 22 | §7's cost is bounded to one backoff per tenant per 30 s | **FALSE** — `TenantStatusCache.cs:17-19` caches only after a successful read, so failures cache nothing and every call retries | ❌ — §7 now states this and defers the remedy to implementation |
 | 23 | 12 of 19 containers were created from paths that no longer exist | `docker inspect` `com.docker.compose.project.working_dir` per container, measured | ✅ |
 | 24 | Nothing needs a tier-wide `up` | all 19 containers exist and start individually with `docker start` | ✅ |
-| 25 | Npgsql raises a distinguishable exception for a severed connection | observed `NpgsqlException` wrapping `EndOfStreamException`, three occurrences in the api log. **Not a survey** of Npgsql's exception classes | ⚠️ observed only — must be confirmed before §7 is implemented |
+| 25 | No gRPC deadline in this repo would be exceeded by a ~10 s backoff | the only `Deadline` across `Iverson.Server` and `Iverson.Clients` is `Api.Tests/Helpers/TestServerCallContext.cs:37` (`DateTime.MaxValue`); no production call sets one. **Scope:** this covers this repo's own clients only — an external caller could still set a deadline a §7 backoff would blow through | ✅ scoped |
+| 26 | Npgsql raises a distinguishable exception for a severed connection | observed `NpgsqlException` wrapping `EndOfStreamException`, three occurrences in the api log. **Not a survey** of Npgsql's exception classes | ⚠️ observed only — must be confirmed before §7 is implemented |
 
 ## 10. Known issues, accepted as out of scope
 
@@ -265,7 +268,7 @@ stopped state. **No settings were changed** and no poller was left running.
 - **The container map is only as good as its sampling.** If the stack is restarted and the ledger's
   map is stale at crash time, an address may resolve to the wrong container or to none. §5 step 5
   records whether a restart intervened so this is visible rather than silent.
-- **Assumption 25 is confirmed only by observed instances**, not by a survey of Npgsql's exception
+- **Assumption 26 is confirmed only by observed instances**, not by a survey of Npgsql's exception
   classes. Which classes actually signal a severed connection must be settled before §7 is
   implemented — not before this spec lands.
 - **The poller is itself a Postgres client** and appears in its own ledger. §6 has a row for that. It
