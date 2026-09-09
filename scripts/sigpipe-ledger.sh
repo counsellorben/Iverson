@@ -20,6 +20,7 @@
 # resolve client_addr against the map AS RECORDED NEAREST THE CRASH, not against the current stack.
 #
 # RUNNING IT. Foreground by default. To leave it running:  setsid ./scripts/sigpipe-ledger.sh &
+# The script writes its own PID to <out-dir>/poller.pid and prints the stop command on startup.
 # Stopping it is the whole teardown -- it changes no Postgres state and creates no containers.
 #
 # state and query are recorded as of the FIRST tick that saw a backend, not as of the crash.
@@ -77,6 +78,20 @@ copy (select now(), pid, backend_start, backend_type,
 SQL
 
 declare -A SEEN
+
+# Write poller PID and print stop command
+PID_FILE="${OUT_DIR}/poller.pid"
+echo $$ > "$PID_FILE"
+echo "poller PID $$ — stop with: kill \$(cat ${PID_FILE})"
+
+# Prime SEEN from existing ledger to avoid duplicates on relaunch
+if [[ -s "$LEDGER" ]]; then
+    while IFS= read -r row; do
+        [[ -z "$row" ]] && continue
+        key="$(cut -d, -f2 <<<"$row")|$(cut -d, -f3 <<<"$row")"
+        SEEN[$key]=1
+    done < <(tail -n +2 "$LEDGER")
+fi
 
 echo "[sigpipe-ledger] polling ${CONTAINER} every ${INTERVAL}s -> ${LEDGER}"
 echo "[sigpipe-ledger] container map every ${MAP_EVERY} ticks -> ${MAP}"
