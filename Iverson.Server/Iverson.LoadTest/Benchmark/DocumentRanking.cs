@@ -12,6 +12,8 @@ namespace Iverson.LoadTest.Benchmark;
 /// </summary>
 public static class DocumentRanking
 {
+    private const int TailCap = 3;
+
     public static IReadOnlyList<(string DocId, double Score)> CollapseByDocId(
         IEnumerable<(string DocId, double Score)> scored,
         int limit) =>
@@ -41,6 +43,40 @@ public static class DocumentRanking
             .OrderByDescending(kv => kv.Value.Score)
             .Take(limit)
             .Select(kv => (kv.Key, kv.Value.Score, kv.Value.Text))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Collapses chunk rows to one row per parent, scoring each as its maximum chunk score plus
+    /// <paramref name="beta"/> times the sum of up to its next <see cref="TailCap"/> highest chunk
+    /// scores (spec §2). At beta == 0 this delegates to <see cref="CollapseByDocId"/> outright, so the
+    /// ranking is bit-identical to today's max-passage rather than incidentally equal through IEEE
+    /// arithmetic — the Phase 1 identity check asserts exactly that.
+    /// </summary>
+    public static IReadOnlyList<(string DocId, double Score)> CollapseByDocIdWithTail(
+        IEnumerable<(string DocId, double Score)> scored,
+        int limit,
+        double beta)
+    {
+        if (beta == 0) return CollapseByDocId(scored, limit);
+
+        var byDoc = new Dictionary<string, List<double>>();
+        foreach (var (docId, score) in scored)
+        {
+            if (!byDoc.TryGetValue(docId, out var scores))
+                byDoc[docId] = scores = [];
+            scores.Add(score);
+        }
+
+        return byDoc
+            .Select(kv =>
+            {
+                var descending = kv.Value.OrderByDescending(s => s).ToList();
+                var tail       = descending.Skip(1).Take(TailCap).Sum();
+                return (DocId: kv.Key, Score: descending[0] + beta * tail);
+            })
+            .OrderByDescending(r => r.Score)
+            .Take(limit)
             .ToList();
     }
 }
