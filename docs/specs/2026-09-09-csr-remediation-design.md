@@ -39,7 +39,7 @@ One git worktree off `main`, **11 SDD tasks**, per-task review between each, fin
 | 8 | Connection strings fail closed | #6 | `appsettings` + compose + Helm |
 | 9 | Security headers | #7 | nginx + Ingress |
 | 10 | `/v1/traces` body limit; Authentik pagination | #10, #12 | `Iverson.Api` |
-| 11 | SSH.NET pin; CI checksums; action SHA pinning | #8, #9 | Deps + CI |
+| 11 | Testcontainers upgrade (clears SSH.NET advisory); CI checksums; action SHA pinning | #8, #9 | Deps + CI |
 
 **Grouping.** Tasks 2 and 3 are adjacent because both edit `blueprints-configmap-service-clients.yaml`. The five SDKs split across two tasks because one diff spanning five languages is not reviewable. Tasks 7, 10 and 11 each pair findings sharing a file or category.
 
@@ -247,7 +247,11 @@ Verify the envelope against a running Authentik (compose brings one up) or its `
 
 ### Task 11 — Supply chain (Findings #8, #9)
 
-**SSH.NET.** `2023.0.0` (GHSA-q939-rpr3-3284, High) arrives transitively via `Testcontainers 3.9.0` in four test projects. No production project is affected. There is **no** `Directory.Packages.props`, so add a direct `PackageReference` to a patched version in each of `Iverson.Api.Tests`, `Iverson.Sql.Tests`, `Iverson.StarRocks.Tests` and `Iverson.Vector.Tests`. Prefer this over upgrading Testcontainers to 4.x, which is a breaking change for test infrastructure and out of proportion to a test-only advisory.
+**SSH.NET.** `2023.0.0` (GHSA-q939-rpr3-3284 / CVE-2026-48798, High) arrives transitively via `Testcontainers 3.9.0` in four test projects. No production project is affected.
+
+**Upgrade Testcontainers to `4.15.0` rather than pinning SSH.NET directly.** An earlier draft of this section preferred a direct `PackageReference` pin as "the minimal jump past the advisory." There is no minimal jump: the advisory affects **`<= 2025.1.0`** and is first patched in **`2026.0.0`**, so a pin requires the same 2023→2026 jump — but onto a `3.9.0` host built against `2023.0.0`, a pairing upstream never tests. Testcontainers `4.15.0` ships SSH.NET `2026.0.0` as its own tested dependency and targets `net10.0` directly, so the upgrade clears the advisory transitively with no pin at all.
+
+The upgrade is also smaller than that draft assumed: the API surface in use is already the modern fluent form 4.x preserved (`ContainerBuilder`, `IContainer`, `PostgreSqlBuilder`, `KafkaBuilder`), with no `TestcontainersBuilder<T>`, `INetwork` or endpoint-auth config. Six `PackageReference` lines across `Iverson.Api.Tests`, `Iverson.Sql.Tests`, `Iverson.StarRocks.Tests` and `Iverson.Vector.Tests`. Because the integration tests are the only place containers are actually constructed, they must be run explicitly to validate the upgrade.
 
 **CI integrity.** `.gitlab-ci.yml` downloads kubeconform, kube-score and tfsec release archives and executes them with no verification (`:26-28`, `:47-51`). Pin each to a published SHA-256 and verify before extraction. Pin the GitHub Actions in `.github/workflows/` by commit SHA rather than major tag.
 
@@ -303,7 +307,8 @@ The Python client suite is called out separately because it is the one Task 4 is
 | Six client SDKs | Five: DotNet, Go, Java, Python, TypeScript (`Common` is protos) | Task 4/5 scope corrected |
 | No existing test pins HAVING behaviour | **Three** do (`:2064`, `:2619`, `:2659`) | Task 6 includes rewriting all three |
 | No agent test pins `_user_key` | `test_session.py:243-251` does | Task 7 includes replacing it |
-| A central package-version file exists | None; no `Directory.Packages.props` | Task 11 pins in 4 projects |
+| A central package-version file exists | None; no `Directory.Packages.props` | Task 11 edits the 4 test projects individually |
+| SSH.NET has a patched version below `2026.0.0` | GitHub advisory API: affects `<= 2025.1.0`, **first patched `2026.0.0`**. Testcontainers `4.15.0` ships exactly that and targets `net10.0` | **Task 11 upgrades Testcontainers instead of pinning** |
 | CI runs the test suites | It does not | Done-criteria state the local-only gate |
 
 **Deferred to task time (need a live service):** whether StarRocks requires `AllowPublicKeyRetrieval` (Task 8); the Authentik pagination envelope (Task 10); whether StarRocks *executes* the HAVING reference — severity only, the fix is identical either way (Task 6); the suite baseline on `main`.
