@@ -96,4 +96,136 @@ public class DocumentRankingTests
 
         DocumentRanking.CollapseByDocId(scored, limit: 10).Should().Equal(("d1", 0.5, "first"));
     }
+
+    [Fact]
+    public void CollapseByDocIdWithTail_FiveChunks_SumsOnlyThe2ndThrough4thHighest()
+    {
+        // Tail is capped at 3: the 5th-highest chunk (0.1) must not contribute.
+        var scored = new[]
+        {
+            ("doc-1", 0.9),
+            ("doc-1", 0.5),
+            ("doc-1", 0.4),
+            ("doc-1", 0.3),
+            ("doc-1", 0.1),
+        };
+
+        var result = DocumentRanking.CollapseByDocIdWithTail(scored, limit: 10, beta: 1.0);
+
+        result.Should().ContainSingle().Which.Should().Be(("doc-1", 0.9 + (0.5 + 0.4 + 0.3)));
+    }
+
+    [Fact]
+    public void CollapseByDocIdWithTail_TwoChunks_SumsOnlyTheSecond()
+    {
+        var scored = new[] { ("doc-1", 0.9), ("doc-1", 0.4) };
+
+        var result = DocumentRanking.CollapseByDocIdWithTail(scored, limit: 10, beta: 1.0);
+
+        result.Should().ContainSingle().Which.Should().Be(("doc-1", 0.9 + 0.4));
+    }
+
+    [Theory]
+    [InlineData(0.0)]
+    [InlineData(0.5)]
+    [InlineData(1.0)]
+    public void CollapseByDocIdWithTail_SingleChunkDocument_ScoresExactlyItsMaxAtEveryBeta(double beta)
+    {
+        var scored = new[] { ("doc-1", 0.7) };
+
+        var result = DocumentRanking.CollapseByDocIdWithTail(scored, limit: 10, beta);
+
+        result.Should().ContainSingle().Which.Should().Be(("doc-1", 0.7));
+    }
+
+    [Fact]
+    public void CollapseByDocIdWithTail_OrdersByAugmentedScore_NotByMax()
+    {
+        // doc-low has the higher max (0.9) but no tail; doc-high has a lower max (0.6) plus a
+        // strong tail. At beta 1.0 the augmented score must flip the ordering.
+        var scored = new[]
+        {
+            ("doc-low", 0.9),
+            ("doc-high", 0.6),
+            ("doc-high", 0.5),
+            ("doc-high", 0.5),
+        };
+
+        var result = DocumentRanking.CollapseByDocIdWithTail(scored, limit: 10, beta: 1.0);
+
+        result.Should().BeEquivalentTo(new[]
+        {
+            ("doc-high", 0.6 + 0.5 + 0.5),
+            ("doc-low", 0.9),
+        }, options => options.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void CollapseByDocIdWithTail_TruncatesToLimitAfterCollapsing_NotBefore()
+    {
+        var scored = new[] { ("doc-1", 0.9), ("doc-1", 0.8), ("doc-2", 0.7) };
+
+        var result = DocumentRanking.CollapseByDocIdWithTail(scored, limit: 2, beta: 1.0);
+
+        result.Should().HaveCount(2);
+        result.Select(r => r.DocId).Should().BeEquivalentTo(new[] { "doc-1", "doc-2" });
+    }
+
+    // The rank-50 boundary is exactly where beta changes the scored document set, so a tie
+    // STRADDLING the limit is the untested edge closest to the gate: which of two equally-scored
+    // documents survives Take(limit) decides what gets scored at all. CollapseByDocIdWithTail
+    // populates its dictionary in input order and OrderByDescending is stable, so the survivor is
+    // the one whose first chunk appeared first in the input -- pinned here, not changed.
+    [Fact]
+    public void CollapseByDocIdWithTail_TieStraddlingTheLimit_KeepsTheFirstSeenDocument()
+    {
+        // doc-a and doc-b have identical chunk multisets, so their augmented scores are the same
+        // double exactly -- the tie does not depend on floating-point luck. doc-top outranks both.
+        var scored = new[]
+        {
+            ("doc-a",   0.5), ("doc-a", 0.2),
+            ("doc-b",   0.5), ("doc-b", 0.2),
+            ("doc-top", 0.9),
+        };
+
+        var result = DocumentRanking.CollapseByDocIdWithTail(scored, limit: 2, beta: 0.5);
+
+        result.Should().Equal(("doc-top", 0.9), ("doc-a", 0.5 + 0.5 * 0.2));
+    }
+
+    [Fact]
+    public void CollapseByDocIdWithTail_TieStraddlingTheLimit_FollowsInputOrder_NotDocIdOrder()
+    {
+        // Same inputs as above with doc-b's chunks first. If the survivor were chosen by doc id (or
+        // by anything other than first appearance) this would still return doc-a and the test above
+        // would pass for the wrong reason.
+        var scored = new[]
+        {
+            ("doc-b",   0.5), ("doc-b", 0.2),
+            ("doc-a",   0.5), ("doc-a", 0.2),
+            ("doc-top", 0.9),
+        };
+
+        var result = DocumentRanking.CollapseByDocIdWithTail(scored, limit: 2, beta: 0.5);
+
+        result.Should().Equal(("doc-top", 0.9), ("doc-b", 0.5 + 0.5 * 0.2));
+    }
+
+    [Fact]
+    public void CollapseByDocIdWithTail_BetaZero_EqualsCollapseByDocId()
+    {
+        var scored = new[]
+        {
+            ("doc-1", 0.9),
+            ("doc-1", 0.5),
+            ("doc-1", 0.4),
+            ("doc-2", 0.7),
+            ("doc-2", 0.2),
+        };
+
+        var tailResult = DocumentRanking.CollapseByDocIdWithTail(scored, limit: 10, beta: 0);
+        var maxResult  = DocumentRanking.CollapseByDocId(scored, limit: 10);
+
+        tailResult.Should().Equal(maxResult);
+    }
 }

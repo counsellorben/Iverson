@@ -21,4 +21,45 @@ public class CommandFlagsTests
         CommandFlags.Parse(["--chunk-budget-multiplier", "11"]).ChunkBudgetMultiplier.Should().Be(11);
         CommandFlags.Parse([]).ChunkBudgetMultiplier.Should().Be(5);
     }
+
+    // Mutation: a locale-sensitive parse (comma-decimal) would misparse "--beta 0.003" on a
+    // non-invariant machine locale; DblFlag must use CultureInfo.InvariantCulture.
+    [Fact]
+    public void Parse_Beta_Parses_AndDefaultsToZero()
+    {
+        CommandFlags.Parse(["--beta", "0.003"]).Beta.Should().Be(0.003);
+        CommandFlags.Parse([]).Beta.Should().Be(0);
+    }
+
+    // The comma is InvariantCulture's GROUP separator, and double.Parse(raw, IFormatProvider)
+    // implies NumberStyles.Float | AllowThousands -- so "--beta 0,003" used to parse as 3.0, ~84x
+    // the gate document's binding upper bound, and produced a well-formed run file. DblFlag must
+    // pass NumberStyles.Float explicitly so this throws instead.
+    [Fact]
+    public void Parse_Beta_WithAGroupSeparator_Throws_RatherThanParsingAsThreeThousand()
+    {
+        var act = () => CommandFlags.Parse(["--beta", "0,003"]);
+        act.Should().Throw<FormatException>();
+    }
+
+    [Fact]
+    public void Parse_Beta_StillAcceptsExponentAndSign()
+    {
+        CommandFlags.Parse(["--beta", "3.58e-2"]).Beta.Should().Be(0.0358);
+        CommandFlags.Parse(["--beta", "+0.0358"]).Beta.Should().Be(0.0358);
+    }
+
+    [Fact]
+    public void Parse_ScoresPath_Parses_AndDefaultsToEmpty()
+    {
+        CommandFlags.Parse(["--scores-path", "runs/a.scores.tsv"]).ScoresPath.Should().Be("runs/a.scores.tsv");
+        CommandFlags.Parse([]).ScoresPath.Should().Be("");
+    }
+
+    [Fact]
+    public void Parse_HitsPath_Parses_AndDefaultsToEmpty()
+    {
+        CommandFlags.Parse(["--hits-path", "runs/a.chunks.hits.tsv"]).HitsPath.Should().Be("runs/a.chunks.hits.tsv");
+        CommandFlags.Parse([]).HitsPath.Should().Be("");
+    }
 }

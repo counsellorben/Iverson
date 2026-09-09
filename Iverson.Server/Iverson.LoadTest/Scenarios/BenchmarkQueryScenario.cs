@@ -257,6 +257,10 @@ public sealed class BenchmarkQueryScenario(
         var chunksResults  = new List<(string QueryId, IReadOnlyList<(string DocId, double Score)> Ranked)>();
         var diversity      = new List<(string QueryId, (int At10, int At50) Diversity)>();
 
+        // Raw per-query chunk hits, pre-aggregation, for a later task to replay offline at different
+        // weightings (chunk-coverage-phase1 Task 2). Query order preserved, one entry per query.
+        var chunkHits = new List<(string QueryId, IReadOnlyList<(string ParentKey, double Score)> Hits)>();
+
         var done = 0;
         long failures = 0;
         var unresolvedParents = new HashSet<string>(StringComparer.Ordinal);
@@ -280,6 +284,7 @@ public sealed class BenchmarkQueryScenario(
             similarResults.Add((query.QueryId, similar.Ranked));
             chunksResults.Add((query.QueryId, chunks.Ranked));
             diversity.Add((query.QueryId, chunks.Diversity));
+            chunkHits.Add((query.QueryId, chunks.RawHits));
 
             done++;
             if (done % 25 == 0)
@@ -294,6 +299,13 @@ public sealed class BenchmarkQueryScenario(
 
         Console.WriteLine($"[benchmark-query] Wrote {similarPath}");
         Console.WriteLine($"[benchmark-query] Wrote {chunksPath}");
+
+        // Raw chunk hits, pre-aggregation, per query -- a fifth output alongside the four above, so a
+        // later task can replay MaxPassageAggregator offline at different weightings without re-running
+        // the search RPCs (chunk-coverage-phase1 Task 2).
+        var chunkHitsPath = Path.Combine(flags.OutputDir, $"{flags.ConfigLabel}.chunks.hits.tsv");
+        await ChunkHitDumpWriter.WriteAsync(chunkHitsPath, chunkHits, ct);
+        Console.WriteLine($"[benchmark-query] Wrote {chunkHitsPath}");
 
         // Chunk diversity is measured on the RAW SearchChunks hit list, before MaxPassageAggregator
         // collapses it to documents (spec §3.3) — that collapse is the only place the caller-visible
@@ -336,6 +348,22 @@ public sealed class BenchmarkQueryScenario(
                 $"scored. First few: {string.Join(", ", unresolvedParents.Take(5))}. Either drop the " +
                 "tenant's Qdrant collections and re-ingest (clear-data does NOT touch Qdrant), or pass a " +
                 "key map covering every ingest the collection holds.");
+
+        // Only now -- past BOTH fail-loud checks -- does the sidecar gain the field that says this run
+        // finished. It is a SECOND write, deliberately not a move of the first one: the sidecar is
+        // written before the first query so a run that dies mid-flight still leaves its build
+        // attribution behind. Without this field a REFUSED run's outputs are byte-indistinguishable
+        // from an accepted run's -- same filenames, same composite, a self-consistent dump, and a
+        // beta=0 benchmark-aggregate replay of it passes the identity check. `queryCount` is what
+        // benchmark-aggregate checks the dump's distinct query id count against.
+        var completedSidecarPath = Path.Combine(flags.OutputDir, $"{flags.ConfigLabel}.meta.json");
+        var completedSidecar = JsonNode.Parse(await File.ReadAllTextAsync(completedSidecarPath, ct))
+            ?? throw new InvalidOperationException($"{completedSidecarPath} could not be re-parsed.");
+        completedSidecar["queryCount"] = queries.Count;
+        await File.WriteAllTextAsync(
+            completedSidecarPath, completedSidecar.ToJsonString(SidecarWriteOptions), ct);
+        Console.WriteLine(
+            $"[benchmark-query] Recorded queryCount={queries.Count:N0} in {completedSidecarPath}");
     }
 
     private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed)> RunSimilarAsync(
@@ -383,7 +411,7 @@ public sealed class BenchmarkQueryScenario(
         return (DocumentRanking.CollapseByDocId(results, DocumentBudget), failed);
     }
 
-    private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed, IReadOnlyList<string> Unresolved, (int At10, int At50) Diversity)> RunChunksAsync(
+    private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed, IReadOnlyList<string> Unresolved, (int At10, int At50) Diversity, IReadOnlyList<(string ParentKey, double Score)> RawHits)> RunChunksAsync(
         CorpusQuery query, Metadata headers, IReadOnlyDictionary<string, string> keyMap,
         TeiRerankClient? reranker, RerankInput rerankInput, IReadOnlyDictionary<string, string>? corpusText,
         int chunkBudgetMultiplier, CancellationToken ct)
@@ -412,11 +440,16 @@ public sealed class BenchmarkQueryScenario(
         // counting after it would measure documents, not the caller-visible chunk diversity.
         var diversity = ChunkDiversity.Count(chunks.Select(c => c.ParentKey).ToList());
 
+        // Raw per-query hits, in the order SearchChunks returned them -- captured here so the caller
+        // can dump them (Task 2 of the chunk-coverage plan) without disturbing MaxPassageAggregator's
+        // own collapse below, which consumes the same projection.
+        var rawHits = chunks.Select(c => (c.ParentKey, c.Score)).ToList();
+
         if (reranker is null)
         {
             // Control path: byte-identical to the pre-reranker harness.
-            var aggregated = MaxPassageAggregator.Aggregate(chunks.Select(c => (c.ParentKey, c.Score)), keyMap, DocumentBudget);
-            return (aggregated.Ranked, failed, aggregated.UnresolvedParentKeys, diversity);
+            var aggregated = MaxPassageAggregator.Aggregate(rawHits, keyMap, DocumentBudget);
+            return (aggregated.Ranked, failed, aggregated.UnresolvedParentKeys, diversity, rawHits);
         }
 
         // Spec §3.3: aggregate to DocumentBudget documents FIRST (the unit reranked is the document,
@@ -448,7 +481,7 @@ public sealed class BenchmarkQueryScenario(
 
         var scores   = await reranker.ScoreAsync(query.Text, inputs, ct);
         var rescored = winners.Ranked.Select((w, i) => (w.DocId, scores[i]));
-        return (DocumentRanking.CollapseByDocId(rescored, DocumentBudget), failed, winners.UnresolvedParentKeys, diversity);
+        return (DocumentRanking.CollapseByDocId(rescored, DocumentBudget), failed, winners.UnresolvedParentKeys, diversity, rawHits);
     }
 
     private static List<CorpusQuery> LoadQueries(string corpusPath)
