@@ -1,3 +1,4 @@
+using System.Globalization;
 using Dapper;
 using Grpc.Core;
 using Grpc.Net.Client;
@@ -146,6 +147,7 @@ var services = new ServiceCollection()
     .AddSingleton<ReadPathScenario>()
     .AddSingleton<BenchmarkIngestScenario>()
     .AddSingleton<BenchmarkQueryScenario>()
+    .AddSingleton<BenchmarkAggregateScenario>()
     .BuildServiceProvider();
 
 if (needsTenantAndSchema)
@@ -191,6 +193,9 @@ switch (command)
         break;
     case "benchmark-query":
         await services.GetRequiredService<BenchmarkQueryScenario>().RunAsync(flags);
+        break;
+    case "benchmark-aggregate":
+        await services.GetRequiredService<BenchmarkAggregateScenario>().RunAsync(flags);
         break;
     case "all":
         await services.GetRequiredService<DirectSeeder>().RunAsync(flags);
@@ -238,6 +243,10 @@ switch (command)
               benchmark-query   Run SearchSimilar and SearchChunks over the ingested corpus's queries,
                                 aggregate chunk results to documents (max-passage), and write one
                                 TREC run file per RPC into --output-dir
+              benchmark-aggregate  Replay a benchmark-query run's raw chunk-hit dump (--hits-path) through
+                                the aggregator offline at a chosen --beta, writing <config-label>.chunks.trec
+                                and <config-label>.meta.json into --output-dir without re-querying the
+                                vector store
 
             Options:
               --force-reseed         Truncate and re-seed even if data already present
@@ -270,6 +279,10 @@ switch (command)
               --rerank-input <mode> winning-chunk (default) scores each document through its winning chunk;
                                      document scores it through its full beir/corpus.jsonl text (title +
                                      abstract). Requires --rerank-url.
+              --hits-path <file>    benchmark-aggregate only: path to a benchmark-query run's
+                                     <config-label>.chunks.hits.tsv dump to replay
+              --beta <n>             benchmark-aggregate only: tail-sum weight passed to the aggregator
+                                     (default 0, which reproduces today's max-passage ranking exactly)
             """);
         break;
 }
@@ -404,6 +417,8 @@ public sealed class CommandFlags
     public string RerankModel { get; init; } = "";
     public string RerankInput { get; init; } = RerankInputs.WinningChunkFlag;
     public int    ChunkBudgetMultiplier { get; init; } = 5;
+    public string HitsPath    { get; init; } = "";
+    public double Beta        { get; init; }
 
     public static CommandFlags Parse(string[] args) => new()
     {
@@ -421,6 +436,8 @@ public sealed class CommandFlags
         RerankModel = StrFlag(args, "--rerank-model", ""),
         RerankInput = StrFlag(args, "--rerank-input", RerankInputs.WinningChunkFlag),
         ChunkBudgetMultiplier = IntFlag(args, "--chunk-budget-multiplier", 5),
+        HitsPath    = StrFlag(args, "--hits-path",   ""),
+        Beta        = DblFlag(args, "--beta",        0),
     };
 
     private static int    IntFlag(
@@ -443,5 +460,16 @@ public sealed class CommandFlags
         return i >= 0 && i + 1 < a.Length
             ? a[i + 1]
             : d;
+    }
+
+    private static double DblFlag(
+        string[] a,
+        string f,
+        double d)
+    {
+        var raw = StrFlag(a, f, "");
+        return string.IsNullOrEmpty(raw)
+            ? d
+            : double.Parse(raw, CultureInfo.InvariantCulture);
     }
 }

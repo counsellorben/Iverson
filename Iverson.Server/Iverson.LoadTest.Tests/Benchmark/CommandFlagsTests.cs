@@ -21,4 +21,20 @@ public class CommandFlagsTests
         CommandFlags.Parse(["--chunk-budget-multiplier", "11"]).ChunkBudgetMultiplier.Should().Be(11);
         CommandFlags.Parse([]).ChunkBudgetMultiplier.Should().Be(5);
     }
+
+    // Mutation: a locale-sensitive parse (comma-decimal) would misparse "--beta 0.003" on a
+    // non-invariant machine locale; DblFlag must use CultureInfo.InvariantCulture.
+    [Fact]
+    public void Parse_Beta_Parses_AndDefaultsToZero()
+    {
+        CommandFlags.Parse(["--beta", "0.003"]).Beta.Should().Be(0.003);
+        CommandFlags.Parse([]).Beta.Should().Be(0);
+    }
+
+    [Fact]
+    public void Parse_HitsPath_Parses_AndDefaultsToEmpty()
+    {
+        CommandFlags.Parse(["--hits-path", "runs/a.chunks.hits.tsv"]).HitsPath.Should().Be("runs/a.chunks.hits.tsv");
+        CommandFlags.Parse([]).HitsPath.Should().Be("");
+    }
 }
