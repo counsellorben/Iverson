@@ -4,9 +4,8 @@ A Postgres **backend** in the dev stack dies of `signal 13: Broken pipe`, which 
 to terminate every other backend and reinitialize. Four occurrences are on record. Each one severs
 in-flight gRPC calls, and one of them refused a 42-minute benchmark run.
 
-The cause is **unknown**. This spec does not guess at it and does not fix it. It buys the one piece
-of evidence that every downstream decision depends on: **which service and database owned the backend
-that died.**
+The cause is **unknown**. This spec does not guess at it and does not fix it. It buys the evidence
+every downstream decision depends on: **what the dying backend was.**
 
 ## 1. The problem
 
@@ -18,60 +17,108 @@ LOG:  database system was not properly shut down; automatic recovery in progress
 FATAL:  the database system is in recovery mode      <- every concurrent connection
 ```
 
-Recorded occurrences, all `signal 13`:
+| # | When (UTC) | Dying PID | Recovery window | Benchmark running? |
+|---|---|---|---|---|
+| 1 | 2026-09-08 13:28:18 | 92587 | 8.3 s | unknown |
+| 2 | 2026-09-09 13:28:59 | 139873 | 2.4 s | yes |
+| 3 | 2026-09-09 13:30:10 | 139928 | 3.8 s | yes |
+| 4 | 2026-09-09 14:56:55 | 142842 | 5.7 s | **no** |
 
-| # | When (UTC) | Dying PID | Benchmark running? |
-|---|---|---|---|
-| 1 | 2026-09-08 13:28:18 | 92587 | unknown |
-| 2 | 2026-09-09 13:28:59 | 139873 | yes |
-| 3 | 2026-09-09 13:30:10 | 139928 | yes |
-| 4 | 2026-09-09 14:56:55 | 142842 | **no** |
-
-The container never restarts (`RestartCount = 0`, `StartedAt` days earlier), so `docker ps` reports it
-healthy throughout and only the Postgres log records the event.
+The container never restarts (`RestartCount = 0`), so `docker ps` reports it healthy throughout and
+only the Postgres log records the event.
 
 **Why this is abnormal rather than routine.** Postgres sets `SIGPIPE` to `SIG_IGN` in backends
-precisely so that a vanished client cannot kill one. A backend actually dying of signal 13 means
-something reset that disposition. Nothing has been confirmed about what.
+precisely so that a vanished client cannot kill one. A backend dying of signal 13 means something
+reset that disposition. Nothing has been confirmed about what.
 
 **Why it matters to Iverson.** The API-side failure is a gRPC `StatusCode=Unknown`, whose server
 stack is `Npgsql EndOfStreamException -> PostgresRepository.QuerySingleOrDefaultAsync ->
-TenantStatusCache.GetStatusAsync -> ActingUserInterceptor` — the call dies in the **acting-user
-interceptor, before the search runs**, so it can hit any RPC regardless of the query. On 2026-09-09
-this cost 2 of 1344 RPCs, one of them a `SearchChunks`, which silently truncated a chunk-hit dump to
-671/672 queries. The harness's fail-closed guard refused the run; that guard is the only thing that
-stood between this crash and a believed-but-wrong measurement.
+TenantStatusCache.GetStatusAsync -> ActingUserInterceptor` — the call dies in the acting-user
+interceptor, **before the search runs**, so it can hit any RPC regardless of the query. On
+2026-09-09 this cost 2 of 1344 RPCs, one a `SearchChunks`, which silently truncated a chunk-hit dump
+to 671/672 queries. The harness's fail-closed guard refused the run; that guard is the only thing
+that stood between this crash and a believed-but-wrong measurement.
 
 **Two observations recorded as evidence to test a future answer against — deliberately NOT used to
 shape this design.** Crashes 1 and 2 fall within 41 seconds of the same wall-clock minute on
-consecutive days, which would be consistent with something periodic. Crash 4 occurred with no
-benchmark running, which is evidence against "benchmark load causes it" — a framing this document's
-author initially held on a sample of two.
+consecutive days. Crash 4 occurred with no benchmark running, which is evidence against "benchmark
+load causes it" — a framing this document's author initially held on a sample of two.
 
 ## 2. Goal and non-goals
 
-**Goal.** Answer one question: which user and database owned the dying backend.
+**Goal.** Identify the dying backend: first *what class of process* it was, and if it was a client
+backend, *which client*.
 
-This is the largest branch in the diagnosis. **Authentik shares this Postgres instance** (its own
-`authentik` database and role), and a postmaster reset kills every backend in every database — so the
-process that died may not be an Iverson one at all, and the Iverson RPC failures may be pure
-collateral. Nothing currently on disk distinguishes these two worlds, and they lead to completely
-different responses.
+The class question comes first because it is the largest branch. Not every process the postmaster
+reports as `server process` is a client backend — an autovacuum worker is reported with identical
+wording (§9 #12). And **Authentik shares this instance** with its own role and database, so even
+among client backends the crash may not be Iverson's at all, and the Iverson RPC failures may be
+pure collateral.
 
-**Non-goals.** Fixing the crash. Identifying what reset the signal handler. Statement-level capture.
-Core dumps. Separating Authentik onto its own instance. Each is a consequence of the answer, not a
-prerequisite to getting it.
+**Non-goals.** Fixing the crash. Identifying what reset the signal handler. Core dumps. Separating
+Authentik onto its own instance. Each is a consequence of the answer, not a prerequisite to it.
 
 ## 3. Why the answer is not already available
 
-`log_line_prefix` is `%m [%p] ` — timestamp and PID only. When the postmaster names the dying PID
-there is no user, database, or application on any line to map it back to. `log_connections` and
-`log_disconnections` are both `off`, so no connect-time record exists either. That single gap is why
-four crashes have produced no diagnosis.
+Every one of the four dying PIDs emitted **zero** log lines of its own. The postmaster names a bare
+PID; `log_line_prefix` is `%m [%p] `, carrying no user or database; `log_connections` is `off`, so no
+connect-time record exists; and no snapshot of `pg_stat_activity` is retained. There is nothing on
+disk to map a PID to anything. That is why four crashes have produced no diagnosis.
 
-## 4. The change
+## 4. The mechanism
 
-Three settings, applied with `ALTER SYSTEM SET` followed by `SELECT pg_reload_conf()`:
+**A `pg_stat_activity` identity ledger is the primary evidence. The log settings are a complement
+that closes its sampling gap.**
+
+The view states as data what a log-only approach must infer: `backend_type` names the process class
+outright, `client_addr`/`client_port` identify the peer, `usename`/`datname` the principal, and
+`query` what it was running — the last of which statement logging would have cost heavily to obtain.
+Critically, the view also covers backends that were **already open** before instrumentation started,
+which no `log_connections` setting can do.
+
+### 4.1 The ledger (primary)
+
+A poller reads `pg_stat_activity` once per second and appends to a file **only rows whose
+`(pid, backend_start)` it has not already recorded**:
+
+```
+now(), pid, backend_start, backend_type, usename, datname,
+client_addr, client_port, application_name, state, query
+```
+
+- **Append-on-new, not snapshot-per-tick.** Measured in a smoke test, 5 ticks produced 30 rows but
+  only 10 distinct `(pid, backend_start)` pairs. At the observed fork rate (~34/min) the ledger grows
+  at roughly the fork rate — order 5 MB/day — instead of ~260 MB/day for full snapshots.
+- **`(pid, backend_start)`, not `pid`.** `backend_start` is immutable per backend (§9 #3). PID
+  wraparound at `pid_max` 4,194,304 and ~34 PIDs/min takes ~86 days, so reuse is not a practical risk
+  over a days-long watch; the composite key is cheap insurance, not a necessity.
+- **The poller sets `application_name=sigpipe-poller`** so its own connections are self-evident and
+  never mistaken for application traffic.
+- **It reconnects every tick**, so a postmaster recovery needs no special handling: the failing ticks
+  simply error and the loop continues.
+
+**No `ALTER SYSTEM` and no ordering precondition.** The ledger sees backends that already exist, so
+there is nothing to sequence and no requirement about when the stack is started. This is the single
+biggest reason to prefer it.
+
+### 4.2 The container address map (required, not optional)
+
+Container IPs are assigned dynamically — `docker-compose.yml` declares no static addresses — so an
+address recorded at crash time **cannot be resolved after a restart**. The poller must therefore also
+record, periodically, a `container name -> IP` map for the running stack. Without it, a `client_addr`
+captured today is unresolvable tomorrow.
+
+This also bounds a limit the design must not overstate: a **host-originated** connection through the
+published port 5432 arrives NAT'd onto the same container subnet — measured as `client_addr=10.89.0.9`,
+`client_port=52400` — so it is **not** distinguishable from a container address by shape. It is
+distinguishable only by *absence from the contemporaneous map*. §6 relies on that, not on the address
+looking different.
+
+### 4.3 The log complement
+
+The ledger's one real weakness is a sampling gap: a backend that forks **and** dies inside one poll
+interval never appears. At ~34 forks/min, much of it short-lived, this is not hypothetical. Three
+settings close it for client backends, applied with `ALTER SYSTEM SET` + `SELECT pg_reload_conf()`:
 
 | Setting | From | To |
 |---|---|---|
@@ -79,78 +126,62 @@ Three settings, applied with `ALTER SYSTEM SET` followed by `SELECT pg_reload_co
 | `log_connections` | `off` | `on` |
 | `log_disconnections` | `off` | `on` |
 
+`log_connections` records a client backend's identity at connect time exactly, with no sampling gap.
 `%q` suppresses the user/database portion for non-session processes, so postmaster and auxiliary
-lines are unchanged. `%a` is deliberately absent: nothing in the codebase or compose sets
-`Application Name`, so it would be empty for every client.
+lines are unchanged. `%a` is omitted: nothing in the codebase or compose sets `Application Name`
+(§9 #14), so it would be empty for every client except the poller.
 
-**No restart, and no container recreate.** This matters beyond convenience: **12 of the 19
-`iverson-*` containers were created from working directories that no longer exist** — `iverson-api`
-among them — so a tier-wide `up` would recreate them. `postgres` and `authentik-server` are among the
-7 that were *not*; `docs/2026-09-06-ranked-changes-after-retrieval-experiments.md` §14 names those two
-as the at-risk pair, which was true when written and is not true now. Measured
-2026-09-09 via `docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}'`.
+**These are a complement, and their limitation is now tolerable rather than fatal.**
+`log_connections` and `log_disconnections` are `superuser-backend`, not `sighup` (§9 #2), so they
+take effect only for connections established after the reload. In the log-primary design that forced
+a brittle stack-ordering precondition. Here, a backend they miss is still in the ledger, so the
+consequence is degraded redundancy rather than an unanswerable crash. Apply them whenever convenient;
+applying while the stack is down (its current state) simply maximises their coverage.
 
-Never run a tier-wide `docker compose up`. Every container needed here already exists in `Exited (0)`
-state, so `docker start <name>` restores it without creating anything.
+`log_line_prefix` is `sighup` and applies to every backend immediately, with no such caveat.
 
-### 4.1 Ordering precondition — apply while no client is connected
+### 4.4 Reversal
 
-`log_connections` and `log_disconnections` are **`superuser-backend`**, not `sighup`. `ALTER SYSTEM`
-plus a reload does set them, but they take effect only for connections **established after the
-reload**. Iverson pools its connections, so applying this to a running stack would leave every
-already-open backend permanently unlogged — and those long-lived backends are exactly the population
-most likely to be present when a crash occurs.
+Stop the poller and delete its files. For the settings, `ALTER SYSTEM RESET log_line_prefix;` (and
+the other two), then `SELECT pg_reload_conf()`. `postgresql.auto.conf` lives in the `postgres_data`
+named volume, so these survive container restart **and recreate**; restarting does not undo them,
+only an explicit `RESET` does.
 
-Therefore:
-
-1. `docker start iverson-postgres` — alone, no recreate
-2. Apply the three settings and `SELECT pg_reload_conf()`
-3. Only then return the client services, with `docker start <name>` per container. All 19 containers
-   already exist in `Exited (0)` state, so this creates nothing and touches no compose file.
-   `docker start` does **not** honour `depends_on`, so start infrastructure before its dependents.
-
-Every client connection is then post-reload and logged. If this order is not followed, the design's
-success criterion fails silently on the connections that matter most.
-
-**If the stack is already up when this is applied,** the settings still take, but only for
-connections opened afterwards. Bring the client services down first (single-service `--no-deps`
-actions only, per §4 — never a tier-wide `up`), apply, then bring them back. Do not skip this on the
-grounds that the pool will churn on its own: a busy pool can hold a connection open indefinitely, and
-an unlogged backend is indistinguishable from a logged one until the moment it dies, at which point
-the evidence is already lost.
-
-`log_line_prefix` is `sighup` and applies to all backends immediately, so it is unaffected by this
-constraint.
-
-### 4.2 Reversal
-
-`ALTER SYSTEM RESET log_line_prefix;` (and the other two), then `SELECT pg_reload_conf()`.
-`postgresql.auto.conf` lives in the `postgres_data` named volume, so these settings survive container
-restart **and recreate**. Restarting does not undo them; only an explicit `RESET` does.
+**Never run a tier-wide `docker compose up`.** 12 of the 19 `iverson-*` containers were created from
+working directories that no longer exist — `iverson-api` among them — so a tier-wide `up` would
+recreate them. `postgres` and `authentik-server` are among the 7 that were not. Measured 2026-09-09
+via `docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}'`.
+Every container needed here already exists, so `docker start <name>` restores it without creating
+anything.
 
 ## 5. Procedure when the next crash occurs
 
-1. `docker logs iverson-postgres 2>&1 | grep -n "terminated by signal"` — take the PID.
-2. Search backwards for that PID's `connection authorized: user=… database=…` line.
-3. Record: crash timestamp, PID, user, database, and the `connection received: host=… port=…` line
-   **verbatim** — host and port come from `connection received`, not from `connection authorized`,
-   and the healthcheck's case is `host=[local]` with no port at all. Also record every other line
-   that PID emitted, and whether a benchmark was running.
-4. Record whether **other** PIDs around the crash timestamp carry connection lines. That is the
-   discriminator between §6's last two rows: it separates "this process never had a connection line"
-   from "no process has one, so the settings never took".
+1. `docker logs iverson-postgres 2>&1 | grep -n "terminated by signal"` — take the PID and timestamp.
+2. Look the PID up in the ledger, taking the row whose `backend_start` is the latest at or before the
+   crash. Record `backend_type`, `usename`, `datname`, `client_addr`, `client_port`,
+   `application_name`, `state` and `query`.
+3. If `client_addr` is set, resolve it against the container map (§4.2) **as recorded nearest the
+   crash time**, not against the current stack.
+4. If the PID is absent from the ledger, fall back to the log: search backwards for its
+   `connection received` and `connection authorized` lines.
+5. Record whether a benchmark or ingest was running, and whether the stack had been restarted since
+   the ledger began.
 
 ## 6. Decision tree
 
-| Answer | What it means | Next |
+Keyed on the ledger row, in order — but if the PID has **no** ledger row at all, go straight to the
+final row. Each row is decided by recorded data, not inferred from absence.
+
+| Ledger row for the dying PID | What it means | Next |
 |---|---|---|
-| `authentik@authentik` | Not an Iverson defect. Iverson's exposure is that it shares an instance with a crashing tenant. | The §7 mitigation becomes Iverson's primary response; separately decide whether to isolate Authentik's database. |
-| `iverson@iverson`, `connection received: host=[local]` | **The Postgres container's own healthcheck**, not application code: `pg_isready -U iverson` every 10 s over the Unix socket, which `pg_hba.conf`'s `local all all trust` lets complete a fully authenticated session. Neither an Iverson nor an Authentik defect. | Do not core-dump the application. Pursue it as a non-application backend. |
-| `iverson@iverson`, a compose-network address | Iverson application code. | Resolve API vs worker from the address per §10, then escalate to core dumps for a stack trace naming what reset the handler. Statement logging only if a specific statement is suspected, and never during a measurement campaign. |
-| Any other (user, database) | An unenumerated client. Four databases accept connections (§9 #16). | Identify it before proceeding. |
-| A `connection received` line but no `connection authorized` | The backend died during connection setup, before authenticating. | The host and port on the `received` line still identify the client. |
-| Neither line, **while contemporaneous PIDs have them** | Not a client backend at all. The concrete candidate on this instance is an **autovacuum worker**: it never authenticates, `%q` truncates its prefix, and PG16 reports it with the identical `server process` wording — there is no `autovacuum worker` child-exit label in the binary. | Redoing §4.1's ordering cannot help. Pursue it as a non-client process. |
-| Neither line, **and no contemporaneous PID has them** | Only now is §4.1's ordering the likely cause. | Fix that before spending anything further. |
+| `backend_type <> 'client backend'` | Not a client at all. `autovacuum worker` is the concrete candidate on this instance. | Neither an Iverson nor an Authentik application defect. Pursue as a non-client backend. |
+| `application_name = 'sigpipe-poller'` | Our own poller. | The instrumentation is implicated; redesign it before drawing any conclusion. |
+| `usename = 'authentik'` | Not an Iverson defect. Iverson's exposure is that it shares an instance with a crashing tenant. | §7 becomes Iverson's primary response; separately decide whether to isolate Authentik's database. |
+| `usename = 'iverson'`, `client_addr` **null** | A Unix-socket client — the container's own `pg_isready` healthcheck (every 10 s, `local all all trust`), or a `docker exec` session. | Not application code. Identify which before escalating. |
+| `usename = 'iverson'`, `client_addr` **matches a container** in the contemporaneous map | Iverson application code — API, its `SchemaRefreshWorker` pool, or worker. | Escalate to core dumps for a stack trace naming what reset the handler. |
+| `usename = 'iverson'`, `client_addr` set but **matching no container** in that map | Host-run tooling — `Iverson.LoadTest` or `Iverson.ClientConformance`, both of which default to `Host=localhost;Port=5432` as `iverson` (§9 #15). This was the live workload at crashes 2 and 3. | Reproduce under that tool, not under the API. |
+| Any other `usename`/`datname` | An unenumerated client. Four databases accept connections (§9 #16). | Identify it before proceeding. |
+| **PID absent from the ledger** | It lived less than one poll interval. | Use §5 step 4's log fallback. If the log has no lines either, and other PIDs of that period do, the process was never a logged client — treat as the first row. |
 
 ## 7. Mitigation fallback
 
@@ -160,22 +191,20 @@ on Npgsql's broken-connection exception classes **and on SQLSTATE `57P03` (`cann
 plus `57P01`/`57P02`.
 
 **A single immediate retry would not have mitigated any of the four recorded crashes.** After a
-signal-13 death the postmaster refuses all new connections while it recovers; measured windows are
-**8.3 s, 2.4 s, 3.8 s and 5.7 s**. An immediate retry executes inside that window in milliseconds and
-fails with `FATAL: the database system is in recovery mode` — SQLSTATE `57P03`, which is *not* a
+signal-13 death the postmaster refuses all new connections while it recovers; the measured windows
+are 8.3 s, 2.4 s, 3.8 s and 5.7 s. An immediate retry executes inside that window in milliseconds and
+fails with `FATAL: the database system is in recovery mode` — SQLSTATE `57P03`, which is not a
 broken-connection class and so falls outside the catch set. The log already carries **50** such
-FATALs across the four events: clients retrying and being refused, which is precisely the failure
-mode a naive §7 would have joined. The ~10 s figure is calibrated to the observed worst case over
-four events; it is not a guaranteed ceiling.
+FATALs across the four events: clients retrying and being refused. The ~10 s figure is calibrated to
+the observed worst case over four events; it is not a guaranteed ceiling.
 
-The cost is bounded: `TenantStatusCache.cs:10` caches for 30 s and only misses reach the repository,
-so a backoff fires at most once per tenant per 30 s, and calls that hit the cache during a recovery
-window are unaffected. **If a wait of that length is unacceptable in the RPC path, drop §7 entirely**
-rather than record a mitigation that cannot mitigate.
-
-This is measurement-safe for a specific reason: it runs in `ActingUserInterceptor` **before the
-search executes**, so a retry cannot change a candidate set or bias a ranking. Retrying a *search*
-would not have that property.
+**The cost is NOT bounded to one backoff per tenant per 30 s.** `TenantStatusCache.cs:17-19` calls
+`cache.Set` only *after* a successful repository read, so a failed lookup caches nothing and every
+subsequent call retries. While Postgres is down, the backoff is **per call**, not per tenant, and
+concurrent gRPC calls each hold a thread for the duration. Anyone implementing §7 must decide how to
+handle that — negative caching, in-flight deduplication, or a circuit breaker — and that decision is
+part of §7's implementation, not settled here. **If a wait of that length in the RPC path is
+unacceptable, drop §7 entirely** rather than record a mitigation that cannot mitigate.
 
 **Explicitly out of scope, permanently:** adding retry or failure tolerance to `benchmark-query`'s
 RPC-failure guard. That guard is what caught the truncated run. Weakening it to survive an
@@ -183,53 +212,61 @@ infrastructure fault is how a corrupt run becomes a believed number.
 
 ## 8. Success criterion
 
-One crash observed with its dying PID mapped to a user and a database. Nothing more. If that answer
-arrives and the cause is still unknown, this spec has succeeded.
+One crash whose dying PID resolves to a **`backend_type`**, and — if that is `client backend` — to an
+identified client via `usename` plus an address resolved against the contemporaneous container map.
+Nothing more. If that answer arrives and the cause is still unknown, this spec has succeeded.
+
+A resolution that stops at "a user and a database" is **not** sufficient: §6's largest branch turns on
+whether the address matches a container, and three of its rows are not reachable from user and
+database alone.
 
 ## 9. Verified assumptions
 
-Verified 2026-09-09 against the live container (started alone for verification, then returned to its
-stopped state; **no settings were changed** — `log_line_prefix` re-confirmed as `%m [%p] ` afterwards).
+Verified 2026-09-09 against the live container, started alone for verification and returned to its
+stopped state. **No settings were changed** and no poller was left running.
 
 | # | Assumption | Evidence | Result |
 |---|---|---|---|
-| 1 | `log_line_prefix` is `sighup` | `pg_settings`: context `sighup` | ✅ |
-| 2 | `log_connections` is `sighup` | `pg_settings`: context **`superuser-backend`** | ❌ **failed — forced §4.1** |
-| 3 | `log_disconnections` is `sighup` | `pg_settings`: context **`superuser-backend`** | ❌ **failed — forced §4.1** |
-| 4 | `ALTER SYSTEM` applies to all three | none is `postmaster`/`internal` context | ✅ |
-| 5 | The role can `ALTER SYSTEM` | `pg_roles`: `iverson` `rolsuper = t` | ✅ |
-| 6 | `pg_reload_conf()` applies them | `sighup` for #1; #2/#3 per §4.1's constraint | ✅ with constraint |
-| 7 | `ALTER SYSTEM RESET` reverses | standard; auto.conf is the only source | ✅ |
-| 8 | Current prefix lacks `%u`/`%d` | `show log_line_prefix` = `%m [%p] ` | ✅ |
-| 9 | auto.conf is in the volume | `data_directory` = `/var/lib/postgresql/data`, the `postgres_data` mount | ✅ |
-| 10 | `log_connections` names PID + user/db | PG16 `connection authorized: user=… database=…` | ✅ |
-| 11 | `%a` is useful | **no** `Application Name` anywhere in code or compose — it would be empty | ❌ **dropped from the design** |
-| 12 | The crash line carries the PID | 4 recorded instances all do | ✅ |
-| 13 | Log retention outlives the crash interval | driver is **journald** (not json-file); oldest entry 2026-08-25 ≈ 15 days; crash rate 1–2/day | ✅ with §10 residual |
-| 14 | Iverson connects as `iverson`/`iverson` | `Iverson.Server/Iverson.Api/appsettings.json:22` — `Host=postgres;…;Database=iverson;Username=iverson`; the container env overrides only `ConnectionStrings__StarRocks`, not `__Postgres`. (`POSTGRES_USER`/`POSTGRES_DB` govern `initdb`, not what a client connects as) | ✅ |
-| 15 | Authentik connects as `authentik`/`authentik` | `deploy/postgres/init-authentik-db.sql` | ✅ |
-| 16 | Exactly two roles can log in, so only `iverson` and `authentik` can appear in `%u` | `pg_roles`: `iverson` (super), `authentik`, and `iverson_runtime` (`rolcanlogin = f`, reachable only via `SET ROLE`, which does not change `%u`) | ✅ as restated — the original "the role set is closed" was false. The **database** side is not closed: `iverson`, `authentik`, `postgres` and `template1` all have `datallowconn = t`, which is why §6 carries a fallthrough row |
-| 17 | Nothing consumes the log format | no log parser in the repo; Prometheus scrapes only `iverson-api:8081` | ✅ |
-| 18 | `TenantStatusCache.GetStatusAsync` is on the crash path | server stack trace in `docker logs iverson-api` | ✅ |
-| 19 | Npgsql distinguishes a severed connection | observed `NpgsqlException` wrapping `EndOfStreamException` | ✅ — to be confirmed before §7 is built |
-| 20 | The clients authenticating as `iverson@iverson` are {API, its `SchemaRefreshWorker` pool, worker, **the container's own healthcheck**} | compose healthcheck `pg_isready -U iverson` every 10 s; `pg_hba.conf` `local all all trust` lets it fully authenticate; `Iverson.Api/Schema/SchemaRefreshWorker.cs:10` | ✅ — the earlier prose claim "API and worker" was **false** |
-| 21 | Every signal-killed `server process` is a client backend with a `connection authorized` line | **FALSE** — the PG16 binary's child-exit labels are `startup`/`background writer`/`checkpointer`/`WAL writer`/`autovacuum launcher`/`archiver`/`server process`; there is no `autovacuum worker` label, so such a worker is reported as `server process`. Autovacuum is `on`; 2 of 216 `authentik` user tables show `last_autovacuum` | ❌ — drove §6's three-way split |
-| 22 | A single immediate retry lands after Postgres resumes accepting connections | **FALSE** — measured recovery windows 8.3/2.4/3.8/5.7 s; 50 `in recovery mode` FATALs already in the log | ❌ — drove §7's backoff |
-| 23 | The stack can be returned to service without a tier-wide `up` | all 19 `iverson-*` containers exist in `Exited (0)` and start individually with `docker start` | ✅ |
+| 1 | `pg_stat_activity` exposes all ten columns the ledger records | `information_schema.columns` — all ten present | ✅ |
+| 2 | `log_connections`/`log_disconnections` are `superuser-backend`, `log_line_prefix` is `sighup` | `pg_settings.context` | ✅ — demoted to §4.3, no longer forces an ordering precondition |
+| 3 | `backend_start` is immutable per backend | two reads 2 s apart returned an identical value for the same pid | ✅ |
+| 4 | The poller can self-identify | `PGAPPNAME=sigpipe-poller` → `application_name` = `sigpipe-poller` | ✅ |
+| 5 | The poller loop survives postmaster recovery | each tick is an independent `docker exec`; a failed tick errors and the loop continues. Smoke-tested over 5 ticks | ✅ |
+| 6 | One connection per second does not strain the instance | `max_connections` 100, 7 in use | ✅ |
+| 7 | A superuser session sees backends in **every** database | opened a session on `authentik`; it was visible from a session on `iverson` | ✅ |
+| 8 | Non-client processes appear with a distinguishing `backend_type` | observed `autovacuum launcher`, `background writer`, `checkpointer`, `walwriter`, `logical replication launcher` | ✅ |
+| 9 | `autovacuum worker` is a real `backend_type` value | PG16 binary string table, contiguous: `…autovacuum launcher.autovacuum worker.client backend.background w…` | ✅ |
+| 10 | A superuser can read other backends' `query` | `rolsuper = t` for `iverson` | ✅ |
+| 11 | PID reuse is not a practical risk over a days-long watch | `pid_max` 4,194,304 at ~34 PIDs/min ≈ 86 days to wrap | ✅ — composite key kept as cheap insurance |
+| 12 | A signal-killed autovacuum worker is reported as `server process` | the binary's child-exit labels are `startup`/`background writer`/`checkpointer`/`WAL writer`/`autovacuum launcher`/`archiver`/`server process`; there is no `autovacuum worker` label among them. Autovacuum is `on`; 2 of 216 `authentik` user tables show `last_autovacuum` | ✅ — this is why §2 puts class before identity |
+| 13 | A Unix-socket client is identifiable | `client_addr` NULL, `client_port` −1 for a socket session; `pg_hba.conf` `local all all trust` lets `pg_isready -U iverson` fully authenticate every 10 s | ✅ |
+| 14 | Nothing sets `Application Name` | zero hits across the repo and compose; `%a` would be empty for every client but the poller | ✅ — `%a` dropped from the prefix |
+| 15 | Host-run tooling connects as `iverson@iverson` | `Iverson.LoadTest/Program.cs:33` and `Iverson.ClientConformance/Program.cs:17` both default to `Host=localhost;Port=5432;…Username=iverson`; port 5432 is published | ✅ |
+| 16 | Only two roles can log in; the database side is **not** closed | `pg_roles`: `iverson` (super), `authentik`, and `iverson_runtime` (`rolcanlogin = f`, reachable only via `SET ROLE`, which does not change `usename`). `pg_database`: `iverson`, `authentik`, `postgres`, `template1` all `datallowconn = t` | ✅ — hence §6's fallthrough row |
+| 17 | A host-origin connection is **not** distinguishable from a container by address shape | measured from the host network via published 5432: `client_addr=10.89.0.9`, `client_port=52400` — inside the container subnet | ✅ — §6 keys on absence from the map, not on shape |
+| 18 | Container IPs are dynamic | no `ipv4_address` or IPAM pinning in `docker-compose.yml` | ✅ — forces §4.2's contemporaneous map |
+| 19 | Nothing else consumes the log format or `pg_stat_activity` | no log parser in the repo; no `pg_stat_activity` reference; Prometheus scrapes only `iverson-api:8081` | ✅ |
+| 20 | `TenantStatusCache.GetStatusAsync` is on the crash path | server stack trace in `docker logs iverson-api` | ✅ |
+| 21 | A single immediate retry lands after Postgres resumes | **FALSE** — measured recovery windows 8.3/2.4/3.8/5.7 s; 50 `in recovery mode` FATALs already in the log | ❌ — drove §7's backoff |
+| 22 | §7's cost is bounded to one backoff per tenant per 30 s | **FALSE** — `TenantStatusCache.cs:17-19` caches only after a successful read, so failures cache nothing and every call retries | ❌ — §7 now states this and defers the remedy to implementation |
+| 23 | 12 of 19 containers were created from paths that no longer exist | `docker inspect` `com.docker.compose.project.working_dir` per container, measured | ✅ |
+| 24 | Nothing needs a tier-wide `up` | all 19 containers exist and start individually with `docker start` | ✅ |
+| 25 | Npgsql raises a distinguishable exception for a severed connection | observed `NpgsqlException` wrapping `EndOfStreamException`, three occurrences in the api log. **Not a survey** of Npgsql's exception classes | ⚠️ observed only — must be confirmed before §7 is implemented |
 
 ## 10. Known issues, accepted as out of scope
 
-- **User + database do not identify the client.** Four producers authenticate as `iverson@iverson`:
-  the API, the API's own `SchemaRefreshWorker` pool, the worker, and the Postgres container's
-  healthcheck. The `host=…port=…` on the **`connection received`** line separates them — a
-  compose-network address maps to a container via `docker inspect`, while the healthcheck appears as
-  `host=[local]` with no port. That still leaves the API and its `SchemaRefreshWorker` sharing one
-  container IP; if distinguishing those two matters, setting `Application Name` on the connection
-  strings is the fix — a code change plus a service restart, not needed to answer the primary fork.
-- **Journald is near its default size cap** (3.9G in use) and rotating. Retention is ample now, but
-  would compress sharply if log volume rose — a further reason statement logging stays off.
-- **Assumption 19 is confirmed only by an observed instance**, not by a survey of Npgsql's exception
-  taxonomy. It must be confirmed properly before §7 is implemented, not before this spec lands.
-- **The design cannot rule out that a crash occurs with no logged connection for its PID** if §4.1's
-  ordering is broken by a future stack restart that reloads settings while clients are attached. The
-  §6 branch keyed on "neither line, **and** no contemporaneous PID has them" exists for that case.
+- **The ledger's sampling gap.** A backend forking and dying inside one poll interval never appears
+  in it. §4.3's log settings close this for client backends established after their reload; a
+  short-lived **non-client** process in that window would be missed by both. Accepted: no mechanism
+  short of core dumps covers it.
+- **The API and its `SchemaRefreshWorker` share one container IP** and cannot be told apart by
+  address. If that distinction matters, setting `Application Name` on the connection strings is the
+  fix — a code change plus a service restart, not needed to answer the primary branch.
+- **The container map is only as good as its sampling.** If the stack is restarted and the ledger's
+  map is stale at crash time, an address may resolve to the wrong container or to none. §5 step 5
+  records whether a restart intervened so this is visible rather than silent.
+- **Assumption 25 is confirmed only by observed instances**, not by a survey of Npgsql's exception
+  classes. Which classes actually signal a severed connection must be settled before §7 is
+  implemented — not before this spec lands.
+- **The poller is itself a Postgres client** and appears in its own ledger. §6 has a row for that. It
+  adds one short-lived connection per second to a system whose fork rate is already ~34/min.
