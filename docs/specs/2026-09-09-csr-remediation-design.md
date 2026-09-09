@@ -53,12 +53,24 @@ One git worktree off `main`, **11 SDD tasks**, per-task review between each, fin
 
 Delete the four `/probe/*` endpoints from `Program.cs` (:345, :351, :357, :363). They have **zero consumers** anywhere in the repository; `/health` already aggregates the same four backend checks.
 
-Replace the api Ingress rule (`path: /`, `pathType: Prefix`) with two rules:
+Replace the api Ingress rule (`path: /`, `pathType: Prefix`) with eight rules:
 
 | Path | Type | Purpose |
 |---|---|---|
-| `/iverson.` | Prefix | All six gRPC services — they share proto package `iverson`, so one prefix covers every service and future ones |
+| `/iverson.ObjectMappingService` | Prefix | gRPC service |
+| `/iverson.ObjectPersistenceService` | Prefix | gRPC service |
+| `/iverson.ObjectRetrievalService` | Prefix | gRPC service |
+| `/iverson.ObjectSearchService` | Prefix | gRPC service |
+| `/iverson.TenantLifecycleGrpcService` | Prefix | gRPC service |
+| `/iverson.TenantAdminGrpcService` | Prefix | gRPC service |
 | `/v1/traces` | Prefix | The admin UI's same-origin OTLP relay |
+| `/admin` | Prefix | The three Operator-gated REST endpoints — see below |
+
+One rule per service, **not** a single `/iverson.` prefix. Kubernetes `pathType: Prefix` matches element-wise on `/`-split path segments, so `/iverson.` does not match the first element of `/iverson.ObjectSearchService/Search`. `aws-load-balancer-controller` and the GCE ingress honour that contract and would 404 every gRPC call; ingress-nginx matches by plain string prefix and would not — so the single-prefix form passes in kind while failing on AWS and GCP, invisibly to every test §4 plans. A new service costs one rule, which is a chart edit either way.
+
+**Whichever form is used must be validated against a non-nginx ingress class**, because kind (`className: "nginx"`) cannot exercise the difference.
+
+`/admin` is included deliberately. `POST /admin/reconcile/{typeName}`, `GET /admin/dlq` and `POST /admin/dlq/{id}/replay` sit on the same port 8080 and are published today by the `/` prefix. They are already `RequireAuthorization("Operator")` — the same gate the design leaves in place for the gRPC services — and they are live: `docs/runbooks/chunk-collection-cleanup-2026-07.md:25` instructs an operator to `curl -X POST http://<api-host>/admin/reconcile/{TypeName}`, and `iverson-admin-automation` is documented as "CI/automation calling `/admin/*`". Dropping them would make that runbook instruct a 404.
 
 `/health`, `/health/live`, `/build` and `/metrics` stay exactly where they are and keep `AllowAnonymous`. Once the Ingress stops publishing `/`, they are unreachable from outside regardless of port, and in-cluster access is already constrained by the default-deny NetworkPolicies.
 
@@ -66,10 +78,28 @@ Replace the api Ingress rule (`path: /`, `pathType: Prefix`) with two rules:
 
 ### Task 2 — Transport scheme in cloud values and OIDC blueprint (Finding #2a)
 
-Introduce **one** new value, `global.externalScheme`, defaulting to `http`, set to `https` in `values-aws.yaml`, `values-azure.yaml` and `values-gcp.yaml`. It templates both:
+Introduce **one** new value, `global.externalScheme`, defaulting to `http`, set to `https` in `values-aws.yaml`, `values-azure.yaml` and `values-gcp.yaml`.
 
-- `adminUi.oidcAuthority` in the three cloud values files (currently hardcoded `http://` while `apiBaseUrl` is already `https://`)
-- The blueprint's redirect URIs in `blueprints-configmap-service-clients.yaml:117-129`, currently hardcoded `http://{{ .Values.global.ingressHost }}/admin/callback` with `matching_mode: strict`
+It is consumed **only in chart templates**. Helm never renders values files as templates and this chart uses `tpl` nowhere, so a values-file entry cannot interpolate another value — writing `"{{ .Values.global.externalScheme }}://…"` into `values-aws.yaml` would pass the literal braces through `OIDC_AUTHORITY`, `envsubst` and `config.js` to the browser, and discovery would fail against a schemeless URL.
+
+The complete inventory of hardcoded external-scheme sites is five, found by
+`grep -rn "http://" charts/*/templates/*.yaml | grep -i "ingressHost\|authentik\."`. All five are templated on the new value:
+
+| Site | Failure under `https` if left alone |
+|---|---|
+| `blueprints-configmap-service-clients.yaml:119,122,125,128` — redirect URIs, `matching_mode: strict` | Registered URI no longer matches the console's actual origin |
+| `charts/api/templates/deployment.yaml:138` — `Authentication__ExternalIssuer` | Fed straight into `TokenValidationParameters.ValidIssuers`. The blueprint sets `issuer_mode: global`, so Authentik derives `iss` from the request — behind HTTPS it issues `https://…`, which is not in `ValidIssuers`, and **every human/acting-user token is rejected by the API** |
+| `charts/authentik/templates/ingress.yaml:7` — `cors-allow-origin: "http://<ingressHost>"` | The console's `Origin` is `https://<ingressHost>`, so the cross-origin OIDC token POST and JWKS fetch **fail CORS** — login dies at the token exchange, before the redirect-URI fix matters |
+
+**`adminUi.oidcAuthority` changes shape.** Because it is a values-file entry, it cannot carry the templated scheme. Delete it from `values.yaml` and the three cloud values files, and compose the URL in `charts/admin-ui/templates/deployment.yaml` instead:
+
+```
+value: "{{ .Values.global.externalScheme }}://authentik.{{ .Values.global.ingressHost }}/application/o/iverson-api/"
+```
+
+Every environment's authority already follows that shape, so `global.ingressHost` is sufficient and the per-environment entry becomes redundant.
+
+`cors-allow-origin` is an ingress-nginx-only annotation, so covering it on the cloud classes is part of §3.1's per-controller work rather than a separate decision.
 
 Stating the scheme once removes the mismatch between the app's origin and the registered redirect URI, which would otherwise fail strict matching the moment TLS is enabled.
 
@@ -111,6 +141,8 @@ Flip the transport default to TLS in all **five** SDKs. Task 4 covers Python and
 Every SDK can express TLS with system trust roots using its existing gRPC dependency; no new packages.
 
 All local consumers explicitly opt into plaintext: the per-language test suites, the five conformance drivers, the samples, `Iverson.Agents/Python/iverson_agent/__main__.py`, and `Iverson.LoadTest/Program.cs`. Roughly 15 files.
+
+**One existing test pins the behaviour being removed.** `Iverson.Clients/Python/tests/test_auth.py:87` (`test_client_without_use_tls_and_credentials_uses_local_channel_credentials`) exists specifically to hold the plaintext default — its docstring says "Preserves today's default behavior: `use_tls=False` (the default)". Task 4 rewrites it to pin the new default, the same way Tasks 6 and 7 carry their own pinned-test rewrites.
 
 This is a **breaking change** for any external consumer of these SDKs, accepted deliberately (§7).
 
@@ -161,10 +193,16 @@ Verification changed this task materially. The `??` fallbacks in `Program.cs:163
 
 Changes:
 
-1. Remove both connection strings from `appsettings.json`; put the dev values in `appsettings.Development.json` so `dotnet run` still works locally. Production then fails closed on missing configuration.
+1. Remove both connection strings from `appsettings.json`; put the dev values in `appsettings.Development.json` so `dotnet run` still works locally.
 2. Add an explicit `ConnectionStrings__Postgres` to compose, which runs `ASPNETCORE_ENVIRONMENT=Production` and currently relies on `appsettings.json` for it. (compose already sets `ConnectionStrings__StarRocks`.)
-3. Delete the now-unreachable `??` fallbacks in `Program.cs`.
+3. Replace the `??` fallbacks with behaviour that actually fails closed. **Deleting a `??` yields `null`, not a fail-closed startup** — and for StarRocks that null is swallowed, because `EngagementHealthChecker.CheckHealthAsync` wraps the connection in `try/catch` and returns `Unhealthy`, which `ReadinessPolicy.Evaluate` then ignores when engagement is disabled. So:
+   - **Postgres** is always required: `cfg.GetConnectionString("Postgres") ?? throw new InvalidOperationException(...)`.
+   - **StarRocks** is required only when engagement is on. Throw when `Engagement:Enabled` is true and the string is missing; skip the registration (or register the disabled path) when it is false.
 4. Remove `AllowPublicKeyRetrieval=true` from all three locations — `appsettings.json`, `charts/api/templates/deployment.yaml:92`, and both compose services — and **verify the StarRocks connection still works** against compose. If StarRocks genuinely requires it, restore it and document why in the task report. This is the one item settled by experiment rather than by design.
+
+**The `engagementEnabled: false` profile is the reason step 3 is split.** `ConnectionStrings__StarRocks` is emitted only inside `{{- if .Values.global.engagementEnabled }}` in both `charts/api/templates/deployment.yaml:85-93` and `charts/worker/templates/deployment.yaml:78-84`, and `values-laptop.yaml:13` sets `engagementEnabled: false`. That profile is carried today by the very fallback this task removes — dead code only while `appsettings.json` still holds the value. Removing both without tying StarRocks to `Engagement:Enabled` would flow `null` into `AddStarRocks`, which takes a non-nullable `string` on a `<Nullable>enable</Nullable>` project.
+
+The five real connection-string sources are therefore: `appsettings.json`, `appsettings.Development.json`, compose, the Helm api/worker deployments, and the `values-laptop.yaml` profile that deliberately supplies no StarRocks string at all.
 
 ### Task 9 — Security headers (Finding #7)
 
@@ -174,13 +212,30 @@ No `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options` or 
 - `X-Content-Type-Options: nosniff`
 - `Referrer-Policy: no-referrer`
 - `Content-Security-Policy` — verification confirmed the app loads only same-origin scripts (`config.js` and the bundled entry point), no CDN and no external fonts, so `default-src 'self'` plus `connect-src 'self' <oidc-authority>` is sufficient. Check whether the Vite build emits inline styles requiring `style-src 'self' 'unsafe-inline'`.
-- `Strict-Transport-Security` — templated on `global.externalScheme` from Task 2, emitted only when the scheme is `https`
+- `Strict-Transport-Security` — emitted only when the external scheme is `https`
 
-Mirror the header set at the Ingress via the existing `ingress.annotations` passthrough so API responses are covered too.
+**Both parameterised headers need a runtime substitution point; Helm cannot reach `nginx.conf`.** That file is `COPY`'d into the admin-ui image at build time (`Dockerfile:24`), and the chart mounts no ConfigMap over it. The OIDC authority is per-environment *runtime* config delivered via `OIDC_AUTHORITY` + `envsubst` at container start, and it is a **different origin** from the console (`authentik.<ingressHost>` vs `<ingressHost>`) that the OIDC flow calls cross-origin for discovery, token exchange and JWKS — so a `default-src 'self'` policy whose `connect-src` cannot name the real authority breaks admin login in every environment but the one the image was built for.
+
+Use the `nginxinc` base image's own `/etc/nginx/templates/*.template` mechanism (rendered by its `20-envsubst-on-templates.sh` step), or extend the existing `docker-entrypoint.sh`, so `${OIDC_AUTHORITY}` and a new `${EXTERNAL_SCHEME}` env var — wired from `global.externalScheme` in `charts/admin-ui/templates/deployment.yaml` — are substituted into the CSP `connect-src` and the HSTS line at container start.
+
+**Ingress mirror — per-controller.** There is no portable annotation that adds response headers, and the chart configures four ingress classes. Each gets its own answer:
+
+| Class | Values file | Mechanism |
+|---|---|---|
+| `nginx` | `values-local.yaml:96`, `values-laptop.yaml:80` | `configuration-snippet`, which needs `allow-snippet-annotations: true` on the controller (disabled by default since ingress-nginx v1.9), or the newer `custom-headers` annotation plus a controller-namespace ConfigMap |
+| `azure-application-gateway` | `values-azure.yaml:81` | A pre-provisioned App Gateway rewrite rule set referenced by annotation; the header text cannot live in the annotation |
+| `alb` | `values-aws.yaml:81` | **No response-header annotation exists.** Headers come from the origin only |
+| `gce` | `values-gcp.yaml:82` | **No response-header annotation exists.** Headers come from the origin only |
+
+This task therefore takes on two external prerequisites: the ingress-nginx `allow-snippet-annotations` / `custom-headers` controller configuration, and the AGIC rewrite-rule-set. For `alb` and `gce` the honest per-controller answer is that the Ingress cannot carry the headers at all — the admin-ui container's nginx remains the only source there, which the runtime-substitution work above already covers.
+
+Note the api Ingress serves gRPC (`content-type: application/grpc`), which no browser renders, so the mirror's security value there is materially lower than on the admin-ui Ingress.
 
 ### Task 10 — `/v1/traces` limit and Authentik pagination (Findings #10, #12)
 
-**`/v1/traces`** (`Program.cs:461-470`) streams the request body to Jaeger with no size limit and forwards the caller's `Content-Type` verbatim, gated only by bare `RequireAuthorization()`. Add a per-endpoint request body size limit and restrict `Content-Type` to `application/x-protobuf`. This is not SSRF — the destination is a fixed configured `BaseAddress` and no part of the request influences it.
+**`/v1/traces`** (`Program.cs:461-470`) streams the request body to Jaeger with no size limit and forwards the caller's `Content-Type` verbatim, gated only by bare `RequireAuthorization()`. Add a per-endpoint request body size limit — the half that actually addresses Finding #10's unbounded-relay concern — and allow-list `application/json` **and** `application/x-protobuf` (Jaeger's OTLP/HTTP receiver accepts both). This is not SSRF — the destination is a fixed configured `BaseAddress` and no part of the request influences it.
+
+**Do not restrict to `application/x-protobuf` alone.** The endpoint's only consumer is the admin UI's browser OTel SDK, and it sends JSON: `@opentelemetry/exporter-trace-otlp-http`'s browser exporter is constructed with `JsonTraceSerializer` and a hardcoded `{'Content-Type': 'application/json'}`, and no `-proto` exporter is a dependency. A protobuf-only restriction would 415 every trace export, silently, since `BatchSpanProcessor` failures are not surfaced. The endpoint's own comment asserts protobuf and is the source of this error — correct it in the same task.
 
 **`IdpAdminClient.ListUsersByTenantAsync`** (`IdpAdminClient.cs:57-101`) infers Authentik's pagination envelope; the class comment records it was never verified against a live instance. If the shape differs, the method silently truncates. `RequireUserInTenantAsync` fails closed on truncation (safe), but user listing and offboarding fail open (not safe).
 
@@ -198,7 +253,9 @@ Verify the envelope against a running Authentik (compose brings one up) or its `
 
 **Per task:** implementation plus tests, and a clean per-task review before the next task starts.
 
-**Before merge:** the full non-integration .NET suite, the agent's pytest suite, TypeScript vitest, and the Go and Java client suites all green. Because Tasks 4 and 5 change transport defaults across five SDKs, the **client conformance harness must pass in all five languages**. Then a final whole-branch review scoped to seams rather than to tasks.
+**Before merge:** the full non-integration .NET suite, the agent's pytest suite (`Iverson.Agents/Python/tests/`), the **Python client suite (`Iverson.Clients/Python/tests/`, 11 modules — a different directory and a different suite)**, TypeScript vitest, and the Go and Java client suites all green. Because Tasks 4 and 5 change transport defaults across five SDKs, the **client conformance harness must pass in all five languages**. Then a final whole-branch review scoped to seams rather than to tasks.
+
+The Python client suite is called out separately because it is the one Task 4 is certain to break — `test_auth.py:87` exists to pin the plaintext default — and an earlier draft of this gate omitted it by conflating it with the agent's suite.
 
 > **There is no CI that runs these suites.** GitHub Actions is CodeQL plus deploy-validate; GitLab CI is deploy-validate only. Every suite gate above is a local activity and must be run deliberately. Establish the baseline on `main` when the worktree is created, so a pre-existing failure is not misattributed to this work.
 
@@ -217,7 +274,7 @@ Verify the envelope against a running Authentik (compose brings one up) or its `
 | `/probe/*` has zero consumers | Repo-wide grep: only the definitions in `Program.cs` |
 | All gRPC services share one proto package | `Common/Proto/*.proto` — all six declare `package iverson` |
 | Prometheus does not scrape via the Ingress | `charts/prometheus/templates/configmap.yaml:12` — target `{{ .Release.Name }}-api:8081` |
-| `/build` is consumed only in-process | `BuildIdentityEndpointTests.cs:15,21` — `AuthTestWebApplicationFactory` |
+| `/build` has no consumer through the Ingress | Two consumers, neither via the Ingress: `BuildIdentityEndpointTests.cs:15,21` in-process (`AuthTestWebApplicationFactory`), and `Iverson.LoadTest/Scenarios/BenchmarkQueryScenario.cs:172` over HTTP on port 8081 (`http://localhost:8081`), which the Ingress never published. Do **not** carry this forward as "in-process only" — a later task that moves `/build` would break the benchmark, which hard-fails without it (`:181,189,201`) |
 | Admin UI makes no API calls | No gRPC/fetch calls in `src/pages/`; only OIDC and same-origin `/v1/traces` |
 | Admin orchestrator is production infrastructure | `charts/api/templates/deployment.yaml:158-160` wires `Authentik__AdminToken` from its Secret |
 | Conformance harness needs the gated identities | `Iverson.ClientConformance/{TokenBroker,Requirements,Scenarios/IdentityScenario}.cs` |
