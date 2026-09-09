@@ -29,9 +29,9 @@ score(doc) = max_chunk + β · Σ(up to the next 3 highest chunk scores of that 
   short-circuits, matching the discipline already in `ResultReranker` (which short-circuits its
   weighted mean to preserve ordering bit-for-bit) and `ResultDiversifier` (which reduces to
   `Take(topK)` at λ = 1.00). This is a **requirement on code that does not yet exist**, not a verified
-  fact, so it is stated here rather than in §8. It is discharged after implementation by the check §3
-  already specifies: an offline β = 0 reconstruction must equal the in-run `.chunks.trec` byte for
-  byte. That identity is the whole reason §3 puts the aggregator in one shared C# function rather
+  fact, so it is stated here rather than in §8. It is discharged after implementation by the β = 0 identity check
+  specified in §3's Phase 1: an offline reconstruction at `--beta 0`, written to a separate output
+  directory under the pool run's own label, must equal the in-run `.chunks.trec` byte for byte. That identity is the whole reason §3 puts the aggregator in one shared C# function rather
   than a second implementation.
 - **The tail is capped at 3 chunks.** Uncapped, the term is dominated by document length rather than
   coverage. The term multiplies *fused* chunk scores (`ResultReranker.cs:36-52`), not raw cosines.
@@ -43,8 +43,12 @@ today. `*.chunks.trec` is the collapsed document ranking (one maximum per docume
 twice mistook its rank-50 truncation edge (0.5770) for a floor on chunk scores.
 
 Phase 1 reports, from the dump: the **in-pool tail-depth histogram** (how many top-50 documents have
-2, 3, 4 or more pooled chunks) and the **tail-score level `s`** (mean score of a document's 2nd–4th
-pooled chunks). Phase 2 sets the ladder from the ranking's own decision scale, measured on the same
+2, 3, 4 or more pooled chunks) and the **tail-score level `s`** — the mean score of the 2nd–4th pooled
+chunks **of the documents that reach the top 50 of the β = 0 ranking**. That scoping is not arbitrary:
+both numerators below are properties of the top-50 ranking, so the denominator must come from the same
+population or the ratio is not a ratio of comparable quantities. Phase 1 also reports the **pool-wide**
+figure beside it — the same mean over every parent in the 550-chunk pool, which is strictly lower — so
+the gap between the two is on the record and a later reader can see which population the ladder used. Phase 2 sets the ladder from the ranking's own decision scale, measured on the same
 arm:
 
 - **tie-break** β = median top-10 adjacent gap ÷ `s`
@@ -96,6 +100,15 @@ recomputed from the measured `s`.**
   experiment needs regardless; it is ordering, not extra cost. It also discharges the one design
   dependency no assumption covered — how deep the tail actually is *in the pool*, as opposed to in the
   corpus.
+
+  **β = 0 identity check, before any β arm is scored.** Run `benchmark-aggregate --beta 0` with
+  `--config-label` equal to the pool run's and a **different `--output-dir`**, then require the emitted
+  `.chunks.trec` to be byte-identical to the in-run one. The distinct output directory is what makes
+  this possible: `TrecRunWriter` writes the config label as column 6 (`TrecRunWriter.cs:31`) and derives
+  the output path from it, so an equal label in the same directory would overwrite the comparand rather
+  than reproduce it. This form also exercises the `.meta.json` write without clobbering the pool run's
+  sidecar. **A failure here blocks Phase 2** — it means the shared aggregator does not reduce to today's
+  behaviour at β = 0.
 - **Phase 2 — calibrate and sweep.** Fix the β ladder from Phase 1's numbers per §2, then run the
   remaining arms. **One query run per corpus serves every β**, since the sweep is offline over the
   dumped hits.
@@ -160,15 +173,31 @@ re-ingest.
 
 ## 6. Gate
 
-**Ordering check, on the λ = 0.70 arm.** Because stream order and score order coincide at λ = 1.00,
-the tail's ordering rule is only falsifiable where MMR reorders. On the FreshStack-2048 λ = 0.70 arm,
-for every document contributing ≥ 4 chunks to the pool, assert the tail term equals `β · Σ` of the
-2nd–4th **largest** chunk scores, recomputed independently from the dump. **This must pass before the
-confirmation arm is read as a gate result** — otherwise a stream-order bug presents exactly as "the
-finding does not survive the shipped configuration".
+**Ordering check, on the λ = 0.70 arm.** Because stream order and score order coincide at λ = 1.00
+(`ResultReranker.cs:59`, `ResultDiversifier.cs:71-75`), the tail's ordering rule is only falsifiable
+where MMR reorders. On the FreshStack-2048 λ = 0.70 arm — which therefore dumps its pool like Phase 1's
+and reports its own tail-depth histogram — assert, **for every document in the β-arm's top 50 that
+contributes ≥ 4 chunks to the pool**, that the tail term equals `β · Σ` of the 2nd–4th **largest** chunk
+scores recomputed independently from the dump. The tail term is obtained by differencing a β = 0 and a
+β = parity aggregate of the same dump: `score_β − score_0` is exactly `β · Σ(tail)`.
+
+The domain is stated as the top 50 rather than the whole pool because that is what is observable —
+`<label>.chunks.trec` holds one row per document truncated to the top 50 per query
+(`DocumentRanking.cs:40-44`), so a pool document ranking 51st or lower has no persisted score to assert
+against.
+
+**The check must report the number of (query, document) pairs it asserted over, and a count of zero is
+a failure of the precondition, not a pass.** The λ = 0.70 tail-depth histogram gives the expected count
+before the check runs, so vacuity is detected against a prior expectation rather than inferred from the
+check's own silence. **This must pass before the confirmation arm is read as a gate result** — otherwise
+a stream-order bug presents exactly as "the finding does not survive the shipped configuration".
 
 **Primary: nDCG@10 on FreshStack-2048 at λ = 1.00**, baselined at β = 0, Holm-corrected across the
-four non-zero β values (family size 4). A β **qualifies** if its nDCG@10 delta against β = 0 is **positive** and Holm p_adj < 0.05. A
+ladder's non-zero β values — **five**, under §2's tie-break + three intermediates + parity construction.
+`report.py` derives the family from the `--run` count (`:678-681`), so the invariant the run must satisfy
+is that **the printed family size equals the number of non-zero β arms passed as `--run`**; stating the
+count that way means a later change to the ladder's length cannot re-stale this section. A β
+**qualifies** if its nDCG@10 delta against β = 0 is **positive** and Holm p_adj < 0.05. A
 significant negative delta is a qualifying result for the opposite conclusion and is recorded as
 such, not discarded.
 
@@ -222,7 +251,7 @@ Verified 2026-09-08 against the working tree and the corpora on disk.
 | B15 | `--baseline` Holm-corrects within each measure | `report.py:471` `holm_adjust`, `:620` prints family size |
 | B16 | `--pair` would reject these arms | `report.py:732` `check_pool` exits on any document-set change |
 | B17 | α-nDCG computes on FreshStack | `report.py` `--nugget-qrels`; nugget files present |
-| B18 | The chunk budget is **550** on every arm | `DocumentBudget` = 50 (`BenchmarkQueryScenario.cs:42`); multiplier 11 per §3.2, matching `fs-2048-l100.meta.json` (`chunkBudgetMultiplier: 11`) and the Tier 1 policy at `2026-09-GATE-tier1-defaults.md:35-38`. The harness default of 5 (`Program.cs:423`) is **not** what these arms use |
+| B18 | The chunk budget is **550** on every arm | `DocumentBudget` = 50 (`BenchmarkQueryScenario.cs:42`); multiplier 11, stated in §3's Phase 1 bullet and §7, matching the pool `fs-2048-l100.meta.json` was produced at (`chunkBudgetMultiplier: 11`). This is a deliberate **deviation** from the Tier 1 policy at `2026-09-GATE-tier1-defaults.md:33-36`, which is per-corpus — "**5** on SciFact (1.27 chunks/doc), **11** on both FreshStack arms" — adopted here so tail depth is comparable across arms. B24 confirms 11 admits all four. The harness default of 5 (`Program.cs:423`) is **not** what these arms use |
 | B19 | Adding a variant breaks no existing caller | `CollapseByDocId` has four production call sites (`MaxPassageAggregator.cs:56,75`; `BenchmarkQueryScenario.cs:383,451`) and 8 tests in `DocumentRankingTests.cs`. **`:383` is the `SearchSimilar` dedup path** — the shared use that forces the new-function requirement in §3 |
 | B21 | All four corpora have keymap **and** qrels **and** snapshots | Checked together per corpus, not severally |
 | B22 | The scale the ranking is decided at, on the primary arm | `fs-2048-l100.chunks.trec` (**document-level** maxima): rank-1 → rank-50 span 0.0747 mean / 0.0701 median, median top-10 adjacent gap 0.00236. Sound as ranking properties; says nothing about chunk scores |
