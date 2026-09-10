@@ -295,7 +295,7 @@ describe('IversonClient — search-family execution methods', () => {
             { data: { Id: '2', Title: 'B', WordCount: 20 }, score: 0, traceId: '' },
         ];
         const { fn, calls } = makeStreamStub<SearchRequest, SearchResponse>(rows);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { search: fn, close: vi.fn() };
         (client as unknown as { _actingUserToken: unknown })._actingUserToken = 'tok';
 
@@ -318,7 +318,7 @@ describe('IversonClient — search-family execution methods', () => {
     it('searchSimilar() converts each row into a T instance via the shared Struct-conversion path and preserves score', async () => {
         const rows: SearchResponse[] = [{ data: { Id: '9', Title: 'Vec', WordCount: 5 }, score: 0.9, traceId: '' }];
         const { fn } = makeStreamStub<SearchSimilarRequest, SearchResponse>(rows);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { searchSimilar: fn, close: vi.fn() };
 
         const req: SearchSimilarRequest = {
@@ -338,7 +338,7 @@ describe('IversonClient — search-family execution methods', () => {
     it('groupBy() returns plain records — no entity conversion applied', async () => {
         const rows: SearchResponse[] = [{ data: { category: 'tech', count: 5 }, score: 0, traceId: '' }];
         const { fn } = makeStreamStub<GroupByRequest, SearchResponse>(rows);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { groupBy: fn, close: vi.fn() };
 
         const req: GroupByRequest = {
@@ -356,7 +356,7 @@ describe('IversonClient — search-family execution methods', () => {
     it('pipeline() returns plain records — no entity conversion applied', async () => {
         const rows: SearchResponse[] = [{ data: { rank: 1, total: 100 }, score: 0, traceId: '' }];
         const { fn } = makeStreamStub<PipelineRequest, SearchResponse>(rows);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { pipeline: fn, close: vi.fn() };
 
         const req: PipelineRequest = {
@@ -373,7 +373,7 @@ describe('IversonClient — search-family execution methods', () => {
     it('searchChunks() is a typed pass-through of ChunkSearchResponse rows', async () => {
         const rows: ChunkSearchResponse[] = [{ parentKey: 'p1', chunkText: 'hello', score: 0.9, traceId: '' }];
         const { fn } = makeStreamStub<SearchChunksRequest, ChunkSearchResponse>(rows);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { searchChunks: fn, close: vi.fn() };
 
         const req: SearchChunksRequest = {
@@ -390,7 +390,7 @@ describe('IversonClient — search-family execution methods', () => {
     it('aggregate() is a typed pass-through of the unary AggregateResponse', async () => {
         const response: AggregateResponse = { results: [], total: 42, traceId: '' };
         const { fn, calls } = makeUnaryStub<AggregateRequest, AggregateResponse>(response);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { aggregate: fn, close: vi.fn() };
         (client as unknown as { _actingUserToken: unknown })._actingUserToken = 'tok-agg';
 

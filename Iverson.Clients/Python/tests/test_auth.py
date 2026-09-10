@@ -29,6 +29,7 @@ def test_client_with_credentials_uses_secure_channel(monkeypatch):
     IversonClient(
         host="localhost",
         port=5000,
+        use_tls=False,
         credentials=IversonClientCredentials("id", "secret", "http://localhost:9000/application/o/token/"),
     )
 
@@ -84,11 +85,14 @@ def test_client_with_use_tls_and_credentials_uses_ssl_channel_credentials(monkey
     assert captured["base_creds"] is not local_sentinel
 
 
-def test_client_without_use_tls_and_credentials_uses_local_channel_credentials(monkeypatch):
-    """Preserves today's default behavior: use_tls=False (the default) while the composite-
-    channel-credentials branch is entered (now via credentials=, see the sibling test above
-    for why the entry point moved) must still use local_channel_credentials() as the base,
-    since grpcio rejects CallCredentials on a bare insecure_channel."""
+def test_client_without_use_tls_and_credentials_uses_ssl_channel_credentials(monkeypatch):
+    """Pins the new default: use_tls now defaults to True, so a client built with no
+    use_tls= at all — while the composite-channel-credentials branch is entered (via
+    credentials=, see the sibling test above for why the entry point moved) — must use
+    ssl_channel_credentials() as the base, exactly like passing use_tls=True explicitly.
+    Before this change the default was False and this same construction used
+    local_channel_credentials() (unencrypted); that plaintext-by-default behavior is what
+    this task removes."""
     captured = {}
     ssl_sentinel = object()
     local_sentinel = object()
@@ -121,8 +125,8 @@ def test_client_without_use_tls_and_credentials_uses_local_channel_credentials(m
         credentials=IversonClientCredentials("id", "secret", "http://localhost:9000/application/o/token/"),
     )
 
-    assert captured["base_creds"] is local_sentinel
-    assert captured["base_creds"] is not ssl_sentinel
+    assert captured["base_creds"] is ssl_sentinel
+    assert captured["base_creds"] is not local_sentinel
 
 
 def test_client_with_acting_user_token_only_uses_insecure_channel(monkeypatch):
@@ -145,7 +149,9 @@ def test_client_with_acting_user_token_only_uses_insecure_channel(monkeypatch):
         "iverson_client.core.mapping_grpc.ObjectMappingServiceStub", lambda channel: object()
     )
 
-    client = IversonClient(host="localhost", port=5000, acting_user_token="user-token-123")
+    client = IversonClient(
+        host="localhost", port=5000, use_tls=False, acting_user_token="user-token-123"
+    )
 
     assert captured["address"] == "localhost:5000"
     assert client._acting_user_token == "user-token-123"
@@ -188,7 +194,9 @@ def test_get_schema_sends_exactly_one_acting_user_metadata_entry(monkeypatch):
         "iverson_client.core.grpc.metadata_call_credentials", fake_metadata_call_credentials
     )
 
-    client = IversonClient(host="localhost", port=1, acting_user_token="user-token-123")
+    client = IversonClient(
+        host="localhost", port=1, use_tls=False, acting_user_token="user-token-123"
+    )
     client._mapping_stub = MagicMock()
     client._mapping_stub.GetSchema.return_value = mapping_pb.GetSchemaResponse(types=[])
 
@@ -217,7 +225,9 @@ def test_coordinator_call_sends_exactly_one_acting_user_metadata_entry(monkeypat
         "iverson_client.core.grpc.metadata_call_credentials", fake_metadata_call_credentials
     )
 
-    client = IversonClient(host="localhost", port=1, acting_user_token="user-token-123")
+    client = IversonClient(
+        host="localhost", port=1, use_tls=False, acting_user_token="user-token-123"
+    )
     coordinator = client.coordinator(CoordSchemaEntity)
     coordinator._retrieval = MagicMock()
     coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
@@ -247,7 +257,7 @@ def test_client_with_empty_string_acting_user_token_still_emits_the_header(monke
         "iverson_client.core.grpc.metadata_call_credentials", fake_metadata_call_credentials
     )
 
-    client = IversonClient(host="localhost", port=1, acting_user_token="")
+    client = IversonClient(host="localhost", port=1, use_tls=False, acting_user_token="")
     client._mapping_stub = MagicMock()
     client._mapping_stub.GetSchema.return_value = mapping_pb.GetSchemaResponse(types=[])
 
@@ -263,7 +273,7 @@ def test_client_with_empty_string_acting_user_token_still_emits_the_header(monke
 def test_get_schema_builds_request_and_converts_response():
     """get_schema must forward trace_id verbatim in the request and return the
     response's types unmodified — not just echo whatever the mock happens to hold."""
-    client = IversonClient(host="localhost", port=1)
+    client = IversonClient(host="localhost", port=1, use_tls=False)
     client._mapping_stub = MagicMock()
 
     field = mapping_pb.SchemaField(

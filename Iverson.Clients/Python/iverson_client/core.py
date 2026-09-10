@@ -815,7 +815,7 @@ class IversonClient:
     Args:
         host: gRPC server host (default: ``localhost``).
         port: gRPC server port (default: ``5000``).
-        use_tls: whether to use TLS (default: ``False`` for h2c).
+        use_tls: whether to use TLS (default: ``True``).
         credentials: optional OAuth2 client-credentials for authenticated calls.
         acting_user_token: optional pre-minted acting-user token, propagated on
             every call as ``x-acting-user-authorization`` metadata.
@@ -825,7 +825,7 @@ class IversonClient:
         self,
         host: str = "localhost",
         port: int = 5000,
-        use_tls: bool = False,
+        use_tls: bool = True,
         *,
         credentials: IversonClientCredentials | None = None,
         acting_user_token: str | None = None,

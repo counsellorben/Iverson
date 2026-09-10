@@ -807,7 +807,7 @@ export class IversonClient {
     constructor(
         host: string = 'localhost',
         port: number = 5000,
-        useTls: boolean = false,
+        useTls: boolean = true,
         callCredentials?: grpc.CallCredentials,
         actingUserToken?: ActingUserToken,
     ) {
