@@ -68,7 +68,7 @@ Newly introduced by this plan and verified at plan-write time:
 | P3 | File path | `report.py` at the same directory (Task 2 imports it) | `ls` — 47,023 B |
 | P4 | File path | The original run's evidence exists | `gte-chunks-raw.chunks.trec` 639,872 B, `gte-multivector-raw.chunks.trec` 714,759 B in `runs/`; `qrels.trec` 5,702 B at the **run-dir root**, not in `runs/` |
 | P5 | Signature | `report.per_query_values(qrels, run_path, measure, nugget_qrels=None)` → `{query_id: value}` | `report.py:489-499` |
-| P6 | Signature | qrels load via `ir_measures.read_trec_qrels(path)` → list | `report.py:899` |
+| P6 | Signature | `ir_measures.read_trec_qrels(path)` returns a **generator**; callers materialise it with `list(...)` | `report.py:899` is `qrels = list(ir_measures.read_trec_qrels(args.qrels))` — the `list()` is the caller's. Measured: `type(...)` is `generator`, first pass 339 rows, second pass 0 |
 | P7 | Signature | `collapse_by_doc(scored, limit)` takes `[(doc_id, score)]` | `multivector.py:74-81` |
 | P8 | Signature | `ingest.qdrant_request(method, path, body=None)` → `(status, parsed)` | `ingest.py:279-281` |
 | P9 | Signature | `ingest.embed(text, model, document_prefix, embed_url)` | `ingest.py:533` |
@@ -79,7 +79,7 @@ Newly introduced by this plan and verified at plan-write time:
 | P12 | Command | `python3 -m pytest Iverson.Server/Iverson.LoadTest/scripts/test_multivector.py -q` runs from the repo root | Executed: `12 passed in 0.08s` |
 | P13 | Command | Importing `report` needs no `PYTHONPATH`; `probe` at run time does | `report.py` top-level imports are argparse/glob/json/os/sys/datetime only (`:101-106`); `ir_measures` imported inside functions (`:368, :495, :641, :724, :781`); `import report` succeeded with no `PYTHONPATH` |
 | P14 | Command | Commit convention is lowercase imperative, no CC prefix | `git log -- .../scripts/`: "refuse a --scores-path that would destroy one of its own files", "report.py: alpha-nDCG@10 via --nugget-qrels ..." |
-| P15 | Ordering | Task 2 references no symbol Task 1 introduces; both modify one file, so the order is forced | Task 2 uses `collapse_by_doc`, `scroll`, `ingest.*`, `report.per_query_values` — all pre-existing |
+| P15 | Ordering | Task 2 consumes `rank_multivector_points` from Task 1, so Task 1 must precede it; both tasks also modify one file, so the order is forced twice over | Task 2 Step 4 items 4 and 5 call `rank_multivector_points` (introduced by Task 1 Step 2); its other references — `collapse_by_doc`, `rank_chunk_hits`, `scroll`, `ingest.*`, `report.per_query_values` — are pre-existing |
 | P16 | Ordering | Task 1 does not modify `collapse_by_doc` itself | Task 1 adds a caller (`rank_multivector_points`); the helper body is untouched |
 | P17 | Code validity | `POST /points/query` (the arm's endpoint) accepts `params: {hnsw_ef}` and honours it identically to `/points/search` | Live, 20 in-distribution vectors: `/points/query` `limit` 50 default vs `hnsw_ef` 65 → identical 16/20; vs `hnsw_ef` 100 → 20/20; `/points/query` `ef`=65 ≡ `/points/search` `ef`=65 → 20/20; both return HTTP 200 |
 | P18 | Code validity | `R@50` builds as a measure object and `per_query_values` yields the 11 tail ids | `PYTHONPATH=.../python-libs`: `R@50` → `_R`; 300 per-query entries per run; diff → exactly 11 ids `129, 130, 146, 213, 312, 521, 692, 693, 834, 1049, 1110`; mean R@50 delta **−0.0300**, reproducing the gate |
@@ -87,6 +87,10 @@ Newly introduced by this plan and verified at plan-write time:
 | P20 | Consumer impact | Routing the arm through `collapse_by_doc` keeps every downstream consumer's shape | `mv_ranked` is consumed only by the `short` check (`:330`) and `trec_lines` (`:333`); `collapse_by_doc` returns the same `[(doc_id, score)]`, and the `short` check then measures *distinct* documents, which is what it was always meant to |
 | P21 | Consumer impact | No executable caller of `multivector.py query` exists, so a new CLI arg breaks nothing | `grep -rn "multivector.py"` over `docs/`, `Iverson.Server/`, `scripts/` — every hit is prose in a plan or the ranked-changes doc; no script, Makefile or compose entry invokes it |
 | P22 | Consumer impact | No workflow legitimately re-runs into an existing run directory, so the refusal blocks nothing real | Same grep as P21 |
+| P25 | File path | All 11 tail ids are present in `beir/queries.jsonl`, so `probe_set`'s `ValueError` cannot fire on the fresh run directory; the resulting probe set is **39** queries, not 41 — `1049` and `1110` sit at corpus positions 10 and 19, inside the first 30 | 300 unique `_id`s, all 11 present; first-30 union tail = 39 |
+| P26 | Signature | `ingest.embed`'s `document_prefix` is positional with no default; the value for this model is the empty string | `ingest.py:533`; pinned one function away at `multivector.py:308` — `ingest.embed(text, args.model, "", args.embed_url)`, "Same route and empty prefix as the API for this model" |
+| P27 | Code validity | `indexed_vectors_count` counts **points, not rows**, on a `max_sim` collection, so Task 1 Step 3's `indexed == points` equality is satisfiable on the arm | Recorded sidecar: multivector collection 5,183/5,183 over 19,967 rows |
+| P28 | Code validity | `pytest` is already imported in `test_multivector.py`, so Task 2 Step 1's `pytest.raises` needs no new import | `test_multivector.py:11` |
 
 ## Tasks
 
@@ -97,7 +101,7 @@ Newly introduced by this plan and verified at plan-write time:
 - Test: `Iverson.Server/Iverson.LoadTest/scripts/test_multivector.py`
 
 **Interfaces:**
-- Produces: `rank_multivector_points(points, limit)` and `existing_run_files(runs_dir)` — Task 2 does not consume either, but both live in the pure-function section Task 2 also edits.
+- Produces: `rank_multivector_points(points, limit)` and `existing_run_files(runs_dir)`. **Task 2 consumes `rank_multivector_points`** (Step 4 items 4 and 5), so Task 1 must land first; both helpers also live in the pure-function section Task 2 edits.
 
 - [ ] **Step 1: Write the failing tests** in `test_multivector.py`, following the existing idiom (no new fixtures).
 
@@ -221,7 +225,7 @@ git commit -m "multivector.py: set the arm's beam explicitly, dedupe its rows, a
 - Test: `Iverson.Server/Iverson.LoadTest/scripts/test_multivector.py`
 
 **Interfaces:**
-- Consumes: `collapse_by_doc`, `rank_chunk_hits`, `scroll`, `require_collection`, `ingest.embed`, `ingest.qdrant_request` — all pre-existing.
+- Consumes: `rank_multivector_points` **from Task 1** (Step 4 items 4 and 5 — Task 1 must be committed first), plus `collapse_by_doc`, `rank_chunk_hits`, `scroll`, `require_collection`, `ingest.embed`, `ingest.qdrant_request`, all pre-existing.
 
 - [ ] **Step 1: Write the failing tests** for the two new pure functions.
 
@@ -281,13 +285,13 @@ PROBE_BULK_QUERIES = 30
 
 - [ ] **Step 4: Implement `cmd_probe`.** Structure, in order:
 
-  1. `require_collection` on both collections (no index-state assertion here — the probe is diagnostic and must be runnable before §3.3 as well as after).
-  2. Derive the tail set. Keep `import report`, `import ir_measures` and `from ir_measures import R` **function-local, inside `cmd_probe`** — matching `report.py`'s own convention (`:368, :495, ...`) and keeping `build`/`query`/`stats` free of any `ir_measures` dependency. Load qrels with `ir_measures.read_trec_qrels(args.tail_qrels)`, call `report.per_query_values(qrels, args.tail_control_run, R@50)` and the same for `args.tail_arm_run`, then `tail_query_ids(...)`. Print the count and the ids.
-  3. Load `<run-dir>/beir/queries.jsonl`, build `probe_set(ids, tail, PROBE_BULK_QUERIES)`, embed each query once with `ingest.embed` and keep the vectors.
+  1. `require_collection` on all three collections, **keeping the returned info**. No index-state assertion here — the probe is diagnostic and must be runnable before §3.3 as well as after — but the state it ran under must be recorded (item 6).
+  2. Derive the tail set. Keep `import report`, `import ir_measures` and `from ir_measures import R` **function-local, inside `cmd_probe`** — matching `report.py`'s own convention (`:368, :495, ...`) and keeping `build`/`query`/`stats` free of any `ir_measures` dependency. Load qrels with `qrels = list(ir_measures.read_trec_qrels(args.tail_qrels))` — **materialised, not the bare generator**: `read_trec_qrels` returns a generator, `per_query_values` iterates it, and a second call against an exhausted one returns `{}` with no error, silently making the tail all 300 ids. Call `report.per_query_values(qrels, args.tail_control_run, R@50)` and the same for `args.tail_arm_run`, then `tail_query_ids(...)`. Print the tail count **against the corpus size** (`tail: 11 of 300`) so a 300-of-300 tail is visible rather than merely large.
+  3. Load `<run-dir>/beir/queries.jsonl`, build `probe_set(ids, tail, PROBE_BULK_QUERIES)`, embed each query once with `ingest.embed(text, args.model, "", args.embed_url)` — the same empty prefix `cmd_query` uses at `:308`, since `document_prefix` is positional with no default — and keep the vectors.
   4. **Step 0** — on the multivector collection at `limit` `DOCUMENT_BUDGET`, three configurations: no `params`, `hnsw_ef` 65, `hnsw_ef` 1000. Rank each with `rank_multivector_points`. Count queries where default ≠ 65 (`settable_n`) and where 65 ≠ 1000 (`positive_control_n`).
   5. **Step 1** — for each collection, sweep its constant. Control: `POST /points/search` at `limit` `CHUNK_TOP_K` with `params.hnsw_ef`, ranked by `rank_chunk_hits` through the `key_to_doc` map built from `scroll(args.object_collection, False, ["key", "docId"])`. Arm: `POST /points/query` at `limit` `DOCUMENT_BUDGET`, ranked by `rank_multivector_points`. For each collection report, per sweep point, the number of queries whose top-50 document ranking differs from that collection's operating point (250 for the control, 65 for the arm).
-  6. Write `<run-dir>/runs/probe.json` with the tail ids, the probe-set ids, `settable_n`, `positive_control_n`, and the per-sweep-point agreement counts.
-  7. **Fail closed:** if `settable_n == 0` **and** `positive_control_n == 0`, `sys.exit` with a message saying the arm's beam is not settable through `params.hnsw_ef`, that the design's correction therefore does not work, and that the run must stop for re-approval before any gated measurement.
+  6. Write `<run-dir>/runs/probe.json` with the tail ids, the probe-set ids, `settable_n`, `positive_control_n`, and the per-sweep-point agreement counts — plus a `collections` block mirroring `cmd_query`'s `index_state` (`multivector.py:263-270`): for each of the three collections its name, `status`, `points_count`, `indexed_vectors_count` and `segments_count`; plus `CONTROL_HNSW_EF_SWEEP`, `ARM_HNSW_EF_SWEEP` and `PROBE_BULK_QUERIES`, so the artifact is self-describing. Without the index-state block a probe run before §3.3 is uninterpretable: unindexed segments are searched exactly, which ignores the beam and biases every agreement count toward "invariant". Compute `runs_dir = os.path.join(args.run_dir, "runs")` and call `os.makedirs(runs_dir, exist_ok=True)` **early in `cmd_probe`, before the embedding loop** — spec §4's fresh run directory contains only `beir/` and `qrels.trec`, so `runs/` does not exist at probe time, and an unwritable path must fail in the first second rather than after every measurement.
+  7. **Fail closed:** if `settable_n == 0` **and** `positive_control_n == 0`, `sys.exit` with a message saying the arm's beam is not settable through `params.hnsw_ef`, that the design's correction therefore does not work, and that the run must stop for re-approval before any gated measurement. Include the arm's `indexed_vectors_count` / `points_count` in that message, so a stop caused by an unindexed collection — where exact search ignores the beam and all three step-0 configurations agree by construction — is diagnosable from the message alone rather than being read as an engine verdict.
 
 - [ ] **Step 5: Add the subparser.**
 
