@@ -123,3 +123,23 @@ def test_existing_run_files_reports_only_the_two_run_files(tmp_path):
 
 def test_existing_run_files_empty_on_a_fresh_directory(tmp_path):
     assert multivector.existing_run_files(str(tmp_path)) == []
+
+
+def test_tail_query_ids_are_the_queries_whose_value_differs():
+    control = {"a": 1.0, "b": 0.5, "c": 0.25}
+    arm = {"a": 1.0, "b": 0.75, "c": 0.25}
+    assert multivector.tail_query_ids(control, arm) == ["b"]
+
+
+def test_tail_query_ids_counts_a_query_missing_from_one_side():
+    assert multivector.tail_query_ids({"a": 1.0, "b": 0.5}, {"a": 1.0}) == ["b"]
+
+
+def test_probe_set_is_bulk_plus_tail_deduped_in_corpus_order():
+    ids = ["q1", "q2", "q3", "q4", "q5"]
+    assert multivector.probe_set(ids, ["q5", "q2"], 2) == ["q1", "q2", "q5"]
+
+
+def test_probe_set_refuses_a_tail_id_absent_from_the_corpus():
+    with pytest.raises(ValueError):
+        multivector.probe_set(["q1", "q2"], ["q9"], 1)
