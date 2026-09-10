@@ -1,15 +1,15 @@
 # Changes needed after the retrieval experiments — ranked choices
 
 > **Status: living index + decision record. Index (§0) reconciled 2026-09-10.** §0 is the durable half and
-> is kept current: one row per gate document under `docs/plans/2026-09-GATE-*.md`, plus any non-gated work
-> that produced a verdict. When a gate lands, its row is added there. The tiered items below are decision
-> content and expire as they are settled; a settled item collapses to its verdict and a pointer to the gate
-> that settled it.
+> is kept current — see §0 below for the rule on what counts as a gate document. The tiered items below are
+> decision content and expire as they are settled; a settled item collapses to its verdict and a pointer to
+> the gate that settled it.
 
 Supersedes `docs/2026-08-28-proposed-code-changes-from-retrieval-experiments.md`, which was written while
-ArguAna was still running and lists four items that have since shipped. Everything here is stated against
-local main at `9eb99f7` and the eight gate documents under `docs/plans/2026-09-GATE-*.md`. Nothing here has
-been through `thorough-brainstorming`; each item is the input to that, not a substitute for it.
+ArguAna was still running and lists four items that have since shipped. This document originated against
+local main at `9eb99f7` (2026-09-06) and has been kept current since; §0 is reconciled against whatever gate
+documents exist under `docs/plans/*GATE*.md` at the time it is read — currently eight. Nothing here has been
+through `thorough-brainstorming`; each item is the input to that, not a substitute for it.
 
 The experiments this closes out are the ones scored on top-k relevance metrics (nDCG@10, R@50, AP) through
 the `Iverson.LoadTest` benchmark harness: the prefix and title work, the chunk-window ablation, the
@@ -25,9 +25,10 @@ evidence already decides, the item says so and the choice is only whether to act
 
 ## 0. Where things stand
 
-§0 is the durable half and is kept current: one row per gate document under
-`docs/plans/2026-09-GATE-*.md`, plus any non-gated work that produced a verdict. When a gate lands, its row
-is added there.
+§0 is the durable half and is kept current: one row per gate document matching `docs/plans/*GATE*.md`, plus
+any non-gated work that produced a verdict. When a gate lands, its row is added there — the glob is
+deliberately loose (not `docs/plans/2026-09-GATE-*.md`) so a gate landing under a later month's date prefix
+still counts.
 
 | Experiment | Verdict | What shipped | Record |
 |---|---|---|---|
@@ -45,19 +46,27 @@ is added there.
 | Chunk-coverage signal, Phase 1 | **Phase 2 warranted** — 85.0 % of top-50 slots carry a tail; β calibrated | harness only (`beta_invariant.py` and the β ladder) | `2026-09-GATE-chunk-coverage.md` |
 | Chunk-coverage signal, Phase 2 | **NO β QUALIFIES** — all five arms negative and monotone on nDCG@10; the top three are Holm-significant (p_adj 0.0010), not a null | nothing | `2026-09-GATE-chunk-coverage-phase2.md` |
 
-Every gated number above was measured at the **512/448-character window on SciFact**, with NFCorpus and
-FreshStack as secondary corpora. That single fact drives item 1.
+The rows above finalized before 2026-09-07 — prefixes, the chunk-window ablation itself, centroid weight,
+request-scaled centroid, MMR λ, reranker Phase 1, embedding migration Phases 1 and 2, and the multivector
+layout — were all measured at the **512/448-character window on SciFact**, with NFCorpus and FreshStack as
+secondary corpora. That was the evidence gap item 1 closed. The four rows added since were measured at the
+shipped window instead: Tier 1 retrieval defaults ran `sci-2048`, `fs-2048` and `fs-512`; `SearchSimilar`
+centroid retrieval ran the two FreshStack arms (`fs-2048`, `fs-512`); both chunk-coverage phases ran
+`fs2048` only.
 
 ---
 
-## Tier 1 — production defaults that the evidence does not yet cover
+## Tier 1 — production defaults the evidence had not yet covered, now closed
 
-### 1. The production chunk window has never been measured under the shipped model — CLOSED 2026-09-07
+### 1. Chunk window under the shipped model — CLOSED 2026-09-07
 
-Rule 7.1 PASS on both halves; the chunk-window default STANDS. Spec §3.4 was not executed: the five client
+Rule 7.1 PASS on both halves; the chunk-window default STANDS. Before this gate, every scored number in
+this campaign sat at the 512/448-character window on SciFact (NFCorpus and FreshStack secondary) — see §0
+above. Rule 7.1 is what extended coverage to the shipped 2048/1792 window (`sci-2048` vs bge-base;
+`fs-2048` vs `fs-512`) and confirmed parity, closing that gap. Spec §3.4 was not executed: the five client
 attribute defaults stay at 512 tokens / 64 overlap. Record: `docs/plans/2026-09-GATE-tier1-defaults.md`
 
-### 2. λ is one knob for two RPCs that pay opposite prices — CLOSED 2026-09-07
+### 2. λ split across `SearchSimilar` / `SearchChunks` — CLOSED 2026-09-07
 
 `LambdaSimilar` 1.00, `LambdaChunks` 0.70 shipped (`VectorRankingOptions.cs:24-25`). Record:
 `docs/plans/2026-09-GATE-tier1-defaults.md`
@@ -67,15 +76,17 @@ collapse, which reduces chunks to documents before scoring and so cannot see chu
 `SearchChunks` returns the chunk list: at λ = 1.00 a request for ten chunks yields 5.2 distinct source
 documents instead of 7.2 on `fs-512`.
 
-### 3. `SearchSimilar` now embeds only the first 512 tokens of a document — RESOLVED 2026-09-08
+### 3. `SearchSimilar` centroid via chunks — RESOLVED 2026-09-08
 
 `VectorRanking:SimilarViaChunksTypes` ships the operator-configurable alternative
 (`VectorRankingOptions.cs:30`); the rule 7.3 follow-up gated FAIL and was reconciled. Records:
 `docs/plans/2026-09-GATE-tier1-defaults.md`, `docs/plans/2026-09-GATE-similar-centroid.md`
 
-**Empty.** Every production default this campaign identified as unmeasured has now been measured. The
-fusion triple's A-vs-B choice (item 8) is a separate case — not unmeasured but *undecidable* here, since no
-corpus this project has can judge recency.
+---
+
+**Tier 1 status: empty.** Every production default this campaign identified as unmeasured has now been
+measured. The fusion triple's A-vs-B choice (item 8) is a separate case — not unmeasured but *undecidable*
+here, since no corpus this project has can judge recency.
 
 ---
 
@@ -91,6 +102,10 @@ NO-GO. The re-run removed both asymmetries and the layout is the same function a
 the larger corpus fraction (1.93 % vs 1.25 %), so the retrieval-budget asymmetry favoured the arm. The
 index-state asymmetry was real and inert — equalising it reproduced the original gate to four decimal
 places.
+
+Do not propose another multivector variant without first showing it computes a *different* scoring function
+from max-passage collapse. Sum-of-rows, top-k-rows or a learned aggregation would be new questions; beam,
+index state, and retrieval budget are not.
 
 ### 5. bge-small: failed by 0.0028 at n = 300, with an 8.71× ingest speed-up on the table
 
@@ -209,13 +224,22 @@ too early. Over-request and collapse is not a workaround; it is the scoring func
   `docker compose up` that touches it from a shell without the variable recreates it on bge-base, and the
   api/worker `/info` guards then fail against a non-default model. Harmless in production (bge-base is the
   default), fatal mid-experiment.
-- `iverson-postgres` and `iverson-authentik-server` were both created from main's path
-  (`/home/ben/repositories/Iverson/Iverson.Server`), but `iverson-api` was created from
-  `.worktrees/chunk-coverage-phase2/Iverson.Server`, a worktree that no longer exists. `iverson-api`'s
-  composite is not reproducible from a deleted worktree, so it cannot simply be recreated in place. Only
-  single-service `--no-deps` actions are safe until the stack is recreated from main deliberately (verified
+- Ten of the running containers have a `working_dir` label pointing at a path that no longer exists (verified
   2026-09-10 via `podman inspect --format '{{.Name}} :: {{index .Config.Labels
-  "com.docker.compose.project.working_dir"}}'`).
+  "com.docker.compose.project.working_dir"}}'`):
+
+  | Container | Vanished working_dir |
+  |---|---|
+  | `iverson-qdrant`, `iverson-redis`, `iverson-kafka`, `iverson-zookeeper`, `iverson-jaeger`, `iverson-authentik-migrate` | `/home/ben/repositories/Iverson-tenant/Iverson.Server` |
+  | `iverson-ollama-init`, `iverson-tgi` | `.worktrees/embedding-migration-phase2/Iverson.Server` |
+  | `iverson-reranker` | `.worktrees/reranker-phase1/Iverson.Server` |
+  | `iverson-api` | `.worktrees/chunk-coverage-phase2/Iverson.Server` |
+
+  `iverson-qdrant` matters most — it holds every benchmark collection. `iverson-api`'s composite is not
+  reproducible from a deleted worktree, so it cannot simply be recreated in place. Safe, created from main's
+  path (`/home/ben/repositories/Iverson/Iverson.Server`): `iverson-postgres`, `iverson-authentik-server`,
+  `iverson-authentik-worker`, `iverson-ollama`, `iverson-prometheus`, `iverson-tei-embed`, `iverson-worker`.
+  Only single-service `--no-deps` actions are safe until the stack is recreated from main deliberately.
 - Qdrant's `wait=true` covers the write, not the optimizer; a fresh collection is exact-searched until the
   indexer finishes, and a collection can sit green with a sub-threshold segment forever. Any latency or recall
   comparison between two collections must check `indexed_vectors_count == points_count` on both.
