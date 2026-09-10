@@ -189,6 +189,90 @@ public class StarRocksQueryBuilderTests
         lookup["h0"].Should().Be(10.0);
     }
 
+    [Fact]
+    public void BuildAggregate_HavingOnRestrictedColumn_ThrowsTranslationException()
+    {
+        // Mirrors BuildAggregate's own spec.Field/GroupByFields/Expression reject-on-reference
+        // tests: a HAVING clause referencing a real (non-alias) column must go through the same
+        // IsFieldAllowed gate — "Bio" is not one of the fixed HAVING aliases (bucket_key/doc_count/
+        // metric_val) and is excluded from AllowedFields here.
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property = "Bio", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, having, authz: authz);
+
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildAggregate_HavingOnAllowedColumn_DoesNotThrow()
+    {
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property = "Rating", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { NumberVal = 3 }, ClauseType = SearchClauseType.Filter
+        });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, having, authz: authz);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildAggregate_HavingOnUnknownProperty_ThrowsTranslationException()
+    {
+        // Neither a HAVING alias nor a resolvable Author column — the negative case with no
+        // authz restriction in play at all (proves rejection isn't solely an AllowedFields path).
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property = "NoSuchColumn", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { NumberVal = 1 }, ClauseType = SearchClauseType.Filter
+        });
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, having);
+
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*NoSuchColumn*");
+    }
+
+    [Fact]
+    public void BuildAggregate_HavingNamingTheTenantColumn_IsRejected()
+    {
+        // Mirrors BuildAggregate_TermsOnTheTenantColumn_IsRejected et al.: the server-owned
+        // tenant column must never be nameable via HAVING either.
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property = TenantCol, Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", TenantAuthorSchema(), null, spec, having, authz: TenantAuthz("Author"));
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
     // ── BuildAggregate — DateHistogram "quarter" ───────────────────────────────
 
     [Fact]
@@ -2025,6 +2109,74 @@ public class StarRocksQueryBuilderTests
     }
 
     [Fact]
+    public void BuildGroupBy_HavingOnRestrictedColumn_ThrowsTranslationException()
+    {
+        // Mirrors BuildGroupBy_RestrictedKey_ThrowsTranslationException / RestrictedMetricField:
+        // a HAVING clause referencing a real (non-alias) column must go through the same
+        // IsFieldAllowed gate as Keys/Metrics/OrderBy on this same request.
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.Having = new SearchQuery();
+        request.Having.Clauses.Add(new SearchClause
+        {
+            Property = "Bio", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_HavingOnAllowedColumn_DoesNotThrow()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.Having = new SearchQuery();
+        request.Having.Clauses.Add(new SearchClause
+        {
+            Property = "Rating", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { NumberVal = 3 }, ClauseType = SearchClauseType.Filter
+        });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_HavingNamingTheTenantColumn_IsRejected()
+    {
+        // Mirrors BuildGroupBy_KeyNamingTheTenantColumn_IsRejected / OrderByNamingTheTenantColumn:
+        // the server-owned tenant column must never be nameable via HAVING either.
+        var request = new GroupByRequest { TypeName = "Author" };
+        request.Keys.Add("Name");
+        request.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+        request.Having = new SearchQuery();
+        request.Having.Clauses.Add(new SearchClause
+        {
+            Property = TenantCol, Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "authors", TenantAuthorSchema(), request, _ => null, TenantAuthz("Author"));
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
+    [Fact]
     public void BuildGroupBy_CountAll_EmitsCountStar()
     {
         var registry = BuildRegistry(AuthorSchema());
@@ -2061,8 +2213,14 @@ public class StarRocksQueryBuilderTests
     }
 
     [Fact]
-    public void BuildGroupBy_HavingPropertyWithBacktick_EscapesEmbeddedBacktick()
+    public void BuildGroupBy_HavingPropertyNeitherAliasNorColumn_ThrowsTranslationException()
     {
+        // Was BuildGroupBy_HavingPropertyWithBacktick_EscapesEmbeddedBacktick: previously HAVING
+        // properties were escaped but never authorized, so an arbitrary string like this one
+        // would be spliced straight into the SQL (correctly escaped, but never checked against
+        // the statement's alias set or the schema's allowed columns). "evil`alias" is neither a
+        // metric/key alias ("cnt"/"Name") nor a real Author column, so it must now be REJECTED —
+        // EscapeIdentifier is defence-in-depth, not the primary control.
         var registry = BuildRegistry(AuthorSchema());
 
         var request = new GroupByRequest
@@ -2080,9 +2238,10 @@ public class StarRocksQueryBuilderTests
             ClauseType = SearchClauseType.Filter
         });
 
-        var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
-        sql.Should().Contain("HAVING `evil``alias` > @h0");
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*evil`alias*");
     }
 
     [Fact]
@@ -2627,11 +2786,43 @@ public class StarRocksQueryBuilderTests
                 Value = new SearchValue { NumberVal = 3 }, ClauseType = SearchClauseType.Filter
             }
         };
+        // "article_count" is authorized via alias-set membership alone (mirrors the pipeline
+        // call site, which has no schema/resolver available either) — this test is about the
+        // paramPrefix behavior, not the authorization gate itself.
+        var aliases = new Dictionary<string, string> { ["article_count"] = "article_count" };
 
-        var sql = StarRocksQueryBuilder.BuildHaving(clauses, SearchLogic.And, param, "s3_h");
+        var sql = StarRocksQueryBuilder.BuildHaving(
+            clauses, SearchLogic.And, param, aliases,
+            resolveColumn: null, schema: null, tableMap: null, authz: null,
+            paramPrefix: "s3_h");
 
         sql.Should().Be("`article_count` > @s3_h0");
         param.Get<double>("s3_h0").Should().Be(3);
+    }
+
+    [Fact]
+    public void BuildHaving_PropertyNotInAliasSet_NoSchemaAvailable_ThrowsTranslationException()
+    {
+        // Direct unit test of the pipeline route's exact shape: no schema/resolver/tableMap is
+        // available there (a CTE step name is not a registered type), so a HAVING property that
+        // misses the alias set must be rejected on that basis alone — there is no column-resolver
+        // fallback to consult.
+        var param = new DynamicParameters();
+        var clauses = new[]
+        {
+            new SearchClause
+            {
+                Property = "not_an_alias", Operator = SearchOperator.GreaterThan,
+                Value = new SearchValue { NumberVal = 1 }, ClauseType = SearchClauseType.Filter
+            }
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildHaving(
+            clauses, SearchLogic.And, param,
+            aliases: new Dictionary<string, string>(),
+            resolveColumn: null, schema: null, tableMap: null, authz: null);
+
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*not_an_alias*");
     }
 
     // ── VectorSimilar rejection ────────────────────────────────────────────────
@@ -2659,9 +2850,15 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildHaving_VectorSimilarClause_ThrowsInvalidArgument()
     {
+        // VectorClause()'s Property is "Name", which is neither an alias (the alias set below is
+        // empty) nor an authorized column in this fixture (no resolver/schema is even supplied),
+        // so this pins that the VectorSimilar guard fires FIRST — ahead of the new authorization
+        // validation — rather than the call instead failing with an "is not authorized" message.
         var param = new DynamicParameters();
         var act = () => StarRocksQueryBuilder.BuildHaving(
-            [VectorClause()], SearchLogic.And, param);
+            [VectorClause()], SearchLogic.And, param,
+            aliases: new Dictionary<string, string>(),
+            resolveColumn: null, schema: null, tableMap: null, authz: null);
 
         act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message.Contains("VECTOR_SIMILAR")

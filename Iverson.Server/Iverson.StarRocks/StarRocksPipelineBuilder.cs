@@ -449,7 +449,9 @@ internal static class StarRocksPipelineBuilder
             var step  = request.Steps[i];
             var input = byName[string.IsNullOrEmpty(step.Reads) ? prev : step.Reads];
             sb.Append($", `{step.Name}` AS (");
-            EmitStep(sb, step, input, emitted, registry, param, stepIdx: i + 1, authz, tenantDatabase);
+            EmitStep(
+                sb, step, input, emitted, registry, param, stepIdx: i + 1,
+                outputAliases: byName[step.Name].Columns, authz: authz, tenantDatabase: tenantDatabase);
             sb.Append(')');
             prev = step.Name;
             emitted.Add(byName[step.Name]);
@@ -480,6 +482,7 @@ internal static class StarRocksPipelineBuilder
         Func<string, EngagementQuerySchema?> registry,
         DynamicParameters param,
         int stepIdx,
+        IReadOnlyDictionary<string, string> outputAliases,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
         string? tenantDatabase = null)
     {
@@ -515,8 +518,16 @@ internal static class StarRocksPipelineBuilder
             if (where.Length > 0) sb.Append($" WHERE {where}");
             sb.Append($" GROUP BY {string.Join(", ", groupCols)}");
 
+            // Gates on alias membership alone: this route has no EngagementQuerySchema and no
+            // tableMap (a CTE step name is not a registered type, so IsFieldAllowed cannot run
+            // here) — resolveColumn/schema/tableMap are explicitly null. outputAliases is this
+            // step's OWN output (forwarded from Build, which computed it via TrackAndValidate),
+            // not the input step's columns — a HAVING clause filters the aggregate this step just
+            // produced, so it must be checked against what this step emits, not what it read.
             var having = StarRocksQueryBuilder.BuildHaving(
-                step.Having, SearchLogic.And, param, $"s{stepIdx}_h");
+                step.Having, SearchLogic.And, param, outputAliases,
+                resolveColumn: null, schema: null, tableMap: null, authz: authz,
+                paramPrefix: $"s{stepIdx}_h");
             if (having.Length > 0) sb.Append($" HAVING {having}");
             return;
         }

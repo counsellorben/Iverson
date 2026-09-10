@@ -18,6 +18,19 @@ internal static class StarRocksQueryBuilder
     private static readonly ConditionalWeakTable<
         EngagementQuerySchema,
         Dictionary<string, string>> _columnCache = new();
+
+    // BuildAggregate's HAVING alias set: the three result-column names its own SELECT can ever
+    // emit (bucket_key for Terms/DateHistogram/Range, metric_val for Avg/Sum/Min/Max/Count).
+    // Fixed and identical for every call — BuildAggregate issues exactly one of these shapes per
+    // AggregationDescriptor, never both, so a HAVING clause can only ever legitimately reference
+    // one of the three regardless of which AggregationKind produced it.
+    private static readonly IReadOnlyDictionary<string, string> AggregateHavingAliases =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["bucket_key"] = "bucket_key",
+            ["doc_count"]  = "doc_count",
+            ["metric_val"] = "metric_val",
+        };
     internal static (string Sql, DynamicParameters Param) BuildSearch(
         string tableName,
         EngagementQuerySchema schema,
@@ -259,7 +272,9 @@ internal static class StarRocksQueryBuilder
             && string.IsNullOrEmpty(spec.Field)
             && string.IsNullOrEmpty(spec.Expression);
 
-        var havingSql = BuildHaving(having?.Clauses, having?.Logic ?? SearchLogic.And, param);
+        var havingSql = BuildHaving(
+            having?.Clauses, having?.Logic ?? SearchLogic.And, param,
+            AggregateHavingAliases, ResolveStrict, schema, tableMap, authz);
         var hc = havingSql.Length > 0 ? $" HAVING {havingSql}" : "";
 
         // Multi-key GROUP BY: spec.GroupByFields, when present with more than one entry,
@@ -377,7 +392,21 @@ internal static class StarRocksQueryBuilder
             .Concat(metricExprs)
             .ToList();
 
-        var havingSql = BuildHaving(request.Having?.Clauses, request.Having?.Logic ?? SearchLogic.And, param);
+        // HAVING alias set: the compound SELECT's own metric aliases plus the (already-authorized,
+        // per keyCols above) GROUP BY key columns — the two sets of names a HAVING clause can
+        // legitimately reference without being a fresh, unauthorized column reference.
+        // request.Keys (the caller's own, pre-resolution property names, e.g. "Name" or
+        // "Article.Body") rather than keyCols (the resolved "alias.field" form) — a HAVING clause
+        // refers to a GROUP BY key the same way the caller named it in Keys, and keyCols above has
+        // already run every entry through IsFieldAllowed once, so admitting it here on alias-set
+        // membership alone (no re-resolution) does not skip an authorization check.
+        var havingAliases = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var m in request.Metrics) havingAliases[m.Name] = m.Name;
+        foreach (var k in request.Keys) havingAliases[k] = k;
+
+        var havingSql = BuildHaving(
+            request.Having?.Clauses, request.Having?.Logic ?? SearchLogic.And, param,
+            havingAliases, p => ResolveColumn(tableMap, p), schema, tableMap, authz);
         var hc = havingSql.Length > 0 ? $" HAVING {havingSql}" : "";
 
         // Field reject-on-reference: an ORDER BY over a disallowed field would leak that field's
@@ -593,11 +622,21 @@ internal static class StarRocksQueryBuilder
     }
 
     /// <summary>
-    /// Builds a HAVING clause from the same clause-matching logic as <see cref="BuildWhere(EngagementQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?)"/>,
-    /// but without the schema-backed <see cref="ResolveColumn(EngagementQuerySchema, string)"/> guard —
-    /// HAVING clauses reference SQL output aliases (e.g. "doc_count", "metric_val") which are not
-    /// schema columns, so the clause's Property is used verbatim as the column name. Uses an
-    /// "h{n}" parameter prefix by default (vs. "p{n}" for WHERE) so both can share one
+    /// Builds a HAVING clause. Unlike <see cref="BuildWhere(EngagementQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?)"/>,
+    /// a HAVING clause's Property is most often a SQL output alias (e.g. "doc_count", "metric_val",
+    /// a metric name) rather than a schema column, so it is validated two ways: <paramref
+    /// name="aliases"/> is checked first (a plain alias-membership test — no resolution, no
+    /// authorization needed, since an alias only exists because this same query already produced
+    /// it), and only a Property that misses the alias set falls through to <paramref
+    /// name="resolveColumn"/> + <see cref="IsFieldAllowed"/> so a caller can also filter on an
+    /// authorized schema column that was not itself selected. A Property that is neither is
+    /// rejected with the same exception shape the WHERE/GROUP BY/ORDER BY gates use — this closes
+    /// the gap where HAVING was escaped but never authorized. <paramref name="schema"/> is
+    /// nullable: the pipeline route (<see cref="StarRocksPipelineBuilder"/>) has no
+    /// <see cref="EngagementQuerySchema"/> or column resolver available at its call site (a CTE
+    /// step name is not a registered type), so it passes null for <paramref name="resolveColumn"/>/
+    /// <paramref name="schema"/>/<paramref name="tableMap"/> and gates on alias membership alone.
+    /// Uses an "h{n}" parameter prefix by default (vs. "p{n}" for WHERE) so both can share one
     /// DynamicParameters instance without name collisions when a query has both a filter and a
     /// HAVING clause; pipeline steps pass "s{i}_h" so multiple steps can share one instance too.
     /// </summary>
@@ -605,9 +644,34 @@ internal static class StarRocksQueryBuilder
         IEnumerable<SearchClause>? clauses,
         SearchLogic logic,
         DynamicParameters param,
+        IReadOnlyDictionary<string, string> aliases,
+        Func<string, string?>? resolveColumn,
+        EngagementQuerySchema? schema,
+        IReadOnlyDictionary<string, JoinContext>? tableMap,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz,
         string paramPrefix = "h")
     {
         if (clauses is null) return "";
+
+        // Resolves and authorizes one clause's Property: alias-set membership first (no
+        // resolution needed — see the method doc comment), then — only when a schema-backed
+        // resolver is available — a real column passing IsFieldAllowed. Returns the already-
+        // quoted SQL identifier to splice in, or null with the disallowed field's type name (when
+        // known) for the caller to build the rejection message from.
+        (string? QuotedCol, string? TypeName) Authorize(string prop)
+        {
+            if (aliases.ContainsKey(prop))
+                return ($"`{EscapeIdentifier(prop)}`", null);
+
+            if (schema is null) return (null, null);
+
+            var resolved = resolveColumn?.Invoke(prop);
+            if (resolved is null) return (null, null);
+
+            return IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName)
+                ? (QuoteQualified(resolved), null)
+                : (null, typeName);
+        }
 
         var parts = new List<string>();
         var nextIdx = 0;
@@ -619,9 +683,16 @@ internal static class StarRocksQueryBuilder
                     "VECTOR_SIMILAR clauses are not supported by the SQL search path; " +
                     "use the SearchSimilar or SearchChunks RPCs for vector search.");
 
-            var col = clause.Property;
-            if (string.IsNullOrEmpty(col)) continue;
-            var quotedCol = $"`{EscapeIdentifier(col)}`";
+            var prop = clause.Property;
+            if (string.IsNullOrEmpty(prop)) continue;
+
+            var (quotedCol, typeName) = Authorize(prop);
+            if (quotedCol is null)
+            {
+                var suffix = typeName is null ? "" : $" on '{typeName}'";
+                throw new EngagementQueryTranslationException(
+                    $"HAVING property '{prop}'{suffix} is not authorized for this caller.");
+            }
 
             var pName = $"{paramPrefix}{nextIdx++}";
 
