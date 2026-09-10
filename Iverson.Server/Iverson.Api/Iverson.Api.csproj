@@ -16,6 +16,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Never let the credentials-bearing dev overlay reach a published/container output.
+         appsettings.Development.json is committed (see .gitignore's negation) so
+         Iverson.Api.Tests can load it under Mvc.Testing's Development environment, but
+         Dockerfile:13 (`COPY . .`) copies source before `dotnet publish` runs, and the SDK's
+         implicit glob would otherwise carry this file straight into the publish output and
+         from there into every container image built from this tree. -->
+    <Content Remove="appsettings.Development.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Grpc.AspNetCore" Version="2.80.0" />
     <PackageReference Include="Grpc.AspNetCore.Web" Version="2.80.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.9" />

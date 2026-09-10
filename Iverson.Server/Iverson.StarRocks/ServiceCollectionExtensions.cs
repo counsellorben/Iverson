@@ -25,7 +25,11 @@ public static class ServiceCollectionExtensions
             services.AddSingleton<IEngagementStoreSearchService>(new DisabledEngagementStoreSearchService());
 
         services.AddSingleton(new EngagementHealthChecker(connectionString));
-        services.AddSingleton<IEngagementStoreHealthCheck>(sp => sp.GetRequiredService<EngagementHealthChecker>());
+
+        if (engagementEnabled)
+            services.AddSingleton<IEngagementStoreHealthCheck>(sp => sp.GetRequiredService<EngagementHealthChecker>());
+        else
+            services.AddSingleton<IEngagementStoreHealthCheck>(new DisabledEngagementStoreHealthCheck());
 
         return services;
     }

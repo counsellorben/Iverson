@@ -89,7 +89,7 @@ spec:
                   name: {{ .Release.Name }}-starrocks-app
                   key: app-password
             - name: ConnectionStrings__StarRocks
-              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;Database=iverson;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);AllowPublicKeyRetrieval=true;"
+              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;Database=iverson;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);"
             {{- end }}
             - name: Engagement__Enabled
               value: {{ .Values.global.engagementEnabled | quote }}

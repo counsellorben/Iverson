@@ -160,12 +160,18 @@ builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, AuditingAut
 
 builder.Services.AddScoped<IActingUserAccessor, ActingUserAccessor>();
 
+var engagementStoreEnabledAtStartup = cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true);
+
 builder.Services.AddPostgres(cfg.GetConnectionString("Postgres")
-    ?? "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
+    ?? throw new InvalidOperationException(
+        "ConnectionStrings:Postgres is required and was not configured."));
 
 builder.Services.AddStarRocks(
     cfg.GetConnectionString("StarRocks")
-    ?? "Server=localhost;Port=9030;Database=iverson;User Id=root;Password=;AllowPublicKeyRetrieval=true;",
+    ?? (engagementStoreEnabledAtStartup
+        ? throw new InvalidOperationException(
+            "ConnectionStrings:StarRocks is required when Engagement:Enabled is true and was not configured.")
+        : string.Empty),
     new EngagementResilienceOptions
     {
         BackendReadyTimeout = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:BackendReadyTimeoutSeconds", 120)),
@@ -177,7 +183,7 @@ builder.Services.AddStarRocks(
             BreakDuration     = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:CircuitBreaker:BreakDurationSeconds", 15))
         }
     },
-    cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true));
+    engagementStoreEnabledAtStartup);
 
 builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",

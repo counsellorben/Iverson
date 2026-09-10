@@ -436,6 +436,7 @@ services:
       - "8081:8081"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
+      - ConnectionStrings__Postgres=Host=postgres;Port=5432;Database=iverson;Username=iverson;Password=iverson
       - Otel__Endpoint=http://jaeger:4317
       - Embeddings__BaseUrl=http://tei-embed:80
       # MMR lambda per endpoint; these match VectorRankingOptions' defaults, set by the Tier 1 gate
@@ -456,7 +457,7 @@ services:
       # deployment.yaml): connect as iverson_app, the user starrocks-init provisions, not root —
       # EngagementRepository.EnsureTenantProvisionedAsync's `SET ROLE user_admin` depends on
       # authenticating as the user that role was granted to.
-      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;AllowPublicKeyRetrieval=true;
+      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
       - Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ExternalIssuer=http://authentik.iverson.local/application/o/iverson-api/
@@ -533,6 +534,7 @@ services:
       # IConfiguration under the literal key "WORKLOAD_ROLE" — the first key Program.cs checks.
       - WORKLOAD_ROLE=worker
       - Otel__Endpoint=http://jaeger:4317
+      - ConnectionStrings__Postgres=Host=postgres;Port=5432;Database=iverson;Username=iverson;Password=iverson
       - Embeddings__BaseUrl=http://tei-embed:80
       - Embeddings__ModelId=${BENCH_EMBED_MODEL:-BAAI/bge-base-en-v1.5}
       - Enrichment__BaseUrl=http://ollama:11434
@@ -542,7 +544,7 @@ services:
       # deployment.yaml): connect as iverson_app, the user starrocks-init provisions, not root —
       # EngagementRepository.EnsureTenantProvisionedAsync's `SET ROLE user_admin` depends on
       # authenticating as the user that role was granted to.
-      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;AllowPublicKeyRetrieval=true;
+      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
       - Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ExternalIssuer=http://authentik.iverson.local/application/o/iverson-api/
