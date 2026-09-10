@@ -240,12 +240,21 @@ def test_expand_document_out_of_range_and_unknown_tool_are_reported_not_raised()
     assert answer.tool_calls == 2 and answer.text == "Done [doc 1]."
 
 
-def test_user_key_is_the_jwt_subject_when_the_token_is_a_jwt():
+def test_user_key_does_not_collide_when_a_forged_token_copies_another_users_subject_claim():
+    # The cache key must depend on the whole signed token, not an unverified claim: a forged
+    # token that copies another user's `sub` (but cannot reproduce their signature, since that
+    # requires the signing key) must key differently, or it would return that user's cached
+    # schema without ever contacting the server (SchemaCache.get is a hit-return).
     import base64
     import json
     from iverson_agent.session import _user_key
     payload = base64.urlsafe_b64encode(json.dumps({"sub": "user-42"}).encode()).rstrip(b"=").decode()
-    assert _user_key(f"hdr.{payload}.sig") == "user-42"
-    assert _user_key("opaque-token") == "opaque-token"
-    no_sub = base64.urlsafe_b64encode(b'{"iss":"x"}').rstrip(b"=").decode()
-    assert _user_key(f"hdr.{no_sub}.sig") == f"hdr.{no_sub}.sig"
+    real_token = f"hdr.{payload}.real-signature"
+    forged_token = f"hdr.{payload}.forged-signature"
+    assert _user_key(real_token) != _user_key(forged_token)
+
+
+def test_user_key_gives_distinct_tokens_distinct_keys_and_is_stable_for_the_same_token():
+    from iverson_agent.session import _user_key
+    assert _user_key("token-a") != _user_key("token-b")
+    assert _user_key("token-a") == _user_key("token-a")

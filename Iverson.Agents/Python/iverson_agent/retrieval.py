@@ -166,13 +166,16 @@ def estimate_tokens(text: str) -> int:
 
 
 def _render_one(n: int, c: DocumentContext, passages: list[tuple[float, str]]) -> str:
+    """Wrap the rendered block in a `<doc n="..." key="...">` delimiter so retrieved text is
+    unambiguously marked as data, not instructions, to the model (single formatting point: covers
+    both the initial page and tool results)."""
     meta = " ".join(f"{k}={v}" for k, v in c.metadata.items())
     head = f'[doc {n}] key={c.key} title="{c.title or ""}" {meta}'.rstrip()
     if passages:
         body = "\n".join(f"  passage: {t}" for _, t in passages)
     else:
         body = f"  summary: {c.summary or '(no summary available)'}"
-    return f"{head}\n{body}"
+    return f'<doc n="{n}" key="{c.key}">\n{head}\n{body}\n</doc>'
 
 
 def render_context(contexts: list[DocumentContext], budget_tokens: int) -> str:
