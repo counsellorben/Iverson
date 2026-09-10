@@ -46,4 +46,24 @@ public class ServiceCollectionExtensionsTests
         healthCheck.Should().BeOfType<EngagementHealthChecker>();
         entityStore.Should().BeOfType<EngagementRepository>();
     }
+
+    // Pins the /health readiness-probe contract from Program.cs: with engagement disabled, the
+    // registered IEngagementStoreHealthCheck must be the non-throwing DisabledEngagementStore-
+    // HealthCheck, not EngagementHealthChecker. A later refactor that reverted this branch (e.g.
+    // "simplify" back to always registering EngagementHealthChecker) would still compile and
+    // still pass every other suite in the repo, but would make the api/worker pods permanently
+    // unready on the engagementEnabled: false profile (values-laptop.yaml) — this is the test
+    // that would actually catch that regression.
+    [Fact]
+    public void AddStarRocks_WithEngagementDisabled_RegistersDisabledHealthCheck()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<ILogger<EngagementRepository>>(NullLogger<EngagementRepository>.Instance);
+        services.AddStarRocks(ConnString, engagementEnabled: false);
+
+        using var provider = services.BuildServiceProvider();
+        var healthCheck = provider.GetRequiredService<IEngagementStoreHealthCheck>();
+
+        healthCheck.Should().BeOfType<DisabledEngagementStoreHealthCheck>();
+    }
 }

@@ -162,16 +162,25 @@ builder.Services.AddScoped<IActingUserAccessor, ActingUserAccessor>();
 
 var engagementStoreEnabledAtStartup = cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true);
 
-builder.Services.AddPostgres(cfg.GetConnectionString("Postgres")
-    ?? throw new InvalidOperationException(
-        "ConnectionStrings:Postgres is required and was not configured."));
-
-builder.Services.AddStarRocks(
-    cfg.GetConnectionString("StarRocks")
-    ?? (engagementStoreEnabledAtStartup
+// string.IsNullOrWhiteSpace, not `??`: an explicitly-configured "" (or whitespace-only string)
+// is non-null and would otherwise silently bypass a plain `??` check, reaching AddPostgres /
+// AddStarRocks without ever throwing even though the value is unusable as a real connection
+// string. The plan's fail-closed intent is "no usable value", not merely "no null value".
+var postgresConnectionString = cfg.GetConnectionString("Postgres");
+builder.Services.AddPostgres(
+    string.IsNullOrWhiteSpace(postgresConnectionString)
         ? throw new InvalidOperationException(
-            "ConnectionStrings:StarRocks is required when Engagement:Enabled is true and was not configured.")
-        : string.Empty),
+            "ConnectionStrings:Postgres is required and was not configured.")
+        : postgresConnectionString);
+
+var starRocksConnectionString = cfg.GetConnectionString("StarRocks");
+builder.Services.AddStarRocks(
+    string.IsNullOrWhiteSpace(starRocksConnectionString)
+        ? (engagementStoreEnabledAtStartup
+            ? throw new InvalidOperationException(
+                "ConnectionStrings:StarRocks is required when Engagement:Enabled is true and was not configured.")
+            : string.Empty)
+        : starRocksConnectionString,
     new EngagementResilienceOptions
     {
         BackendReadyTimeout = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:BackendReadyTimeoutSeconds", 120)),
