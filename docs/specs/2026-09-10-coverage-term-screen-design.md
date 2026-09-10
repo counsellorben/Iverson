@@ -146,8 +146,10 @@ reporting a CI bound beside a permutation p:
   does not satisfy. **The p is one-sided in the pre-registered coverage direction:
   `p = P(advantage_perm ≥ advantage_obs)`.** The tail must be stated because this null is *not*
   centred on zero — `AUC(count)` is held fixed by construction while the permuted candidate centres
-  near chance, so the null mean of the advantage sits near +0.03, and the three readings of "the
-  p-value" straddle `HOLM_ALPHA` on a live candidate. One-sided binds on the same side as both CI
+  near chance, so the null mean of the advantage sits near +0.03 **on the judged population** — and
+  *negative* on all-multi, where `AUC(count)` is itself above chance (measured −0.068 for `mean_tail`,
+  −0.011 for `n_within_tau`) — and the three readings of "the p-value" straddle `HOLM_ALPHA` on a
+  live candidate. One-sided binds on the same side as both CI
   clauses in §2.6 and as §2.3's fixed orientation.
 - **95 % CI** by cluster bootstrap resampling **queries** (not pairs) — queries are the independent
   unit here, and a pair-level bootstrap would understate the interval by treating a query's pairs as
@@ -198,9 +200,13 @@ Two classes are reported rather than folded into "no candidate passes":
 
 - **Population-dependent.** A candidate passing in one population but not the other is neither a GO
   nor a silent discard: it is reported as such, naming which bias it rides.
-- **Anti-coverage.** A candidate whose raw-AUC 95 % CI lies wholly **below** 0.5, or whose advantage
-  CI lies wholly below 0, is a confident finding in the opposite direction, not an absence of signal.
-  It is named in the verdict document with the population it holds in and the bias it may ride. §2.7
+- **Anti-coverage.** A candidate whose raw-AUC 95 % CI lies wholly **below** 0.5 is a confident
+  finding in the opposite direction, not an absence of signal. It is named in the verdict document
+  with the population it holds in and the bias it may ride. **The advantage CI is not a direction
+  test and must not be used as one:** `AUC(count)` is 0.4707 on judged but 0.5631 on all-multi (A20),
+  so on all-multi an advantage CI wholly below 0 is earned by any candidate that is merely
+  uninformative — uniform noise scores −0.062 — exactly as, on judged, an advantage CI wholly above 0
+  is earned by one (+0.027, §2.5). §2.7
   already publishes the raw AUCs and `AUC(count)` per decile, so this costs nothing at run time —
   what was missing was the instruction to read them.
 
@@ -235,6 +241,9 @@ Two classes are reported rather than folded into "no candidate passes":
 | A20 | **`AUC(count)` within `max_chunk` deciles is not 0.5** — the quantity §2.5's advantage is measured against | 0.4707 on the judged population, 0.5631 on all-multi. This is the mechanism §2.5 now guards against |
 | A21 | `tail_sum` under screen 1's own estimator and population | Spearman ρ = 0.9292 on the 92,758 multi-chunk pairs — not the gate's Pearson 0.9970, which is a different operand, estimator and population |
 | A22 | The permutation scheme has adequate cells to permute | Measured on the scheme as written in §2.5 — permuting the candidate within `(count, max-decile)`: 56 cells (judged) / 60 (all-multi), with 2 and 5 members respectively falling in singleton cells, and 99.9 % of pairs in cells holding ≥ 2 members and both labels. (Round 1's figures described the superseded label-shuffle scheme and do not bear on this one.) |
+| A23 | `report.py` exposes the seed and resample count §2.5 names | `report.py:113` `PERMUTATION_SEED = 20260831`, `:114` `PERMUTATION_RESAMPLES = 10_000` (A12 covers only `HOLM_ALPHA` and `holm_adjust`) |
+| A24 | `mean_tail` is well defined on the screen's population | minimum tail length over the 92,758 in-scope pairs is 1, so the divisor is never zero; no control path evaluates `mean_tail` outside that population |
+| A25 | The one-sided p closes round 1's noise leak independently of the CI clauses | running the specified permutation: on judged, `mean_tail` clears the *advantage* half of both CI clauses (+0.0307) yet scores p = 0.60 against its own within-cell null (+0.0319, sd 0.0056) |
 
 ## 4. Out of scope
 
