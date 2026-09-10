@@ -94,6 +94,22 @@ def rank_chunk_hits(hits, key_to_doc, limit):
     return collapse_by_doc(scored, limit)
 
 
+def rank_multivector_points(points, limit):
+    """MaxSim points -> document ranking. Qdrant returns one point per document here, but the
+    arm must not depend on that: two points sharing a docId would produce a malformed run, and
+    the chunk arm already collapses. Same helper, same order -- collapse, then truncate."""
+    return collapse_by_doc([(p["payload"]["docId"], p["score"]) for p in points], limit)
+
+
+def existing_run_files(runs_dir):
+    """The run files a `query` into this directory would overwrite. The gate's own
+    `gte-chunks-raw` / `gte-multivector-raw` files are unreproducible evidence, so cmd_query
+    refuses rather than clobbering them."""
+    names = (f"{CHUNKS_RUN_LABEL}.chunks.trec", f"{MULTIVECTOR_RUN_LABEL}.chunks.trec")
+    paths = [os.path.join(runs_dir, n) for n in names]
+    return [p for p in paths if os.path.exists(p)]
+
+
 def trec_lines(query_id, ranked, run_tag):
     """TrecRunWriter's format: `qid Q0 docid rank score runtag`, rank from 1, score F6."""
     return [f"{query_id} Q0 {doc_id} {rank} {score:.6f} {run_tag}"
@@ -267,6 +283,12 @@ def cmd_query(args):
         info = require_collection(name)
         if info["status"] != "green":
             sys.exit(f"'{name}' is {info['status']}: wait for indexing to finish before measuring")
+        if info["indexed_vectors_count"] != info["points_count"]:
+            sys.exit(
+                f"'{name}' has {info['indexed_vectors_count']:,} of {info['points_count']:,} vectors "
+                f"HNSW-indexed: a segment below indexing_threshold is searched exactly, which is the "
+                f"index-state asymmetry this re-run exists to remove. Raise indexing_threshold and "
+                f"re-check before measuring.")
         index_state[name] = {k: info[k] for k in ("status", "points_count", "indexed_vectors_count", "segments_count")}
     queries_path = os.path.join(args.run_dir, "beir", "queries.jsonl")
     with open(queries_path, encoding="utf-8") as f:
@@ -278,6 +300,10 @@ def cmd_query(args):
 
     runs_dir = os.path.join(args.run_dir, "runs")
     os.makedirs(runs_dir, exist_ok=True)
+    clash = existing_run_files(runs_dir)
+    if clash:
+        sys.exit(f"refusing to overwrite {len(clash)} existing run file(s) in {runs_dir}: "
+                 f"{', '.join(os.path.basename(p) for p in clash)} -- point --run-dir at a fresh directory")
     chunk_lines, mv_lines, short = [], [], []
     latency = {"chunks": [], "multivector": []}
 
@@ -293,6 +319,7 @@ def cmd_query(args):
             "chunks_collection": args.chunks_collection,
             "multivector_collection": args.multivector_collection,
             "chunk_top_k": CHUNK_TOP_K, "document_budget": DOCUMENT_BUDGET,
+            "mv_hnsw_ef": args.mv_hnsw_ef,
             "queries": len(queries),
             "index_state": index_state,
         }
@@ -318,14 +345,15 @@ def cmd_query(args):
                 sys.exit(f"query {qid}: chunk search HTTP {status} {resp}")
             ranked = rank_chunk_hits(resp["result"], key_to_doc, DOCUMENT_BUDGET)
 
+            mv_body = {"query": [vec], "limit": DOCUMENT_BUDGET, "with_payload": ["docId"],
+                       "params": {"hnsw_ef": args.mv_hnsw_ef}}
             t0 = time.perf_counter()
-            status, resp = ingest.qdrant_request("POST", f"/collections/{args.multivector_collection}/points/query", {
-                "query": [vec], "limit": DOCUMENT_BUDGET, "with_payload": ["docId"],
-            })
+            status, resp = ingest.qdrant_request(
+                "POST", f"/collections/{args.multivector_collection}/points/query", mv_body)
             latency["multivector"].append((time.perf_counter() - t0) * 1000)
             if status != 200:
                 sys.exit(f"query {qid}: multivector query HTTP {status} {resp}")
-            mv_ranked = [(p["payload"]["docId"], p["score"]) for p in resp["result"]["points"]]
+            mv_ranked = rank_multivector_points(resp["result"]["points"], DOCUMENT_BUDGET)
 
             if len(ranked) < DOCUMENT_BUDGET or len(mv_ranked) < DOCUMENT_BUDGET:
                 short.append((qid, len(ranked), len(mv_ranked)))
@@ -367,6 +395,10 @@ def main():
     q.add_argument("--run-dir", required=True, help="run directory holding beir/queries.jsonl; writes runs/")
     q.add_argument("--model", required=True, help="embedding model id, sent as the request's model field")
     q.add_argument("--embed-url", required=True, help="TEI base URL, e.g. http://localhost:8091")
+    q.add_argument("--mv-hnsw-ef", type=int, default=65,
+                   help="params.hnsw_ef for the multivector arm (default 65: the corpus-fraction "
+                        "match to the control's 250-node beam). Values below the query's own limit "
+                        "are clamped up to it by Qdrant and are therefore inert.")
     q.set_defaults(func=cmd_query)
 
     s = sub.add_parser("stats", help="points / indexed / segments / disk for both collections")

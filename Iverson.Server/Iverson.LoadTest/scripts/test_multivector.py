@@ -92,3 +92,34 @@ def test_rank_chunk_hits_collapses_through_the_parent_map():
 def test_rank_chunk_hits_fails_loud_on_unknown_parent():
     with pytest.raises(SystemExit):
         multivector.rank_chunk_hits([{"id": 1, "score": 0.9, "payload": {"parent_id": "zz"}}], {}, 50)
+
+
+def mvpoint(doc_id, score):
+    return {"id": 1, "score": score, "payload": {"docId": doc_id}}
+
+
+def test_rank_multivector_points_dedupes_by_docid_keeping_max():
+    # Two points sharing a docId is what the gate warned would produce a malformed run.
+    ranked = multivector.rank_multivector_points(
+        [mvpoint("d1", 0.3), mvpoint("d2", 0.5), mvpoint("d1", 0.9)], 10)
+    assert ranked == [("d1", 0.9), ("d2", 0.5)]
+
+
+def test_rank_multivector_points_truncates_after_the_collapse():
+    # Truncate-before-collapse would keep only d1.
+    ranked = multivector.rank_multivector_points(
+        [mvpoint("d1", 0.9), mvpoint("d1", 0.8), mvpoint("d2", 0.7)], 2)
+    assert ranked == [("d1", 0.9), ("d2", 0.7)]
+
+
+def test_existing_run_files_reports_only_the_two_run_files(tmp_path):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec").write_text("x")
+    (runs / "unrelated.txt").write_text("x")
+    found = multivector.existing_run_files(str(runs))
+    assert [f.rsplit("/", 1)[-1] for f in found] == [f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec"]
+
+
+def test_existing_run_files_empty_on_a_fresh_directory(tmp_path):
+    assert multivector.existing_run_files(str(tmp_path)) == []
