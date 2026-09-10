@@ -1,7 +1,7 @@
 # Multivector re-run: removing the two control-favouring asymmetries — design
 
 **Date:** 2026-09-10
-**Status:** approved, not executed. No step below may run while the box is busy (§6).
+**Status:** EXECUTED 2026-09-10. Verdict NO-GO, unchanged. See the amendment in `docs/plans/2026-09-GATE-multivector.md`.
 **Parent gate:** `docs/plans/2026-09-GATE-multivector.md` — NO-GO, recorded 2026-09-06.
 **Parent spec:** `docs/specs/2026-09-04-multivector-experiment-design.md` — §7 is the gate rule, §6 the protocol this one subsets.
 **Ranked-changes item:** `docs/2026-09-06-ranked-changes-after-retrieval-experiments.md` §4 (Tier 2), choice 1.
