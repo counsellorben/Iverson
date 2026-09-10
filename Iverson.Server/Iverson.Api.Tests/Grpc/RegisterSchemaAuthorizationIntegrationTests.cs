@@ -46,14 +46,14 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
         // than production, and irreproducible the moment upstream publishes again.
         .WithImage("starrocks/allin1-ubuntu:4.1.1")
         .WithPortBinding(StarRocksMysqlPort, true)
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(StarRocksMysqlPort))
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(StarRocksMysqlPort))
         .Build();
 
     private readonly IContainer _qdrant = new ContainerBuilder()
         .WithImage("qdrant/qdrant:v1.18.2")
         .WithPortBinding(QdrantGrpcPort, assignRandomHostPort: true)
         .WithPortBinding(6333, assignRandomHostPort: true)
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(QdrantGrpcPort))
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(QdrantGrpcPort))
         .Build();
 
     public string ConnectionString { get; private set; } = null!;

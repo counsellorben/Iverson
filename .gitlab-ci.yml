@@ -26,7 +26,9 @@ helm-template-kubeconform:
   extends: .rules-deploy-changes
   before_script:
     - apk add --no-cache curl
-    - curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+    - curl -sSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+    - echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  kubeconform.tar.gz" | sha256sum -c -
+    - tar xzf kubeconform.tar.gz kubeconform
     - mv kubeconform /usr/local/bin/
   script:
     - helm dependency build Iverson.Server/deploy/helm/iverson
@@ -47,9 +49,17 @@ security-audit:
   extends: .rules-deploy-changes
   before_script:
     - apk add --no-cache curl
-    - curl -sSL https://github.com/zegl/kube-score/releases/download/v1.19.0/kube-score_1.19.0_linux_amd64.tar.gz | tar xz
+    - curl -sSL -o kube-score.tar.gz https://github.com/zegl/kube-score/releases/download/v1.19.0/kube-score_1.19.0_linux_amd64.tar.gz
+    - echo "a5b10e509bd845f0bc32a529f4e8165c021877f924ee6f6be66678039f75a761  kube-score.tar.gz" | sha256sum -c -
+    - tar xzf kube-score.tar.gz kube-score
     - mv kube-score /usr/local/bin/
-    - curl -sSL https://github.com/aquasecurity/tfsec/releases/download/v1.28.6/tfsec-linux-amd64 -o /usr/local/bin/tfsec
+    # tfsec publishes a raw unarchived binary at tfsec-linux-amd64 with no checksum manifest
+    # entry for that exact asset; the tar.gz sibling asset is the only form the project
+    # publishes a SHA-256 for (tfsec_1.28.6_checksums.txt), so fetch that instead.
+    - curl -sSL -o tfsec.tar.gz https://github.com/aquasecurity/tfsec/releases/download/v1.28.6/tfsec_1.28.6_linux_amd64.tar.gz
+    - echo "8cbd8d64cbd1f25b38f33fa04db602466dade79e99c99dc9da053b5962d34014  tfsec.tar.gz" | sha256sum -c -
+    - tar xzf tfsec.tar.gz tfsec
+    - mv tfsec /usr/local/bin/tfsec
     - chmod +x /usr/local/bin/tfsec
   script:
     - helm dependency build Iverson.Server/deploy/helm/iverson

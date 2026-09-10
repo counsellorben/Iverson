@@ -19,7 +19,7 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
             .WithImage("qdrant/qdrant:v1.18.2")
             .WithPortBinding(GrpcPort, assignRandomHostPort: true)
             .WithPortBinding(6333,     assignRandomHostPort: true)
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(GrpcPort))
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(GrpcPort))
             .Build();
 
     public IntelligenceVectorService Service { get; private set; } = null!;
