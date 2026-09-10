@@ -257,7 +257,10 @@ class AgentSession:
             target.passages.extend(new_passages)
             target.passages.sort(key=lambda c: c[0], reverse=True)   # keep best-first (same invariant as
                                                                        # assemble's top-up merge, §4.3)
-            return "\n".join(f"[doc {n}] passage: {t}" for _, t in new_passages)
+            # Delimited the same way as the initial page and search_more (_render_one is the one
+            # place that wraps document content in <doc>...</doc>): expand_document pulls MORE
+            # passages out of a document, exactly where an injected instruction would surface.
+            return _render_one(n, target, new_passages)
         return f"Unknown tool {name}."
 
 

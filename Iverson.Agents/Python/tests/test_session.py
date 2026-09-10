@@ -198,6 +198,23 @@ def test_expand_document_keeps_passages_best_first_after_topup():
     assert answer.citations[0].passages == ["a-new", "a1"]
 
 
+def test_expand_document_result_is_delimited():
+    # expand_document is the tool that pulls MORE passages out of a document — precisely where an
+    # injected instruction buried in a document would surface — so its tool result must carry the
+    # same <doc>...</doc> delimiter _render_one emits for the initial page and search_more.
+    session, anthropic, _ = make_session(
+        [message(tool_use("expand_document", doc_number=1, query_text="more"), stop_reason="tool_use"),
+         message(text("Done [doc 1]."))],
+        chunks=[[chunk("A", "a1", 0.9), chunk("B", "b1", 0.5)], [chunk("A", "a-new", 0.99)]],
+        entities=[[doc("A"), doc("B")], [doc("A")]],
+        cfg=AgentConfig(m=1))
+    session.run("q?", "tok", trace_id="t")
+    tool_result = anthropic.messages.create.call_args.kwargs["messages"][-1]["content"][0]
+    content = tool_result["content"]
+    assert content.startswith('<doc n="1" key="A">') and content.rstrip().endswith("</doc>")
+    assert "[doc 1] key=A" in content and "passage: a-new" in content
+
+
 def test_refusal_carries_the_stop_details():
     session, _, _ = make_session([SimpleNamespace(
         content=[], stop_reason="refusal",
