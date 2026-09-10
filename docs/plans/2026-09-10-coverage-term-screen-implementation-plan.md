@@ -73,6 +73,8 @@ Newly introduced by this plan and verified at plan-write time:
 | P19 | Code validity | The `(count, max-decile)` permutation grid matches A22 | `count` ranges 2–8 (7 distinct); 60 cells occupied on all-multi, exactly A22's figure |
 | P15, P16 | Ordering | Task 2 consumes only Task 1's committed script; Task 1's controls compute without screen 2 | controls read the dump and the β = 0 run file only |
 | P21 | Consumer impact | No name collision in `scripts/` | no existing `coverage*` module |
+| P22 | Code validity | The **judged** population also stratifies without an empty or single-class decile — P18's evidence covered only the 92,758 | sizes 1088/1087/1087/1088/1087/1087/1088/1087/1087/1088 under its own quantiles; 1,000 cluster-bootstrap replicates produced no degenerate stratum |
+| P23 | Code validity | The permutation grid on the **judged** population — P19's evidence covered only all-multi | 56 cells / 2 singletons under its own deciles, exactly spec A22's figure; 54 cells if all-multi edges are reused |
 
 `mean_tail` makes the candidate table **seven** rows. Spec §2.2, §2.3 and §2.6 each say "six" in prose — stale wording left when `mean_tail` was added, which changes no rule (`m` is the number of screen-1 survivors, not the table's length). This plan implements the table.
 
@@ -105,7 +107,13 @@ Newly introduced by this plan and verified at plan-write time:
 
 - [ ] **Step 3: Stratified AUC and advantage.** Stratify by `max_chunk` decile (`np.quantile` + `np.digitize`, P18), compute each candidate's AUC of relevant vs irrelevant within each stratum via `mannwhitneyu` (P17), pool weighted by stratum size, and report both the **raw AUC** and the **advantage over `count`** on the same pairs.
 
-- [ ] **Step 4: Permutation and bootstrap.** One-sided permutation `p = P(advantage_perm ≥ advantage_obs)`, permuting the **candidate** within `(count, max-decile)` cells with labels fixed (P19), using `report.PERMUTATION_SEED` and `report.PERMUTATION_RESAMPLES`. 95 % CI by cluster bootstrap resampling **queries**, not pairs, same seed. The CI is computed for **both** the raw AUC and the advantage, since the GO rule tests a bound on each; the permutation p is computed for the **advantage** only, which is the quantity §2.6's Holm clause consumes.
+  **Decile edges are computed under both readings, and the per-population reading decides.** Reading A recomputes `np.quantile` within each label population; reading B computes the edges once on the 92,758 and reuses them for the judged population. **Reading A is the deciding computation** — it reproduces the spec's own recorded A20 (`AUC(count)` 0.4707), A22 (56 judged cells) and A25 (+0.0307), and keeps judged strata at 1087–1088 rather than 360–2,870. Reading B is computed and published in the verdict document as a sensitivity column, in the same way §2.3's ρ(τ) curve is published: it is on the record, and it decides nothing. Both readings coincide on the all-multi population, which is the population B's edges come from.
+
+  The distinction is load-bearing and neither control catches it: under reading B, `mean_tail`'s raw-AUC CI lower bound is 0.4982, which is 0.0018 from the 0.5 bar the GO conjunction tests.
+
+- [ ] **Step 4: Permutation and bootstrap.** One-sided permutation `p = P(advantage_perm ≥ advantage_obs)`, permuting the **candidate** within `(count, max-decile)` cells with labels fixed (P19), using `report.PERMUTATION_SEED` and `report.PERMUTATION_RESAMPLES`. 95 % CI by cluster bootstrap resampling **queries**, not pairs, same seed, with **`report.PERMUTATION_RESAMPLES` (10,000) replicates and a BCa interval**. BCa rather than percentile because the statistic is an AUC near 0.5 tested against a one-sided bar, which is where percentile intervals are weakest; it needs a jackknife pass over the 672 queries per statistic on top of the replicates. The replicate count is the same constant the permutation uses, so one number governs both. The CI is computed for **both** the raw AUC and the advantage, since the GO rule tests a bound on each; the permutation p is computed for the **advantage** only, which is the quantity §2.6's Holm clause consumes.
+
+  Both the replicate count and the interval construction are decision inputs, not diagnostics — two of the GO conjunction's three clauses are CI lower bounds — so both are named here and must be restated in the verdict document.
 
 - [ ] **Step 5: The two fail-closed controls.** Compute on their own populations (Global Constraints):
   1. Pearson `corr(tail_sum, tail_count)` over all **172,704** pooled pairs, where `tail_count = len(tail_scores(scores))`. Target ≈ 0.9970.
@@ -128,8 +136,7 @@ Newly introduced by this plan and verified at plan-write time:
   ```bash
   cd Iverson.Server/Iverson.LoadTest/scripts
   PYTHONPATH=/home/ben/repositories/iverson-benchmark-corpora/python-libs python3 -m pytest . -q
-  git add Iverson.Server/Iverson.LoadTest/scripts/coverage_screen.py \
-          Iverson.Server/Iverson.LoadTest/scripts/test_coverage_screen.py
+  git add coverage_screen.py test_coverage_screen.py
   git commit -m "add coverage_screen.py: does any candidate carry signal the chunk count does not"
   ```
 
@@ -143,7 +150,7 @@ Newly introduced by this plan and verified at plan-write time:
 
 - [ ] **Step 1: Run the screen over both populations.** Capture the full output; it is the verdict document's only source. If either control fails, stop — the run reports nothing else by design, and that is itself the finding.
 
-- [ ] **Step 2: Write the verdict document** at `docs/plans/2026-09-GATE-coverage-screen.md`, in the shape of `docs/plans/2026-09-GATE-chunk-coverage-phase2.md`. Spec §2.7 mandates all of: every candidate's degeneracy ρ; its raw AUC **and** advantage in both populations; **`AUC(count)` per `max_chunk` decile**; the **full ρ(τ) curve** for `n_within_tau`; and both control reproductions.
+- [ ] **Step 2: Write the verdict document** at `docs/plans/2026-09-GATE-coverage-screen.md`, in the shape of `docs/plans/2026-09-GATE-chunk-coverage-phase2.md`. Spec §2.7 mandates all of: every candidate's degeneracy ρ; its raw AUC **and** advantage in both populations; **`AUC(count)` per `max_chunk` decile**; the **full ρ(τ) curve** for `n_within_tau`; and both control reproductions. Task 1 step 3 adds one more: the **reading-B decile sensitivity column**, published beside the deciding reading-A figures. Task 1 step 4 adds the bootstrap's replicate count and interval construction, which are decision inputs.
 
 - [ ] **Step 3: Record the verdict and the two reporting classes.** GO/NO-GO per spec §2.6, remembering that a NO-GO closes item 15 **for the coverage direction** only. Then name, rather than folding into "no candidate passes":
   - **population-dependent** candidates — passing in one population but not the other, naming which bias each rides;
