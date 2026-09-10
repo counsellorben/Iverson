@@ -14,7 +14,7 @@ chunk count in disguise — `corr(Σ tail, tail count) = 0.9970` over all 172,70
 because β multiplies the whole term the degeneracy is β-invariant, accounting for 91–92 % of
 movement at every arm. What was falsified is **count-weighted promotion of multi-chunk documents**.
 
-The gate names two candidate families that might not degenerate, and then sets the bar for anyone
+The gate names three shapes that might not degenerate, and then sets the bar for anyone
 proposing one (`2026-09-GATE-chunk-coverage-phase2.md:777-784`):
 
 > "This is a scope limit, not an invitation. Nothing in this result suggests such a term would
@@ -23,8 +23,9 @@ proposing one (`2026-09-GATE-chunk-coverage-phase2.md:777-784`):
 > rather than an argument.**"
 
 This spec is that measurement. It defines **no ranking term and no β**. It asks only whether any
-candidate statistic carries relevance signal that the chunk count does not. If none does, **item 15
-closes** and the project never pays for another arm. That is the expected outcome, and a clean NO is
+candidate statistic carries **coverage-direction** relevance signal that the chunk count does not. If
+none does, **item 15 closes** for that direction and the project never pays for another arm. Signal in
+the anti-coverage direction is a different finding and is reported, not counted as absence (§2.6). That is the expected outcome, and a clean NO is
 the most valuable thing this screen can produce.
 
 The relevance data give it no encouragement to start with: P(relevant | pooled chunk count) runs
@@ -77,6 +78,7 @@ nothing else in the run is trustworthy (§2.6).
 |---|---|---|
 | `count` | number of pooled chunks | null baseline; the thing every candidate must beat |
 | `tail_sum` | `Σ tail_scores` | Phase 2's actual term; must reproduce Pearson ≈ 0.9970 with `tail_count` on all 172,704 pairs (§2.6), and prints Spearman ρ ≈ 0.9292 against `count` under screen 1's own estimator and population |
+| `mean_tail` | `Σ tail_scores / len(tail_scores)` | the gate's **first-named** shape — "a mean tail rather than a sum (depth stops buying score)". Least count-shaped statistic in the set: Spearman ρ = 0.1389 with `count` on the 92,758. Oriented positive: a covering document's tail sits close to its max, so a high mean tail is coverage-positive |
 | `norm_tail_sum` | `Σ (sᵢ / s_max)` over the tail | the gate's family 1, literal reading |
 | `n_within_tau` | count of chunks with `sᵢ ≥ τ · s_max`, τ = 0.95 fixed, not swept | "only chunks close to the best one count" |
 | `gap_1_2` | **`−(s_max − s_second)`** | peakedness; not count-shaped. Signed negative: the coverage hypothesis predicts a covering document matches in several places, so its tail sits *close* to its max — low raw gap is coverage-positive |
@@ -99,6 +101,11 @@ between 0.94 and 0.95. The value is kept, and the whole curve is published in th
 chunk scores are tight (within-count CV ≈ 5.8 %), so `sᵢ / s_max` is near-constant and its sum is
 still a count. `gap_1_2` and `dispersion` are the only two expected to reach screen 2. Recording this
 now makes the screen falsifiable against its author's expectations.
+
+**Scored during design review, before execution.** The `norm_tail_sum` half is confirmed (ρ = 0.9268,
+disqualified) though for a sharper reason than argued: within-depth CV is 1.5–1.7 %, not 5.8 %. The
+"only two" half is **falsified** — measured on the screen's own population, `n_within_tau` survives at
+ρ = 0.8474 and `mean_tail` at ρ = 0.1389, so four candidates reach screen 2, not two.
 
 ### 2.4 Screen 1 — degeneracy
 
@@ -136,7 +143,12 @@ reporting a CI bound beside a permutation p:
   null actually of interest — candidate ⫫ relevance given `count` and `max_chunk` — by holding
   `count`'s own signal fixed by construction, which is what "signal the count does not carry" means.
   Shuffling labels instead drives both AUCs to 0.5 and centres the null on 0, which a null candidate
-  does not satisfy.
+  does not satisfy. **The p is one-sided in the pre-registered coverage direction:
+  `p = P(advantage_perm ≥ advantage_obs)`.** The tail must be stated because this null is *not*
+  centred on zero — `AUC(count)` is held fixed by construction while the permuted candidate centres
+  near chance, so the null mean of the advantage sits near +0.03, and the three readings of "the
+  p-value" straddle `HOLM_ALPHA` on a live candidate. One-sided binds on the same side as both CI
+  clauses in §2.6 and as §2.3's fixed orientation.
 - **95 % CI** by cluster bootstrap resampling **queries** (not pairs) — queries are the independent
   unit here, and a pair-level bootstrap would understate the interval by treating a query's pairs as
   independent draws. Same seed.
@@ -179,9 +191,18 @@ reports nothing else.
     itself, and screen-1 casualties never reach screen 2. Conditioning m on screen 1 does not peek at
     the outcome variable, because screen 1 is label-free (§2.4).
 
-**Overall NO-GO** — no candidate passes — closes item 15. A candidate passing in one population but
-not the other is neither a GO nor a silent discard: it is reported as a population-dependent result,
-naming which bias it rides.
+**Overall NO-GO** — no candidate passes — closes item 15 **for the coverage direction**, which is the
+direction §2.3's orientation pre-registers and the only one the GO conjunction can detect.
+
+Two classes are reported rather than folded into "no candidate passes":
+
+- **Population-dependent.** A candidate passing in one population but not the other is neither a GO
+  nor a silent discard: it is reported as such, naming which bias it rides.
+- **Anti-coverage.** A candidate whose raw-AUC 95 % CI lies wholly **below** 0.5, or whose advantage
+  CI lies wholly below 0, is a confident finding in the opposite direction, not an absence of signal.
+  It is named in the verdict document with the population it holds in and the bias it may ride. §2.7
+  already publishes the raw AUCs and `AUC(count)` per decile, so this costs nothing at run time —
+  what was missing was the instruction to read them.
 
 ### 2.7 Outputs
 
@@ -213,7 +234,7 @@ naming which bias it rides.
 | A19 | The β = 0 run file control 2 consumes exists and matches the dump | `chunk-coverage-phase2-arms-2026-09-09/fs2048-b0.chunks.trec`, 33,600 rows; `scoped_to_run` over the Phase 1 dump recovers all 33,600 |
 | A20 | **`AUC(count)` within `max_chunk` deciles is not 0.5** — the quantity §2.5's advantage is measured against | 0.4707 on the judged population, 0.5631 on all-multi. This is the mechanism §2.5 now guards against |
 | A21 | `tail_sum` under screen 1's own estimator and population | Spearman ρ = 0.9292 on the 92,758 multi-chunk pairs — not the gate's Pearson 0.9970, which is a different operand, estimator and population |
-| A22 | The permutation scheme has adequate cells to permute | verified in review §0 |
+| A22 | The permutation scheme has adequate cells to permute | Measured on the scheme as written in §2.5 — permuting the candidate within `(count, max-decile)`: 56 cells (judged) / 60 (all-multi), with 2 and 5 members respectively falling in singleton cells, and 99.9 % of pairs in cells holding ≥ 2 members and both labels. (Round 1's figures described the superseded label-shuffle scheme and do not bear on this one.) |
 
 ## 4. Out of scope
 
@@ -232,6 +253,6 @@ naming which bias it rides.
   judged-only population contains exactly the pairs some earlier run surfaced; the all-pairs
   population treats 88.3 % unassessed pairs as negatives. Requiring agreement across both is a
   mitigation, not a fix — a candidate that rides a bias common to both would still pass.
-- **A NO-GO closes item 15 on FreshStack-2048 evidence alone**, at the 2048/1792 window with the
+- **A NO-GO closes item 15 for the coverage direction on FreshStack-2048 evidence alone**, at the 2048/1792 window with the
   shipped fusion triple. Phase 2's negative carries the same limitation; this screen inherits it and
   does not widen it.
