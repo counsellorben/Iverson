@@ -505,7 +505,7 @@ def cmd_probe(args):
             per_query[qid] = [doc_id for doc_id, _ in ranked]
         control_rankings[ef] = per_query
         print(f"[multivector] control hnsw_ef={ef} done")
-    control_agreement = {
+    control_differs_from_operating = {
         ef: sum(1 for qid in probe_ids
                 if control_rankings[ef][qid] != control_rankings[control_operating_ef][qid])
         for ef in CONTROL_HNSW_EF_SWEEP
@@ -526,12 +526,12 @@ def cmd_probe(args):
             per_query[qid] = [doc_id for doc_id, _ in ranked]
         arm_rankings[ef] = per_query
         print(f"[multivector] arm hnsw_ef={ef} done")
-    arm_agreement = {
+    arm_differs_from_operating = {
         ef: sum(1 for qid in probe_ids if arm_rankings[ef][qid] != arm_rankings[arm_operating_ef][qid])
         for ef in ARM_HNSW_EF_SWEEP
     }
-    print(f"[multivector] control differs-from-operating-point (ef={control_operating_ef}): {control_agreement}")
-    print(f"[multivector] arm differs-from-operating-point (ef={arm_operating_ef}): {arm_agreement}")
+    print(f"[multivector] control differs-from-operating-point (ef={control_operating_ef}): {control_differs_from_operating}")
+    print(f"[multivector] arm differs-from-operating-point (ef={arm_operating_ef}): {arm_differs_from_operating}")
 
     probe_path = os.path.join(runs_dir, "probe.json")
     result = {
@@ -545,8 +545,8 @@ def cmd_probe(args):
         "probe_bulk_queries": PROBE_BULK_QUERIES,
         "control_operating_ef": control_operating_ef,
         "arm_operating_ef": arm_operating_ef,
-        "control_agreement": {str(ef): n for ef, n in control_agreement.items()},
-        "arm_agreement": {str(ef): n for ef, n in arm_agreement.items()},
+        "control_differs_from_operating": {str(ef): n for ef, n in control_differs_from_operating.items()},
+        "arm_differs_from_operating": {str(ef): n for ef, n in arm_differs_from_operating.items()},
         "collections": {
             name: {
                 "name": name,
