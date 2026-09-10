@@ -199,6 +199,37 @@ def test_check_sidecars_carry_the_ladder_passes_when_multiset_matches_and_none_e
     assert beta_invariant.check_sidecars_carry_the_ladder(betas_by_path, ladder, max_beta=0.035800) == 6
 
 
+# ── validate_max_beta ─────────────────────────────────────────────────────────────────────
+# check 3's bound comparison is `beta > max_beta`, and that comparison fails OPEN for a non-finite
+# max_beta -- `0.358 > float("nan")` and `0.358 > float("inf")` are both False. These are the tests
+# that matter: each gives the guard exactly the value that would otherwise silently defeat check 3,
+# the sweep's only protection against a mistyped non-zero beta.
+
+def test_validate_max_beta_exits_on_nan():
+    with pytest.raises(SystemExit) as excinfo:
+        beta_invariant.validate_max_beta(float("nan"))
+    assert "nan" in str(excinfo.value).lower()
+
+
+def test_validate_max_beta_exits_on_positive_infinity():
+    with pytest.raises(SystemExit) as excinfo:
+        beta_invariant.validate_max_beta(float("inf"))
+    assert "inf" in str(excinfo.value).lower()
+
+
+def test_validate_max_beta_exits_on_negative_value():
+    with pytest.raises(SystemExit):
+        beta_invariant.validate_max_beta(-1.0)
+
+
+def test_validate_max_beta_accepts_the_default_and_an_explicit_in_range_value():
+    """Guard against over-rejecting: ordinary, in-range values (including the zero boundary) must
+    not raise."""
+    beta_invariant.validate_max_beta(0.035800)  # the default
+    beta_invariant.validate_max_beta(0.05)      # an explicit in-range value
+    beta_invariant.validate_max_beta(0.0)       # the boundary -- zero is finite and non-negative
+
+
 # ── build_arg_parser: the nargs='+' detail ───────────────────────────────────────────────
 
 def test_sidecar_and_ladder_accept_multiple_values_after_a_single_flag():
@@ -217,6 +248,24 @@ def test_sidecar_and_ladder_accept_multiple_values_after_a_single_flag():
 
 
 # ── main(): end-to-end CLI ────────────────────────────────────────────────────────────────
+
+def test_main_exits_on_an_invalid_max_beta_before_touching_any_input_file(monkeypatch):
+    """End-to-end confirmation of 'before any check runs': --hits/--keymap/--scores-zero/
+    --scores-parity/--sidecar all point at paths that do not exist. If validate_max_beta's call in
+    main() were ever removed, or moved to run after the file loads instead of before them, this
+    test would fail with an unhandled FileNotFoundError instead of the clean SystemExit asserted
+    here -- so it pins both the guard's presence and its position."""
+    monkeypatch.setattr(sys, "argv", [
+        "beta_invariant.py",
+        "--hits", "/nonexistent/h.chunks.hits.tsv", "--keymap", "/nonexistent/keymap.json",
+        "--scores-zero", "/nonexistent/z.scores.tsv", "--scores-parity", "/nonexistent/p.scores.tsv",
+        "--sidecar", "/nonexistent/s.meta.json", "--ladder", "0",
+        "--max-beta", "nan",
+    ])
+    with pytest.raises(SystemExit) as excinfo:
+        beta_invariant.main()
+    assert "max-beta" in str(excinfo.value)
+
 
 def test_main_exits_on_check_2_when_the_same_scores_file_is_passed_twice(tmp_path, monkeypatch):
     """spec §4's positive control, exercised through the real CLI argument names: passing one file

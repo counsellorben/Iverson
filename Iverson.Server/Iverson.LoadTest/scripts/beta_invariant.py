@@ -36,6 +36,7 @@ Stdlib only.
 """
 import argparse
 import json
+import math
 import os
 import sys
 from collections import Counter
@@ -179,6 +180,21 @@ def check_sidecars_carry_the_ladder(betas_by_path, ladder, max_beta):
     return len(betas_by_path)
 
 
+def validate_max_beta(max_beta):
+    """Guards --max-beta itself, before any of the three checks run. Check 3's bound comparison is
+    `beta > max_beta`, and that comparison fails OPEN for a non-finite max_beta:
+    `0.358 > float("nan")` and `0.358 > float("inf")` are both False, so a NaN or +Inf --max-beta
+    would silently let through the exact out-of-range arm (ten times parity) check 3 exists to
+    catch -- and check 3 is the ONLY one of the three checks that can catch it at all, since check 1
+    is beta-blind by construction and check 2 passes for any non-zero beta. Mirrors the equivalent
+    guard the gated C# applies to the same quantity (`BenchmarkAggregateScenario.cs:70`:
+    `!double.IsFinite(flags.Beta) || flags.Beta < 0`)."""
+    if not math.isfinite(max_beta) or max_beta < 0:
+        sys.exit(
+            f"[beta_invariant] --max-beta {max_beta!r} is invalid -- it must be finite and "
+            f"non-negative, or check 3's bound comparison fails open")
+
+
 def build_arg_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--hits", required=True, help="the pool dump, <label>.chunks.hits.tsv (same format tail_stats.py reads)")
@@ -196,6 +212,7 @@ def build_arg_parser():
 
 def main():
     args = build_arg_parser().parse_args()
+    validate_max_beta(args.max_beta)
 
     keymap = tail_stats.load_keymap(args.keymap)
     hits = tail_stats.load_hits(args.hits)
