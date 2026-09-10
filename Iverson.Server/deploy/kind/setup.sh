@@ -50,11 +50,20 @@ kubectl create namespace iverson --dry-run=client -o yaml | kubectl apply -f -
 kubectl label namespace iverson pod-security.kubernetes.io/enforce=baseline --overwrite
 
 echo "Installing ingress-nginx..."
+# allow-snippet-annotations is disabled by default since ingress-nginx v1.9; the
+# api and admin-ui charts' Ingress templates emit
+# nginx.ingress.kubernetes.io/configuration-snippet on this className, which the
+# validating admission webhook rejects (or the controller silently drops) without
+# this setting. This install is this repo's only source of the controller for the
+# only ingress class the kind profile actually runs, so this is the one place that
+# setting can be turned on.
 helm upgrade --install ingress-nginx ingress-nginx \
   --repo https://kubernetes.github.io/ingress-nginx \
+  --version 4.11.3 \
   --namespace ingress-nginx --create-namespace \
   --set controller.hostPort.enabled=true \
   --set controller.service.type=ClusterIP \
+  --set controller.allowSnippetAnnotations=true \
   --wait
 
 echo "Installing CloudNativePG operator..."

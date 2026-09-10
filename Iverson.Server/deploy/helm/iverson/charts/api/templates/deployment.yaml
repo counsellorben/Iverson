@@ -141,20 +141,24 @@ spec:
             - name: Authentication__ValidAudiences__0
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-human-oidc-client, key: client-id }
+            {{- if .Values.global.provisionTestIdentities }}
             - name: Authentication__ValidAudiences__1
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-loadtest-client, key: client-id }
             - name: Authentication__ValidAudiences__2
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-webtest-client, key: client-id }
+            {{- end }}
             - name: Authentication__ValidAudiences__3
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-admin-automation-client, key: client-id }
             - name: Authentication__ActingUser__Authority
               value: "http://{{ .Release.Name }}-authentik:9000/application/o/iverson-api/"
+            {{- if .Values.global.provisionTestIdentities }}
             - name: Authentication__ActingUser__ValidAudiences__0
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-loadtest-human-client, key: client-id }
+            {{- end }}
             - name: Authentik__BaseUrl
               value: "http://{{ .Release.Name }}-authentik:9000"
             - name: Authentik__AdminToken

@@ -156,6 +156,11 @@ api:
     annotations: {}
     host: "iverson.local"
     tlsSecretName: ""   # set per-environment; empty disables the tls: block (kind only — see values-local.yaml)
+    securityHeadersRuleSet: ""   # name of a pre-provisioned azurerm_application_gateway_rewrite_rule_set
+                                 # carrying the security-header rewrite rules; only used when
+                                 # className is "azure-application-gateway". This repo's Terraform
+                                 # does not provision one — leave empty unless you have provisioned
+                                 # it yourself, otherwise AGIC references a rule set that does not exist.
 
 worker:
   enabled: true
@@ -212,6 +217,7 @@ adminUi:
     className: ""
     annotations: {}
     tlsSecretName: ""   # set per-environment; empty disables the tls: block (kind only — see values-local.yaml)
+    securityHeadersRuleSet: ""   # see api.ingress.securityHeadersRuleSet above — same opt-in, same default.
 
 authentik:
   enabled: true

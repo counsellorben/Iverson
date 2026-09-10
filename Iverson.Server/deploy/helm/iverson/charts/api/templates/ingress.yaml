@@ -1,9 +1,11 @@
 {{/*
 Mirror the security-header block admin-ui's nginx already serves, at the Ingress
 layer, for the controller classes that support it — see charts/admin-ui/templates/
-ingress.yaml for the per-class rationale and the two external prerequisites (the
-ingress-nginx `allow-snippet-annotations` controller setting, and the AGIC
-"iverson-security-headers" rewrite rule set). This Ingress serves gRPC, which no
+ingress.yaml for the per-class rationale. The nginx `allow-snippet-annotations`
+controller setting is not external to this repo on the kind profile — see that
+file's comment — and the AGIC "iverson-security-headers" rewrite rule set is not
+provisioned anywhere, so that annotation is opt-in via `ingress.securityHeadersRuleSet`
+(see the admin-ui template and values.yaml). This Ingress serves gRPC, which no
 browser renders as a document, so the mirror's value here is materially lower than
 on the admin-ui Ingress — browser-enforced headers like frame-ancestors and
 X-Frame-Options have no audience on a gRPC response. It is still applied uniformly
@@ -29,8 +31,8 @@ metadata:
       {{- if eq .Values.global.externalScheme "https" }}
       more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
       {{- end }}
-    {{- else if eq .Values.ingress.className "azure-application-gateway" }}
-    appgw.ingress.kubernetes.io/rewrite-rule-set: "iverson-security-headers"
+    {{- else if and (eq .Values.ingress.className "azure-application-gateway") .Values.ingress.securityHeadersRuleSet }}
+    appgw.ingress.kubernetes.io/rewrite-rule-set: {{ .Values.ingress.securityHeadersRuleSet | quote }}
     {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className | quote }}
