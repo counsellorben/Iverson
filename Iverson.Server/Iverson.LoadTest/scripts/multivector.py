@@ -488,7 +488,9 @@ def cmd_probe(args):
     key_to_doc = {p["payload"]["key"]: p["payload"]["docId"]
                   for p in scroll(args.object_collection, False, ["key", "docId"])}
 
-    control_operating_ef = 250
+    # The operating point is each sweep's own first entry (250 / 65) -- derived, not a
+    # separate literal, so the two can never silently drift apart.
+    control_operating_ef = CONTROL_HNSW_EF_SWEEP[0]
     control_rankings = {}
     for ef in CONTROL_HNSW_EF_SWEEP:
         per_query = {}
@@ -509,7 +511,7 @@ def cmd_probe(args):
         for ef in CONTROL_HNSW_EF_SWEEP
     }
 
-    arm_operating_ef = 65
+    arm_operating_ef = ARM_HNSW_EF_SWEEP[0]
     arm_rankings = {}
     for ef in ARM_HNSW_EF_SWEEP:
         per_query = {}
