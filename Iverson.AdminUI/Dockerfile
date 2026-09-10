@@ -21,7 +21,7 @@ RUN chown 101:101 /usr/share/nginx/html
 # Replaces the base image's stock default.conf, which has no SPA fallback:
 # unmatched paths (e.g. /callback, /performance) 404 instead of resolving to
 # index.html and letting React Router take over client-side.
-COPY Iverson.AdminUI/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --chown=101:101 Iverson.AdminUI/nginx.conf /etc/nginx/conf.d/default.conf
 COPY Iverson.AdminUI/docker-entrypoint.sh /docker-entrypoint.d/40-admin-ui-config.sh
 RUN chmod +x /docker-entrypoint.d/40-admin-ui-config.sh
 USER 101

@@ -1,3 +1,20 @@
+{{/*
+Mirror the security-header block nginx.conf already serves from the admin-ui pod
+itself, at the Ingress layer, for the controller classes that support it. There is
+no portable response-header annotation across ingress controllers, so each class
+gets its own mechanism:
+  - nginx: a configuration-snippet using more_set_headers (which replaces rather
+    than appends, avoiding duplicate headers) — requires the controller-wide
+    `allow-snippet-annotations: true` setting, disabled by default since
+    ingress-nginx v1.9. This is an external prerequisite this chart cannot set.
+  - azure-application-gateway: AGIC's rewrite-rule-set annotation references a
+    named rule set; the header text itself cannot live in the annotation, so
+    "iverson-security-headers" must be pre-provisioned in Azure separately. This
+    is the second external prerequisite this chart cannot set.
+  - alb, gce: neither controller exposes a response-header annotation, so for
+    these classes the headers come from the origin (this pod's own nginx) only.
+*/}}
+{{- $oidcOrigin := printf "%s://authentik.%s" .Values.global.externalScheme .Values.global.ingressHost }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -6,6 +23,18 @@ metadata:
     nginx.ingress.kubernetes.io/rewrite-target: /$2
     {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if eq .Values.ingress.className "nginx" }}
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "Referrer-Policy: no-referrer";
+      more_set_headers "Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' {{ $oidcOrigin }}; frame-ancestors 'none'";
+      {{- if eq .Values.global.externalScheme "https" }}
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+      {{- end }}
+    {{- else if eq .Values.ingress.className "azure-application-gateway" }}
+    appgw.ingress.kubernetes.io/rewrite-rule-set: "iverson-security-headers"
     {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className | quote }}

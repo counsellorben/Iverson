@@ -1,9 +1,37 @@
+{{/*
+Mirror the security-header block admin-ui's nginx already serves, at the Ingress
+layer, for the controller classes that support it — see charts/admin-ui/templates/
+ingress.yaml for the per-class rationale and the two external prerequisites (the
+ingress-nginx `allow-snippet-annotations` controller setting, and the AGIC
+"iverson-security-headers" rewrite rule set). This Ingress serves gRPC, which no
+browser renders as a document, so the mirror's value here is materially lower than
+on the admin-ui Ingress — browser-enforced headers like frame-ancestors and
+X-Frame-Options have no audience on a gRPC response. It is still applied uniformly
+for consistency with the admin-ui Ingress and because the same channel (this API)
+is also reachable from the browser via grpc-web fetches, where CSP connect-src
+still matters.
+*/}}
+{{- $oidcOrigin := printf "%s://authentik.%s" .Values.global.externalScheme .Values.global.ingressHost }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Release.Name }}-api
   annotations:
-    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if eq .Values.ingress.className "nginx" }}
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "Referrer-Policy: no-referrer";
+      more_set_headers "Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' {{ $oidcOrigin }}; frame-ancestors 'none'";
+      {{- if eq .Values.global.externalScheme "https" }}
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+      {{- end }}
+    {{- else if eq .Values.ingress.className "azure-application-gateway" }}
+    appgw.ingress.kubernetes.io/rewrite-rule-set: "iverson-security-headers"
+    {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className | quote }}
 {{- if .Values.ingress.tlsSecretName }}
