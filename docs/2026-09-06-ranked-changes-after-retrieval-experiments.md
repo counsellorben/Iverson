@@ -30,7 +30,7 @@ evidence already decides, the item says so and the choice is only whether to act
 | Reranker Phase 1 (ms-marco MiniLM, bge-reranker-base) + A4 document input | **GATE FAILED**: +0.0082 n.s.; bge-reranker-base −0.1126 significantly worse; A4 −0.0050 n.s. | harness only (`reranker` compose profile, `TeiRerankClient`); no server change | `2026-09-GATE-reranker-phase1.md` |
 | Embedding migration Phase 1 (TEI bge-base / bge-small vs nomic) | **PASS for bge-base** (+0.0492 nDCG@10, p_adj 0.0010; NFCorpus +0.0185 significant); bge-small FAIL by 0.0028 on the R@50 bound | TEI `/v1/embeddings` route, `/info` identity guard, per-model base URLs | `2026-09-GATE-embedding-migration.md` |
 | Embedding migration Phase 2 (ship bge-base; TGI for enrichment) | embedding switch shipped; **enrichment gate FAILED** → Phase C′ | bge-base is the default everywhere (compose, Helm `activeEmbeddingModel`, code); `tei-embed` is a default service; nomic dropped; Ollama stays for enrichment (`qwen2.5:3b`); `tgi` profile-gated | `2026-09-GATE-enrichment-backend.md` |
-| Multivector layout (one MaxSim point per doc, gte-modernbert-base) | **NO-GO**: R@50 −0.0300 significant, nDCG@10 CI too wide; latency 0.61× passes; gte ≈ bge-base n.s. | `multivector.py` harness script; `TEI_MAX_BATCH_TOKENS` templated on `tei-embed` | `2026-09-GATE-multivector.md` |
+| Multivector layout (one MaxSim point per doc, gte-modernbert-base) | **NO-GO, closed 2026-09-10 after a full re-run.** Both asymmetries removed: index state was inert (reproduced the original to 4 decimals), budget equalisation made the arm worse. At `params.exact` the arm ties the control exactly (Δ +0.0000, 0/300 changed) because MaxSim and max-passage collapse are the same function | `multivector.py` harness script (`--mv-hnsw-ef`, `--mv-exact`, `probe`); `TEI_MAX_BATCH_TOKENS` templated on `tei-embed` | `2026-09-GATE-multivector.md` + its two 2026-09-10 amendments |
 
 Every gated number above was measured at the **512/448-character window on SciFact**, with NFCorpus and
 FreshStack as secondary corpora. That single fact drives item 1.
@@ -126,29 +126,44 @@ count per query over `runs/fs2048-routed.chunks.trec`.
 
 ## Tier 2 — cheap re-measurements before a verdict is treated as final
 
-### 4. Multivector: the NO-GO carries two asymmetries a re-run could remove for the cost of an hour
+### 4. Multivector: **CLOSED 2026-09-10** — re-run done; the layout is the same function as the control
 
-**What the gate recorded.** R@50 −0.0300 (significant, 11 of 300 queries changed) and nDCG@10 −0.0140 (n.s.,
-CI [−0.0312, +0.0032]). Two mechanisms sit inside those numbers: the per-chunk arm over-fetches 5× (250 chunks
-→ 50 docs) while the multivector arm asks HNSW for 50 documents directly; and the control collection had one
-segment below the indexing threshold, so ~16 % of it was exact-searched while the arm under test was 100 %
-approximate. Both bias the control upward on R@50. The gte snapshots (`scifact-gte-qdrant-snapshots/`, three
-collections) are on disk, so a re-run costs a restore, a `build`, and a 5-minute `query` — no ingest.
+**Done, in full.** Design `docs/specs/2026-09-10-multivector-rerun-design.md`, executed 2026-09-10; two
+amendments appended to `docs/plans/2026-09-GATE-multivector.md` (`7659624`, `e4b8c62`). This item's original
+choice 1 (re-run once with both asymmetries removed, then close) was taken; it settled the question past the
+point where its choices 2 and 3 remain meaningful, and the ranked-choices list is dropped accordingly.
 
-**Choices, ranked.**
+**Both asymmetries were removed, and neither was the story.**
 
-1. **Re-run once with the two asymmetries removed, then close.** Force-optimise (or set
-   `indexing_threshold` 0 on) both collections so neither has a sub-threshold segment; add an over-fetch to
-   the multivector query (`limit` 250, truncate to 50) so both arms get comparable HNSW budgets; extend
-   `cmd_query`'s precondition to require `indexed_vectors_count == points_count`. If R@50 is still
-   significantly negative the layout is dead on this corpus; if it is not, the adoption cost in choice 2
-   decides.
-2. **Close as NO-GO and record the adoption cost that was never measured.** MaxSim does not report the
-   winning row, so `SearchChunks`'s chunk text/index contract needs a local argmax over retrieved rows plus
-   chunk texts in the point payload — a second round-trip and payload growth that eat into the 0.61× latency
-   margin. Adoption would also need a write-time `docId` dedupe.
-3. **Re-attempt on a long-document corpus.** Only worth it after choice 1 passes; SciFact at 512/448 is the
-   layout-friendly case (3.85 rows per point) and it still lost.
+- *Index state.* Equalised (`indexing_threshold` 1 on both collections; the gate's suggested `0` is inverted —
+  it disables HNSW). The counterfactual re-run at the arm's default beam reproduced the original gate **to
+  four decimal places on every statistic**. The control's run file moved on 648 of 15,000 rows and its
+  aggregate scores were identical to six decimals: every moved row was a qrels-irrelevant document. The bias
+  was real and completely inert.
+- *Retrieval budget.* Equalised on corpus fraction (`hnsw_ef` 65 = 1.25 % of the arm's graph, matching the
+  control's 250/19,967). This made the arm **worse** — nDCG@10 −0.0205, R@50 −0.0467 — because it lowers the
+  arm's beam from its default 100. Note the correction to this item's original premise: after index
+  equalisation the *arm* had the larger corpus fraction (1.93 % vs 1.25 %), so the over-fetch asymmetry
+  favoured the arm, not the control.
+
+**Why the question is closed rather than answered.** MaxSim scores a document as the max cosine over its chunk
+rows; the control retrieves chunks and collapses by parent taking the max. **They are the same function.** Run
+with `params.exact`, the arm ties the control exactly — nDCG@10 +0.0000, R@50 +0.0000, 0 of 300 queries
+changed, p95 ratio 1.05× — and 243 of 300 queries come back with a bit-identical top-50 (order, set and score,
+maximum delta 0.000e+00). Every negative delta this gate ever recorded was HNSW approximation error over the
+`max_sim` graph, not layout quality. A larger beam cannot rescue it either: `hnsw_ef` 4000 and `hnsw_ef` 100000
+return the identical ranking as each other and both still differ from exact on 9 of 20 queries, so HNSW over
+`max_sim` points has an approximation floor beam width does not close.
+
+**Choice: closed, NO-GO.** The layout's ceiling is a tie with the thing it would replace, reachable only by a
+full scan — affordable here only because the corpus is 5,183 documents, and not a property that scales. The
+adoption costs in the old choice 2 (argmax for the winning row, chunk texts in the payload, write-time `docId`
+dedupe) never need pricing, and the long-document re-attempt in the old choice 3 was gated on choice 1 passing,
+which it did not.
+
+**Do not propose another multivector variant without first showing it computes a *different* scoring function
+from max-passage collapse.** Sum-of-rows, top-k-rows or a learned aggregation would be new questions; beam,
+index state, and retrieval budget are not — all three are now measured and none of them is a lever.
 
 ### 5. bge-small: failed by 0.0028 at n = 300, with an 8.71× ingest speed-up on the table
 
@@ -220,8 +235,10 @@ unauthorised properties), and a second uncalibrated fusion stacked on the first.
 A caller who wants N documents must over-request and collapse client-side, exactly as the harness does
 (`ChunkBudgetMultiplier = 5`). No client documentation says so. **Choices:** document it in the client standard
 and each client's search docs (recommended, cheap); add a document-level `top_k` option to the proto (five
-languages, a new spec); do nothing. The multivector experiment's "over-fetch is where the recall lives"
-finding is the same mechanism seen from the other side.
+languages, a new spec); do nothing. Item 4's re-run makes this sharper than a mechanism note: retrieving
+chunks and collapsing by parent on the max IS max-passage scoring, proven bit-identical to exact MaxSim on 243
+of 300 queries, so the only thing that degrades a caller's document-level recall is truncating the chunk list
+too early. Over-request and collapse is not a workaround; it is the scoring function.
 
 ### 12. Stale and contradictory documents
 
