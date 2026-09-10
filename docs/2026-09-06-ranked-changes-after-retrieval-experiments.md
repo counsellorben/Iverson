@@ -8,7 +8,7 @@
 
 Supersedes `docs/2026-08-28-proposed-code-changes-from-retrieval-experiments.md`, which was written while
 ArguAna was still running and lists four items that have since shipped. Everything here is stated against
-local main at `9eb99f7` and the four gate documents under `docs/plans/2026-09-GATE-*.md`. Nothing here has
+local main at `9eb99f7` and the eight gate documents under `docs/plans/2026-09-GATE-*.md`. Nothing here has
 been through `thorough-brainstorming`; each item is the input to that, not a substitute for it.
 
 The experiments this closes out are the ones scored on top-k relevance metrics (nDCG@10, R@50, AP) through
@@ -43,7 +43,7 @@ is added there.
 | Tier 1 retrieval defaults | Rule 7.1 **PASS**, chunk-window default STANDS; Rule 7.2 λ split per endpoint; Rule 7.3 FIRES → follow-up | `LambdaSimilar` 1.00 / `LambdaChunks` 0.70; the `.chunks.diversity.json` sidecar. Chunk-window defaults unchanged by decision | `2026-09-GATE-tier1-defaults.md` |
 | `SearchSimilar` centroid retrieval (rule 7.3 follow-up) | **FAIL** — head retrieval stands, `SimilarRetrievalVector` deleted; reconciled in the 2026-09-08 amendment | nothing; Task 1's wiring reverted | `2026-09-GATE-similar-centroid.md` |
 | Chunk-coverage signal, Phase 1 | **Phase 2 warranted** — 85.0 % of top-50 slots carry a tail; β calibrated | harness only (`beta_invariant.py` and the β ladder) | `2026-09-GATE-chunk-coverage.md` |
-| Chunk-coverage signal, Phase 2 | **NO β QUALIFIES** — significant negative on all five arms, not a null | nothing | `2026-09-GATE-chunk-coverage-phase2.md` |
+| Chunk-coverage signal, Phase 2 | **NO β QUALIFIES** — all five arms negative and monotone on nDCG@10; the top three are Holm-significant (p_adj 0.0010), not a null | nothing | `2026-09-GATE-chunk-coverage-phase2.md` |
 
 Every gated number above was measured at the **512/448-character window on SciFact**, with NFCorpus and
 FreshStack as secondary corpora. That single fact drives item 1.
