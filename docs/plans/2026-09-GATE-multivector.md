@@ -730,3 +730,91 @@ on `BAAI/bge-base-en-v1.5` at 16384 from a shell with neither `BENCH_EMBED_MODEL
 `tei-embed`; no tier-wide `up`, no `stack.py`, no `down`. `iverson-api` and `iverson-worker` were
 never touched — both gated arms are raw Qdrant. `scifact-gte-2026-09-06/runs/` was read but never
 written.
+
+---
+
+# Amendment 2026-09-10 (second) — the ceiling: the two layouts are the same function
+
+Asked whether the re-run should proceed at a larger beam. It should not, and the reason retires the
+question permanently rather than answering it.
+
+**Run directory:** `scifact-gte-mvrerun-exact-2026-09-10/`. **Harness:** `--mv-exact`, added at
+`c8ae71b`.
+
+## A larger beam was never the lever
+
+Exact search is not "a very large `hnsw_ef`". Measured over 20 queries against
+`mvrerun_multivector` at `limit` 50:
+
+| Configuration | Top-50 rankings identical to `params.exact` |
+|---|---|
+| `hnsw_ef` 65 (the gated arm) | 0 / 20 |
+| `hnsw_ef` 4000 | 11 / 20 |
+| `hnsw_ef` 100000 (≫ the collection's 5,183 points) | 11 / 20 |
+
+`hnsw_ef` 4000 and 100000 return the identical ranking as each other and both still differ from exact
+on 9 of 20. **HNSW over `max_sim` points has an approximation floor that beam width does not close** —
+raising the beam past ~4000 buys nothing at all. Any "run it at a bigger beam" plan tops out here,
+well short of the arm's real ceiling.
+
+## The ceiling is the control, exactly
+
+Running the arm with `params.exact` (full scan) against the control unchanged:
+
+| # | Criterion | Deciding number | Threshold | |
+|---|---|---|---|---|
+| 1 | nDCG@10 delta 95 % CI lower bound | **+0.0000** (delta +0.0000, CI [+0.0000, +0.0000], 0/300 queries changed) | must be > −0.02 | **PASS** |
+| 2 | R@50 delta 95 % CI lower bound | **+0.0000** (delta +0.0000, CI [+0.0000, +0.0000], 0/300 queries changed) | must be > −0.02 | **PASS** |
+| 3 | p95 latency ratio | **1.05×** (22.6 ms ÷ 21.4 ms) | must be ≤ 1.25× | **PASS** |
+
+Absolute scores are identical on both arms: nDCG@10 0.7137, R@50 0.9467, AP 0.6799.
+
+**All three criteria pass — by tying, not by winning.** And the tie is not a coincidence of this
+corpus. MaxSim scores a document as the max cosine over its chunk rows; the control retrieves chunks
+and collapses by parent taking the max. *These are the same function.* Comparing the two run files
+row by row (ignoring the run-label column): 243 of 300 queries have an identical top-50 in order, in
+set, and in score — **maximum score difference 0.000e+00, bit-identical**. The 57 that differ are
+those where the control's 250-chunk budget or its HNSW truncates a document the full scan reaches,
+and on every one of them the difference involves only qrels-irrelevant documents, which is why all
+three aggregate metrics agree to four decimals and `report.py` reports 0/300 queries changed.
+
+## What this means for the verdict
+
+The multivector layout is not a different retrieval method. It is the same max-passage-collapse
+scoring, computed over a different index. It therefore **cannot beat the control on quality at any
+setting** — its best possible outcome is the exact tie above.
+
+Every negative delta this gate has ever measured is HNSW approximation error over the `max_sim`
+graph, not layout quality:
+
+| Configuration | nDCG@10 delta | R@50 delta | Criteria 1 & 2 |
+|---|---|---|---|
+| `hnsw_ef` 65 (corpus-fraction matched) | −0.0205 | −0.0467 | FAIL |
+| `hnsw_ef` 100 (arm default; reproduces the original gate) | −0.0140 | −0.0300 | FAIL |
+| `params.exact` (ceiling) | +0.0000 | +0.0000 | PASS (tie) |
+
+So the layout buys nothing and costs an index. The exact configuration that passes is a full scan,
+which is only affordable here because the corpus is small (5,183 points / 19,967 rows — the scan is
+comparable work to the control's HNSW search over the same 19,967 vectors, hence the 1.05× ratio).
+That ratio is a property of a 5k-document corpus and does not survive scaling; the HNSW
+configurations, which do scale, are exactly the ones that lose.
+
+### Verdict: **NO-GO stands.** Not because the layout loses on merit, but because its ceiling is a tie
+### with the thing it would replace, reachable only by abandoning the index that motivated it.
+
+This supersedes the "over-fetch question" in the remediation notes above and the first amendment's
+"no beam setting in evidence passes". The sharper statement: **no beam setting can pass, because the
+beam is only ever recovering ground toward a ceiling that is the control itself.**
+
+## Caveats on this amendment
+
+- The three criteria were pre-specified for a *deployable* configuration. Exact search is not one, and
+  reporting it as a PASS is a ceiling measurement, not a recommendation. Nothing here should be read
+  as "adopt the multivector layout with exact search."
+- Criterion 3's ratio carries real box noise: the identical control run measured p95 24.6 / 20.0 /
+  21.4 ms across the three sessions (≈23 % spread). The exact arm's 1.05× sits inside that noise
+  band, so read it as "roughly parity", not as a precise figure. It is nowhere near 1.25× either way.
+- The control's run file is not byte-stable across restore sessions (its qrels-irrelevant tail
+  reshuffles), but its aggregate scores were 0.7137 / 0.9467 / 0.6799 in all three runs.
+- Scores were compared after collapsing each arm through the same `collapse_by_doc`, so the
+  bit-identity claim is about the collapsed document scores, not about raw Qdrant point scores.
