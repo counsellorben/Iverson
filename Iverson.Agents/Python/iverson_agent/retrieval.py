@@ -165,17 +165,35 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def _escape(text: str) -> str:
+    """Neutralise delimiter-shaped sequences before they go inside the `<doc>` wrapper.
+
+    Escaping every literal `<` and `>` makes it impossible for attacker-controlled text to spell
+    `</doc>` (to step outside the boundary) or a forged `<doc n="..." key="...">` (to spoof a
+    second document) — regardless of case, whitespace, or tag name, since the escape targets the
+    bracket characters themselves rather than pattern-matching the literal substrings `<doc` /
+    `</doc>`."""
+    return text.replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _render_one(n: int, c: DocumentContext, passages: list[tuple[float, str]]) -> str:
     """Wrap the rendered block in a `<doc n="..." key="...">` delimiter so retrieved text is
     unambiguously marked as data, not instructions, to the model (single formatting point: covers
-    both the initial page and tool results)."""
-    meta = " ".join(f"{k}={v}" for k, v in c.metadata.items())
-    head = f'[doc {n}] key={c.key} title="{c.title or ""}" {meta}'.rstrip()
+    both the initial page and tool results).
+
+    Every piece of attacker-influenceable text — key, title, metadata values, passages, and the
+    summary — is escaped (§ CSR finding: an unescaped delimiter lets attacker text close the real
+    `</doc>` and forge a new one). Metadata keys are schema field names chosen by the type
+    declaration, not document content, so they are not escaped."""
+    key = _escape(c.key)
+    title = _escape(c.title or "")
+    meta = " ".join(f"{k}={_escape(str(v))}" for k, v in c.metadata.items())
+    head = f'[doc {n}] key={key} title="{title}" {meta}'.rstrip()
     if passages:
-        body = "\n".join(f"  passage: {t}" for _, t in passages)
+        body = "\n".join(f"  passage: {_escape(t)}" for _, t in passages)
     else:
-        body = f"  summary: {c.summary or '(no summary available)'}"
-    return f'<doc n="{n}" key="{c.key}">\n{head}\n{body}\n</doc>'
+        body = f"  summary: {_escape(c.summary) if c.summary else '(no summary available)'}"
+    return f'<doc n="{n}" key="{key}">\n{head}\n{body}\n</doc>'
 
 
 def render_context(contexts: list[DocumentContext], budget_tokens: int) -> str:
