@@ -5,6 +5,7 @@
 No Qdrant, no TEI: the request bodies are pinned by the spec's live probes (spec §10 rows 3-5),
 so these tests cover the logic between them -- regrouping, parent resolution, collapse, TREC
 formatting and the latency summary."""
+import json
 import os
 import sys
 
@@ -143,3 +144,47 @@ def test_probe_set_is_bulk_plus_tail_deduped_in_corpus_order():
 def test_probe_set_refuses_a_tail_id_absent_from_the_corpus():
     with pytest.raises(ValueError):
         multivector.probe_set(["q1", "q2"], ["q9"], 1)
+
+
+def test_config_snapshot_extracts_ef_construct_and_indexing_threshold():
+    info = {"config": {"hnsw_config": {"ef_construct": 512},
+                        "optimizer_config": {"indexing_threshold": 20000}}}
+    assert multivector.config_snapshot(info) == {"ef_construct": 512, "indexing_threshold": 20000}
+
+
+def test_query_run_refusal_allows_a_fresh_directory(tmp_path):
+    assert multivector.query_run_refusal(str(tmp_path)) is None
+
+
+def test_query_run_refusal_blocks_when_no_sidecar_present(tmp_path):
+    (tmp_path / f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / f"{multivector.MULTIVECTOR_RUN_LABEL}.chunks.trec").write_text("x")
+    refusal = multivector.query_run_refusal(str(tmp_path))
+    assert refusal is not None and "no raw-latency.json sidecar" in refusal
+
+
+def test_query_run_refusal_blocks_a_completed_prior_run(tmp_path):
+    (tmp_path / f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / f"{multivector.MULTIVECTOR_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / "raw-latency.json").write_text(json.dumps({"complete": True}))
+    refusal = multivector.query_run_refusal(str(tmp_path))
+    assert refusal is not None and "does not mark the prior run incomplete" in refusal
+
+
+def test_query_run_refusal_blocks_a_sidecar_missing_the_complete_key(tmp_path):
+    # A sidecar written before this flag existed has no "complete" key -- ambiguous, so this
+    # must fail closed the same as an explicit complete=True.
+    (tmp_path / f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / f"{multivector.MULTIVECTOR_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / "raw-latency.json").write_text(json.dumps({"queries": 300}))
+    refusal = multivector.query_run_refusal(str(tmp_path))
+    assert refusal is not None and "does not mark the prior run incomplete" in refusal
+
+
+def test_query_run_refusal_allows_retry_of_an_incomplete_prior_run(tmp_path):
+    # A run that died mid-loop still leaves both .trec files (write_outputs runs in a
+    # finally) -- the identical retry command must not be locked out by its own failure.
+    (tmp_path / f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / f"{multivector.MULTIVECTOR_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / "raw-latency.json").write_text(json.dumps({"complete": False}))
+    assert multivector.query_run_refusal(str(tmp_path)) is None

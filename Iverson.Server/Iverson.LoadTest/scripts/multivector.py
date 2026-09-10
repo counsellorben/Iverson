@@ -122,6 +122,35 @@ def existing_run_files(runs_dir):
     return [p for p in paths if os.path.exists(p)]
 
 
+def query_run_refusal(runs_dir):
+    """Whether a `query` into this directory should refuse to proceed, and why (None to
+    proceed). write_outputs runs in a finally, so a run that died mid-loop still leaves both
+    .trec files on disk -- a plain existing_run_files check would then refuse the identical
+    retry command, forcing a rebuilt run directory on the one procedure whose precondition is
+    an idle box. The sidecar's "complete" flag (false only when the loop didn't finish) tells
+    the two cases apart: an incomplete prior run is not gate evidence, so retrying over it is
+    exactly what this guard should allow. A sidecar reporting complete, or the case where the
+    .trec files exist with no sidecar at all (the original gate-evidence case this guard exists
+    to protect), still refuse."""
+    clash = existing_run_files(runs_dir)
+    if not clash:
+        return None
+    names = ", ".join(os.path.basename(p) for p in clash)
+    sidecar_path = os.path.join(runs_dir, "raw-latency.json")
+    if os.path.exists(sidecar_path):
+        with open(sidecar_path, encoding="utf-8") as f:
+            sidecar = json.load(f)
+        complete = sidecar.get("complete")
+        if complete is False:
+            return None
+        return (f"refusing to overwrite {len(clash)} existing run file(s) in {runs_dir}: {names} "
+                 f"-- raw-latency.json does not mark the prior run incomplete (complete={complete!r}) "
+                 f"-- point --run-dir at a fresh directory")
+    return (f"refusing to overwrite {len(clash)} existing run file(s) in {runs_dir}: {names} "
+             f"-- no raw-latency.json sidecar found alongside them, so completeness can't be "
+             f"determined -- point --run-dir at a fresh directory")
+
+
 def tail_query_ids(control_values, arm_values):
     """Query ids whose per-query measure value differs between the two runs -- per the design
     these are the only queries whose exactness bears on the gate, because recall failures live
@@ -198,6 +227,16 @@ def require_collection(name):
     if info is None:
         sys.exit(f"collection '{name}' does not exist")
     return info
+
+
+def config_snapshot(info):
+    """The two config values the design's beam arithmetic rests on: with no params.hnsw_ef the
+    beam is max(limit, ef_construct), and §3.3 mutates indexing_threshold by PATCH. Recorded so
+    a restored snapshot's real settings are visible in the sidecar rather than assumed."""
+    return {
+        "ef_construct": info["config"]["hnsw_config"]["ef_construct"],
+        "indexing_threshold": info["config"]["optimizer_config"]["indexing_threshold"],
+    }
 
 
 INDEX_WAIT_SECONDS = 600
@@ -321,7 +360,10 @@ def cmd_query(args):
                 f"HNSW-indexed: a segment below indexing_threshold is searched exactly, which is the "
                 f"index-state asymmetry this re-run exists to remove. Raise indexing_threshold and "
                 f"re-check before measuring.")
-        index_state[name] = {k: info[k] for k in ("status", "points_count", "indexed_vectors_count", "segments_count")}
+        index_state[name] = {
+            **{k: info[k] for k in ("status", "points_count", "indexed_vectors_count", "segments_count")},
+            **config_snapshot(info),
+        }
     queries_path = os.path.join(args.run_dir, "beir", "queries.jsonl")
     with open(queries_path, encoding="utf-8") as f:
         queries = [json.loads(line) for line in f if line.strip()]
@@ -332,16 +374,18 @@ def cmd_query(args):
 
     runs_dir = os.path.join(args.run_dir, "runs")
     os.makedirs(runs_dir, exist_ok=True)
-    clash = existing_run_files(runs_dir)
-    if clash:
-        sys.exit(f"refusing to overwrite {len(clash)} existing run file(s) in {runs_dir}: "
-                 f"{', '.join(os.path.basename(p) for p in clash)} -- point --run-dir at a fresh directory")
+    refusal = query_run_refusal(runs_dir)
+    if refusal:
+        sys.exit(refusal)
     chunk_lines, mv_lines, short = [], [], []
     latency = {"chunks": [], "multivector": []}
+    completed = False
 
     def write_outputs():
         # Called on every exit path (try/finally): a failed run still leaves its partial
-        # evidence on disk, and the latency sidecar carries whatever was measured.
+        # evidence on disk, and the latency sidecar carries whatever was measured. "complete"
+        # is true only once the loop below runs to its end -- query_run_refusal reads it back
+        # to tell a dead run's partial output apart from finished gate evidence.
         with open(os.path.join(runs_dir, f"{CHUNKS_RUN_LABEL}.chunks.trec"), "w", encoding="utf-8") as f:
             f.write("\n".join(chunk_lines) + ("\n" if chunk_lines else ""))
         with open(os.path.join(runs_dir, f"{MULTIVECTOR_RUN_LABEL}.chunks.trec"), "w", encoding="utf-8") as f:
@@ -353,6 +397,7 @@ def cmd_query(args):
             "chunk_top_k": CHUNK_TOP_K, "document_budget": DOCUMENT_BUDGET,
             "mv_hnsw_ef": args.mv_hnsw_ef,
             "queries": len(queries),
+            "complete": completed,
             "index_state": index_state,
         }
         for mode, samples in latency.items():
@@ -393,6 +438,7 @@ def cmd_query(args):
             mv_lines.extend(trec_lines(qid, mv_ranked, MULTIVECTOR_RUN_LABEL))
             if i % 50 == 0 or i == len(queries):
                 print(f"[multivector] {i}/{len(queries)} queries")
+        completed = True
     finally:
         write_outputs()
 
@@ -448,6 +494,12 @@ def cmd_probe(args):
     # the first second, not after every measurement below.
     runs_dir = os.path.join(args.run_dir, "runs")
     os.makedirs(runs_dir, exist_ok=True)
+    probe_path = os.path.join(runs_dir, "probe.json")
+    if os.path.exists(probe_path):
+        sys.exit(f"refusing to overwrite existing {probe_path} -- probe.json is gate-amendment "
+                 f"evidence (e.g. a probe taken before the §3.3 index change) and is not "
+                 f"cheaply reproducible once indexing_threshold has been raised -- point "
+                 f"--run-dir at a fresh directory")
 
     vectors = {}
     for i, qid in enumerate(probe_ids, start=1):
@@ -458,11 +510,16 @@ def cmd_probe(args):
             print(f"[multivector] embedded {i}/{len(probe_ids)} probe queries")
 
     # Step 0: is the arm's beam settable through params.hnsw_ef at all? Three configurations
-    # at the arm's own limit (DOCUMENT_BUDGET): no params (Qdrant's default beam), hnsw_ef 65
-    # (the operating point), hnsw_ef 1000 (a positive control -- if even this doesn't move the
-    # ranking, the collection isn't approximating over this probe set at all).
+    # at the arm's own limit (DOCUMENT_BUDGET): no params (Qdrant's default beam), the arm's
+    # operating point, and its positive control (if even this doesn't move the ranking, the
+    # collection isn't approximating over this probe set at all). Both beams come from the
+    # sweep constants, not duplicate literals, so step 0 and step 1 can never silently drift
+    # apart (ae49ed2 did this for the operating point; the positive control was missed).
     print("[multivector] step 0: is the arm's beam settable via params.hnsw_ef?")
-    mv_configs = {"default": None, 65: {"hnsw_ef": 65}, 1000: {"hnsw_ef": 1000}}
+    arm_operating_ef = ARM_HNSW_EF_SWEEP[0]
+    arm_positive_control_ef = ARM_HNSW_EF_SWEEP[-1]
+    mv_configs = {"default": None, arm_operating_ef: {"hnsw_ef": arm_operating_ef},
+                  arm_positive_control_ef: {"hnsw_ef": arm_positive_control_ef}}
     mv_rankings = {label: {} for label in mv_configs}
     for qid in probe_ids:
         vec = vectors[qid]
@@ -477,8 +534,10 @@ def cmd_probe(args):
             ranked = rank_multivector_points(resp["result"]["points"], DOCUMENT_BUDGET)
             mv_rankings[label][qid] = [doc_id for doc_id, _ in ranked]
 
-    settable_n = sum(1 for qid in probe_ids if mv_rankings["default"][qid] != mv_rankings[65][qid])
-    positive_control_n = sum(1 for qid in probe_ids if mv_rankings[65][qid] != mv_rankings[1000][qid])
+    settable_n = sum(1 for qid in probe_ids
+                      if mv_rankings["default"][qid] != mv_rankings[arm_operating_ef][qid])
+    positive_control_n = sum(1 for qid in probe_ids
+                              if mv_rankings[arm_operating_ef][qid] != mv_rankings[arm_positive_control_ef][qid])
     print(f"[multivector] settable_n={settable_n} positive_control_n={positive_control_n} "
           f"(of {len(probe_ids)} probe queries)")
 
@@ -489,29 +548,34 @@ def cmd_probe(args):
                   for p in scroll(args.object_collection, False, ["key", "docId"])}
 
     # The operating point is each sweep's own first entry (250 / 65) -- derived, not a
-    # separate literal, so the two can never silently drift apart.
+    # separate literal, so the two can never silently drift apart. "default" (no params.hnsw_ef
+    # at all) is folded into the same sweep so control_differs_from_operating also carries a
+    # default-vs-250 point, empirically anchoring the control's real beam the way step 0
+    # already anchors the arm's.
     control_operating_ef = CONTROL_HNSW_EF_SWEEP[0]
+    control_configs = {"default": None, **{ef: {"hnsw_ef": ef} for ef in CONTROL_HNSW_EF_SWEEP}}
     control_rankings = {}
-    for ef in CONTROL_HNSW_EF_SWEEP:
+    for label, params in control_configs.items():
         per_query = {}
         for qid in probe_ids:
             body = {"vector": {"name": CHUNK_VECTOR_NAME, "vector": vectors[qid]},
-                     "limit": CHUNK_TOP_K, "with_payload": ["parent_id"], "params": {"hnsw_ef": ef}}
+                     "limit": CHUNK_TOP_K, "with_payload": ["parent_id"]}
+            if params is not None:
+                body["params"] = params
             status, resp = ingest.qdrant_request(
                 "POST", f"/collections/{args.chunks_collection}/points/search", body)
             if status != 200:
-                sys.exit(f"probe step1 control query {qid} (hnsw_ef={ef}): HTTP {status} {resp}")
+                sys.exit(f"probe step1 control query {qid} ({label}): HTTP {status} {resp}")
             ranked = rank_chunk_hits(resp["result"], key_to_doc, DOCUMENT_BUDGET)
             per_query[qid] = [doc_id for doc_id, _ in ranked]
-        control_rankings[ef] = per_query
-        print(f"[multivector] control hnsw_ef={ef} done")
+        control_rankings[label] = per_query
+        print(f"[multivector] control {label} done")
     control_differs_from_operating = {
-        ef: sum(1 for qid in probe_ids
-                if control_rankings[ef][qid] != control_rankings[control_operating_ef][qid])
-        for ef in CONTROL_HNSW_EF_SWEEP
+        label: sum(1 for qid in probe_ids
+                if control_rankings[label][qid] != control_rankings[control_operating_ef][qid])
+        for label in control_configs
     }
 
-    arm_operating_ef = ARM_HNSW_EF_SWEEP[0]
     arm_rankings = {}
     for ef in ARM_HNSW_EF_SWEEP:
         per_query = {}
@@ -533,8 +597,24 @@ def cmd_probe(args):
     print(f"[multivector] control differs-from-operating-point (ef={control_operating_ef}): {control_differs_from_operating}")
     print(f"[multivector] arm differs-from-operating-point (ef={arm_operating_ef}): {arm_differs_from_operating}")
 
-    probe_path = os.path.join(runs_dir, "probe.json")
+    # Step 0's positive_control_n and step 1's arm_differs_from_operating[arm_positive_control_ef]
+    # are bit-identical requests (arm_operating_ef vs arm_positive_control_ef), ranked
+    # identically -- the same number by construction unless the index moved between the two
+    # steps (a segment merge or concurrent write), which would silently invalidate every count
+    # in this file. Assert rather than trust.
+    arm_step1_positive_control_n = arm_differs_from_operating[arm_positive_control_ef]
+    if positive_control_n != arm_step1_positive_control_n:
+        sys.exit(
+            f"probe self-check failed: step 0's positive_control_n={positive_control_n} != "
+            f"step 1's arm_differs_from_operating[{arm_positive_control_ef}]="
+            f"{arm_step1_positive_control_n}, even though both compare the identical "
+            f"hnsw_ef={arm_operating_ef} vs hnsw_ef={arm_positive_control_ef} arm request. "
+            f"The index moved between step 0 and step 1 -- this probe was taken on a moving "
+            f"index and is invalid; re-run it on a quiescent box."
+        )
+
     result = {
+        "model": args.model, "embed_url": args.embed_url,
         "tail_query_ids": tail,
         "corpus_size": corpus_size,
         "probe_query_ids": probe_ids,
@@ -545,7 +625,7 @@ def cmd_probe(args):
         "probe_bulk_queries": PROBE_BULK_QUERIES,
         "control_operating_ef": control_operating_ef,
         "arm_operating_ef": arm_operating_ef,
-        "control_differs_from_operating": {str(ef): n for ef, n in control_differs_from_operating.items()},
+        "control_differs_from_operating": {str(label): n for label, n in control_differs_from_operating.items()},
         "arm_differs_from_operating": {str(ef): n for ef, n in arm_differs_from_operating.items()},
         "collections": {
             name: {
@@ -554,6 +634,7 @@ def cmd_probe(args):
                 "points_count": info["points_count"],
                 "indexed_vectors_count": info["indexed_vectors_count"],
                 "segments_count": info["segments_count"],
+                **config_snapshot(info),
             }
             for name, info in collections.items()
         },
