@@ -180,8 +180,11 @@ record even though it cannot veto.
 ## 6. Outcome
 
 A gate document at `docs/plans/2026-09-GATE-chunk-coverage-phase2.md`, following the Phase 1 gate's
-convention, recording the ladder, the invariant's asserted-pair count, the full `report.py` output, and
-the verdict. `docs/plans/` is git-ignored (`.gitignore:49`), so it is committed with `git add -f`, as
+convention, recording the ladder, the full `report.py` output, and the verdict — **and the result of
+every check this spec defines**: §4's asserted-pair count, its multi-chunk-differs count, its
+sidecar-β-against-the-ladder assertion, and §1.1's `/build` certification that the λ = 0.70 dump was
+taken on composite `3ffafcd26416ed30`. A check whose result reaches no durable artefact reproduces
+§4's own failure mode one level up: it looks exactly like a check that passed. `docs/plans/` is git-ignored (`.gitignore:49`), so it is committed with `git add -f`, as
 the Phase 1 gate was.
 
 **A null is a result, not a failure.** If no β qualifies, max-passage stands and the null is
