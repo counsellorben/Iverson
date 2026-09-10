@@ -4,7 +4,7 @@
 **Status:** EXECUTED 2026-09-10. Verdict NO-GO, unchanged. See the amendment in `docs/plans/2026-09-GATE-multivector.md`.
 **Parent gate:** `docs/plans/2026-09-GATE-multivector.md` — NO-GO, recorded 2026-09-06.
 **Parent spec:** `docs/specs/2026-09-04-multivector-experiment-design.md` — §7 is the gate rule, §6 the protocol this one subsets.
-**Ranked-changes item:** `docs/2026-09-06-ranked-changes-after-retrieval-experiments.md` §4 (Tier 2), choice 1.
+**Ranked-changes item:** `docs/2026-09-06-ranked-changes-after-retrieval-experiments.md` §4 — closed 2026-09-10 by this experiment.
 
 ## 1. The question
 
@@ -135,7 +135,7 @@ with `indexed_vectors_count` 16,673 of 18,622, i.e. one sub-threshold segment le
    original run was not like that: asymmetry 1 left 3,289 control vectors exact-searched, giving the
    **control** the larger effective search effort (~17.7% against 1.93%), which is one reason the
    re-run is being done at all. Matching the control's *absolute* beam (`hnsw_ef` 250, ranked-changes
-   §4 choice 1) was rejected: 250/5,183 = 4.82% would widen the post-§3.3 gap rather than close it.
+   §4's original first choice) was rejected: 250/5,183 = 4.82% would widen the post-§3.3 gap rather than close it.
 2. **Route the multivector arm through `collapse_by_doc`.** Today the arm writes TREC rows straight
    from each point's `payload.docId` with no dedupe, unlike the chunk arm — the gate flagged that two
    points sharing a `docId` would produce a malformed run. `collapse_by_doc` (`multivector.py:74`)
