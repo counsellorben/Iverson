@@ -113,6 +113,15 @@ def rank_multivector_points(points, limit):
     return collapse_by_doc([(p["payload"]["docId"], p["score"]) for p in points], limit)
 
 
+def mv_search_params(exact, hnsw_ef):
+    """Qdrant search params for the multivector arm. `exact` is NOT "a very large hnsw_ef":
+    measured 2026-09-10 over 20 queries, hnsw_ef 4000 and hnsw_ef 100000 return the identical
+    ranking as each other and both differ from params.exact on 9 of them, so HNSW over max_sim
+    points has an approximation floor no beam width closes. Exact search is therefore the arm's
+    quality ceiling and a diagnostic only -- it is a full scan, not a deployable configuration."""
+    return {"exact": True} if exact else {"hnsw_ef": hnsw_ef}
+
+
 def existing_run_files(runs_dir):
     """The run files a `query` into this directory would overwrite. The gate's own
     `gte-chunks-raw` / `gte-multivector-raw` files are unreproducible evidence, so cmd_query
@@ -395,7 +404,8 @@ def cmd_query(args):
             "chunks_collection": args.chunks_collection,
             "multivector_collection": args.multivector_collection,
             "chunk_top_k": CHUNK_TOP_K, "document_budget": DOCUMENT_BUDGET,
-            "mv_hnsw_ef": args.mv_hnsw_ef,
+            "mv_exact": args.mv_exact,
+            "mv_hnsw_ef": None if args.mv_exact else args.mv_hnsw_ef,
             "queries": len(queries),
             "complete": completed,
             "index_state": index_state,
@@ -423,7 +433,7 @@ def cmd_query(args):
             ranked = rank_chunk_hits(resp["result"], key_to_doc, DOCUMENT_BUDGET)
 
             mv_body = {"query": [vec], "limit": DOCUMENT_BUDGET, "with_payload": ["docId"],
-                       "params": {"hnsw_ef": args.mv_hnsw_ef}}
+                       "params": mv_search_params(args.mv_exact, args.mv_hnsw_ef)}
             t0 = time.perf_counter()
             status, resp = ingest.qdrant_request(
                 "POST", f"/collections/{args.multivector_collection}/points/query", mv_body)
@@ -682,6 +692,10 @@ def main():
                    help="params.hnsw_ef for the multivector arm (default 65: the corpus-fraction "
                         "match to the control's 250-node beam). Values below the query's own limit "
                         "are clamped up to it by Qdrant and are therefore inert.")
+    q.add_argument("--mv-exact", action="store_true",
+                   help="run the multivector arm with params.exact (full scan) instead of HNSW, "
+                        "ignoring --mv-hnsw-ef. Diagnostic ceiling only: exact search is not a "
+                        "deployable configuration and its latency must not be read as criterion 3.")
     q.set_defaults(func=cmd_query)
 
     s = sub.add_parser("stats", help="points / indexed / segments / disk for both collections")

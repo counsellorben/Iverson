@@ -188,3 +188,13 @@ def test_query_run_refusal_allows_retry_of_an_incomplete_prior_run(tmp_path):
     (tmp_path / f"{multivector.MULTIVECTOR_RUN_LABEL}.chunks.trec").write_text("x")
     (tmp_path / "raw-latency.json").write_text(json.dumps({"complete": False}))
     assert multivector.query_run_refusal(str(tmp_path)) is None
+
+
+def test_mv_search_params_uses_hnsw_ef_when_not_exact():
+    assert multivector.mv_search_params(False, 65) == {"hnsw_ef": 65}
+
+
+def test_mv_search_params_exact_drops_hnsw_ef_entirely():
+    # Not "a very large hnsw_ef": measured, HNSW over max_sim points never converges to exact
+    # at any beam, so sending both keys would misdescribe what the arm ran.
+    assert multivector.mv_search_params(True, 65) == {"exact": True}
