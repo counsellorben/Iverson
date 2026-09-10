@@ -20,6 +20,11 @@ networkPolicy:
 # in lockstep with api.ingress.host in every values-*.yaml file.
 global:
   ingressHost: "iverson.local"
+  # Scheme alone (http/https), not a URL and not an origin — templated onto the
+  # external-facing URLs (OIDC authority, external issuer, redirect URIs) that a
+  # values file cannot compose itself, since Helm never renders values files as
+  # templates. Default matches the kind/local profile; cloud profiles set "https".
+  externalScheme: "http"
   # The generative model used for ingest enrichment. Lives under `global` (not under
   # `ollama:`) because two subcharts must agree on it: the ollama subchart PULLS it, and
   # the api/worker subcharts REQUEST it via Enrichment__ModelId. Scoping it to one subchart
@@ -196,7 +201,6 @@ adminUi:
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "250m", memory: "256Mi" }
-  oidcAuthority: "http://authentik.iverson.local/application/o/iverson-api/"
   apiBaseUrl: "http://iverson.local"
   ingress:
     className: ""

@@ -7,10 +7,11 @@ resources:
   requests: { cpu: "100m", memory: "128Mi" }
   limits: { cpu: "250m", memory: "256Mi" }
 
-# oidcAuthority/apiBaseUrl are static per environment (no secret involved) —
-# populated per environment in the parent chart's values*.yaml adminUi: block.
-# Defaults below match the kind profile.
-oidcAuthority: "http://authentik.iverson.local/application/o/iverson-api/"
+# apiBaseUrl is static per environment (no secret involved) — populated per
+# environment in the parent chart's values*.yaml adminUi: block. Default below
+# matches the kind profile. OIDC_AUTHORITY is composed in the template itself
+# from global.externalScheme/global.ingressHost — a values-file entry can't
+# carry the templated scheme, since Helm never renders values files as templates.
 apiBaseUrl: "http://iverson.local"
 
 ingress:

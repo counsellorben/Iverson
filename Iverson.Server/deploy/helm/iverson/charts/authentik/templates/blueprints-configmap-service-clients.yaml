@@ -116,13 +116,13 @@ data:
           client_type: public
           redirect_uris:
             - matching_mode: strict
-              url: "http://{{ .Values.global.ingressHost }}/admin/callback"
+              url: "{{ .Values.global.externalScheme }}://{{ .Values.global.ingressHost }}/admin/callback"
               redirect_uri_type: authorization
             - matching_mode: strict
               url: "http://localhost:5173/callback"
               redirect_uri_type: authorization
             - matching_mode: strict
-              url: "http://{{ .Values.global.ingressHost }}/admin/"
+              url: "{{ .Values.global.externalScheme }}://{{ .Values.global.ingressHost }}/admin/"
               redirect_uri_type: logout
             - matching_mode: strict
               url: "http://localhost:5173/"

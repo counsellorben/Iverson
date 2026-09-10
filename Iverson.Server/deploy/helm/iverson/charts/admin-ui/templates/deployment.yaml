@@ -59,7 +59,7 @@ spec:
                   name: {{ .Release.Name }}-authentik-human-oidc-client
                   key: client-id
             - name: OIDC_AUTHORITY
-              value: {{ .Values.oidcAuthority | quote }}
+              value: "{{ .Values.global.externalScheme }}://authentik.{{ .Values.global.ingressHost }}/application/o/iverson-api/"
             - name: API_BASE_URL
               value: {{ .Values.apiBaseUrl | quote }}
           resources:

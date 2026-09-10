@@ -139,7 +139,6 @@ adminUi:
   resources:
     requests: { cpu: "50m", memory: "64Mi" }
     limits: { cpu: "100m", memory: "128Mi" }
-  oidcAuthority: "http://authentik.iverson.local/application/o/iverson-api/"
   apiBaseUrl: "http://iverson.local"
   ingress:
     className: "nginx"

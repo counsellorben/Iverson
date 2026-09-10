@@ -135,7 +135,7 @@ spec:
             - name: Authentication__Authority
               value: "http://{{ .Release.Name }}-authentik:9000/application/o/iverson-api/"
             - name: Authentication__ExternalIssuer
-              value: "http://authentik.{{ .Values.global.ingressHost }}/application/o/iverson-api/"
+              value: "{{ .Values.global.externalScheme }}://authentik.{{ .Values.global.ingressHost }}/application/o/iverson-api/"
             - name: Authentication__ValidAudiences__0
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-human-oidc-client, key: client-id }
