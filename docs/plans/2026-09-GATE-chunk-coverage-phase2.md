@@ -32,27 +32,113 @@ are monotone in β, and the top three are Holm-significant at p_adj = 0.0010.**
 | `fs2048-b19855` | 0.019855 | 0.2706 | **−0.0226** | **0.0010** | **significant** |
 | `fs2048-b35800` | 0.035800 | 0.2579 | **−0.0353** | **0.0010** | **significant** |
 
-**The coverage signal makes ranking worse.** Not "fails to help" — worse, monotonically, with the
-damage growing in β right up to parity, and significant well before parity is reached. The two
-non-significant arms are not a counterweight: `fs2048-b3387`'s |Δ| of 0.0022 is below its own MDE of
-0.0050 and `fs2048-b6107`'s 0.0051 below its 0.0065, so they are the underpowered low end of one
-monotone trend, not evidence of a flat region. Every one of them points the same way.
+**The coverage signal as parameterised makes ranking worse.** Not "fails to help" — worse,
+monotonically, with the damage growing in β right up to parity, and significant well before parity is
+reached. The two non-significant arms are not a counterweight: `fs2048-b3387`'s |Δ| of 0.0022 is below
+its own MDE of 0.0050 and `fs2048-b6107`'s 0.0051 below its 0.0065, so they are the underpowered low
+end of one monotone trend, not evidence of a flat region. Every one of them points the same way.
+
+**What is falsified is narrower than "coverage", and the difference is the whole reading of this
+document.** On this dump the term the ladder sweeps is a *count* of pooled tail chunks wearing a
+score's clothing — measured immediately below. So the proposition these five arms reject is
+**count-weighted promotion of multi-chunk documents**: a document ranking higher because more of its
+chunks reached the pool, nearly independently of how good those chunks are. That proposition was tested
+across the full range of β spec §2 defines, and it loses — monotonically, significantly, on all four
+measures. A coverage term whose value does *not* collapse onto the tail count is a different function
+and this experiment does not speak to it.
 
 **Max-passage stands, and it stands on a positive finding against the alternative rather than on the
 absence of one.** β is not a tunable this corpus leaves open; the best value of β on the measured
 ladder is 0.
 
-### The cost spec §5 said to watch for is the cost that materialised
+### The tail term is a chunk count — at every β, not only past parity
+
+Parent spec `2026-09-08-chunk-coverage-signal-design.md` §2 bounds the ladder at parity and says why:
+it *"does **not** extend past parity: beyond it the term degenerates into a count of tail chunks, and
+§6's 'opposite conclusion' rule would misread a loss from count-ranking as evidence about coverage."*
+That bound is correct about the danger and wrong about where it starts. **On this dump the degeneracy
+is not a property of β past parity. It is a property of the term, and it holds at every arm on the
+ladder.**
+
+Recomputed for this document from the Phase 1 hit dump and `keymap.json`, over the same 172,704
+(query, document) pairs §4 recomputes:
+
+| | |
+|---|---|
+| `corr(Σ tail scores, tail chunk count)`, all 172,704 pairs | **0.9970** |
+| the same over just the 92,758 pairs that have a tail at all | **0.9901** |
+
+The sum is a count in disguise because the chunk scores it adds are nearly constant. Within a fixed
+tail depth the sum barely moves:
+
+| Tail depth `n` | Pairs | Mean Σ tail | Coefficient of variation | Mean per tail chunk |
+|---|---|---|---|---|
+| 0 (no tail) | 79,946 | 0 | — | — |
+| 1 | 35,435 | 0.6709 | **5.8 %** | 0.6709 |
+| 2 | 24,719 | 1.3467 | **5.8 %** | 0.6733 |
+| 3 | 32,604 | 2.0483 | **5.7 %** | 0.6828 |
+
+`Σ tail ≈ 0.678 · n`, to within about 6 %. So `β · Σ tail ≈ β · 0.678 · n`: what the ladder sweeps is,
+to first order, max-passage plus a flat bonus per pooled chunk. (0.678 is the *pool-wide* mean tail
+chunk score, over every pair in the dump. It is not in conflict with the `s` = 0.695455 that set the
+ladder: `s` is scoped to the documents reaching the top 50, and `tail_stats.py` records that the
+pool-wide figure is strictly the lower of the two.)
+
+**Why this is β-invariant.** β multiplies the entire term, so it scales the count component and the
+residual by the same factor; the ratio between them is independent of β. Substituting a pure count —
+`β · 0.683 · n` in place of `β · Σ tail` — and re-ranking the same dump confirms that directly, at
+every arm. Nothing hangs on the constant: repeating the substitution at the pool-wide 0.6779 moves the
+parity figure from 96.96 % to 96.98 %, so the result is a property of the term's shape, not of a fitted
+coefficient.
+
+| Arm β | Top-10 slots the arm moves off β = 0 | A pure count reproduces | Share of the movement that is count promotion |
+|---|---|---|---|
+| 0.003387 | 420 / 6,720 (6.25 %) | 6,683 / 6,720 (99.45 %) | **91.2 %** |
+| 0.006107 | 695 / 6,720 (10.34 %) | 6,662 / 6,720 (99.14 %) | **91.7 %** |
+| 0.011012 | 1,117 / 6,720 (16.62 %) | 6,621 / 6,720 (98.53 %) | **91.1 %** |
+| 0.019855 | 1,685 / 6,720 (25.07 %) | 6,568 / 6,720 (97.74 %) | **91.0 %** |
+| 0.035800 (parity) | 2,210 / 6,720 (32.89 %) | 6,516 / 6,720 (96.96 %) | **90.8 %** |
+
+Measured over top-10 slot *occupancy* — which documents hold the 672 × 10 = 6,720 top-10 slots,
+counted per query. The recomputation is not a re-implementation talking to itself: the same code's
+β = 0 and parity rankings reproduce `fs2048-b0.chunks.trec` and `fs2048-b35800.chunks.trec`
+**position-for-position on all 33,600 top-50 slots**, so the left-hand column is the shipped arms.
+
+The last column is flat at ≈ 91 % across a ten-fold range of β. **Whatever the amplitude, about nine
+tenths of what this signal does to the top 10 is promote documents for having more pooled chunks.**
+
+**What this changes and what it does not.** It does not touch the measurement. The deltas, the
+monotonicity, the Holm corrections and the four-measure agreement in the table above stand exactly as
+recorded; the arms were run correctly and swept the full stated range. What it changes is the *name* of
+the hypothesis they reject. Read as "coverage does not help", this document would over-claim. The
+supported claim is narrower and still entirely negative: **this parameterisation of coverage is a
+count-ranker, and count-ranking loses on FreshStack-2048 across every β at which it can act.** That is
+exactly the misreading parent §2 wrote its bound to prevent — arriving from inside the ladder rather
+than from past its end.
+
+### The cost spec §5 said to watch for did appear — as an observation, not a mechanism
 
 Spec §5: *"α-nDCG is watched for a *negative*: coverage may concentrate on comprehensive documents at
 the cost of subtopic spread, and that cost belongs in the record even though it cannot veto."*
 
 α-nDCG@10 moves negative at every arm — **−0.0020, −0.0039, −0.0100, −0.0175, −0.0312** — significant
-from `fs2048-b11012` up (p_adj 0.0258, 0.0016, 0.0010). This is the *specific* mechanism §5 named,
-observed rather than hypothesised: rewarding a document for matching in several places promotes
-documents that are comprehensive about one thing over a set that spans the query's subtopics. It does
-not gate, and it does not need to — nDCG@10 already decided. It is recorded because it says *how* the
-signal hurts, not merely that it does.
+from `fs2048-b11012` up (p_adj 0.0258, 0.0016, 0.0010). The negative §5 told this phase to watch for
+did appear, and it belongs on the record. **It is recorded as an observation, not as a mechanism** —
+the data do not support promoting it to an explanation of *how* the signal hurts, and two checks argue
+against doing so:
+
+- **All four measures fall together, and α-nDCG falls the *least* in relative terms.** At parity the
+  relative falls are nDCG@10 **−12.0 %**, R@50 **−13.1 %**, AP **−16.0 %**, α-nDCG@10 **−8.8 %**. A cost
+  specific to subtopic spread should bite hardest on the subtopic-aware measure. It bites softest.
+- **The tail count carries almost no relevance signal to trade away.** Over the β = 0 arm's 33,600
+  top-50 slots, P(relevant | pooled chunk count) runs 8.9 / 8.1 / 7.3 / 7.1 / 9.1 / 11.9 % for counts
+  1…6+ — no trend worth the name — and the mean pooled-chunk count is **3.360** for relevant documents
+  against **3.330** for irrelevant ones. There is nothing here for the signal to concentrate *on*.
+
+Taken with the count result above, the supported reading is the duller one: **a near-uninformative
+perturbation whose amplitude grows with β**, degrading every measure roughly in proportion. α-nDCG's
+fall is *consistent with* that. It is not evidence *for* a subtopic-spread cost. It does not gate, and
+it does not need to — nDCG@10 already decided.
 
 R@50 and AP are also negative at every arm and significant at **all five** (R@50 p_adj 0.0048 →
 0.0010; AP p_adj 0.0464 → 0.0010), i.e. on those two measures even the tie-break arm loses. Neither
@@ -95,11 +181,27 @@ Artefacts live untracked in `~/repositories/iverson-benchmark-corpora/`:
 `chunk-coverage-phase2-arms-2026-09-09/` (18 arm files + `invariant.txt` + `report.txt`) and
 `chunk-coverage-phase2-l070-2026-09-09/` (the λ = 0.70 capture + `capture-certification.txt`).
 
-Six `WARNING:` banners were printed, one per replay, all of them the expected "`fs2048-pool.meta.json`
-has no `queryCount`" banner — the Phase 1 sidecar predates that field. Spec §3 records the answer:
-that run *was* verified complete by hand, 672/672 queries, zero failed RPCs, no unhandled exception.
-No other warning, and no `REFUSING` / `Exception` / `BUILD MISMATCH` / `BUILD UNKNOWN` text, appeared
-anywhere.
+`benchmark-aggregate` warns rather than refuses when its source sidecar has no `queryCount`, and the
+Phase 1 sidecar predates that field, so each of the six replays was expected to print one such banner.
+**No aggregate console log was kept, so this document cannot evidence what was printed.** `report.txt`
+is the scorer's output, not the replays', and contains no `WARNING` line at all (`grep -c WARNING` →
+0); there is no other console capture in the arm directory. Asserting "six banners and nothing worse"
+would reproduce, in this document, the exact failure mode §3 below argues against: a check whose result
+reaches no durable artefact looks precisely like a check that passed.
+
+What *is* durable, and carries the same load, is the sidecars. A `REFUSING` / `BUILD MISMATCH` /
+`BUILD UNKNOWN` banner is how a build-identity refusal would have announced itself, and the six
+sidecars settle that question from the artefacts:
+
+- all six carry `composite` **`3ffafcd26416ed30`**, identical to one another *and* to the Phase 1 pool
+  sidecar the dump was taken on — no arm replayed a dump from a different server build;
+- all six carry `aggregatorComposite` **`c5f976dc8d6b9497`**, identical across every arm — one
+  aggregator binary produced all six (Phase 1's sidecar predates this field, which is why §5 below
+  confirms aggregator drift by output comparison instead);
+- all six run files exist with 33,600 rows each, and a refused arm writes no run file at all.
+
+Spec §3 separately records the answer to the `queryCount` gap itself: that run *was* verified complete
+by hand, 672/672 queries, zero failed RPCs, no unhandled exception.
 
 ---
 
@@ -258,6 +360,25 @@ additionally *solved* from each arm's own scores by least squares over the 92,75
 Bit-exact on every one of the 1,036,224 scores, and the β recovered from the numbers matches the label
 to nine decimals at every arm. A label↔β swap is excluded, as is any mistyped β, at every arm rather
 than only at the two the invariant script compares.
+
+**What this recomputation cannot test: the ordering rule — and it must not be read as if it had.**
+`DocumentRanking.cs:74` takes the tail from `OrderByDescending(s => s)`, so the rule is "the three
+*largest* remaining chunk scores", not "the next three in stream order". Those two rules are
+distinguishable only on a group whose stream order differs from its score order, and **all 172,704
+groups in the Phase 1 dump are already score-descending** — spec §8 assumption 22, re-derived
+independently here at 0 groups out of order. On that input `descending.Skip(1).Take(3)` and a
+stream-order `Skip(1).Take(3)` select the same three numbers, so the recomputation above pins the
+β↔label binding decisively and is **silent on ordering**. Parent §6 says exactly this: the tail's
+ordering rule *"is only falsifiable where MMR reorders."* Assumption 22 is what makes deferring that
+check safe for the primary arm; it is not a substitute for running it.
+
+**And the λ = 0.70 capture is precisely the input that would make it falsifiable.** In
+`fs2048-pool-l070.chunks.hits.tsv`, **54,436** of that dump's 206,615 (query, document) groups have a
+stream order that is not score-descending — the population parent §6's check needs, and the one the
+Phase 1 dump does not contain a single instance of. So the capture recorded below as "insurance that
+did not pay out" is not only a banked confirmation arm. It is the only artefact on hand that can turn
+parent §6's ordering check from unfalsifiable into a measurement, at the cost of a `--scores-path`
+flag on an offline replay.
 
 ### 5. Aggregator drift — spec §8 assumption 21's free confirmation — PASS
 
@@ -602,19 +723,23 @@ with all six runs passed to `--run` and β = 0 additionally as `--baseline`.
 ## What this does and does not license
 
 **Licensed.** Max-passage (β = 0) stands as the shipped aggregation rule, and the chunk-coverage
-signal as specified — a β-weighted sum of a document's next three pooled chunk scores — is **rejected
-on FreshStack-2048 at the production window**, on evidence rather than on a failure to find evidence.
-The Phase 1 gate's "not licensed" clause is now answered: tail depth was available (85.0 % of top-50
-slots have a tail), the term did move the ranking, and it moved it the wrong way.
+signal **as specified** — a β-weighted sum of a document's next three pooled chunk scores, which on
+this dump is its pooled chunk *count* to within ≈ 6 % — is **rejected on FreshStack-2048 at the
+production window**, on evidence rather than on a failure to find evidence. The Phase 1 gate's "not
+licensed" clause is now answered: tail depth was available (85.0 % of top-50 slots have a tail,
+re-derived here), the term did move the ranking, and it moved it the wrong way.
 
-There is no β on this ladder worth shipping, and none off it either: past parity 0.035800 the term
-degenerates into a count of tail chunks, which spec §2 forbids and §5's opposite-conclusion rule would
-misread; below tie-break 0.003387 the term cannot break a median top-10 gap, so it is inert by
-construction. The ladder spans the entire interval in which the signal can do anything at all, and it
-is negative across the whole of it.
+There is no β on this ladder worth shipping, and none off it either: above parity 0.035800 the tail
+term outweighs the whole rank-1-to-rank-50 span, and below tie-break 0.003387 it cannot break a median
+top-10 gap, so it is inert by construction. **The ladder spans the entire interval in which *this term*
+can change a ranking without dominating it, and it is negative across the whole of it.** Note what the
+term is before reading that as a span claim about coverage: spec §2 expected it to degenerate into a
+count of tail chunks past parity, and the measurement above finds it ≈ 91 % a count of tail chunks at
+every arm *on* the ladder as well. The interval is fully swept. What was swept in it is a count-ranker.
 
-**Not licensed.** The scope limits below are load-bearing, and the two that constrain *this* verdict
-hardest are the fusion triple and the chunk budget.
+**Not licensed.** The scope limits below are load-bearing. The one that constrains *this* verdict
+hardest is the last: the term's *shape*, which the count measurement above turns from a hypothetical
+into a fact about what was swept. After it, the fusion triple and the chunk budget.
 
 ### Scope limits (spec §9, inherited in full)
 
@@ -644,6 +769,19 @@ hardest are the fusion triple and the chunk budget.
 - **Nor does this say whether the result transfers to the routed `SearchSimilar` path**, which
   collapses a larger pool scaling with the caller's `top_k` (`ObjectSearchGrpcService.cs:358-362`), so
   available tail depth varies per request and no fixed-budget harness arm measures it.
+- **A coverage term of a different *shape* is untested by this experiment.** The rejected term's value
+  collapses onto the tail count — `corr` 0.9970 pool-wide, and ≈ 91 % of its top-10 effect reproduced
+  by a pure count at every arm — so what these five arms swept is count-weighted promotion of
+  multi-chunk documents. A term deliberately built not to have that property is a different function of
+  the same dump and was not measured: a *mean* tail rather than a sum (depth stops buying score); a
+  tail normalised by the document's own max chunk score (only chunks close to the best one count); a
+  coverage measure over distinct query aspects hit rather than over chunk scores. **This is a scope
+  limit, not an invitation.** Nothing in this result suggests such a term would succeed, and the
+  relevance data give it no encouragement: P(relevant) is essentially flat in pooled chunk count
+  (8.9 / 8.1 / 7.3 / 7.1 / 9.1 / 11.9 % for 1…6+) and mean pooled count is 3.360 for relevant against
+  3.330 for irrelevant documents. Anyone proposing one owes an argument that it is not the same signal
+  in new clothes — and, since every arm here is an offline replay of a dump that still exists, a cheap
+  measurement rather than an argument.
 
 One thing the negative result makes *easier* to carry than a null would have: a null at a single
 corpus and a single budget invites "try another budget". A monotone, significant, four-measure-agreeing
@@ -654,13 +792,14 @@ the budget and triple qualify how far it generalises rather than whether it happ
 
 ## What was captured but not read
 
-**The λ = 0.70 confirmation arm and parent §6's ordering check remain unread, and this outcome does
-not un-defer them.**
+**The λ = 0.70 confirmation arm and parent §6's ordering check remain unread. Unread is not the same
+as deferred** — spec §7 un-deferred both when §1.1 captured their dump up front; what waits on a β
+qualifying is the *reading* of the confirmation, not the work.
 
-Spec §7 routes both to *"a β qualifying"*, and spec §1 fixes what that means operationally: *"pay for
-everything that only matters if the answer is positive only once it is."* The confirmation arm exists
-to answer whether a winning β survives the configuration that ships. There is no winning β. **The
-capture was therefore not consumed by this phase, and this document does not claim it was.**
+Spec §1 fixes what that waiting means operationally: *"pay for everything that only matters if the
+answer is positive only once it is."* The confirmation arm exists to answer whether a winning β
+survives the configuration that ships. There is no winning β. **The capture was therefore not consumed
+by this phase, and this document does not claim it was.**
 
 It was taken anyway, and the reason should be recorded honestly rather than retrofitted: at capture
 time the outcome was unknown and the *capability* was perishable. The λ = 1.00 `iverson-api` container
@@ -669,8 +808,15 @@ exists, so the build survived only as a local image; λ is fixed at container-cr
 0.70 required a recreate, and a recreate is one flag from a rebuild that would have produced a
 different composite and destroyed the λ-only comparison permanently. Spending 46 minutes to convert a
 perishable capability into a permanent artefact was the right call under uncertainty **and** it turned
-out not to be needed. Both halves of that are true, and the second does not retroactively make it
-waste — it makes it insurance that did not pay out.
+out not to be needed *for the purpose it was bought for*. Both halves of that are true, and the second
+does not retroactively make it waste — it makes it insurance that did not pay out on the claim it was
+written against.
+
+It does, however, pay out on a different one. §4 above shows that the Phase 1 dump cannot test the
+tail's ordering rule at all, because every one of its 172,704 groups is already score-descending; the
+λ = 0.70 dump has **54,436** groups where stream order and score order differ. Parent §6's ordering
+check is unfalsifiable on the primary arm's input and falsifiable on this one. That is a use for the
+capture that does not depend on any β qualifying.
 
 What the capture leaves behind, banked:
 
@@ -680,7 +826,9 @@ What the capture leaves behind, banked:
   six `benchmark-aggregate` invocations against that dump plus one `report.py` — minutes, no Docker,
   no Qdrant restore, no SIGPIPE exposure. It never again costs 46 minutes.
 - Parent §6's ordering check additionally needs a `--scores-path` output from those replays, which
-  does not yet exist. It is one flag on each replay.
+  does not yet exist. It is one flag on each replay — and, per §4, this dump is the only input on hand
+  that can make that check assert anything, since it holds 54,436 groups whose stream order is not
+  score order against the Phase 1 dump's zero.
 
 Anyone re-opening chunk coverage — at another budget, another fusion triple, or another corpus —
 starts from a certified λ = 0.70 dump they will not have to re-capture, and cannot re-capture, since
@@ -688,13 +836,18 @@ the build that produced it is gone from source.
 
 ### Still deferred, and what would un-defer it
 
-Unchanged from spec §7.
+**Spec §7's deferrals are the three corpora, and only those.** Spec §7 is explicit that *"the λ = 0.70
+ordering check and confirmation arm are **no longer deferred**"* — §1.1's up-front capture converted
+both into offline replays, and what waits on a β qualifying is only the *reading* of the confirmation,
+not the work. The last two rows are carried here so the ledger is complete, flagged for what they
+actually are: captured, unread, and minutes from being read.
 
-| Deferred | Un-deferred by |
-|---|---|
-| FreshStack-512, NFCorpus (density arms) | a decision to spend ~2 h; they cannot triangulate at the production window anyway |
-| SciFact-2048 (parent §5's invariant site) | a decision to re-site the §4 invariant |
-| λ = 0.70 confirmation arm + parent §6 ordering check | a β qualifying — which, per this verdict, none does |
+| Item | Status | Un-deferred / unblocked by |
+|---|---|---|
+| FreshStack-512, NFCorpus (density arms) | **deferred** (spec §7) | a decision to spend ~2 h; they cannot triangulate at the production window anyway |
+| SciFact-2048 (parent §5's invariant site) | **deferred** (spec §7) | a decision to re-site the §4 invariant |
+| λ = 0.70 confirmation arm | *not deferred* — captured, unread | its **reading** waits on a β qualifying, which per this verdict none does |
+| Parent §6 ordering check | *not deferred* — captured, unread | nothing but `--scores-path` on a replay: §4 shows the Phase 1 dump cannot test it and the λ = 0.70 dump's 54,436 reordered groups can |
 
 ---
 
@@ -711,6 +864,7 @@ Unchanged from spec §7.
 | λ = 0.70 capture | `~/repositories/iverson-benchmark-corpora/chunk-coverage-phase2-l070-2026-09-09/` |
 | Source dump | `~/repositories/iverson-benchmark-corpora/chunk-coverage-phase1-2026-09-09/runs/` |
 | Permutation seed | 20260831, 10,000 sign flips |
+| Figures derived for this document | the count/CV/substitution figures in "The tail term is a chunk count", the relevance figures in the α-nDCG section, and the stream-order counts in §4 were recomputed for this revision from the source dump, `keymap.json` and `qrels.trec` only — no benchmark run, no `report.py` invocation, and no change to `beta_invariant.py`. Every ranking figure was cross-checked against the shipped `fs2048-b0` / `fs2048-b35800` run files, which it reproduces on all 33,600 top-50 slots |
 
 `docs/plans/` is git-ignored (`.gitignore:49`); this document is committed with `git add -f`, as the
 Phase 1 gate was.
