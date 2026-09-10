@@ -51,9 +51,11 @@ of queries that moved R@50 at all in the original run.
 Whether the arm's HNSW over `max_sim` multi-row points is approximate is an open question that §3.5
 measures directly, on the restored gte collections, before any gated number exists.
 
-What does survive is mechanical: the beam, not the returned-list size, governs recall, and Qdrant
-floors it at `max(limit, ef_construct)` = 100. That is what makes asymmetry 2 measurable at all, and
-what §3.4 item 1 equalises.
+What does survive is mechanical, and it has two parts. With no `params.hnsw_ef`, Qdrant's beam is
+`max(limit, ef_construct)` with `ef_construct` = 100 — which is why a `limit`-only over-fetch from 50
+to 65 changes nothing. With an explicit `params.hnsw_ef` = N, the beam is `max(N, limit)` — which is
+why setting it is a real lever, and why any `hnsw_ef` below a query's own `limit` is inert. That is
+what makes asymmetry 2 measurable at all, and what §3.4 item 1 equalises.
 
 ## 3. Design
 
@@ -115,17 +117,25 @@ with `indexed_vectors_count` 16,673 of 18,622, i.e. one sub-threshold segment le
 
 1. **`--mv-hnsw-ef`, default 65.** The multivector arm passes `params.hnsw_ef` explicitly; `limit`
    stays at `DOCUMENT_BUDGET`. The beam, not the size of the returned list, governs HNSW recall, and
-   Qdrant floors it at `max(limit, ef_construct)` with `ef_construct` = 100 — so a `limit`-based
-   over-fetch to 65 is a no-op (§2). 65 equalises the **corpus fraction** each arm's beam explores:
+   Qdrant's beam has two rules: with no `params.hnsw_ef` it is `max(limit, ef_construct)` with
+   `ef_construct` = 100, so a `limit`-based over-fetch to 65 is a no-op (§2); with an explicit
+   `params.hnsw_ef` = N it is `max(N, limit)`, so `hnsw_ef` 65 at `limit` 50 sets the beam to 65 — a
+   real change, down from the default 100 — while any `hnsw_ef` below a query's own `limit` is inert.
+   65 equalises the **corpus fraction** each arm's beam explores:
    the control at `limit` 250 explores 250/19,967 = 1.2521% of its chunk graph; 65/5,183 = 1.2541% of
-   the arm's document graph. The same number falls out as the count of distinct documents the
-   control's 250 chunks reach (250/3.852).
+   the arm's document graph. The two candidate invariants diverge rather than agree: the control's
+   250 chunks reach ~165 distinct documents (measured over 20 queries), so equalising *document
+   candidates ranked over* would give a beam near 165, not 65. The design equalises corpus fraction,
+   and 65 is determined by that invariant alone.
 
-   **This corrects an arm-favouring asymmetry, not a control-favouring one.** At its default the arm
-   already searches with a beam of 100 over 5,183 nodes = 1.93%, against the control's 1.25% — the
-   original gate measured the arm with ~1.54× more relative search effort, and it lost anyway.
-   Matching the control's *absolute* beam (`hnsw_ef` 250, ranked-changes §4 choice 1) was rejected:
-   250/5,183 = 4.82% would widen that gap rather than close it.
+   **This corrects an asymmetry that will favour the arm once §3.3 has run.** After index-state
+   equalisation, and only after it, the arm's default beam would explore 100/5,183 = 1.93% against the
+   control's 250/19,967 = 1.25% — so leaving the arm at its default would hand it ~1.54× the relative
+   search effort, which is why the equalisation lowers the arm's beam rather than raising it. The
+   original run was not like that: asymmetry 1 left 3,289 control vectors exact-searched, giving the
+   **control** the larger effective search effort (~17.7% against 1.93%), which is one reason the
+   re-run is being done at all. Matching the control's *absolute* beam (`hnsw_ef` 250, ranked-changes
+   §4 choice 1) was rejected: 250/5,183 = 4.82% would widen the post-§3.3 gap rather than close it.
 2. **Route the multivector arm through `collapse_by_doc`.** Today the arm writes TREC rows straight
    from each point's `payload.docId` with no dedupe, unlike the chunk arm — the gate flagged that two
    points sharing a `docId` would produce a malformed run. `collapse_by_doc` (`multivector.py:74`)
@@ -150,18 +160,26 @@ logic).
 
 ### 3.5 The exactness probe — runs FIRST, before the gated run
 
-**Step 0 — confirm the beam floor applies to the `max_sim` path.** Against `mvrerun_multivector`, one
-read-only query at `limit` 50, at `limit` 65, and at `limit` 50 with `params.hnsw_ef` 65. If the first
-two agree and the third differs, the flooring holds and `--mv-hnsw-ef` is the correct lever. If
-`hnsw_ef` 65 does *not* differ from the default, the arm's beam is not settable this way and §3.4
-item 1's correction does not work — stop and re-approve before any gated measurement.
+**Step 0 — confirm the explicit-`hnsw_ef` rule applies to the `max_sim` path.** Against
+`mvrerun_multivector`, over the same probe set step 1 uses (30 bulk + 11 tail), compare three
+read-only configurations at `limit` 50: the default, `params.hnsw_ef` 65, and `params.hnsw_ef` 1000.
+Decide on a **rate**, not a single equality — if `hnsw_ef` 65 differs from the default on ≥ 1 of N
+queries, the beam is settable and `--mv-hnsw-ef` is the correct lever.
+
+The 65-vs-1000 pair is the **positive control**: it is the highest-contrast comparison available, and
+on the live named-vector analogue it differs on 5 of 20. If it is flat too, the null is the instrument
+rather than the engine. If `hnsw_ef` 65 does not differ from the default on any query **and** the
+positive control is also flat, the arm's beam is not settable this way and §3.4 item 1's correction
+does not work — stop and re-approve before any gated measurement.
 
 **Step 1 — the probe.** Over a probe set of the first 30 queries **plus the 11 query ids whose R@50
-changed in the original run** (recoverable from `scifact-gte-2026-09-06/runs/`; they are the only
-queries whose exactness bears on the gate), hold each collection's `limit` at its operating value —
-250 on `mvrerun_chunks`, 50 on `mvrerun_multivector` — and vary only `params.hnsw_ef` across
-{65, 100, 250, 1000}, comparing the resulting top-50 **document** rankings (order and set) within each
-collection.
+changed in the original run** (recoverable from `scifact-gte-2026-09-06/` — `runs/` plus `qrels.trec`
+at the run-directory root; they are the only queries whose exactness bears on the gate), hold each
+collection's `limit` at its operating value — 250 on `mvrerun_chunks`, 50 on `mvrerun_multivector` —
+and vary `params.hnsw_ef` over a sweep whose every point exceeds that collection's own `limit`, since
+any `hnsw_ef` below a query's `limit` is inert (§3.4 item 1): **{250, 500, 1000, 4000} on the
+control**, **{65, 100, 250, 1000} on the arm**. Compare the resulting top-50 **document** rankings
+(order and set) within each collection.
 
 Varying `limit` instead would not work on the control: at 3.85 chunks per document, 50 or 65 chunk
 hits cannot yield 50 distinct parents, so those probe points would differ for a purely mechanical
@@ -243,7 +261,7 @@ it holds the gate's evidence.
 **A10 — the original probe's conclusion was falsified, and the design changed in response.** See §2.
 The one-vector probe reported identical top-50 rankings across `limit` 50/65/250 and `hnsw_ef` 1000;
 a twenty-vector repeat on the same collection found 18/20 and 17/20, so the control is not exact.
-What replaced it is the beam-flooring fact in §3.4 item 1.
+What replaced it is the two-part beam rule in §3.4 item 1.
 
 ### Deferred to execution — self-verifying at the run's first step
 
@@ -252,7 +270,7 @@ What replaced it is the beam-flooring fact in §3.4 item 1.
 | A1 | Qdrant restores a snapshot into the collection named in the URL path, so an alias name works | §3.1 restore; point counts must read 5,183 / 19,967 / 5,183. If this fails the design must fall back to parent spec §6's overwrite-and-restore-back, which is a **plan-shape change requiring re-approval**. |
 | A9 | `PATCH optimizers_config` converges `indexed_vectors_count` to `points_count` in bounded time | §3.3 poll. |
 | A22 | gte-modernbert-base is still cached in the `tei_models` volume (§3.2) | **Unverified** — inspecting the volume requires root. Not load-bearing: an absent cache costs a download on the first `--force-recreate`, not a wrong number. Observable at §3.2's wait for `/info`. |
-| A23 | Qdrant floors the search beam at `max(limit, ef_construct)` on the multivector (`max_sim`) query path as it does on the named-vector path | **Inferred, not verified** — measured only on a dense named-vector collection. Settled at §3.5 step 0. |
+| A23 | Qdrant's explicit-`hnsw_ef` rule (beam = `max(hnsw_ef, limit)`) holds on the multivector (`max_sim`) query path as it does on the named-vector path | **Inferred, not verified** — confirmed on the named-vector path (at `limit` 50, `hnsw_ef` 65 differs from the default on 4/20 queries; at `limit` 250, `hnsw_ef` 65/100/250 are all identical to the default, each clamped up to 250). Settled at §3.5 step 0. |
 
 ## 6. Preconditions
 
