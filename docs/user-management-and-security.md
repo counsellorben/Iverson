@@ -437,7 +437,7 @@ future Authentik flow-executor scripting in this repo.
 |---|---|---|---|---|---|
 | `iverson-loadtest` | `client_credentials` | confidential | `dev-iverson-loadtest-client-id` | — | Load-test service caller |
 | `iverson-webtest` | `client_credentials` | confidential | `dev-iverson-webtest-client-id` | — | External web-test service caller |
-| `iverson-admin-automation` | `client_credentials` | confidential | `dev-iverson-admin-automation-client-id` | `admin` scope → `scope` claim | CI/automation calling `/admin/*` |
+| `iverson-admin-automation` | `client_credentials` | confidential | `dev-iverson-admin-automation-client-id` | `admin` scope → `scope` claim | CI/automation calling `/admin/*` in-cluster (`kubectl port-forward`/`exec` — not reachable via the ingress) |
 | `iverson-oidc-default` (app slug `iverson-api`) | Authorization Code + PKCE | public | `dev-iverson-human-oidc-client-id` | `groups` scope → `groups` claim | Human operator browser login |
 | `iverson-loadtest-human` *(Part 4, unmerged)* | Authorization Code + PKCE | public, no secret | `dev-iverson-loadtest-human-client-id` | — | Scripted acting-user smoke test |
 

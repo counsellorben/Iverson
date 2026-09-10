@@ -20,9 +20,16 @@ chunk from an orphaned duplicate after the fact.
    curl -X DELETE http://<qdrant-host>:6333/collections/{collection}_chunks
    ```
 3. Trigger a full reconcile for every affected type, which replays every row from Postgres
-   through the pipeline and re-creates the chunks collection fresh (with the now-stable IDs):
+   through the pipeline and re-creates the chunks collection fresh (with the now-stable IDs).
+   `/admin/*` is not reachable through the ingress (the admin-ui Ingress owns `/admin` on the
+   same host) — reach it in-cluster instead, via a port-forward:
    ```
-   curl -X POST http://<api-host>/admin/reconcile/{TypeName}
+   kubectl -n <ns> port-forward svc/<release>-api 8080:8080 &
+   curl -X POST http://localhost:8080/admin/reconcile/{TypeName}
+   ```
+   or by exec'ing into a running API pod:
+   ```
+   kubectl -n <ns> exec deploy/<release>-api -- curl -X POST http://localhost:8080/admin/reconcile/{TypeName}
    ```
 4. Verify: `SearchChunks` results for a known article should return exactly the expected number
    of passages (no duplicates) — spot-check 2-3 articles per type.

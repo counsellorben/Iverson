@@ -186,7 +186,8 @@ internal sealed class ReconciliationService(
         if (attempts >= MaxAttempts)
             logger.LogCritical(
                 "[Reconciliation] Giving up on type={Type} key={Key} after {Attempts} attempts — " +
-                "requires manual POST /admin/reconcile/{Type}. Last error: {Error}",
+                "requires a manual in-cluster POST to /admin/reconcile/{Type} (kubectl port-forward or " +
+                "exec — not reachable via the ingress). Last error: {Error}",
                 row.TypeName,
                 row.EntityKey,
                 attempts,

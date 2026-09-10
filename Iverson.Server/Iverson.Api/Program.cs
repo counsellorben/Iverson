@@ -342,31 +342,6 @@ app.MapGet("/health", async (
 .WithName("Health")
 .AllowAnonymous();
 
-app.MapGet("/probe/sql", async (IRecordStoreQueryExecutor db) =>
-{
-    var result = await db.QuerySingleOrDefaultAsync<int>("SELECT 1");
-    return Results.Ok(new { connected = result == 1, traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeSql").AllowAnonymous();
-
-app.MapGet("/probe/starrocks", async (IEngagementStoreHealthCheck sr) =>
-{
-    var healthy = await sr.IsHealthyAsync();
-    return Results.Ok(new { connected = healthy, traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeStarRocks").AllowAnonymous();
-
-app.MapGet("/probe/vector", async (IVectorSchemaManager vector) =>
-{
-    await vector.EnsureCollectionAsync("iverson-probe", 4);
-    return Results.Ok(new { connected = true, collection = "iverson-probe", traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeVector").AllowAnonymous();
-
-app.MapPost("/probe/kafka", async (IEventProducer producer) =>
-{
-    var traceId = Activity.Current?.TraceId.ToString();
-    await producer.ProduceAsync("iverson.probe", "probe", new { timestamp = DateTime.UtcNow, traceId });
-    return Results.Ok(new { produced = true, topic = "iverson.probe", traceId });
-}).WithName("ProbeKafka").AllowAnonymous();
-
 app.MapPost("/admin/reconcile/{typeName}", async (
     string typeName,
     Iverson.Api.Reconciliation.ReconciliationService reconciliation,

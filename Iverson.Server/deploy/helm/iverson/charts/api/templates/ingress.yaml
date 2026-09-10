@@ -15,7 +15,49 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          - path: /
+          - path: /iverson.ObjectMappingService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /iverson.ObjectPersistenceService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /iverson.ObjectRetrievalService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /iverson.ObjectSearchService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /iverson.TenantLifecycleGrpcService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /iverson.TenantAdminGrpcService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /v1/traces
             pathType: Prefix
             backend:
               service:
