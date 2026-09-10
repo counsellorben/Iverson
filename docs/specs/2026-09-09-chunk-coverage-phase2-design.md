@@ -48,7 +48,16 @@ capability into a permanent artefact and makes both λ = 0.70 items offline repl
 3. **Verify `/build` still reports `3ffafcd26416ed30` before running anything.** This is the check that
    catches an accidental rebuild, and it is the whole point of the sequence: a different composite here
    means the confirmation arm is no longer a λ-only comparison, and the capture has failed.
-4. Verify `LambdaChunks` reads `0.70`, then run the pool pass at `--chunk-budget-multiplier` 11.
+4. Verify `LambdaChunks` reads `0.70`, then run the pool pass at `--chunk-budget-multiplier` 11 —
+   **with a label and directory of its own**: `--config-label fs2048-pool-l070` into a new
+   `chunk-coverage-phase2-l070-<date>/runs`. **Neither `--output-dir` nor `--config-label` may be
+   Phase 1's** (`chunk-coverage-phase1-2026-09-09/runs`, `fs2048-pool`). `benchmark-query` writes all
+   five artefacts as `Path.Combine(OutputDir, ConfigLabel…)` with `append: false` and **no overwrite
+   guard** — its only `File.Exists` calls are on inputs. Reusing Phase 1's invocation with λ changed
+   and nothing else, which is literally what parent §4's "λ is the only difference" invites, truncates
+   `fs2048-pool.chunks.hits.tsv` — the sole input to all six primary replays, and the file
+   `s` = 0.695455 was derived from. By this step the λ = 1.00 container is already gone, so recovery
+   is another recreate plus another 42-minute SIGPIPE-exposed pass.
 
 This run is exposed to the SIGPIPE crash, whose fail-closed guard refused a run on 2026-09-09. A
 refusal means re-running, not reinterpreting.
@@ -116,8 +125,19 @@ looks exactly like a check that passed.
 of zero there is equally a failure.** The count rule above guards against the check running on nothing;
 it does not guard against the check running on everything and comparing it to itself — which reports
 79,946 pairs asserted and zero differences, and looks exactly like a triumphant pass. This positive
-control kills that case, a mis-typed β, and an arm that silently failed to apply β, all from data the
-check already has open.
+control kills that case and an arm that silently failed to apply β — both collapse to zero differences
+— from data the check already has open. **It does not catch a mis-typed β**, except a mistype to zero:
+any other wrong non-zero β still moves every multi-chunk pair, and the single-chunk assertion is
+β-blind by construction, since `Skip(1).Take(3).Sum()` is 0 and the score is `descending[0] + β·0` at
+every β.
+
+**So assert the ladder itself, from an artefact the sweep already writes.** `benchmark-aggregate`
+records `beta` in each `<label>.meta.json` (`BenchmarkAggregateScenario.cs:249`) and nothing currently
+reads it back — `report.py` reads only `composite`. Check that the six sidecars' `beta` values equal
+§2's ladder exactly and that **none exceeds 0.035800**, the Phase 1 gate's hard bound made checkable,
+at one read per arm. Without it a decimal slip putting the top arm at 0.35800 — ten times parity, in
+the region §6 says degenerates into counting tail chunks — passes every other check this spec
+defines.
 
 **If this fails, the sweep is not interpreted at all.**
 
@@ -214,6 +234,9 @@ below is read-only against artefacts already on disk or source already committed
 | 21 | The aggregator binary Phase 2 runs is output-inert versus the one Phase 1's identity check certified | `git diff 7463d6c..HEAD`: `DocumentRanking.cs`, `MaxPassageAggregator.cs` and `TrecRunWriter.cs` untouched since `be24347`; the only run-file-path change is `double.Parse(…, CultureInfo)` → `(…, NumberStyles.Float, CultureInfo)`, dropping `AllowThousands`, inert for tokens like `0.8120335340499878`. **Assumption 1 does not establish this** — `composite` is copied verbatim from the pool sidecar, so it tracks the server, and harness changes are precisely what could invalidate a *replay*. A free confirmation is available: Phase 2's `fs2048-b0.chunks.trec` cannot be byte-compared to Phase 1's certified `identity-beta0/fs2048-pool.chunks.trec` because `TrecRunWriter.cs:31` writes the config label into column 6, but **a columns-1-to-5 comparison works and costs nothing** | ✅ |
 | 22 | The dump's per-query stream order is fused-descending | **0 of 369,600 rows** violate per-query descending score order. Independently, `DocumentRanking.cs:74` takes the tail from `OrderByDescending(s => s)`, so the tail is the three largest by construction regardless of stream order | ✅ — this is what makes deferring parent §6's ordering check safe for the primary arm |
 | 23 | The keymap and qrels are the ones the dump was taken with | 0 unresolved parent keys against today's `keymap.json`; both qrels files have mtime 2026-09-07, predating the 2026-09-09 run | ✅ |
+| 24 | The fused score is time-independent, so a λ = 0.70 dump captured later is comparable to one captured 2026-09-09 | decay is supplied by a wall-clock read (`ObjectSearchGrpcService.cs:282,653`), but `DecayFieldResolver.Resolve` returns a field only for a `TIMESTAMPTZ`/`DATETIME` metadata column, and `BenchmarkDocument` (`Entities/BenchmarkDocument.cs:6-21`) declares `Id`, `DocId`, `Title`, `Body`, `OwnerId` and **no timestamp** — so `hasDecay` is false and the score reduces to `(0.45·base + 0.45·centroid)/0.90`, a function of the index and query vector only | ✅ — this is the load-bearing fact under §1.1's capture-now decision |
+| 25 | The Qdrant collection is the one Phase 1 ran against | in `iversonserver_qdrant_data`, `benchmark_documents_tenant_bypass` and `benchmark_documents_chunks_tenant_bypass` were last written **2026-09-09 09:20**, immediately before the Phase 1 run, and nothing has touched them since. A swapped index would also surface loudly — unresolved parent keys throw at `BenchmarkAggregateScenario.cs:264` | ✅ |
+| 26 | Compose from the main checkout owns the existing containers | `docker compose ps -a` from the main checkout enumerates all 19, so the project resolves to `iversonserver` as the container labels record. Were it otherwise, §1.1 step 2 would hit the explicit `container_name: iverson-api` and fail rather than recreate | ✅ |
 
 ## 9. Known issues, inherited and accepted
 
