@@ -409,9 +409,12 @@ await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSc
 await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
 await schemaManager.ApplySchemaAsync(Iverson.Api.Tenancy.TenantSchema.Table);
 
-var tenantRepository = app.Services.GetRequiredService<ITenantRepository>();
-foreach (var legacyTenantId in new[] { "tenant_loadtest", "tenant_webtest", "tenant_admin", "tenant_smoke_test", "tenant_bypass" })
-    await tenantRepository.SeedIfMissingAsync(legacyTenantId, legacyTenantId, "active");
+if (cfg.GetValue("Tenancy:SeedLegacyTenants", false))
+{
+    var tenantRepository = app.Services.GetRequiredService<ITenantRepository>();
+    foreach (var legacyTenantId in new[] { "tenant_loadtest", "tenant_webtest", "tenant_admin", "tenant_smoke_test", "tenant_bypass" })
+        await tenantRepository.SeedIfMissingAsync(legacyTenantId, legacyTenantId, "active");
+}
 
 // Self-heal RLS state for tables whose descriptor was registered before this change shipped —
 // their physical DDL predates the tenant policy/RLS/grant this schema manager now applies.

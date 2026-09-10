@@ -19,6 +19,9 @@ global:
   embeddingModels:
     - name: BAAI/bge-base-en-v1.5
       slug: bge-base
+  # Laptop dev needs the Authentik test identities and legacy tenant seeding the production
+  # default (values.yaml) turns off.
+  provisionTestIdentities: true
 
 prometheus:
   enabled: false

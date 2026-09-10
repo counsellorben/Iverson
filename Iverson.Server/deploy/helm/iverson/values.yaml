@@ -51,6 +51,12 @@ global:
   engagementEnabled: true
   # Drives the jaeger subchart's condition AND the api/worker OTLP env vars.
   tracingEnabled: true
+  # Gates the Authentik blueprint's dev-only test identities (smoke-test user, loadtest-bypass
+  # user/group, loadtest/webtest service clients, the loadtest-human provider, and the
+  # localhost:5173 redirect URIs) AND Tenancy__SeedLegacyTenants (the five-tenant legacy seeding
+  # loop in Program.cs). Default false so no production install provisions test credentials or
+  # seeds placeholder tenants; values-local.yaml and values-laptop.yaml set this true.
+  provisionTestIdentities: false
 
 postgres:
   enabled: true

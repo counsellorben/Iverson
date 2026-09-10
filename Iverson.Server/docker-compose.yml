@@ -475,6 +475,7 @@ services:
       - Authentik__BaseUrl=http://authentik-server:9000
       - Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
+      - Tenancy__SeedLegacyTenants=true
     # Kestrel does not begin listening until Program.cs's startup block has finished — the
     # bootstrap DDL (EnsureRuntimeRoleAsync, the plumbing-table EnsureTableAsync calls, and every
     # ApplySchemaAsync) is awaited BEFORE app.Run(). A successful TCP connect to 8080 is therefore
@@ -555,6 +556,7 @@ services:
       - Authentik__BaseUrl=http://authentik-server:9000
       - Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
+      - Tenancy__SeedLegacyTenants=true
     depends_on:
       # The same backing-service conditions iverson-api uses...
       postgres:

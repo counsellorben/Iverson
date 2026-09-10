@@ -48,6 +48,7 @@ data:
           name: "Iverson: tenant id"
           description: The caller's tenant identifier for data isolation
           expression: 'return {"tenant_id": request.user.attributes.get("tenant_id")}'
+{{- if .Values.global.provisionTestIdentities }}
       - model: authentik_providers_oauth2.scopemapping
         identifiers:
           scope_name: tenant_id_loadtest
@@ -62,6 +63,7 @@ data:
           name: "Iverson: webtest tenant id"
           description: Fixed tenant identifier issued to the webtest service client
           expression: 'return {"tenant_id": "tenant_webtest"}'
+{{- end }}
       - model: authentik_providers_oauth2.scopemapping
         identifiers:
           scope_name: tenant_id_admin
@@ -70,6 +72,7 @@ data:
           description: Fixed tenant identifier issued to the admin-automation service client
           expression: 'return {"tenant_id": "tenant_admin"}'
 {{- range $name := list "loadtest" "webtest" "admin-automation" }}
+{{- if or (eq $name "admin-automation") $.Values.global.provisionTestIdentities }}
 {{- $secret := index (dict "loadtest" $loadtest "webtest" $webtest "admin-automation" $adminAuto) $name }}
       - model: authentik_providers_oauth2.oauth2provider
         identifiers:
@@ -104,6 +107,7 @@ data:
           name: iverson-{{ $name }}
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-{{ $name }}]]
 {{- end }}
+{{- end }}
       - model: authentik_providers_oauth2.oauth2provider
         identifiers:
           name: iverson-oidc-default
@@ -118,15 +122,19 @@ data:
             - matching_mode: strict
               url: "{{ .Values.global.externalScheme }}://{{ .Values.global.ingressHost }}/admin/callback"
               redirect_uri_type: authorization
+{{- if .Values.global.provisionTestIdentities }}
             - matching_mode: strict
               url: "http://localhost:5173/callback"
               redirect_uri_type: authorization
+{{- end }}
             - matching_mode: strict
               url: "{{ .Values.global.externalScheme }}://{{ .Values.global.ingressHost }}/admin/"
               redirect_uri_type: logout
+{{- if .Values.global.provisionTestIdentities }}
             - matching_mode: strict
               url: "http://localhost:5173/"
               redirect_uri_type: logout
+{{- end }}
           client_id: {{ if $humanOidc }}{{ index $humanOidc.data "client-id" | b64dec }}{{ else }}{{ randAlphaNum 40 }}{{ end }}
           signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
           issuer_mode: global
@@ -199,6 +207,7 @@ data:
           slug: initial-setup
         attrs:
           title: "Welcome to Iverson!"
+{{- if .Values.global.provisionTestIdentities }}
       - model: authentik_providers_oauth2.oauth2provider
         identifiers:
           name: iverson-loadtest-human
@@ -252,6 +261,7 @@ data:
             tenant_id: "tenant_bypass"
           groups:
             - !Find [authentik_core.group, [name, iverson-loadtest-bypass]]
+{{- end }}
       - model: authentik_core.group
         identifiers:
           name: tenant-admins

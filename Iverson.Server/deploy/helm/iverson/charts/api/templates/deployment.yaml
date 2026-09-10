@@ -93,6 +93,8 @@ spec:
             {{- end }}
             - name: Engagement__Enabled
               value: {{ .Values.global.engagementEnabled | quote }}
+            - name: Tenancy__SeedLegacyTenants
+              value: {{ .Values.global.provisionTestIdentities | quote }}
             - name: QDRANT_API_KEY
               valueFrom:
                 secretKeyRef:
