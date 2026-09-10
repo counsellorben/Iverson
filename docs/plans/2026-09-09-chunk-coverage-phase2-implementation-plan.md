@@ -63,6 +63,10 @@ Newly introduced by this plan and verified 2026-09-09, read-only.
 | 12 | Ordering | Tasks 2–4 need no live server, so none depends on Task 1 | `BenchmarkAggregateScenario` opens **zero** gRPC clients — fully offline |
 | 13 | Ordering | Task 3 reads Phase 1's dump, not Task 1's | the six arms all take `--hits-path <phase1>/runs/fs2048-pool.chunks.hits.tsv` |
 | 14 | Dependents | A new file in the scripts directory disturbs nothing | 15 independent `*.py` files there; no package `__init__.py`, no shared import surface |
+| 15 | Command | pytest is installed and importable without `PYTHONPATH` | pytest 9.1.1 at `/home/ben/.local/lib/python3.14/site-packages/pytest/__init__.py` |
+| 16 | Command | `bench-env.sh` supplies the run's credentials | it exports `IVERSON_GRPC_URL`, `IVERSON_TOKEN_ENDPOINT` and the admin client id/secret/scope. It does **not** export `IVERSON_HTTP_URL`, which defaults correctly to `http://localhost:8081` (`Iverson.LoadTest/Program.cs:36`) — so Task 1 Step 3's `curl` works by default, not because the env file sets it |
+| 17 | Command | `docker exec iverson-api env` works | the runtime stage is `mcr.microsoft.com/dotnet/aspnet:10.0` (Debian), not chiselled or distroless — Task 1 Step 4 would fail silently on such a base |
+| 18 | Consumer impact | `VECTOR_RANKING_LAMBDA_SIMILAR` is not inherited into the recreate, and that is inert | λ_similar governs only `.similar.trec`, which no Phase 2 task reads, and `SimilarViaChunksTypes` is empty by default so `SearchSimilar` is not routed through the chunk path. This is why Step 4 verifies λ_chunks only |
 
 ## Tasks
 
@@ -76,17 +80,34 @@ becomes unreachable as a λ-only comparison.
 
 - [ ] **Step 1: Bring up only what a query run needs**, with single-service actions.
 ```bash
-for c in iverson-postgres iverson-qdrant iverson-tei-embed iverson-authentik-server iverson-api; do
-  docker start "$c"; done
-until docker exec iverson-postgres pg_isready -U iverson >/dev/null 2>&1; do sleep 1; done
+# iverson-redis is REQUIRED. authentik-server declares `redis: condition: service_healthy`
+# (docker-compose.yml:340) with AUTHENTIK_REDIS__HOST: redis (:332), and `docker start` bypasses
+# depends_on entirely. Every benchmark RPC carries a token minted at authentik, so omitting redis
+# fails the run — AFTER Step 2 has already destroyed the λ = 1.00 container.
+for c in iverson-postgres iverson-redis iverson-qdrant iverson-tei-embed \
+         iverson-authentik-server iverson-api; do
+  docker start "$c"
+done
+
+# Wait on the healthchecks compose already defines, not a single pg_isready that gates nothing.
+for c in iverson-postgres iverson-redis iverson-qdrant iverson-tei-embed iverson-authentik-server; do
+  until [ "$(docker inspect -f '{{.State.Health.Status}}' "$c" 2>/dev/null)" = "healthy" ]; do
+    sleep 2
+  done
+  echo "  $c healthy"
+done
 ```
-Never a tier-wide `docker compose up` (Global Constraints).
+Never a tier-wide `docker compose up` (Global Constraints). The service set is grounded in what Phase 1
+actually ran with: `iverson-redis` was up throughout its 09:20–10:49 capture, while StarRocks and Kafka
+had stopped days earlier — which is why they are absent here.
 
 - [ ] **Step 2: Recreate `iverson-api` at λ = 0.70, without `--build`.**
 ```bash
-cd Iverson.Server
-VECTOR_RANKING_LAMBDA_CHUNKS=0.70 docker compose up -d --no-deps iverson-api
+( cd Iverson.Server && VECTOR_RANKING_LAMBDA_CHUNKS=0.70 docker compose up -d --no-deps iverson-api )
 ```
+The `cd` is scoped to a subshell so it cannot leak into later steps, whose `--project` paths are
+repo-root-relative. Keeping the `cd` rather than `-f` preserves the compose project resolution the spec
+already verified (assumption 26).
 This is the form `docker-compose.yml:444` documents. λ is fixed at container-create time, which is why
 a `docker start` cannot change it. **Setting the variable explicitly matters even though 0.70 is the
 default** — the invoking shell may already carry a value from an earlier experiment.
@@ -94,6 +115,9 @@ default** — the invoking shell may already carry a value from an earlier exper
 - [ ] **Step 3: Verify the composite BEFORE running anything.** This is the step that makes the whole
 capture meaningful: it catches an accidental rebuild while the run has not yet happened.
 ```bash
+# Wait for the freshly recreated API before reading /build, so a connection refusal is not misread
+# as a composite mismatch.
+until curl -sf http://localhost:8081/build >/dev/null 2>&1; do sleep 2; done
 curl -s http://localhost:8081/build | python3 -m json.tool | head -5
 ```
 **It must report `3ffafcd26416ed30`.** A different composite means the image was rebuilt, the λ-only
@@ -127,9 +151,19 @@ Propagate the real exit code — a wrapper ending in `tail` reports the pipeline
 with any failed RPC. Record, for the gate document: the `/build` composite from Step 3, the query
 count, and whether the SIGPIPE crash intervened.
 ```bash
-grep -c "failed for QueryId\|Unhandled exception" "$D/runs/fs2048-pool-l070.log"   # must be 0
-cut -f1 "$D/runs/fs2048-pool-l070.chunks.hits.tsv" | tail -n +2 | sort -u | wc -l  # must be 672
+# Defined here, not inherited: each step runs as its own invocation, so an inherited $D would be
+# empty and these paths would address /runs/... at the filesystem root.
+D=~/repositories/iverson-benchmark-corpora/chunk-coverage-phase2-l070-2026-09-09
+{
+  echo "composite at capture: $(curl -s http://localhost:8081/build | python3 -c 'import sys,json;print(json.load(sys.stdin)["composite"])')"
+  echo -n "failed RPCs / exceptions (must be 0): "
+  grep -c "failed for QueryId\|Unhandled exception" "$D/runs/fs2048-pool-l070.log"
+  echo -n "distinct queries (must be 672): "
+  cut -f1 "$D/runs/fs2048-pool-l070.chunks.hits.tsv" | tail -n +2 | sort -u | wc -l
+} 2>&1 | tee "$D/capture-certification.txt"
 ```
+Task 4 reads `capture-certification.txt`; a certification that reaches no file is one the gate document
+cannot record.
 If the run was refused by a Postgres SIGPIPE crash, re-run it — that is a re-run, not a reinterpretation.
 
 ### Task 2: `beta_invariant.py` and its falsifying tests
@@ -228,15 +262,24 @@ explained before the sweep is read.**
 
 - [ ] **Step 2: Run the precondition. The sweep is not interpreted unless this passes.**
 ```bash
+# Defined here, not inherited from Step 1 — each step is its own invocation.
+P=~/repositories/iverson-benchmark-corpora/chunk-coverage-phase1-2026-09-09
+C=~/repositories/iverson-benchmark-corpora/freshstack-2048-2026-09-07
+A=~/repositories/iverson-benchmark-corpora/chunk-coverage-phase2-arms-2026-09-09
 python3 Iverson.Server/Iverson.LoadTest/scripts/beta_invariant.py \
   --hits "$P/runs/fs2048-pool.chunks.hits.tsv" --keymap "$C/keymap.json" \
   --scores-zero "$A/fs2048-b0.scores.tsv" --scores-parity "$A/fs2048-b35800.scores.tsv" \
   --sidecar "$A"/fs2048-b*.meta.json \
-  --ladder 0 0.003387 0.006107 0.011012 0.019855 0.035800
+  --ladder 0 0.003387 0.006107 0.011012 0.019855 0.035800 \
+  2>&1 | tee "$A/invariant.txt"
 ```
+Tee'd because spec §6 requires the gate document to record all three of its outputs, and Task 4 runs as
+a separate invocation.
 
 - [ ] **Step 3: Score.**
 ```bash
+C=~/repositories/iverson-benchmark-corpora/freshstack-2048-2026-09-07
+A=~/repositories/iverson-benchmark-corpora/chunk-coverage-phase2-arms-2026-09-09
 export PYTHONPATH=~/repositories/iverson-benchmark-corpora/python-libs
 python3 Iverson.Server/Iverson.LoadTest/scripts/report.py \
   --qrels "$C/qrels.trec" --nugget-qrels "$C/qrels.nugget.trec" \
@@ -252,8 +295,14 @@ python3 Iverson.Server/Iverson.LoadTest/scripts/report.py \
 run and correct Holm across **five** arms per measure. A family of six means the baseline was not
 excluded and the correction is wrong.
 ```bash
-grep -n "baseline\] excluded\|family" "$A/report.txt" | head
+A=~/repositories/iverson-benchmark-corpora/chunk-coverage-phase2-arms-2026-09-09
+# report.py:620 prints "Holm (N tests)". The token "family" NEVER reaches stdout — it is only a
+# variable name — so grepping for it would assert nothing.
+grep -c "\[baseline\] excluded" "$A/report.txt"          # must be 1: the beta=0 run was excluded
+grep -o "Holm ([0-9]* tests)" "$A/report.txt" | sort -u    # must be exactly "Holm (5 tests)"
 ```
+A family of six means the baseline was not excluded from `compare_paths` and every Holm correction in
+the run is wrong.
 
 ### Task 4: The gate document
 
@@ -264,10 +313,11 @@ grep -n "baseline\] excluded\|family" "$A/report.txt" | head
 convention. Spec §6 requires it to record **every check's result**, not only the verdict:
 
 - the ladder, and the arm labels it maps to
-- Task 1's `/build` certification that the λ = 0.70 dump was taken on composite `3ffafcd26416ed30`
+- Task 1's `/build` certification — from `chunk-coverage-phase2-l070-2026-09-09/capture-certification.txt`
 - `beta_invariant.py`'s three outputs: the asserted-pair count, the multi-chunk-differs count, and the
-  sidecar-β result
-- the full `report.py` output, including the printed Holm family size
+  sidecar-β result — from `chunk-coverage-phase2-arms-2026-09-09/invariant.txt`
+- the full `report.py` output, including the printed `Holm (N tests)` line — from
+  `chunk-coverage-phase2-arms-2026-09-09/report.txt`
 - the verdict
 
 **A β qualifies only if its nDCG@10 delta against β = 0 is positive AND Holm p_adj < 0.05.** A
