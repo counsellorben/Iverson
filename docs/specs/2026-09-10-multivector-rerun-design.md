@@ -36,26 +36,24 @@ The two asymmetries, both biasing toward the control:
 ## 2. What verification changed
 
 The design originally rested on the gate's stated mechanism for asymmetry 2: the control's 250-chunk
-budget "gives HNSW many chances to surface a document through any of its chunks". A read-only probe
-against the live chunks collection falsified the retrieval-budget half of that.
+budget "gives HNSW many chances to surface a document through any of its chunks". Two read-only
+probes bear on it, and the second overturned the first.
 
-Querying one in-distribution vector at `limit` 50, `limit` 65, `limit` 250, and `limit` 50 with an
-explicit `params.hnsw_ef` of 1000 returned **byte-identical top-50 rankings in all five pairwise
-comparisons** (identical order, identical set). At this corpus scale the control's retrieval is
-effectively exact; there is no approximation slack for an over-fetch to exploit on the control side.
+An initial probe used **one** in-distribution query vector at `limit` 50, `limit` 65, `limit` 250 and
+`hnsw_ef` 1000, found byte-identical top-50 rankings across all of them, and concluded the control's
+retrieval was effectively exact. Repeating it with **twenty** falsifies that: `limit 50` default vs
+`hnsw_ef 1000` is identical in 18 of 20, and vs `limit 250` truncated to 50 in 17 of 20
+(independently reproduced at 17/20 and 17/20 on a second 20-vector sample). A single query lands in
+the ~85% where nothing moves; recall failures live in the tail — the same order as the 11/300 = 3.7%
+of queries that moved R@50 at all in the original run.
 
-Follow that through and the gate's mechanism does not survive as stated. If the control is exact it
-returns the true top-250 chunks and collapses to the best 50 documents among them, so a document is
-reachable only if its best chunk clears the global top-250. An *exact* multivector arm returns the
-true top-50 documents by MaxSim over **all** of a document's chunks, with no 250-chunk cutoff — the
-strictly better answer. Two exact arms could not produce the observed loss.
+**The control is therefore not exact, and no claim about the arm follows from design-time reasoning.**
+Whether the arm's HNSW over `max_sim` multi-row points is approximate is an open question that §3.5
+measures directly, on the restored gte collections, before any gated number exists.
 
-**So the load-bearing inference is that the multivector arm's HNSW over `max_sim` multi-row points is
-genuinely approximate, and that — not the retrieval budget — is what the original gate measured.**
-This is an inference from the control's exactness, not a direct measurement of the arm; §5.5 measures
-it directly and is the first thing this experiment does.
-
-This does not invalidate the re-run. It sharpens it, and it changes what a null result means.
+What does survive is mechanical: the beam, not the returned-list size, governs recall, and Qdrant
+floors it at `max(limit, ef_construct)` = 100. That is what makes asymmetry 2 measurable at all, and
+what §3.4 item 1 equalises.
 
 ## 3. Design
 
@@ -115,18 +113,25 @@ with `indexed_vectors_count` 16,673 of 18,622, i.e. one sub-threshold segment le
 
 ### 3.4 Script changes (`Iverson.Server/Iverson.LoadTest/scripts/multivector.py`)
 
-1. **`--mv-limit`, default 65.** The multivector arm asks HNSW for `--mv-limit` documents and
-   truncates to `DOCUMENT_BUDGET`. 65 matches the control's *corpus fraction*: 250/19,967 = 1.2521%
-   of chunk nodes; 1.2521% of 5,183 document nodes = 64.89 → 65, an over-fetch of 1.30×. The
-   alternative of matching the control's 5× multiplier (250) was rejected: 250 of 5,183 document
-   nodes is 4.82% of the corpus, ~3.85× the control's slice, which would bias the comparison toward
-   the arm. Corpus fraction is the neutral match and is interpretable in both directions.
+1. **`--mv-hnsw-ef`, default 65.** The multivector arm passes `params.hnsw_ef` explicitly; `limit`
+   stays at `DOCUMENT_BUDGET`. The beam, not the size of the returned list, governs HNSW recall, and
+   Qdrant floors it at `max(limit, ef_construct)` with `ef_construct` = 100 — so a `limit`-based
+   over-fetch to 65 is a no-op (§2). 65 equalises the **corpus fraction** each arm's beam explores:
+   the control at `limit` 250 explores 250/19,967 = 1.2521% of its chunk graph; 65/5,183 = 1.2541% of
+   the arm's document graph. The same number falls out as the count of distinct documents the
+   control's 250 chunks reach (250/3.852).
+
+   **This corrects an arm-favouring asymmetry, not a control-favouring one.** At its default the arm
+   already searches with a beam of 100 over 5,183 nodes = 1.93%, against the control's 1.25% — the
+   original gate measured the arm with ~1.54× more relative search effort, and it lost anyway.
+   Matching the control's *absolute* beam (`hnsw_ef` 250, ranked-changes §4 choice 1) was rejected:
+   250/5,183 = 4.82% would widen that gap rather than close it.
 2. **Route the multivector arm through `collapse_by_doc`.** Today the arm writes TREC rows straight
    from each point's `payload.docId` with no dedupe, unlike the chunk arm — the gate flagged that two
    points sharing a `docId` would produce a malformed run. `collapse_by_doc` (`multivector.py:74`)
-   already does max-per-doc → sort descending → **truncate after the collapse**, which is exactly the
-   dedupe-then-truncate order `--mv-limit` requires. Reusing it fixes the dedupe and implements the
-   truncation in one move; no new helper.
+   already does max-per-doc → sort descending → **truncate after the collapse**. Routing the arm
+   through it fixes the dedupe; no new helper. This is independent of item 1 — the beam change does
+   not alter how many documents come back.
 3. **`cmd_query`'s precondition gains `indexed_vectors_count == points_count`** for both collections.
    Today it checks only `info["status"] != "green"` (`multivector.py:268`), which is exactly why
    asymmetry 1 passed unnoticed: a collection sitting below its indexing threshold is green.
@@ -139,26 +144,45 @@ with `indexed_vectors_count` 16,673 of 18,622, i.e. one sub-threshold segment le
 5. **New `probe` subcommand** implementing §3.5.
 
 `test_multivector.py` covers `collapse_by_doc`, `rank_chunk_hits`, `trec_lines`, `group_rows`,
-`resolve_parents` and `summarize_latency` as pure functions with no Qdrant or TEI. Changes 1, 2 and 4
-are testable there; 3 and 5 are live-stack behaviour.
+`resolve_parents` and `summarize_latency` as pure functions with no Qdrant or TEI. Changes 2 and 4 are
+testable there; 1, 3 and 5 are live-stack behaviour (item 1 is now a request-body parameter, not pure
+logic).
 
 ### 3.5 The exactness probe — runs FIRST, before the gated run
 
-Over the first 30 queries, query **both** restored collections at `limit` 50, `limit` 65,
-`limit` 250, and `limit` 50 with explicit `params.hnsw_ef` 1000, and compare the resulting top-50
-document rankings (order and set) across all four.
+**Step 0 — confirm the beam floor applies to the `max_sim` path.** Against `mvrerun_multivector`, one
+read-only query at `limit` 50, at `limit` 65, and at `limit` 50 with `params.hnsw_ef` 65. If the first
+two agree and the third differs, the flooring holds and `--mv-hnsw-ef` is the correct lever. If
+`hnsw_ef` 65 does *not* differ from the default, the arm's beam is not settable this way and §3.4
+item 1's correction does not work — stop and re-approve before any gated measurement.
 
-This decides whether §3.4's over-fetch corrects anything:
+**Step 1 — the probe.** Over a probe set of the first 30 queries **plus the 11 query ids whose R@50
+changed in the original run** (recoverable from `scifact-gte-2026-09-06/runs/`; they are the only
+queries whose exactness bears on the gate), hold each collection's `limit` at its operating value —
+250 on `mvrerun_chunks`, 50 on `mvrerun_multivector` — and vary only `params.hnsw_ef` across
+{65, 100, 250, 1000}, comparing the resulting top-50 **document** rankings (order and set) within each
+collection.
 
-- **All identical on the multivector arm** → the arm is exact too, the over-fetch is a literal no-op,
-  and asymmetry 2 was never real. The re-run reduces to the index-state correction alone, and the
-  NO-GO stands on *stronger* ground than it did — the loss is a property of MaxSim retrieval at this
-  scale, not of the budget.
-- **They differ** → the arm is approximate, the over-fetch at 65 is a genuine correction, and the
-  gated run proceeds as designed.
+Varying `limit` instead would not work on the control: at 3.85 chunks per document, 50 or 65 chunk
+hits cannot yield 50 distinct parents, so those probe points would differ for a purely mechanical
+reason. Holding `limit` at 250 keeps the control's document ranking well-defined at every probe point;
+on the arm it is well-defined at any limit, and per §3.4 item 1 the `limit` 50 and 65 points are the
+same query anyway.
 
-Either outcome is a reportable finding and goes in the gate amendment. The probe costs ~30 queries
-against each collection and is the cheapest decisive measurement in the experiment.
+This measures one thing: whether each arm's retrieval is approximate at its operating beam, and by how
+much. It says nothing about the verdict.
+
+- **Rankings invariant across `hnsw_ef` on a given arm** → that arm is at or near exact at this scale,
+  so its beam is not a live variable and equalising it changes nothing for that arm.
+- **Rankings vary with `hnsw_ef`** → that arm is approximate, the beam is a live variable, and the
+  corpus-fraction match in §3.4 item 1 is doing real work on it.
+
+Both arms are measured, and the two can differ from each other — that asymmetry, if present, is the
+finding. What a continued FAIL licenses about mechanism is settled in §3.6 against the gated numbers,
+not here.
+
+Either outcome is reportable and goes in the gate amendment. The probe costs one probe set (30 bulk +
+11 tail queries) against each collection and is the cheapest decisive measurement in the experiment.
 
 ### 3.6 The gated run and scoring
 
@@ -170,16 +194,22 @@ against each collection and is the cheapest decisive measurement in the experime
 
 `--pair` is **not** used: it enforces pool invariance, which a layout change cannot satisfy, and
 would declare the multivector arm invalid (parent spec §11 A13). `PERMUTATION_SEED`, resample count
-and `HOLM_ALPHA` are left untouched. Holm corrects at m = 2, as in the original gate.
+and `HOLM_ALPHA` are left untouched. Holm corrects at **m = 1**, not the original gate's m = 2: that
+family had a second non-baseline run (`gte-chunks-api`), which §7 excludes here, so the run directory
+holds one comparison once the baseline is dropped. At m = 1, `p_adj` equals the raw permutation p.
+This does not touch the verdict — criteria 1 and 2 are CI lower bounds, criterion 3 is a latency
+ratio, and none consumes `p_adj` — but any significance statement in the amendment must compare the
+re-run's raw permutation p against the original's **raw** permutation p (0.0108 for R@50, 0.1210 for
+nDCG@10), never against its Holm-adjusted values.
 
 The decision rule is **unchanged** — parent spec §7, all three criteria, as tabulated in §1. Two
 consequences worth stating in advance:
 
-- Criterion 3 is the one that passed, and the over-fetch costs the arm latency. At 1.30× the risk is
-  much smaller than the 5× alternative would have carried, and there is margin (0.61× against a
-  1.25× ceiling) — but the re-run could in principle fix criteria 1-2 and break 3.
-- A continued FAIL at matched search effort indicts the **layout**, not the budget. That is a
-  stronger and more useful negative than the original gate recorded.
+- Criterion 3 is the one that passed. Setting the arm's beam to 65 lowers it from its default 100, so
+  the arm's latency should if anything fall; the 0.61× margin against a 1.25× ceiling is not put at
+  risk by this change.
+- A continued FAIL is measured with the beam corpus-fraction-matched at 1.25% on both sides (§3.4
+  item 1). What it licenses about mechanism depends on §3.5's result and is not settled here.
 
 ## 4. Run directory
 
@@ -203,16 +233,17 @@ it holds the gate's evidence.
 | A12 | `report.py` takes explicit run paths | `report.py:828` `--run` is `action="append"`; `:842` `--baseline`. Accepts a directory or a file. |
 | A13 | The three criteria are as stated | Parent spec §7, tabulated in `2026-09-GATE-multivector.md:468-472`. |
 | A14 | 300 queries and matching qrels exist | `scifact-gte-2026-09-06/beir/queries.jsonl` 300 lines; `qrels.trec` 339 rows over 300 distinct query ids. |
-| A15 | No `--mv-limit` exists today | `multivector.py:323` passes `DOCUMENT_BUDGET` as the multivector `limit`. |
+| A15 | No `--mv-hnsw-ef` exists today, and the arm's beam is unset | `multivector.py:321-323` — the multivector query body is `{query, limit: DOCUMENT_BUDGET, with_payload}` with no `params` block, so the beam is Qdrant's default. |
 | A16 | The changed logic is unit-testable offline | `test_multivector.py` — 12 tests over the pure functions, no Qdrant, no TEI. |
 | A17 | Re-running into the old directory would destroy gate evidence | `scifact-gte-2026-09-06/runs/` holds `gte-chunks-raw.chunks.trec` (639,872 B) and `gte-multivector-raw.chunks.trec` (714,759 B); labels are constants at `multivector.py:35-36`. |
 | A18 | Dedupe must precede truncation | `collapse_by_doc` (`multivector.py:74`) collapses then truncates; the `short` check at `:330` compares against `DOCUMENT_BUDGET` after that. |
 | A19 | The dev-only Qdrant key and restore loop work | Used successfully for every read in this verification pass. |
 | A21 | `ingest.embed` is model-agnostic | `ingest.py:533` — `embed(text, model, document_prefix, embed_url)` posts `{model, input}` to `/v1/embeddings`. |
 
-**A10 — falsified as originally stated, and the design changed in response.** See §2. Verified by
-read-only probe: `limit` 50 / 65 / 250 / `hnsw_ef` 1000 against the live chunks collection returned
-identical top-50 rankings in all five pairwise comparisons.
+**A10 — the original probe's conclusion was falsified, and the design changed in response.** See §2.
+The one-vector probe reported identical top-50 rankings across `limit` 50/65/250 and `hnsw_ef` 1000;
+a twenty-vector repeat on the same collection found 18/20 and 17/20, so the control is not exact.
+What replaced it is the beam-flooring fact in §3.4 item 1.
 
 ### Deferred to execution — self-verifying at the run's first step
 
@@ -220,6 +251,8 @@ identical top-50 rankings in all five pairwise comparisons.
 |---|---|---|
 | A1 | Qdrant restores a snapshot into the collection named in the URL path, so an alias name works | §3.1 restore; point counts must read 5,183 / 19,967 / 5,183. If this fails the design must fall back to parent spec §6's overwrite-and-restore-back, which is a **plan-shape change requiring re-approval**. |
 | A9 | `PATCH optimizers_config` converges `indexed_vectors_count` to `points_count` in bounded time | §3.3 poll. |
+| A22 | gte-modernbert-base is still cached in the `tei_models` volume (§3.2) | **Unverified** — inspecting the volume requires root. Not load-bearing: an absent cache costs a download on the first `--force-recreate`, not a wrong number. Observable at §3.2's wait for `/info`. |
+| A23 | Qdrant floors the search beam at `max(limit, ef_construct)` on the multivector (`max_sim`) query path as it does on the named-vector path | **Inferred, not verified** — measured only on a dense named-vector collection. Settled at §3.5 step 0. |
 
 ## 6. Preconditions
 
