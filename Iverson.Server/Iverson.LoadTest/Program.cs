@@ -127,6 +127,7 @@ var services = new ServiceCollection()
     .AddIversonClient(
         grpcUrl, clientCredentials,
         tenantAdminTokenProvider is not null ? () => tenantAdminTokenProvider.GetTokenAsync() : null,
+        allowInsecureChannelCallCredentials: true,
         entityAssemblies: [typeof(BenchmarkArticle).Assembly])
     .AddSingleton(config)
     .AddSingleton(kafkaOptions)

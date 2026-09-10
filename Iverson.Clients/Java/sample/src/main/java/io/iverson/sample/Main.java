@@ -47,7 +47,7 @@ public class Main {
         }
 
         // ── Connect ────────────────────────────────────────────────────────────
-        try (IversonClient client = new IversonClient(
+        try (IversonClient client = IversonClient.plaintext(
                 "localhost", 5000,
                 new OAuth2ClientCredentials(
                     clientId,

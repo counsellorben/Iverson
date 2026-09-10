@@ -25,12 +25,20 @@ public static class ServiceCollectionExtensions
     /// Assemblies to scan for <c>[IversonEntity]</c> classes.
     /// Defaults to the calling assembly if none are provided.
     /// </param>
+    /// <param name="allowInsecureChannelCallCredentials">
+    /// Explicit opt-in required to attach <see cref="credentials"/> (or
+    /// <paramref name="dataPlaneTokenProvider"/>) call credentials over a plaintext (h2c)
+    /// channel. Without it, grpc-dotnet's own guard applies: call credentials over an
+    /// insecure channel throw rather than silently sending the Authorization header in the
+    /// clear. Pass <see langword="true"/> only for a known-local, non-TLS endpoint.
+    /// </param>
     public static IServiceCollection AddIversonClient(
         this IServiceCollection services,
         string grpcEndpoint,
         IversonClientCredentials? credentials = null,
         Func<Task<string>>? dataPlaneTokenProvider = null,
         Func<Task<string>>? actingUserTokenProvider = null,
+        bool allowInsecureChannelCallCredentials = false,
         params Assembly[] entityAssemblies)
     {
         var assemblies = entityAssemblies.Length > 0
@@ -53,23 +61,27 @@ public static class ServiceCollectionExtensions
         {
             services.AddSingleton(sp => new CachedClientCredentialsTokenProvider(credentials));
             AttachCredentials(mappingBuilder,
-                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync());
+                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync(),
+                allowInsecureChannelCallCredentials);
         }
 
         if (dataPlaneTokenProvider is not null)
         {
-            AttachCredentials(persistenceBuilder, _ => dataPlaneTokenProvider());
-            AttachCredentials(retrievalBuilder, _ => dataPlaneTokenProvider());
-            AttachCredentials(searchBuilder, _ => dataPlaneTokenProvider());
+            AttachCredentials(persistenceBuilder, _ => dataPlaneTokenProvider(), allowInsecureChannelCallCredentials);
+            AttachCredentials(retrievalBuilder, _ => dataPlaneTokenProvider(), allowInsecureChannelCallCredentials);
+            AttachCredentials(searchBuilder, _ => dataPlaneTokenProvider(), allowInsecureChannelCallCredentials);
         }
         else if (credentials is not null)
         {
             AttachCredentials(persistenceBuilder,
-                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync());
+                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync(),
+                allowInsecureChannelCallCredentials);
             AttachCredentials(retrievalBuilder,
-                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync());
+                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync(),
+                allowInsecureChannelCallCredentials);
             AttachCredentials(searchBuilder,
-                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync());
+                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync(),
+                allowInsecureChannelCallCredentials);
         }
 
         services.AddTransient(typeof(EntityCoordinator<>));
@@ -84,17 +96,25 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    private static void AttachCredentials(IHttpClientBuilder builder, Func<IServiceProvider, Task<string>> getToken)
+    private static void AttachCredentials(
+        IHttpClientBuilder builder,
+        Func<IServiceProvider, Task<string>> getToken,
+        bool allowInsecureChannelCallCredentials)
     {
-        // Without UnsafeUseInsecureChannelCallCredentials=true, CallCredentials are silently
-        // dropped over this repo's plaintext h2c channel — no exception, no Authorization
-        // header. Confirmed via Microsoft's own docs and a real listening-server test.
-        builder
-            .ConfigureChannel(o => o.UnsafeUseInsecureChannelCallCredentials = true)
-            .AddCallCredentials(async (_, metadata, serviceProvider) =>
-            {
-                var token = await getToken(serviceProvider);
-                metadata.Add("Authorization", $"Bearer {token}");
-            });
+        // grpc-dotnet refuses to send CallCredentials over a plaintext (h2c) channel unless
+        // UnsafeUseInsecureChannelCallCredentials is set — otherwise the Authorization header
+        // would go out in the clear. Setting it unconditionally would defeat that guard for
+        // every consumer, including ones pointed at a real TLS endpoint, so it is set only
+        // when the caller has explicitly opted in for a known-local, non-TLS endpoint.
+        if (allowInsecureChannelCallCredentials)
+        {
+            builder.ConfigureChannel(o => o.UnsafeUseInsecureChannelCallCredentials = true);
+        }
+
+        builder.AddCallCredentials(async (_, metadata, serviceProvider) =>
+        {
+            var token = await getToken(serviceProvider);
+            metadata.Add("Authorization", $"Bearer {token}");
+        });
     }
 }

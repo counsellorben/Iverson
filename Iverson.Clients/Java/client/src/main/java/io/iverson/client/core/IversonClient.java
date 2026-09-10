@@ -41,10 +41,11 @@ public final class IversonClient implements AutoCloseable {
     final String actingUserToken;
 
     /**
-     * Creates a plain-text (h2c) channel to the given host and port.
+     * Creates a TLS channel to the given host and port. For a local plaintext (h2c) dev
+     * endpoint, use {@link #plaintext(String, int)} instead.
      */
     public IversonClient(String host, int port) {
-        this(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build());
+        this(ManagedChannelBuilder.forAddress(host, port).build());
     }
 
     /**
@@ -61,20 +62,51 @@ public final class IversonClient implements AutoCloseable {
     }
 
     /**
-     * Creates a plain-text (h2c) channel to the given host and port, authenticating every
-     * call with the given credentials (e.g. {@link OAuth2ClientCredentials}).
+     * Creates a TLS channel to the given host and port, authenticating every call with the
+     * given credentials (e.g. {@link OAuth2ClientCredentials}). For a local plaintext (h2c)
+     * dev endpoint, use {@link #plaintext(String, int, CallCredentials)} instead.
      */
     public IversonClient(String host, int port, CallCredentials credentials) {
-        this(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build(), credentials);
+        this(ManagedChannelBuilder.forAddress(host, port).build(), credentials);
+    }
+
+    /**
+     * Creates a TLS channel to the given host and port, authenticating every call with the
+     * given credentials, and carrying an ambient acting-user token as described in
+     * {@link #IversonClient(ManagedChannel, CallCredentials, String)}. For a local plaintext
+     * (h2c) dev endpoint, use {@link #plaintext(String, int, CallCredentials, String)} instead.
+     */
+    public IversonClient(String host, int port, CallCredentials credentials, String actingUserToken) {
+        this(ManagedChannelBuilder.forAddress(host, port).build(), credentials, actingUserToken);
+    }
+
+    /**
+     * Creates a plain-text (h2c) channel to the given host and port. For local development and
+     * test doubles only — production endpoints must use {@link #IversonClient(String, int)}.
+     */
+    public static IversonClient plaintext(String host, int port) {
+        return new IversonClient(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build());
+    }
+
+    /**
+     * Creates a plain-text (h2c) channel to the given host and port, authenticating every call
+     * with the given credentials. For local development and test doubles only — production
+     * endpoints must use {@link #IversonClient(String, int, CallCredentials)}.
+     */
+    public static IversonClient plaintext(String host, int port, CallCredentials credentials) {
+        return new IversonClient(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build(), credentials);
     }
 
     /**
      * Creates a plain-text (h2c) channel to the given host and port, authenticating every call
      * with the given credentials, and carrying an ambient acting-user token as described in
-     * {@link #IversonClient(ManagedChannel, CallCredentials, String)}.
+     * {@link #IversonClient(ManagedChannel, CallCredentials, String)}. For local development and
+     * test doubles only — production endpoints must use
+     * {@link #IversonClient(String, int, CallCredentials, String)}.
      */
-    public IversonClient(String host, int port, CallCredentials credentials, String actingUserToken) {
-        this(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build(), credentials, actingUserToken);
+    public static IversonClient plaintext(String host, int port, CallCredentials credentials, String actingUserToken) {
+        return new IversonClient(
+            ManagedChannelBuilder.forAddress(host, port).usePlaintext().build(), credentials, actingUserToken);
     }
 
     /**
