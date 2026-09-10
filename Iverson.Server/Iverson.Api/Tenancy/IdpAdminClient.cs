@@ -8,10 +8,22 @@ namespace Iverson.Api.Tenancy;
 /// IHttpClientFactory + named-client convention as Iverson.Embeddings.EmbeddingService.
 ///
 /// CAVEAT (carried over from design/plan review): the exact JSON field names used below
-/// (attributes, groups, set_password, is_active, the group/user pagination envelope shape,
-/// and the group add_user/remove_user endpoints) are grounded in Authentik's documented DRF
-/// conventions and public API docs, but have NOT been verified against a live instance or the
-/// /api/v3/schema/ OpenAPI document. Re-verify against a running Authentik before production use.
+/// (attributes, groups, set_password, is_active, and the group add_user/remove_user
+/// endpoints) are grounded in Authentik's documented DRF conventions and public API docs,
+/// but have NOT been verified against a live instance or the /api/v3/schema/ OpenAPI
+/// document. Re-verify against a running Authentik before production use.
+///
+/// The user-list pagination envelope IS now verified (2026-09-10, against the compose
+/// Authentik at localhost:9000, image ghcr.io/goauthentik/server:2026.5.3):
+/// <c>GET /api/v3/core/users/?page_size=2</c> returned
+/// <c>{"pagination":{"next":2,"previous":0,"count":8,"current":1,"total_pages":4,
+/// "start_index":1,"end_index":2},"results":[...]}</c>, and following with
+/// <c>?page_size=2&amp;page=2</c> returned <c>"pagination":{"next":3,"previous":1,...}</c>.
+/// "next" is a page NUMBER (not a URL), and is <c>0</c> — not null, not absent — once the
+/// last page has been read; that matches this class's original inference exactly. See
+/// <see cref="ListUsersByTenantAsync"/>, which now throws on any envelope shape it does not
+/// recognise (missing "pagination", missing/non-numeric "next", or a negative "next") rather
+/// than treating an unrecognised shape as end-of-list.
 /// </summary>
 public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory) : IIdpAdminClient
 {
@@ -90,14 +102,30 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory) : IIdpA
             }
 
             // Authentik's pagination envelope nests page metadata under "pagination"; a "next"
-            // of 0 (not null) signals no further pages. Not verified against a live instance —
-            // see class-level remarks.
-            path = root.TryGetProperty("pagination", out var pagination) &&
-                   pagination.TryGetProperty("next", out var next) &&
-                   next.ValueKind == JsonValueKind.Number &&
-                   next.GetInt32() > 0
-                ? $"/api/v3/core/users/?page={next.GetInt32()}"
-                : null;
+            // of 0 (not null, not absent) signals no further pages — verified against a live
+            // instance, see class-level remarks. An envelope that does not match this shape is
+            // not a "no more pages" signal: it means the response isn't what this client
+            // expects, and silently stopping there would truncate the tenant's user list
+            // without anyone noticing (the finding this replaces). So anything other than a
+            // recognised "pagination.next" — missing "pagination", missing/non-numeric "next",
+            // or a negative "next" — throws instead of ending the loop.
+            if (!root.TryGetProperty("pagination", out var pagination))
+                throw new InvalidOperationException(
+                    "Authentik user-list response is missing the expected \"pagination\" envelope; " +
+                    "refusing to silently truncate the tenant's user list.");
+
+            if (!pagination.TryGetProperty("next", out var next) || next.ValueKind != JsonValueKind.Number)
+                throw new InvalidOperationException(
+                    "Authentik pagination envelope's \"next\" field is missing or not a number; " +
+                    "refusing to silently truncate the tenant's user list.");
+
+            var nextPage = next.GetInt32();
+            if (nextPage < 0)
+                throw new InvalidOperationException(
+                    $"Authentik pagination envelope's \"next\" field was negative ({nextPage}); " +
+                    "refusing to silently truncate the tenant's user list.");
+
+            path = nextPage > 0 ? $"/api/v3/core/users/?page={nextPage}" : null;
         }
 
         return matches;

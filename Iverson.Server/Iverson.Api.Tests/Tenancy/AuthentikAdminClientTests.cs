@@ -181,6 +181,109 @@ public sealed class AuthentikAdminClientTests
         handler.Requests[1].RequestUri!.PathAndQuery.Should().Be("/api/v3/core/users/?page=2");
     }
 
+    /// <summary>
+    /// Regression coverage for the fail-open finding: a response missing the "pagination"
+    /// envelope entirely (e.g. a proxy error page, an API version drift, a malformed
+    /// response) used to be treated the same as an honest "no more pages" signal, silently
+    /// truncating the tenant's user list. It must now raise instead.
+    /// </summary>
+    [Fact]
+    public async Task ListUsersByTenantAsync_MissingPaginationEnvelope_Throws()
+    {
+        var page = JsonResponse(HttpStatusCode.OK, """
+            {
+              "results": [
+                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+              ]
+            }
+            """);
+        var sut = CreateClient(new FakeHttpMessageHandler(page), out _);
+
+        await sut.Invoking(s => s.ListUsersByTenantAsync("tenant-a"))
+                 .Should().ThrowAsync<InvalidOperationException>()
+                 .WithMessage("*pagination*");
+    }
+
+    [Fact]
+    public async Task ListUsersByTenantAsync_PaginationMissingNext_Throws()
+    {
+        var page = JsonResponse(HttpStatusCode.OK, """
+            {
+              "pagination": {"previous": 0, "count": 1},
+              "results": [
+                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+              ]
+            }
+            """);
+        var sut = CreateClient(new FakeHttpMessageHandler(page), out _);
+
+        await sut.Invoking(s => s.ListUsersByTenantAsync("tenant-a"))
+                 .Should().ThrowAsync<InvalidOperationException>()
+                 .WithMessage("*next*");
+    }
+
+    [Fact]
+    public async Task ListUsersByTenantAsync_PaginationNextIsNotANumber_Throws()
+    {
+        var page = JsonResponse(HttpStatusCode.OK, """
+            {
+              "pagination": {"next": null, "previous": 0, "count": 1},
+              "results": [
+                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+              ]
+            }
+            """);
+        var sut = CreateClient(new FakeHttpMessageHandler(page), out _);
+
+        await sut.Invoking(s => s.ListUsersByTenantAsync("tenant-a"))
+                 .Should().ThrowAsync<InvalidOperationException>()
+                 .WithMessage("*next*");
+    }
+
+    [Fact]
+    public async Task ListUsersByTenantAsync_PaginationNextIsNegative_Throws()
+    {
+        var page = JsonResponse(HttpStatusCode.OK, """
+            {
+              "pagination": {"next": -1, "previous": 0, "count": 1},
+              "results": [
+                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+              ]
+            }
+            """);
+        var sut = CreateClient(new FakeHttpMessageHandler(page), out _);
+
+        await sut.Invoking(s => s.ListUsersByTenantAsync("tenant-a"))
+                 .Should().ThrowAsync<InvalidOperationException>()
+                 .WithMessage("*negative*");
+    }
+
+    /// <summary>
+    /// The offboarding path (DeactivateAllUsersInTenantAsync) lists users through the exact
+    /// same method, so an unrecognised envelope must abort offboarding too rather than
+    /// deactivating a truncated, silently-incomplete set of users.
+    /// </summary>
+    [Fact]
+    public async Task DeactivateAllUsersInTenantAsync_UnrecognisedPaginationEnvelope_ThrowsAndDeactivatesNoOne()
+    {
+        var page = JsonResponse(HttpStatusCode.OK, """
+            {
+              "results": [
+                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+              ]
+            }
+            """);
+        var sut = CreateClient(new FakeHttpMessageHandler(page), out var handler);
+
+        await sut.Invoking(s => s.DeactivateAllUsersInTenantAsync("tenant-a"))
+                 .Should().ThrowAsync<InvalidOperationException>();
+
+        // Only the list call happened; no PATCH was ever attempted against a user pulled
+        // from the unrecognised, possibly-truncated page.
+        handler.Requests.Should().ContainSingle();
+        handler.Requests[0].Method.Should().Be(HttpMethod.Get);
+    }
+
     [Fact]
     public async Task DeactivateUserAsync_SendsPatchWithIsActiveFalse()
     {

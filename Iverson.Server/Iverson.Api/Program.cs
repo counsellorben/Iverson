@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http.Features;
 using Iverson.Api;
 using Iverson.Api.Authorization;
 using Iverson.Api.Consumers;
@@ -449,13 +450,45 @@ if (workloadRole == "api")
     // Relays the admin-ui browser's OTel Web SDK spans to Jaeger's OTLP/HTTP endpoint.
     // Same-origin so the browser never needs Jaeger's own network address, and
     // authenticated so only signed-in admin-ui sessions can write traces through it.
-    // Body is relayed byte-for-byte (StreamContent straight from the request body) since
-    // it's OTLP protobuf, not JSON — this must not attempt to parse or re-serialize it.
+    // Body is relayed byte-for-byte (StreamContent straight from the request body), so this
+    // must not attempt to parse or re-serialize it. The endpoint's only consumer is the
+    // admin UI's browser OTel SDK, whose JsonTraceSerializer hardcodes
+    // "Content-Type: application/json" — there is no -proto exporter dependency anywhere in
+    // the admin UI — so JSON is the payload actually sent, not protobuf. Both
+    // application/json and application/x-protobuf are allow-listed (the latter for any OTLP
+    // exporter that does emit it); anything else is rejected with 415 rather than forwarded.
+    // The body is also bounded, both by a declared-Content-Length check (so an oversized
+    // request is rejected immediately, before any bytes are relayed to Jaeger) and by
+    // IHttpMaxRequestBodySizeFeature (so a request that lies about its length is still cut
+    // off by the transport once actually read) — this relay must not be usable to push an
+    // unbounded payload at Jaeger.
+    const long MaxTraceBodyBytes = 1 * 1024 * 1024; // 1 MiB: a browser span batch is KBs; ample headroom, still bounded.
+
     app.MapPost("/v1/traces", async (HttpContext ctx, IHttpClientFactory httpClientFactory) =>
     {
+        var contentType = ctx.Request.ContentType;
+        var mediaType = contentType is not null && MediaTypeHeaderValue.TryParse(contentType, out var parsedContentType)
+            ? parsedContentType.MediaType
+            : null;
+        if (mediaType is not ("application/json" or "application/x-protobuf"))
+        {
+            ctx.Response.StatusCode = StatusCodes.Status415UnsupportedMediaType;
+            return;
+        }
+
+        if (ctx.Request.ContentLength is long declaredLength && declaredLength > MaxTraceBodyBytes)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+            return;
+        }
+
+        var maxBodySizeFeature = ctx.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (maxBodySizeFeature is not null && !maxBodySizeFeature.IsReadOnly)
+            maxBodySizeFeature.MaxRequestBodySize = MaxTraceBodyBytes;
+
         var client = httpClientFactory.CreateClient("JaegerOtlpHttp");
         using var content = new StreamContent(ctx.Request.Body);
-        content.Headers.ContentType = MediaTypeHeaderValue.Parse(ctx.Request.ContentType ?? "application/x-protobuf");
+        content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType!);
         using var response = await client.PostAsync("/v1/traces", content);
         ctx.Response.StatusCode = (int)response.StatusCode;
         await response.Content.CopyToAsync(ctx.Response.Body);
