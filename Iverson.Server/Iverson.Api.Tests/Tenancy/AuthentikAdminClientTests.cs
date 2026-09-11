@@ -87,13 +87,14 @@ public sealed class AuthentikAdminClientTests
 
         var sut = CreateClient(new FakeHttpMessageHandler(groupLookup, createUser, recovery), out var handler);
 
-        var userId = await sut.CreateUserAsync(
+        var result = await sut.CreateUserAsync(
             "new-user",
             "new-user@example.invalid",
             "tenant-a",
             ["tenant-admins"]);
 
-        userId.Should().Be("42");
+        result.UserId.Should().Be("42");
+        result.RecoveryLink.Should().Be("http://authentik.local/if/flow/recovery/abc123");
 
         handler.Requests.Should().HaveCount(3);
         handler.Requests[0].Method.Should().Be(HttpMethod.Get);
@@ -146,9 +147,10 @@ public sealed class AuthentikAdminClientTests
 
         var sut = CreateClient(new FakeHttpMessageHandler(createUser, recovery), out var handler);
 
-        var userId = await sut.CreateUserAsync("u", "u@example.invalid", "tenant-b", []);
+        var result = await sut.CreateUserAsync("u", "u@example.invalid", "tenant-b", []);
 
-        userId.Should().Be("7");
+        result.UserId.Should().Be("7");
+        result.RecoveryLink.Should().Be("http://authentik.local/if/flow/recovery/xyz");
         handler.Requests.Should().HaveCount(2);
         using var body = JsonDocument.Parse(handler.RequestBodies[0]!);
         body.RootElement.GetProperty("groups").GetArrayLength().Should().Be(0);
@@ -162,9 +164,10 @@ public sealed class AuthentikAdminClientTests
 
         var sut = CreateClient(new FakeHttpMessageHandler(createUser, recovery), out _, out var logger);
 
-        var userId = await sut.CreateUserAsync("u", "u@example.invalid", "tenant-b", []);
+        var result = await sut.CreateUserAsync("u", "u@example.invalid", "tenant-b", []);
 
-        userId.Should().Be("7");
+        result.UserId.Should().Be("7");
+        result.RecoveryLink.Should().BeNull();
         logger.Received(1).Log(
             LogLevel.Warning,
             Arg.Any<EventId>(),

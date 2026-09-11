@@ -17,9 +17,11 @@ namespace Iverson.Api.Tenancy;
 /// Authentik's set_password endpoint. Instead it POSTs /api/v3/core/users/{id}/recovery/,
 /// which Authentik's docs describe as returning a one-time recovery link
 /// (<c>{"link": "..."}</c>) the user follows to set their own password directly against
-/// Authentik. That specific endpoint shape is, like the set_password endpoint it replaces,
-/// UNVERIFIED against a live instance or the OpenAPI schema — re-verify it too before
-/// production use.
+/// Authentik. VERIFIED against a live instance (2026-09-11, isolated Authentik 2026.5.3 with the
+/// `recovery-flow.yaml` blueprint applied): <c>/recovery/</c> returns <c>{"link":"..."}</c>. The
+/// link is returned to the caller as <see cref="CreateUserResult.RecoveryLink"/> and surfaced in
+/// the gRPC response (TenantUser.recovery_link / Tenant.admin_recovery_link) — see
+/// <see cref="TriggerPasswordRecoveryAsync"/>.
 ///
 /// The user-list pagination envelope IS now verified (2026-09-10, against the compose
 /// Authentik at localhost:9000, image ghcr.io/goauthentik/server:2026.5.3):
@@ -37,7 +39,7 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
 {
     public const string HttpClientName = "iverson.authentik";
 
-    public async Task<string> CreateUserAsync(
+    public async Task<CreateUserResult> CreateUserAsync(
         string username,
         string email,
         string tenantId,
@@ -66,9 +68,9 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
         using var createdDoc = await JsonDocument.ParseAsync(createdStream);
         var userId = ReadPk(createdDoc.RootElement);
 
-        await TriggerPasswordRecoveryAsync(client, userId);
+        var recoveryLink = await TriggerPasswordRecoveryAsync(client, userId);
 
-        return userId;
+        return new CreateUserResult(userId, recoveryLink);
     }
 
     /// <summary>
@@ -79,13 +81,14 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
     /// Authentik, never through this platform. See class remarks: this endpoint's shape is
     /// unverified against a live instance.
     ///
-    /// The link is surfaced via a log line, not the gRPC response: neither InviteUser's
-    /// TenantUser nor CreateTenant's Tenant response message (tenant_admin.proto /
-    /// tenant_lifecycle.proto) has a field for it, and adding one ripples into all five SDKs —
-    /// out of scope for this change and tracked as a follow-up. Until that lands, an inviting
-    /// admin retrieves the link from server logs.
+    /// The link is now ALSO returned to the caller (not only logged): TenantUser.recovery_link
+    /// (tenant_admin.proto) and Tenant.admin_recovery_link (tenant_lifecycle.proto) carry it back
+    /// through InviteUser/CreateTenant's gRPC response respectively (CSR round-2 finding #4
+    /// follow-up — this used to be log-only, requiring an inviting admin to read server logs).
+    /// The log line is kept alongside the return value: it's the only record once the gRPC
+    /// response has been read once, and it costs nothing to keep.
     /// </summary>
-    private async Task TriggerPasswordRecoveryAsync(HttpClient client, string userId)
+    private async Task<string?> TriggerPasswordRecoveryAsync(HttpClient client, string userId)
     {
         using var recoveryResponse = await client.PostAsync(
             $"/api/v3/core/users/{userId}/recovery/",
@@ -98,9 +101,11 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
         if (recoveryDoc.RootElement.TryGetProperty("link", out var linkProp) &&
             linkProp.ValueKind == JsonValueKind.String)
         {
+            var link = linkProp.GetString();
             logger.LogInformation(
                 "[IdpAdminClient] recovery link created for new user {UserId}: {RecoveryLink}",
-                userId, linkProp.GetString());
+                userId, link);
+            return link;
         }
         else
         {
@@ -112,6 +117,7 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
                 "a \"link\" string property; the user has no way to set a password until an " +
                 "admin creates one manually in Authentik.",
                 userId);
+            return null;
         }
     }
 

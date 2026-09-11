@@ -98,7 +98,7 @@ if (needsTenantAndSchema && clientCredentials is not null)
         var adminToken = await MintClientCredentialsTokenAsync(clientCredentials);
         await EnsureTenantProvisionedAsync(
             grpcUrl, adminToken, tenantProvisionId, "Iverson LoadTest (dynamic)",
-            tenantAdminUsername, tenantAdminEmail, tenantAdminPassword);
+            tenantAdminUsername, tenantAdminEmail);
 
         var tenantAdminLoggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
         tenantAdminTokenProvider = new ActingUserTokenProvider(new AuthentikFlowExecutorClient(
@@ -326,7 +326,7 @@ static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentia
 
 static async Task EnsureTenantProvisionedAsync(
     string grpcUrl, string adminToken, string tenantId, string displayName,
-    string adminUsername, string adminEmail, string adminPassword)
+    string adminUsername, string adminEmail)
 {
     using var channel = GrpcChannel.ForAddress(grpcUrl);
     var client = new TenantLifecycleGrpcService.TenantLifecycleGrpcServiceClient(channel);
@@ -336,13 +336,17 @@ static async Task EnsureTenantProvisionedAsync(
     if (existing.Tenants.Any(t => t.TenantId == tenantId))
         return;
 
+    // No password param here by design (CSR round-2 finding #4 proto cleanup): CreateTenant
+    // already ignored an incoming admin_initial_password before that field was removed from the
+    // proto entirely, so this was never a live provisioning path — the tenant admin's actual
+    // password/login below (AuthentikFlowExecutorClient) is a separate, pre-existing mechanism
+    // unaffected by this cleanup.
     await client.CreateTenantAsync(new CreateTenantRequest
     {
-        TenantId             = tenantId,
-        DisplayName          = displayName,
-        AdminUsername        = adminUsername,
-        AdminEmail           = adminEmail,
-        AdminInitialPassword = adminPassword,
+        TenantId      = tenantId,
+        DisplayName   = displayName,
+        AdminUsername = adminUsername,
+        AdminEmail    = adminEmail,
     }, headers);
 }
 

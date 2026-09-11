@@ -25,7 +25,6 @@ export const protobufPackage = "iverson";
 export interface InviteUserRequest {
   username: string;
   email: string;
-  initialPassword: string;
 }
 
 export interface ListUsersRequest {
@@ -48,10 +47,17 @@ export interface TenantUser {
   userId: string;
   username: string;
   email: string;
+  /**
+   * Populated only by InviteUser: the one-time Authentik recovery link the new user follows
+   * to set their own password (CSR round-2 finding #4 follow-up — previously this link was
+   * only written to the server log). Empty for every other RPC that returns a TenantUser
+   * (ListUsers, SetTenantAdmin), since those never mint a new recovery link.
+   */
+  recoveryLink: string;
 }
 
 function createBaseInviteUserRequest(): InviteUserRequest {
-  return { username: "", email: "", initialPassword: "" };
+  return { username: "", email: "" };
 }
 
 export const InviteUserRequest: MessageFns<InviteUserRequest> = {
@@ -61,9 +67,6 @@ export const InviteUserRequest: MessageFns<InviteUserRequest> = {
     }
     if (message.email !== "") {
       writer.uint32(18).string(message.email);
-    }
-    if (message.initialPassword !== "") {
-      writer.uint32(26).string(message.initialPassword);
     }
     return writer;
   },
@@ -91,14 +94,6 @@ export const InviteUserRequest: MessageFns<InviteUserRequest> = {
           message.email = reader.string();
           continue;
         }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.initialPassword = reader.string();
-          continue;
-        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -112,11 +107,6 @@ export const InviteUserRequest: MessageFns<InviteUserRequest> = {
     return {
       username: isSet(object.username) ? globalThis.String(object.username) : "",
       email: isSet(object.email) ? globalThis.String(object.email) : "",
-      initialPassword: isSet(object.initialPassword)
-        ? globalThis.String(object.initialPassword)
-        : isSet(object.initial_password)
-        ? globalThis.String(object.initial_password)
-        : "",
     };
   },
 
@@ -128,9 +118,6 @@ export const InviteUserRequest: MessageFns<InviteUserRequest> = {
     if (message.email !== "") {
       obj.email = message.email;
     }
-    if (message.initialPassword !== "") {
-      obj.initialPassword = message.initialPassword;
-    }
     return obj;
   },
 
@@ -141,7 +128,6 @@ export const InviteUserRequest: MessageFns<InviteUserRequest> = {
     const message = createBaseInviteUserRequest();
     message.username = object.username ?? "";
     message.email = object.email ?? "";
-    message.initialPassword = object.initialPassword ?? "";
     return message;
   },
 };
@@ -394,7 +380,7 @@ export const SetTenantAdminRequest: MessageFns<SetTenantAdminRequest> = {
 };
 
 function createBaseTenantUser(): TenantUser {
-  return { userId: "", username: "", email: "" };
+  return { userId: "", username: "", email: "", recoveryLink: "" };
 }
 
 export const TenantUser: MessageFns<TenantUser> = {
@@ -407,6 +393,9 @@ export const TenantUser: MessageFns<TenantUser> = {
     }
     if (message.email !== "") {
       writer.uint32(26).string(message.email);
+    }
+    if (message.recoveryLink !== "") {
+      writer.uint32(34).string(message.recoveryLink);
     }
     return writer;
   },
@@ -442,6 +431,14 @@ export const TenantUser: MessageFns<TenantUser> = {
           message.email = reader.string();
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.recoveryLink = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -460,6 +457,11 @@ export const TenantUser: MessageFns<TenantUser> = {
         : "",
       username: isSet(object.username) ? globalThis.String(object.username) : "",
       email: isSet(object.email) ? globalThis.String(object.email) : "",
+      recoveryLink: isSet(object.recoveryLink)
+        ? globalThis.String(object.recoveryLink)
+        : isSet(object.recovery_link)
+        ? globalThis.String(object.recovery_link)
+        : "",
     };
   },
 
@@ -474,6 +476,9 @@ export const TenantUser: MessageFns<TenantUser> = {
     if (message.email !== "") {
       obj.email = message.email;
     }
+    if (message.recoveryLink !== "") {
+      obj.recoveryLink = message.recoveryLink;
+    }
     return obj;
   },
 
@@ -485,6 +490,7 @@ export const TenantUser: MessageFns<TenantUser> = {
     message.userId = object.userId ?? "";
     message.username = object.username ?? "";
     message.email = object.email ?? "";
+    message.recoveryLink = object.recoveryLink ?? "";
     return message;
   },
 };

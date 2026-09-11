@@ -13,11 +13,16 @@ service TenantLifecycleGrpcService {
 }
 
 message CreateTenantRequest {
-    string tenant_id              = 1;
-    string display_name           = 2;
-    string admin_username         = 3;
-    string admin_email            = 4;
-    string admin_initial_password = 5;
+    string tenant_id      = 1;
+    string display_name   = 2;
+    string admin_username = 3;
+    string admin_email    = 4;
+    // Field 5 (admin_initial_password) removed: CSR round-2 finding #4 remediation replaced
+    // password-based onboarding with Authentik's own recovery-link flow before any client ever
+    // populated this field, so it was always ignored server-side. Reserved rather than reused,
+    // per proto3 convention, so an old client sending it degrades harmlessly (unknown field).
+    reserved 5;
+    reserved "admin_initial_password";
 }
 
 message ListTenantsRequest {
@@ -43,4 +48,10 @@ message Tenant {
     string tenant_id    = 1;
     string display_name = 2;
     string status       = 3;
+    // Populated only by CreateTenant: the one-time Authentik recovery link the new tenant's
+    // admin user follows to set their own password (CSR round-2 finding #4 follow-up —
+    // previously this link was only written to the server log). Empty for every other RPC that
+    // returns a Tenant (ListTenants, SuspendTenant, ReactivateTenant), since those never mint a
+    // new recovery link.
+    string admin_recovery_link = 4;
 }
