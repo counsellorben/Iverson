@@ -303,7 +303,7 @@ internal static class StarRocksQueryBuilder
                 $"{from}{wc} " +
                 $"GROUP BY bucket_key{hc} ORDER BY bucket_key",
 
-            AggregationKind.Range => BuildRangeSql(from, Quote(col), spec.RangeBuckets, wc, hc),
+            AggregationKind.Range => BuildRangeSql(from, Quote(col), spec.RangeBuckets, param, wc, hc),
 
             // spec.Expression is a client-settable field on the public AggregateRequest proto
             // contract (object_search.proto's AggregationSpec.expression) — it IS reachable by
@@ -928,24 +928,35 @@ internal static class StarRocksQueryBuilder
     /// <c>FROM `authors`</c> or the multi-table form emitted by <see cref="BuildFromWithJoins"/>),
     /// and <paramref name="quotedCol"/> must already be fully quoted — see <see cref="BuildEq"/>
     /// for the equivalent contract on WHERE-clause columns.
+    /// <para>
+    /// The bucket <c>Key</c> is a caller-supplied display label reachable by any client via the
+    /// public <c>AggregationSpec.range_buckets[].key</c> proto field. It is a VALUE, not an
+    /// identifier, and is emitted as a bound parameter (<c>@__rbN</c>) — never spliced into a
+    /// string literal. Splicing it (even with single-quote doubling) is a SQL-injection sink:
+    /// StarRocks honours backslash string escapes, so a key ending in <c>\</c> escapes the
+    /// literal's closing quote and drops following tokens into SQL context, downstream of every
+    /// field-authorization check. Parameterization is the same discipline every other value
+    /// operand in this builder already follows.
+    /// </para>
     /// </summary>
     private static string BuildRangeSql(
         string from, string quotedCol,
-        IReadOnlyList<RangeBucketDescriptor>? buckets, string wc, string hc = "")
+        IReadOnlyList<RangeBucketDescriptor>? buckets, DynamicParameters param, string wc, string hc = "")
     {
         if (buckets is null || buckets.Count == 0)
             return $"SELECT NULL AS bucket_key, COUNT(*) AS doc_count {from}{wc}{hc}";
 
-        var cases = buckets.Select(b =>
+        var cases = buckets.Select((b, i) =>
         {
-            var key = EscapeSqlString(b.Key);
-            if (b.From is null && b.To is not null)
-                return $"WHEN {quotedCol} < {b.To.Value} THEN '{key}'";
-            if (b.From is not null && b.To is null)
-                return $"WHEN {quotedCol} >= {b.From.Value} THEN '{key}'";
-            if (b.From is not null && b.To is not null)
-                return $"WHEN {quotedCol} >= {b.From.Value} AND {quotedCol} < {b.To.Value} THEN '{key}'";
-            return null;
+            var when =
+                b.From is null && b.To is not null     ? $"WHEN {quotedCol} < {b.To.Value}"
+                : b.From is not null && b.To is null    ? $"WHEN {quotedCol} >= {b.From.Value}"
+                : b.From is not null && b.To is not null ? $"WHEN {quotedCol} >= {b.From.Value} AND {quotedCol} < {b.To.Value}"
+                : null;
+            if (when is null)
+                return null;   // a bucket with neither bound is meaningless — skip it, and bind no parameter for it
+            param.Add($"__rb{i}", b.Key);
+            return $"{when} THEN @__rb{i}";
         }).OfType<string>();
 
         return $"SELECT CASE {string.Join(" ", cases)} END AS bucket_key, " +
@@ -1040,8 +1051,6 @@ internal static class StarRocksQueryBuilder
         "year"    => "%Y",
         _         => "%Y-%m"
     };
-
-    private static string EscapeSqlString(string value) => value.Replace("'", "''");
 
     // Escapes an embedded backtick in a developer-supplied identifier (metric alias / HAVING
     // property) before it is wrapped in backticks — otherwise a literal backtick would close

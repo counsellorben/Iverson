@@ -40,7 +40,7 @@ public class StarRocksQueryBuilderTests
     // ── BuildAggregate — Range ─────────────────────────────────────────────────
 
     [Fact]
-    public void BuildAggregate_Range_ProducesCaseExprWithEscapedKey()
+    public void BuildAggregate_Range_ProducesCaseExprWithParameterizedKeys()
     {
         var spec = new AggregationDescriptor(
             "rating_ranges", AggregationKind.Range, "Rating",
@@ -51,26 +51,68 @@ public class StarRocksQueryBuilderTests
                 new RangeBucketDescriptor("high", 7,    null),
             ]);
 
-        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
         sql.Should().Contain("CASE");
-        sql.Should().Contain("WHEN `Rating` < 3 THEN 'low'");
-        sql.Should().Contain("WHEN `Rating` >= 3 AND `Rating` < 7 THEN 'mid'");
-        sql.Should().Contain("WHEN `Rating` >= 7 THEN 'high'");
+        // The bucket key is a VALUE, bound as @__rbN — never inlined as a string literal.
+        sql.Should().Contain("WHEN `Rating` < 3 THEN @__rb0");
+        sql.Should().Contain("WHEN `Rating` >= 3 AND `Rating` < 7 THEN @__rb1");
+        sql.Should().Contain("WHEN `Rating` >= 7 THEN @__rb2");
+        sql.Should().NotContain("'low'");
+        sql.Should().NotContain("'mid'");
+        sql.Should().NotContain("'high'");
         sql.Should().Contain("bucket_key");
         sql.Should().Contain("doc_count");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__rb0"].Should().Be("low");
+        lookup["__rb1"].Should().Be("mid");
+        lookup["__rb2"].Should().Be("high");
     }
 
     [Fact]
-    public void BuildAggregate_Range_EscapesSingleQuotesInKey()
+    public void BuildAggregate_Range_SingleQuoteInKey_RidesAsParameterValueVerbatim()
     {
         var spec = new AggregationDescriptor(
             "r", AggregationKind.Range, "Rating",
             RangeBuckets: [new RangeBucketDescriptor("it's high", 7, null)]);
 
-        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
-        sql.Should().Contain("it''s high");
+        // No SQL-string escaping happens or is needed — the value is bound, not spliced.
+        sql.Should().NotContain("it's high");
+        sql.Should().NotContain("it''s high");
+        sql.Should().Contain("THEN @__rb0");
+        ((SqlMapper.IParameterLookup)param)["__rb0"].Should().Be("it's high");
+    }
+
+    [Fact]
+    public void BuildAggregate_Range_MaliciousKey_IsNeverSplicedIntoSql()
+    {
+        // Regression for the 2026-09-10 CSR round-2 finding #2 (SQL injection via range-bucket key).
+        // EscapeSqlString doubled ' but ignored \; a key ending in \ escaped the template's closing
+        // quote in `THEN '{key}'`, dropping following tokens into SQL context downstream of every
+        // field-authorization check. The fix binds the key as a parameter, so no key content — not a
+        // backslash, not a quote, not a would-be subquery — ever reaches the SQL text.
+        const string payload = "a\\' WHEN 1=1 THEN (SELECT secret FROM other) --";
+        var spec = new AggregationDescriptor(
+            "r", AggregationKind.Range, "Rating",
+            RangeBuckets:
+            [
+                new RangeBucketDescriptor(payload, null, 3),
+                new RangeBucketDescriptor("b",     3,    null),
+            ]);
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        // The attacker-controlled bytes appear nowhere in the emitted SQL — only the placeholder does.
+        sql.Should().NotContain("SELECT secret");
+        sql.Should().NotContain("WHEN 1=1");
+        sql.Should().NotContain("\\");
+        sql.Should().Contain("THEN @__rb0");
+        sql.Should().Contain("THEN @__rb1");
+        // The raw payload survives verbatim as the bound value — the driver escapes it at bind time.
+        ((SqlMapper.IParameterLookup)param)["__rb0"].Should().Be(payload);
     }
 
     [Fact]
