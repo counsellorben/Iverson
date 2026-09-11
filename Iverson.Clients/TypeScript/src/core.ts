@@ -810,7 +810,23 @@ export class IversonClient {
         useTls: boolean = true,
         callCredentials?: grpc.CallCredentials,
         actingUserToken?: ActingUserToken,
+        allowInsecureCredentials: boolean = false,
     ) {
+        // grpc-js has no built-in guard here: CallCredentials are attached per-call as
+        // CallOptions.credentials (see callUnary/openStream above), so its own
+        // composition-time security-level check — the one createFromChannelCredentials's
+        // CallCredentials.compose path enforces — never runs. Without this explicit,
+        // named opt-in, a Bearer token would otherwise ride a plaintext channel in the
+        // clear. Pass allowInsecureCredentials=true only for a known-local, non-TLS
+        // endpoint (mirrors the .NET reference's allowInsecureChannelCallCredentials).
+        if (!useTls && callCredentials !== undefined && !allowInsecureCredentials) {
+            throw new Error(
+                'Refusing to attach CallCredentials to a plaintext (useTls=false) channel ' +
+                'without an explicit allowInsecureCredentials=true opt-in. Pass ' +
+                'allowInsecureCredentials=true only for a known-local, non-TLS endpoint.',
+            );
+        }
+
         const address = `${host}:${port}`;
         const credentials = useTls
             ? grpc.credentials.createSsl()

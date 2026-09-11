@@ -819,6 +819,13 @@ class IversonClient:
         credentials: optional OAuth2 client-credentials for authenticated calls.
         acting_user_token: optional pre-minted acting-user token, propagated on
             every call as ``x-acting-user-authorization`` metadata.
+        allow_insecure_credentials: explicit, named opt-in required to attach
+            ``credentials`` when ``use_tls`` is ``False``. Defaults to ``False``: without
+            it, combining plaintext with credentials raises ``ValueError`` at construction
+            rather than silently substituting ``grpc.local_channel_credentials()`` (a
+            "trusted network" designation, NOT real TLS/encryption) to satisfy grpcio's
+            security-level check while the Bearer token rides the channel in the clear.
+            Set ``True`` only for a known-local, non-TLS endpoint.
     """
 
     def __init__(
@@ -829,10 +836,21 @@ class IversonClient:
         *,
         credentials: IversonClientCredentials | None = None,
         acting_user_token: str | None = None,
+        allow_insecure_credentials: bool = False,
     ) -> None:
         address = f"{host}:{port}"
 
         if credentials is not None:
+            if not use_tls and not allow_insecure_credentials:
+                raise ValueError(
+                    "Refusing to attach credentials to a plaintext (use_tls=False) channel "
+                    "without an explicit allow_insecure_credentials=True opt-in. grpcio "
+                    "requires some ChannelCredentials as the base whenever CallCredentials "
+                    "are present; substituting grpc.local_channel_credentials() to satisfy "
+                    "that check is NOT real TLS/encryption, so the Bearer token would "
+                    "otherwise be sent in the clear. Pass allow_insecure_credentials=True "
+                    "only for a known-local, non-TLS endpoint."
+                )
             call_creds_list = []
             provider = _CachedTokenProvider(credentials)
             call_creds_list.append(
@@ -842,7 +860,8 @@ class IversonClient:
             # "UNAUTHENTICATED: Established channel does not have a sufficient security
             # level to transfer call credential" — confirmed live. Some ChannelCredentials
             # is therefore always required as the base here. When use_tls is True we use
-            # real TLS via ssl_channel_credentials(); otherwise we fall back to
+            # real TLS via ssl_channel_credentials(); otherwise (only once the caller has
+            # explicitly set allow_insecure_credentials=True above) we fall back to
             # local_channel_credentials(), a lightweight "trusted network" designation
             # (NOT real TLS/encryption) that satisfies the check without requiring actual
             # certificates.

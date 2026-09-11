@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 import grpc
+import pytest
 
 from iverson_client import IversonClient, IversonClientCredentials
 from iverson_client.annotations import iverson_entity, iverson_key
@@ -31,9 +32,47 @@ def test_client_with_credentials_uses_secure_channel(monkeypatch):
         port=5000,
         use_tls=False,
         credentials=IversonClientCredentials("id", "secret", "http://localhost:9000/application/o/token/"),
+        allow_insecure_credentials=True,
     )
 
     assert captured["address"] == "localhost:5000"
+
+
+def test_client_with_credentials_and_plaintext_raises_without_opt_in():
+    """Closes CSR finding #10: combining use_tls=False with credentials must fail loudly at
+    construction rather than silently substituting grpc.local_channel_credentials() (NOT real
+    TLS/encryption) to satisfy grpcio's security-level check while the Bearer token rides the
+    channel in the clear."""
+    with pytest.raises(ValueError):
+        IversonClient(
+            host="localhost",
+            port=5000,
+            use_tls=False,
+            credentials=IversonClientCredentials(
+                "id", "secret", "http://localhost:9000/application/o/token/"
+            ),
+        )
+
+
+def test_client_with_credentials_and_plaintext_succeeds_with_opt_in(monkeypatch):
+    """The matching positive leg: the same combination succeeds once the caller has explicitly
+    set allow_insecure_credentials=True, mirroring the conformance driver's and sample's
+    deliberate dev/test use of a plaintext channel with credentials."""
+    monkeypatch.setattr(
+        "iverson_client.core.mapping_grpc.ObjectMappingServiceStub", lambda channel: object()
+    )
+
+    client = IversonClient(
+        host="localhost",
+        port=5000,
+        use_tls=False,
+        credentials=IversonClientCredentials(
+            "id", "secret", "http://localhost:9000/application/o/token/"
+        ),
+        allow_insecure_credentials=True,
+    )
+
+    assert client is not None
 
 
 def test_client_with_use_tls_and_credentials_uses_ssl_channel_credentials(monkeypatch):

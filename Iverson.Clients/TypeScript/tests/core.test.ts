@@ -135,6 +135,27 @@ describe('IversonClient — construction', () => {
         expect((client as unknown as { _actingUserToken: unknown })._actingUserToken).toBe('tok-static');
         client.close();
     });
+
+    // Closes CSR finding #10: grpc-js attaches CallCredentials per-call as
+    // CallOptions.credentials, so its own composition-time security check never runs —
+    // IversonClient must supply its own guard rather than silently sending a Bearer token
+    // over a plaintext channel.
+    it('throws when credentials are combined with a plaintext channel and no opt-in', () => {
+        const callCredentials = grpc.credentials.createFromMetadataGenerator((_options, callback) => {
+            callback(null, new grpc.Metadata());
+        });
+        expect(() => new IversonClient('localhost', 5000, false, callCredentials, undefined))
+            .toThrow(/allowInsecureCredentials/);
+    });
+
+    it('succeeds when credentials are combined with a plaintext channel and the opt-in is set', () => {
+        const callCredentials = grpc.credentials.createFromMetadataGenerator((_options, callback) => {
+            callback(null, new grpc.Metadata());
+        });
+        const client = new IversonClient('localhost', 5000, false, callCredentials, undefined, true);
+        expect(client).toBeInstanceOf(IversonClient);
+        client.close();
+    });
 });
 
 // ── EntityCoordinator — acting-user token threading ─────────────────────────
