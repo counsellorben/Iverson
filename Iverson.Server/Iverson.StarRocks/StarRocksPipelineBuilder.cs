@@ -57,6 +57,33 @@ internal static class StarRocksPipelineBuilder
         return cols;
     }
 
+    /// <summary>
+    /// CSR finding #5: caps pipeline shape BEFORE <see cref="TrackAndValidate"/> or any SQL is
+    /// built. <c>base_where</c> and every step's <c>where</c>/<c>having</c>/<c>joins</c>/
+    /// <c>group_by</c> are checked independently against <see cref="EngagementQueryLimitOptions"/>
+    /// (a request with 3 steps each just under the clause cap is fine; one step alone over it is
+    /// not), while step count and total window-function count are checked once for the whole
+    /// pipeline — a chain of 21 one-clause steps is exactly the shape-based cost this guards
+    /// against even though no single step's own clause/join/group-by count is high.
+    /// </summary>
+    private static void ValidateLimits(PipelineRequest request, EngagementQueryLimitOptions limits)
+    {
+        EngagementQueryLimitValidator.CheckPipelineStepCount(request.Steps.Count, limits);
+        EngagementQueryLimitValidator.CheckClauseCount(request.BaseWhere.Count, limits, "WHERE");
+
+        var totalWindows = 0;
+        foreach (var step in request.Steps)
+        {
+            EngagementQueryLimitValidator.CheckClauseCount(step.Where.Count, limits, "WHERE");
+            EngagementQueryLimitValidator.CheckClauseCount(step.Having.Count, limits, "HAVING");
+            EngagementQueryLimitValidator.CheckJoinCount(step.Joins.Count, limits);
+            EngagementQueryLimitValidator.CheckGroupByKeyCount(step.GroupBy.Count, limits);
+            totalWindows += step.Windows.Count;
+        }
+
+        EngagementQueryLimitValidator.CheckWindowFunctionCount(totalWindows, limits);
+    }
+
     internal static IReadOnlyList<StepColumns> TrackAndValidate(
         EngagementQuerySchema schema,
         PipelineRequest request,
@@ -393,8 +420,11 @@ internal static class StarRocksPipelineBuilder
         PipelineRequest request,
         Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
-        string? tenantDatabase = null)
+        string? tenantDatabase = null,
+        EngagementQueryLimitOptions? limits = null)
     {
+        ValidateLimits(request, limits ?? EngagementQueryLimitOptions.Default);
+
         var tracked = TrackAndValidate(schema, request, registry, authz);
         var byName  = tracked.ToDictionary(s => s.Name, StringComparer.OrdinalIgnoreCase);
         var baseColumns = byName[BaseStepName].Columns;

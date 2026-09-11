@@ -149,7 +149,7 @@ public class IntelligenceStoreConsumerTests
         _ = _embedding.DidNotReceive().EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
 
         await _vectorWrite.Received().UpsertNamedAsync(
-            "articles_test-tenant",
+            "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -244,7 +244,7 @@ public class IntelligenceStoreConsumerTests
 
         // Should upsert at least once into the chunks collection
         await _vectorWrite.Received().UpsertNamedAsync(
-            "articles_chunks_test-tenant",
+            "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -271,7 +271,7 @@ public class IntelligenceStoreConsumerTests
 
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite.UpsertNamedAsync(
-                "articles_chunks_test-tenant",
+                "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -302,7 +302,7 @@ public class IntelligenceStoreConsumerTests
 
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite.UpsertNamedAsync(
-                "articles_chunks_test-tenant",
+                "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -348,7 +348,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "articles_chunks_test-tenant",
+                "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -409,7 +409,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_test-tenant",
+                "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -452,7 +452,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "articles_chunks___no-tenant-claim__",
+                "articles_chunks___no_tenant_claim___74zc32639tuhty7qvmca0gtmn",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -548,7 +548,7 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _vectorWrite.Received(1).DeleteAsync("articles_test-tenant", Arg.Any<ulong>());
+        await _vectorWrite.Received(1).DeleteAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<ulong>());
     }
 
     [Fact]
@@ -570,7 +570,7 @@ public class IntelligenceStoreConsumerTests
         await sut.HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _vectorWrite.Received(1).DeleteByFilterAsync(
-            "articles_chunks_test-tenant",
+            "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Is<Filter>(f => f.Must.Count == 1 && f.Must[0].Field.Key == "parent_id"
                               && f.Must[0].Field.Match.Keyword == "article-123"));
     }
@@ -670,7 +670,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "articles_test-tenant",
+                "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -724,7 +724,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "articles_test-tenant",
+                "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -822,7 +822,7 @@ public class IntelligenceStoreConsumerTests
         var upsertCount = 0;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Any<IReadOnlyDictionary<string, object>?>())
@@ -859,7 +859,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "articles_test-tenant",
+                "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -1027,7 +1027,7 @@ public class IntelligenceStoreConsumerTests
         await _vectorWrite
             .Received()
             .UpsertNamedAsync(
-                "articles_test-tenant",
+                "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -1052,7 +1052,7 @@ public class IntelligenceStoreConsumerTests
 
         await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _vectorWrite.Received(1).DeleteAsync("articles_test-tenant", Arg.Any<ulong>());
+        await _vectorWrite.Received(1).DeleteAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<ulong>());
         await _vectorWrite
             .DidNotReceive()
             .UpsertNamedAsync(
@@ -1115,7 +1115,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -1150,7 +1150,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -1191,7 +1191,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -1223,7 +1223,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -1255,7 +1255,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? pointPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_test-tenant",
+                "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => pointPayload = p))
@@ -1294,7 +1294,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -1360,7 +1360,7 @@ public class IntelligenceStoreConsumerTests
         var payloads = new List<IReadOnlyDictionary<string, object>?>();
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Any<IReadOnlyDictionary<string, object>?>())
@@ -1635,14 +1635,14 @@ public class IntelligenceStoreConsumerTests
         await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _vectorWrite.Received(1).UpdateNamedVectorsAsync(
-            "articles_test-tenant",
+            "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(v => v.ContainsKey("body_centroid")));
 
         // The object block's own upsert still fires exactly once — proving the centroid write
         // added an *update*, not a second upsert that would clobber the object point's vectors.
         await _vectorWrite.Received(1).UpsertNamedAsync(
-            "articles_test-tenant",
+            "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -1677,7 +1677,7 @@ public class IntelligenceStoreConsumerTests
         // Update succeeds (the default stub returns Task.CompletedTask) — proving the fix takes
         // the non-destructive update path rather than immediately upserting past the point.
         await _vectorWrite.Received(1).UpdateNamedVectorsAsync(
-            "articles_test-tenant",
+            "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(v => v.ContainsKey("body_centroid")));
 
@@ -1686,7 +1686,7 @@ public class IntelligenceStoreConsumerTests
         // A pre-fix implementation would have called UpsertNamedAsync here and clobbered any
         // pre-existing title_vector.
         await _vectorWrite.DidNotReceive().UpsertNamedAsync(
-            "articles_test-tenant",
+            "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -1702,7 +1702,7 @@ public class IntelligenceStoreConsumerTests
 
         _vectorWrite
             .UpdateNamedVectorsAsync(
-                "articles_test-tenant",
+                "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>())
             .Returns<Task>(_ => throw new RpcException(new Status(StatusCode.NotFound, "no point")));
@@ -1722,7 +1722,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, float[]>? capturedVectors = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "articles_test-tenant",
+                "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Do<IReadOnlyDictionary<string, float[]>>(v => capturedVectors = v),
                 Arg.Any<IReadOnlyDictionary<string, object>?>())
@@ -1731,9 +1731,9 @@ public class IntelligenceStoreConsumerTests
         await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _vectorWrite.Received(1).UpdateNamedVectorsAsync(
-            "articles_test-tenant", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>());
+            "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>());
         await _vectorWrite.Received(1).UpsertNamedAsync(
-            "articles_test-tenant",
+            "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -1767,7 +1767,7 @@ public class IntelligenceStoreConsumerTests
 
         _vectorWrite
             .UpdateNamedVectorsAsync(
-                "docs_test-tenant",
+                "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>())
             .Returns<Task>(_ => throw new RpcException(new Status(StatusCode.NotFound, "no point")));
@@ -1788,7 +1788,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>?  capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_test-tenant",
+                "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Do<IReadOnlyDictionary<string, float[]>>(v => capturedVectors = v),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -1797,9 +1797,9 @@ public class IntelligenceStoreConsumerTests
         await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _vectorWrite.Received(1).UpdateNamedVectorsAsync(
-            "docs_test-tenant", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>());
+            "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>());
         await _vectorWrite.Received(1).UpsertNamedAsync(
-            "docs_test-tenant",
+            "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -1839,7 +1839,7 @@ public class IntelligenceStoreConsumerTests
 
         _vectorWrite
             .UpdateNamedVectorsAsync(
-                "docs_test-tenant",
+                "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>())
             .Returns<Task>(_ => throw new RpcException(new Status(StatusCode.NotFound, "no point")));
@@ -1859,7 +1859,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, float[]>? capturedVectors = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_test-tenant",
+                "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Do<IReadOnlyDictionary<string, float[]>>(v => capturedVectors = v),
                 Arg.Any<IReadOnlyDictionary<string, object>?>())
@@ -1905,7 +1905,7 @@ public class IntelligenceStoreConsumerTests
 
         IReadOnlyDictionary<string, float[]>? capturedCentroids = null;
         _vectorWrite.UpdateNamedVectorsAsync(
-            "docs_test-tenant",
+            "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>())
             .Returns(ci =>
@@ -1928,7 +1928,7 @@ public class IntelligenceStoreConsumerTests
 
         // The chunk-point write loop is untouched: the degenerate chunk keeps its own vector.
         await _vectorWrite.Received(MultiChunkCount).UpsertNamedAsync(
-            "docs_chunks_test-tenant",
+            "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -1948,7 +1948,7 @@ public class IntelligenceStoreConsumerTests
         // No centroid is written at all — an absent centroid is a state part 3 handles; a NaN one
         // is not.
         await _vectorWrite.DidNotReceive().UpdateNamedVectorsAsync(
-            "docs_test-tenant",
+            "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>());
 
@@ -1957,14 +1957,14 @@ public class IntelligenceStoreConsumerTests
         // either — where previously one was written carrying a NaN centroid. Asserted rather than
         // implied, because it is the behaviour change this task knowingly accepts.
         await _vectorWrite.DidNotReceive().UpsertNamedAsync(
-            "docs_test-tenant",
+            "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
 
         // The chunk points are still upserted, one per chunk, degenerate vectors included.
         await _vectorWrite.Received(MultiChunkCount).UpsertNamedAsync(
-            "docs_chunks_test-tenant",
+            "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -1991,7 +1991,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -2024,7 +2024,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -2059,7 +2059,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -2093,7 +2093,7 @@ public class IntelligenceStoreConsumerTests
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -2181,7 +2181,7 @@ public class IntelligenceStoreConsumerTests
         await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _vectorWrite.Received().UpsertNamedAsync(
-            "templated_docs_chunks_test-tenant",
+            "templated_docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -2200,7 +2200,7 @@ public class IntelligenceStoreConsumerTests
         await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _vectorWrite.Received().UpsertNamedAsync(
-            "templated_docs_chunks_test-tenant",
+            "templated_docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -2220,7 +2220,7 @@ public class IntelligenceStoreConsumerTests
         await BuildSut().HandleAsync(first.Key, Serialize(first), CancellationToken.None);
 
         await _vectorWrite.Received(5).UpsertNamedAsync(
-            "templated_docs_chunks_test-tenant",
+            "templated_docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -2237,13 +2237,13 @@ public class IntelligenceStoreConsumerTests
         await BuildSut().HandleAsync(second.Key, Serialize(second), CancellationToken.None);
 
         await _vectorWrite.Received(1).DeleteByFilterAsync(
-            "templated_docs_chunks_test-tenant",
+            "templated_docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Is<Filter>(f => f.Must.Count == 2
                               && f.Must.Any(c => c.Field.Key == "parent_id" && c.Field.Match.Keyword == key)
                               && f.Must.Any(c => c.Field.Key == "field" && c.Field.Match.Keyword == "Document")));
 
         await _vectorWrite.Received(1).UpsertNamedAsync(
-            "templated_docs_chunks_test-tenant",
+            "templated_docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -2279,7 +2279,7 @@ public class IntelligenceStoreConsumerTests
 
         // No chunk points are (re)written for the now-empty Document field.
         await _vectorWrite.DidNotReceive().UpsertNamedAsync(
-            "templated_docs_chunks_test-tenant",
+            "templated_docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -2293,7 +2293,7 @@ public class IntelligenceStoreConsumerTests
         // Body is still populated on this event, so its chunk points are still (re)written —
         // proof the Document field's delete/guard handling did not disturb it.
         await _vectorWrite.Received().UpsertNamedAsync(
-            "templated_docs_chunks_test-tenant",
+            "templated_docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("body_vector")),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -2387,7 +2387,7 @@ public class IntelligenceStoreConsumerTests
         var indexes = new List<string>();
         _vectorWrite
             .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
+                "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
                 Arg.Any<ulong>(),
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Any<IReadOnlyDictionary<string, object>?>())

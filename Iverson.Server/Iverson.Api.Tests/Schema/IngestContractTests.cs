@@ -68,6 +68,14 @@ public class IngestContractTests
     private const string BaseProbe   = "BASEPROBE";
     private const string TenantProbe = "TENANTPROBE";
 
+    // The one tenant id ingest.py's TENANT_ID constant actually uses (ingest.py:174). Hand-copied
+    // like EntityName/ChunkFieldName below — this assembly cannot see ingest.py's own literal to
+    // cross-check it. Needed because finding #9 (2026-09) made the tenant segment of
+    // ResolveCollectionName a SHA-256 fingerprint of the tenant id rather than the id verbatim, so
+    // ingest.py can no longer template its way to the physical collection name the way it once
+    // did — the contract now emits the already-resolved names for this one known tenant instead.
+    private const string KnownTenantId = "tenant_bypass";
+
     // The three hand-copied inputs. See the "Three INPUTS" paragraph on the class doc comment for
     // why each is unverifiable from this assembly and what goes silently wrong if one drifts.
     private const string EntityName     = "BenchmarkDocument";
@@ -177,10 +185,20 @@ public class IngestContractTests
     // ── Collection naming, read back out of ResolveCollectionName ───────────────────────────
 
     /// <summary>
-    /// Emits the naming RULE, recovered by calling the real
-    /// <see cref="IntelligenceTenantScope.ResolveCollectionName"/> with probe tokens and
-    /// substituting them back out — a change to the separator or the "_chunks" suffix changes the
-    /// contract, rather than the contract silently stating a rule the code no longer follows.
+    /// Emits the naming RULE. Structural shape is checked live against
+    /// <see cref="IntelligenceTenantScope.ResolveCollectionName"/> with probe tokens, so a changed
+    /// separator or "_chunks" suffix fails this test loudly rather than the contract silently
+    /// stating a rule the code no longer follows.
+    ///
+    /// <para><b>Why this no longer emits a reusable format string.</b> Before finding #9 (2026-09),
+    /// the tenant segment was the tenant id substituted verbatim, so <c>ingest.py</c> could
+    /// template <c>"{base}{suffix}_{tenant}"</c> with its own <c>TENANT_ID</c>. The fix makes the
+    /// tenant segment <c>Sanitize(tenantId) + "_" + Fingerprint(tenantId)</c> (a SHA-256 fingerprint
+    /// of the ORIGINAL tenant id — collision-safety was the whole point), which Python cannot
+    /// reproduce by string substitution. So instead of a template, the contract emits the
+    /// ALREADY-RESOLVED collection names for the one tenant id <c>ingest.py</c> actually uses
+    /// (<see cref="KnownTenantId"/>) — computed here by calling the real
+    /// <see cref="IntelligenceTenantScope.ResolveCollectionName"/>, never re-derived by hand.</para>
     /// </summary>
     private static object DeriveCollectionNaming()
     {
@@ -189,27 +207,20 @@ public class IngestContractTests
         var objectResolved = scope.ResolveCollectionName(BaseProbe, TenantProbe, isChunks: false);
         var chunksResolved = scope.ResolveCollectionName(BaseProbe, TenantProbe, isChunks: true);
 
-        var tenantSuffix = "_" + TenantProbe;
-        if (!objectResolved.StartsWith(BaseProbe, StringComparison.Ordinal) ||
-            !objectResolved.EndsWith(tenantSuffix, StringComparison.Ordinal) ||
-            !chunksResolved.StartsWith(BaseProbe, StringComparison.Ordinal) ||
-            !chunksResolved.EndsWith(tenantSuffix, StringComparison.Ordinal))
+        if (!objectResolved.StartsWith(BaseProbe + "_", StringComparison.Ordinal) ||
+            !chunksResolved.StartsWith(BaseProbe + "_chunks_", StringComparison.Ordinal))
             throw new InvalidOperationException(
-                $"ResolveCollectionName no longer produces '{{base}}{{suffix}}_{{tenant}}' " +
+                $"ResolveCollectionName no longer produces '{{base}}{{suffix}}_{{tenant segment}}' " +
                 $"('{objectResolved}', '{chunksResolved}'); the emitted naming rule assumes it does.");
 
-        var objectSuffix = objectResolved[BaseProbe.Length..^tenantSuffix.Length];
-        var chunksSuffix = chunksResolved[BaseProbe.Length..^tenantSuffix.Length];
-
-        var tenantSlot = objectResolved[(BaseProbe.Length + objectSuffix.Length)..]
-            .Replace(TenantProbe, "{tenant}", StringComparison.Ordinal);
+        var baseName = SchemaBuilder.ToTableName(EntityName);
 
         return new
         {
-            @base    = SchemaBuilder.ToTableName(EntityName),
-            template = "{base}{suffix}" + tenantSlot,
-            objectSuffix,
-            chunksSuffix
+            @base                          = baseName,
+            knownTenantId                   = KnownTenantId,
+            objectCollectionForKnownTenant  = scope.ResolveCollectionName(baseName, KnownTenantId, isChunks: false),
+            chunksCollectionForKnownTenant  = scope.ResolveCollectionName(baseName, KnownTenantId, isChunks: true)
         };
     }
 

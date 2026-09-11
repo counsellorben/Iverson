@@ -1536,4 +1536,157 @@ public class StarRocksPipelineBuilderTests
             i = end;
         }
     }
+
+    // ── CSR finding #5: query-DSL shape caps ────────────────────────────────────
+
+    private static PipelineStep WindowStep(string name, int windowCount)
+    {
+        // Aliases must be unique across the WHOLE pipeline, not just within one step — a step's
+        // output column set includes everything its input carried, so re-using "rn0" in a second
+        // step collides with the first step's own output alias of the same name.
+        var step = new PipelineStep { Name = name };
+        for (var i = 0; i < windowCount; i++)
+            step.Windows.Add(new WindowFunction
+            {
+                Alias = $"{name}_rn{i}", Kind = WindowFunctionKind.RowNumber, OrderBy = "PublishedAt"
+            });
+        return step;
+    }
+
+    [Fact]
+    public void Build_StepCountAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxPipelineSteps = 2 };
+        var request = Request(new PipelineStep { Name = "a" }, new PipelineStep { Name = "b" });
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry(), limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Build_StepCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxPipelineSteps = 2 };
+        var request = Request(
+            new PipelineStep { Name = "a" }, new PipelineStep { Name = "b" }, new PipelineStep { Name = "c" });
+
+        Action act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry(), limits: limits);
+
+        AssertInvalid(act, "3");
+        AssertInvalid(act, "steps");
+        AssertInvalid(act, "2");
+    }
+
+    [Fact]
+    public void Build_BaseWhereClauseCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxClauses = 1 };
+        var request = Request();
+        request.BaseWhere.Add(new SearchClause { Property = "Title", Operator = SearchOperator.Equals, Value = new SearchValue { StringVal = "a" } });
+        request.BaseWhere.Add(new SearchClause { Property = "Category", Operator = SearchOperator.Equals, Value = new SearchValue { StringVal = "b" } });
+
+        Action act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry(), limits: limits);
+
+        AssertInvalid(act, "WHERE");
+    }
+
+    [Fact]
+    public void Build_StepWindowFunctionCountSummedAcrossSteps_OverLimit_Throws()
+    {
+        // 2 steps of 3 windows each = 6 total, over a cap of 5 — no SINGLE step exceeds the cap,
+        // proving the count is summed across the whole pipeline rather than checked per-step.
+        var limits = new EngagementQueryLimitOptions { MaxWindowFunctions = 5 };
+        var request = Request(WindowStep("s1", 3), WindowStep("s2", 3));
+
+        Action act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry(), limits: limits);
+
+        AssertInvalid(act, "6");
+        AssertInvalid(act, "window functions");
+        AssertInvalid(act, "5");
+    }
+
+    [Fact]
+    public void Build_StepWindowFunctionCount_AtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxWindowFunctions = 6 };
+        var request = Request(WindowStep("s1", 3), WindowStep("s2", 3));
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry(), limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Build_StepJoinCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxJoins = 1 };
+        var step = new PipelineStep
+        {
+            Name = "joined",
+            Select = { new SelectItem { Source = "base", All = true } },
+            Joins =
+            {
+                new PipelineJoin { Source = "Author", Kind = JoinKind.Inner, On = { new JoinCondition { Left = "AuthorId", Right = "Id" } } },
+                new PipelineJoin { Source = "Tag", Kind = JoinKind.Inner, On = { new JoinCondition { Left = "AuthorId", Right = "Id" } } }
+            }
+        };
+        var request = Request(step);
+
+        Action act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, RegistryWithAuthorAndTag(), limits: limits);
+
+        AssertInvalid(act, "joins");
+    }
+
+    [Fact]
+    public void Build_StepGroupByKeyCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByKeys = 1 };
+        var step = new PipelineStep
+        {
+            Name = "agg",
+            GroupBy = { new GroupKey { Field = "Category" }, new GroupKey { Field = "AuthorId" } },
+            Metrics = { new MetricSpec { Name = "cnt", Type = AggregationType.Count } }
+        };
+        var request = Request(step);
+
+        Action act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry(), limits: limits);
+
+        AssertInvalid(act, "GROUP BY");
+    }
+
+    [Fact]
+    public void Build_StepHavingClauseCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxClauses = 1 };
+        var step = new PipelineStep
+        {
+            Name = "agg",
+            GroupBy = { new GroupKey { Field = "Category" } },
+            Metrics = { new MetricSpec { Name = "cnt", Type = AggregationType.Count } },
+            Having =
+            {
+                new SearchClause { Property = "cnt", Operator = SearchOperator.GreaterThan, Value = new SearchValue { NumberVal = 1 } },
+                new SearchClause { Property = "cnt", Operator = SearchOperator.LessThan, Value = new SearchValue { NumberVal = 100 } }
+            }
+        };
+        var request = Request(step);
+
+        Action act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry(), limits: limits);
+
+        AssertInvalid(act, "HAVING");
+    }
+
+    [Fact]
+    public void Build_DefaultLimits_AreUsedWhenNoneSupplied()
+    {
+        var steps = Enumerable.Range(0, EngagementQueryLimitOptions.Default.MaxPipelineSteps + 1)
+            .Select(i => new PipelineStep { Name = $"s{i}" })
+            .ToArray();
+        var request = Request(steps);
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
 }

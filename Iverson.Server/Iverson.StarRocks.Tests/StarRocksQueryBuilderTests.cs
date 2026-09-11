@@ -3221,4 +3221,160 @@ public class StarRocksQueryBuilderTests
 
         sql.Should().Contain($"ORDER BY `{LegacyTenantCol}` DESC");
     }
+
+    // ── CSR finding #5: query-DSL shape caps ────────────────────────────────────
+
+    private static SearchQuery QueryWithClauses(int count)
+    {
+        var query = new SearchQuery();
+        for (var i = 0; i < count; i++)
+            query.Clauses.Add(new SearchClause
+            {
+                Property   = "Name",
+                Operator   = SearchOperator.Equals,
+                Value      = new SearchValue { StringVal = $"v{i}" },
+                ClauseType = SearchClauseType.Filter
+            });
+        return query;
+    }
+
+    private static List<JoinSpec> Joins(int count) => Enumerable.Range(0, count)
+        .Select(_ => new JoinSpec { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner })
+        .ToList();
+
+    [Fact]
+    public void BuildSearch_ClauseCountAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxClauses = 3 };
+        var query  = QueryWithClauses(3);
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildSearch_ClauseCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxClauses = 3 };
+        var query  = QueryWithClauses(4);
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*4*WHERE*3*");
+    }
+
+    [Fact]
+    public void BuildSearch_JoinCountAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxJoins = 2 };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, joins: Joins(2),
+            registry: _ => ArticleSchema(), limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildSearch_JoinCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxJoins = 2 };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, joins: Joins(3),
+            registry: _ => ArticleSchema(), limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*3*joins*2*");
+    }
+
+    [Fact]
+    public void BuildAggregate_HavingClauseCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxClauses = 1 };
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
+        var having = QueryWithClauses(2);
+        having.Clauses[0].Property = "doc_count";
+        having.Clauses[1].Property = "doc_count";
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, having, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*2*HAVING*1*");
+    }
+
+    [Fact]
+    public void BuildAggregate_GroupByFieldCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByKeys = 1 };
+        var spec = new AggregationDescriptor(
+            "multi", AggregationKind.Terms, "Name", GroupByFields: ["Name", "Rating"]);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*2*GROUP BY*1*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_KeyCountAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByKeys = 2 };
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name", "Rating" }, Limit = 10 };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "authors", AuthorSchema(), request, _ => null, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_KeyCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByKeys = 1 };
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name", "Rating" }, Limit = 10 };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "authors", AuthorSchema(), request, _ => null, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*2*GROUP BY*1*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_JoinCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxJoins = 1 };
+        var request = new GroupByRequest
+        {
+            TypeName = "Author", Keys = { "Article.Title" }, Limit = 50,
+            Joins =
+            {
+                new JoinSpec { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Inner },
+                new JoinSpec { LeftType = "Author", RightType = "Tag", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Inner }
+            }
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "authors", AuthorSchema(), request, t => t == "Article" ? ArticleSchema() : t == "Tag" ? TagSchema() : null, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*2*joins*1*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_DefaultLimits_AreUsedWhenNoneSupplied()
+    {
+        var request = new GroupByRequest { TypeName = "Author", Limit = 10 };
+        for (var i = 0; i < EngagementQueryLimitOptions.Default.MaxGroupByKeys + 1; i++)
+            request.Keys.Add("Name");
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, _ => null);
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
 }

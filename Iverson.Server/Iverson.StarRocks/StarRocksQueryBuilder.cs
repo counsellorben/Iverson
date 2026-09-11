@@ -41,8 +41,13 @@ internal static class StarRocksQueryBuilder
         IReadOnlyList<JoinSpec>? joins = null,
         Func<string, EngagementQuerySchema?>? registry = null,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
-        string? tenantDatabase = null)
+        string? tenantDatabase = null,
+        EngagementQueryLimitOptions? limits = null)
     {
+        var lim = limits ?? EngagementQueryLimitOptions.Default;
+        EngagementQueryLimitValidator.CheckClauseCount(query?.Clauses?.Count ?? 0, lim, "WHERE");
+        EngagementQueryLimitValidator.CheckJoinCount(joins?.Count ?? 0, lim);
+
         var param = new DynamicParameters();
 
         var limit  = pageSize > 0 ? pageSize : 50;
@@ -159,8 +164,15 @@ internal static class StarRocksQueryBuilder
         IReadOnlyList<JoinSpec>? joins = null,
         Func<string, EngagementQuerySchema?>? registry = null,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
-        string? tenantDatabase = null)
+        string? tenantDatabase = null,
+        EngagementQueryLimitOptions? limits = null)
     {
+        var lim = limits ?? EngagementQueryLimitOptions.Default;
+        EngagementQueryLimitValidator.CheckClauseCount(query?.Clauses?.Count ?? 0, lim, "WHERE");
+        EngagementQueryLimitValidator.CheckClauseCount(having?.Clauses?.Count ?? 0, lim, "HAVING");
+        EngagementQueryLimitValidator.CheckJoinCount(joins?.Count ?? 0, lim);
+        EngagementQueryLimitValidator.CheckGroupByKeyCount(spec.GroupByFields?.Count ?? 0, lim);
+
         var param = new DynamicParameters();
 
         string from;
@@ -338,8 +350,15 @@ internal static class StarRocksQueryBuilder
         GroupByRequest request,
         Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
-        string? tenantDatabase = null)
+        string? tenantDatabase = null,
+        EngagementQueryLimitOptions? limits = null)
     {
+        var lim = limits ?? EngagementQueryLimitOptions.Default;
+        EngagementQueryLimitValidator.CheckClauseCount(request.Query?.Clauses?.Count ?? 0, lim, "WHERE");
+        EngagementQueryLimitValidator.CheckClauseCount(request.Having?.Clauses?.Count ?? 0, lim, "HAVING");
+        EngagementQueryLimitValidator.CheckJoinCount(request.Joins?.Count ?? 0, lim);
+        EngagementQueryLimitValidator.CheckGroupByKeyCount(request.Keys?.Count ?? 0, lim);
+
         var param = new DynamicParameters();
         // Joined-type ownership predicates are appended to each JOIN's own ON clause inside
         // BuildFromWithJoins (never the outer WHERE — see that method's remarks for why).

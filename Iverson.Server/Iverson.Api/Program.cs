@@ -193,7 +193,19 @@ builder.Services.AddStarRocks(
             BreakDuration     = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:CircuitBreaker:BreakDurationSeconds", 15))
         }
     },
-    engagementStoreEnabledAtStartup);
+    engagementStoreEnabledAtStartup,
+    // CSR finding #5: caps on query-DSL shape (clause/join/GROUP BY key/pipeline step/window
+    // function counts) so an authenticated tenant user cannot compose a request expensive enough
+    // to degrade StarRocks for every tenant. Configurable under StarRocks:QueryLimits:*;
+    // defaults to EngagementQueryLimitOptions' built-in values when unconfigured.
+    new EngagementQueryLimitOptions
+    {
+        MaxClauses         = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxClauses", EngagementQueryLimitOptions.Default.MaxClauses),
+        MaxJoins           = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxJoins", EngagementQueryLimitOptions.Default.MaxJoins),
+        MaxGroupByKeys     = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxGroupByKeys", EngagementQueryLimitOptions.Default.MaxGroupByKeys),
+        MaxPipelineSteps   = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxPipelineSteps", EngagementQueryLimitOptions.Default.MaxPipelineSteps),
+        MaxWindowFunctions = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxWindowFunctions", EngagementQueryLimitOptions.Default.MaxWindowFunctions)
+    });
 
 builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",
@@ -237,9 +249,42 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITenantStatusCache, Iverson.Api.Tenancy.TenantStatusCache>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
+// CSR finding #4: IdpAdminClient posts a cleartext user password to Authentik's set_password
+// endpoint over whatever transport this base URL specifies. In-cluster plaintext is a deliberate,
+// accepted design decision for local/laptop profiles (deploy/helm/iverson/values.yaml,
+// values-local.yaml, values-laptop.yaml — Authentik has no externally reachable endpoint there),
+// so this does NOT force https on the in-cluster hop universally. It fails closed only when the
+// deployment itself is a production/https one.
+//
+// Signal: Authentication:ExternalIssuer's scheme. deployment.yaml renders it as
+// "{{ .Values.global.externalScheme }}://authentik.{{ .Values.global.ingressHost }}/...", i.e. it
+// is LITERALLY global.externalScheme baked into a URI — http on values.yaml/values-local.yaml/
+// values-laptop.yaml, https on values-aws.yaml/values-azure.yaml/values-gcp.yaml. This is the one
+// signal already wired into every deployed profile that tells "cloud/production" apart from
+// "local" — unlike ASPNETCORE_ENVIRONMENT, which this chart never sets (so
+// builder.Environment.IsDevelopment() reports Production for every containerized profile,
+// cloud or local, and cannot distinguish them).
+var authentikBaseUrlValue = cfg["Authentik:BaseUrl"] ?? "http://authentik-server:9000";
+var externalIssuerValue   = cfg["Authentication:ExternalIssuer"];
+if (externalIssuerValue is not null &&
+    Uri.TryCreate(externalIssuerValue, UriKind.Absolute, out var externalIssuerUri) &&
+    externalIssuerUri.Scheme == Uri.UriSchemeHttps &&
+    (!Uri.TryCreate(authentikBaseUrlValue, UriKind.Absolute, out var authentikBaseUri) ||
+     authentikBaseUri.Scheme != Uri.UriSchemeHttps))
+{
+    throw new InvalidOperationException(
+        $"Authentication:ExternalIssuer ('{externalIssuerValue}') is https, indicating a " +
+        "production/cloud profile, but Authentik:BaseUrl " +
+        $"('{authentikBaseUrlValue}') is not https. IdpAdminClient posts plaintext user " +
+        "passwords to Authentik's set_password endpoint over this base URL — refusing to start " +
+        "rather than send them over an insecure transport. Set Authentik:BaseUrl to an https " +
+        "URL for this profile (local/laptop profiles are exempt: their Authentication:ExternalIssuer " +
+        "is http, so this check does not run for them).");
+}
+
 builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName, client =>
 {
-    client.BaseAddress = new Uri(cfg["Authentik:BaseUrl"] ?? "http://authentik-server:9000");
+    client.BaseAddress = new Uri(authentikBaseUrlValue);
     var adminToken = cfg["Authentik:AdminToken"];
     if (!string.IsNullOrEmpty(adminToken))
         client.DefaultRequestHeaders.Authorization =
@@ -327,14 +372,18 @@ app.MapGet("/health", async (
     IRecordStoreQueryExecutor db,
     IEngagementStoreHealthCheck sr,
     IVectorSchemaManager vector,
-    IEventProducer kafka,
+    IEventBrokerHealthCheck kafka,
     IOptions<EngagementStoreOptions> engagementOptions) =>
 {
+    // CSR finding #7: this endpoint is AllowAnonymous, reachable by anything that can reach the
+    // port — so every check here must be passive. Postgres reads (never writes), StarRocks'
+    // CheckHealthAsync is SELECT 1 + a backend-status read, Qdrant's PingAsync lists collections
+    // (never creates one), and Kafka's PingAsync reads broker metadata (never produces). None of
+    // the four performs a write; do not reintroduce one here.
     var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
     var srTask     = sr.CheckHealthAsync();
-    var vectorTask = vector.EnsureCollectionAsync("iverson-probe", 4).ContinueWith(t => t.IsCompletedSuccessfully);
-    var kafkaTask  = kafka.ProduceAsync("iverson.health.probe", "probe", new { ts = DateTime.UtcNow })
-                         .ContinueWith(t => t.IsCompletedSuccessfully);
+    var vectorTask = vector.PingAsync();
+    var kafkaTask  = kafka.PingAsync();
 
     await Task.WhenAll(pgTask, srTask, vectorTask, kafkaTask);
 

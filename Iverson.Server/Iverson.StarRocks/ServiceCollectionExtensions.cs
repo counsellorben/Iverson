@@ -9,12 +9,13 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         string connectionString,
         EngagementResilienceOptions? resilienceOptions = null,
-        bool engagementEnabled = true)
+        bool engagementEnabled = true,
+        EngagementQueryLimitOptions? queryLimitOptions = null)
     {
         services.AddSingleton(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<EngagementRepository>>();
-            return new EngagementRepository(connectionString, logger, resilienceOptions);
+            return new EngagementRepository(connectionString, logger, resilienceOptions, queryLimitOptions);
         });
         services.AddSingleton<IEngagementStoreQueryExecutor>(sp => sp.GetRequiredService<EngagementRepository>());
         services.AddSingleton<IEngagementStoreEntityStore>(sp => sp.GetRequiredService<EngagementRepository>());

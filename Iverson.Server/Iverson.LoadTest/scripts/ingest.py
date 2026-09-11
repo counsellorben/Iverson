@@ -13,13 +13,18 @@ corpus, and the search endpoints would silently return nothing for a wrong id). 
 fixed; the vector DIMENSION is not -- it is probed from the embedding backend at --embed-url
 at startup (768 for nomic-embed-text, 384 for snowflake-arctic-embed:s), never hard-coded:
 
-    object collection   {object-collection}   default benchmark_documents_tenant_bypass
+    object collection   {object-collection}   default benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk
       vectors: body_vector, body_centroid -- both {probed dimension}-dim, Cosine
       payload: key, docId, title, body, ownerId, __TenantId
 
-    chunks collection   {chunks-collection}   default benchmark_documents_chunks_tenant_bypass
+    chunks collection   {chunks-collection}   default benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk
       vectors: body_vector -- {probed dimension}-dim, Cosine
       payload: text, parent_id, field ("Body"), chunk_index (a STRING), ownerId
+
+    (CSR finding #9, 2026-09: the server's collection-naming rule now appends a SHA-256
+    fingerprint of the tenant id, so these defaults carry that suffix -- see DEFAULT_OBJECT_COLLECTION
+    below. The reference points described next still live in the OLD, unsuffixed collection names
+    until an alias or re-ingest addresses that.)
 
 A run's VECTORS are model- and prefix-dependent, even where the point ids are not: --model
 selects the document task prefix resolved from its family (ingest-contract.json's
@@ -173,31 +178,39 @@ CHUNKS_PAYLOAD_INDEXES = ["field", "ownerId", "parent_id"]
 OWNER_ID = "8f5c3da2e5ecbad46e1dab4890c109a4826919be420f5d7a3d0029a9fbff273e"
 TENANT_ID = "tenant_bypass"
 
-# Reconstructed from the contract's collectionNaming template ("{base}{suffix}_{tenant}") and
-# TENANT_ID above. Must reproduce the two literal names the module docstring calls out as
-# irreplaceable -- benchmark_documents_tenant_bypass / benchmark_documents_chunks_tenant_bypass
-# -- exactly; a silently different name would point the benchmark at a collection that does not
-# exist.
+# CSR finding #9 (2026-09) made the tenant segment of the server's collection-naming rule a
+# SHA-256 fingerprint of the tenant id (mirrors Iverson.StarRocks.TenantIdentifier) rather than the
+# tenant id substituted verbatim, so this script can no longer TEMPLATE its way to the physical
+# name the way it once did -- the contract now emits the already-resolved names for the one
+# tenant id this script actually uses (knownTenantId) instead of a format string.
+#
+# CONSEQUENCE FOR THE EXISTING REFERENCE COLLECTIONS: the physical names below are no longer
+# benchmark_documents_tenant_bypass / benchmark_documents_chunks_tenant_bypass -- they now carry a
+# fingerprint suffix. The irreplaceable C#-written reference points (450 + 554 points, ~34s/doc to
+# reproduce) documented in this module's docstring still live in the OLD collections and are, until
+# addressed, unreachable under the new expected names. Point a Qdrant collection ALIAS (zero data
+# movement -- PUT /collections/aliases) from each new name to its old physical collection before
+# relying on --resume / any non---drop path against them. Do not re-ingest to "fix" this cheaply;
+# that is exactly the cost these collections exist to avoid paying twice.
 _naming = CONTRACT["collectionNaming"]
-DEFAULT_OBJECT_COLLECTION = _naming["template"].format(
-    base=_naming["base"], suffix=_naming["objectSuffix"], tenant=TENANT_ID
+assert _naming["knownTenantId"] == TENANT_ID, (
+    f"contract's knownTenantId {_naming['knownTenantId']!r} != this script's TENANT_ID "
+    f"{TENANT_ID!r} -- the contract was regenerated against a different benchmark tenant than "
+    "this script assumes"
 )
-DEFAULT_CHUNKS_COLLECTION = _naming["template"].format(
-    base=_naming["base"], suffix=_naming["chunksSuffix"], tenant=TENANT_ID
-)
+DEFAULT_OBJECT_COLLECTION = _naming["objectCollectionForKnownTenant"]
+DEFAULT_CHUNKS_COLLECTION = _naming["chunksCollectionForKnownTenant"]
 
-# The paragraph above states a requirement; these enforce it. Without them, a change to the
-# contract's base/template/suffixes (or to TENANT_ID) would silently rename the defaults, and the
-# next run would create two brand-new empty collections and report a "successful" ingest the
-# benchmark then queries nothing out of. Written as literals on purpose -- deriving the expected
-# value from the same contract fields would be a tautology.
-assert DEFAULT_OBJECT_COLLECTION == "benchmark_documents_tenant_bypass", (
+# Written as literals on purpose -- deriving the expected value from the same contract field would
+# be a tautology. A change here means the C# fingerprinting algorithm changed; update the alias
+# (or re-ingest) before trusting a run against the reference collections.
+assert DEFAULT_OBJECT_COLLECTION == "benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk", (
     f"default object collection derived from the contract as {DEFAULT_OBJECT_COLLECTION!r}, "
-    "not benchmark_documents_tenant_bypass"
+    "not benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk"
 )
-assert DEFAULT_CHUNKS_COLLECTION == "benchmark_documents_chunks_tenant_bypass", (
+assert DEFAULT_CHUNKS_COLLECTION == "benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk", (
     f"default chunks collection derived from the contract as {DEFAULT_CHUNKS_COLLECTION!r}, "
-    "not benchmark_documents_chunks_tenant_bypass"
+    "not benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk"
 )
 
 # Any fixed UUID works as the uuid5 namespace -- the only requirement is that it never changes

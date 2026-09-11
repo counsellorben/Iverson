@@ -1086,7 +1086,7 @@ public class ObjectSearchGrpcServiceTests
             Id: 1, Score: 0.95,
             Payload: new Dictionary<string, string> { ["title"] = "Great Article" });
 
-        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { vectorResult }.AsReadOnly());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -1121,7 +1121,7 @@ public class ObjectSearchGrpcServiceTests
         };
         await _registry.RegisterAsync(schema);
 
-        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", arcticVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", arcticVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var (writer, _) = MakeStream<SearchResponse>();
@@ -1143,7 +1143,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema()); // Title -> "nomic-embed-text"
 
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var (writer, _) = MakeStream<SearchResponse>();
@@ -1176,7 +1176,7 @@ public class ObjectSearchGrpcServiceTests
 
         var fakeVector = new float[768];
         _embedding.EmbedQueryAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
-        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "test query", TopK = 5 };
@@ -1291,7 +1291,7 @@ public class ObjectSearchGrpcServiceTests
         // condition, so only the ownership condition is expected here.
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId", bypassRole: "other-bypass"));
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("owneds_test-tenant", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("owneds_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var (writer, _) = MakeStream<SearchResponse>();
@@ -1315,7 +1315,7 @@ public class ObjectSearchGrpcServiceTests
         // caller-supplied filter clause either, no Filter is built at all.
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId")); // bypassRole defaults to "test-bypass"
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("owneds_test-tenant", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("owneds_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var (writer, _) = MakeStream<SearchResponse>();
@@ -1376,7 +1376,7 @@ public class ObjectSearchGrpcServiceTests
         var vectorResult = new VectorSearchResult(
             Id: 1, Score: 0.9,
             Payload: new Dictionary<string, string> { ["key"] = "point-key-1", ["name"] = "visible", ["secret"] = "hidden" });
-        _vector.SearchNamedAsync("owneds_test-tenant", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("owneds_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { vectorResult }.AsReadOnly());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -1400,7 +1400,7 @@ public class ObjectSearchGrpcServiceTests
 
         var fakeVector = new float[768];
         _embedding.EmbedQueryAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
-        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns<Task<IReadOnlyList<VectorSearchResult>>>(_ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -1451,7 +1451,7 @@ public class ObjectSearchGrpcServiceTests
             Id: 42, Score: 0.88,
             Payload: new Dictionary<string, string> { ["text"] = "passage text", ["parent_id"] = "parent-id-123" });
 
-        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { chunkResult }.AsReadOnly());
 
         var (writer, written) = MakeStream<ChunkSearchResponse>();
@@ -1460,7 +1460,7 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         await _vector.Received(1).SearchNamedAsync(
-            "articles_chunks_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+            "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
         written.Should().HaveCount(1);
         _ = _embedding.Received(1).EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
         _ = _embedding.DidNotReceive().EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
@@ -1487,7 +1487,7 @@ public class ObjectSearchGrpcServiceTests
         };
         await _registry.RegisterAsync(schema);
 
-        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", arcticVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", arcticVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var (writer, _) = MakeStream<ChunkSearchResponse>();
@@ -1509,7 +1509,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema()); // Body -> "nomic-embed-text"
 
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var (writer, _) = MakeStream<ChunkSearchResponse>();
@@ -1545,7 +1545,7 @@ public class ObjectSearchGrpcServiceTests
 
         var fakeVector = new float[768];
         _embedding.EmbedQueryAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
-        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns<Task<IReadOnlyList<VectorSearchResult>>>(_ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
 
         var (writer, written) = MakeStream<ChunkSearchResponse>();
@@ -1590,7 +1590,7 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
@@ -1641,7 +1641,7 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { MetadataColumns = ["Title"] });
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
@@ -1668,7 +1668,7 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { MetadataColumns = ["Title"] });
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
@@ -1702,7 +1702,7 @@ public class ObjectSearchGrpcServiceTests
         // "title" (what IntelligenceStoreConsumer wrote), not "tITLE".
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { MetadataColumns = ["Title"] });
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
@@ -1777,7 +1777,7 @@ public class ObjectSearchGrpcServiceTests
         var schema = OwnedQdrantSchema("Owned", null, fieldPermissions) with { MetadataColumns = ["Name"] };
         await _registry.RegisterAsync(schema);
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("owneds_chunks_test-tenant", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("owneds_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" };
@@ -1893,7 +1893,7 @@ public class ObjectSearchGrpcServiceTests
         var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Name", ["admin"], []) };
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", null, fieldPermissions));
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("owneds_chunks_test-tenant", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("owneds_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" };
@@ -1914,7 +1914,7 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId", bypassRole: "other-bypass"));
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("owneds_chunks_test-tenant", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("owneds_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" };
@@ -2527,7 +2527,7 @@ public class ObjectSearchGrpcServiceTests
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
                 new Dictionary<string, string> { ["body"] = $"a{i}" }))
             .ToList();
-        _vector.SearchNamedAsync("docs_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(results.AsReadOnly());
         _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
                .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
@@ -2556,7 +2556,7 @@ public class ObjectSearchGrpcServiceTests
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
                 new Dictionary<string, string> { ["title"] = $"a{i}" }))
             .ToList();
-        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(results.AsReadOnly());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -2588,7 +2588,7 @@ public class ObjectSearchGrpcServiceTests
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
                 new Dictionary<string, string> { ["title"] = $"a{i}" }))
             .ToList();
-        _vector.SearchNamedAsync("dated_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("dated_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(results.AsReadOnly());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -2635,7 +2635,7 @@ public class ObjectSearchGrpcServiceTests
                 ["publishedAt"] = publishedAt.ToString("O")
             })
         };
-        _vector.SearchNamedAsync("dated_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("dated_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(results.AsReadOnly());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -2671,7 +2671,7 @@ public class ObjectSearchGrpcServiceTests
             new(2, 0.85, new Dictionary<string, string> { ["body"] = "B-near-duplicate" }),
             new(3, 1.00, new Dictionary<string, string> { ["body"] = "C-dissimilar" }),
         };
-        _vector.SearchNamedAsync("docs_test-tenant", "body_vector", queryVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", queryVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(results.AsReadOnly());
 
         var centroids = new Dictionary<ulong, float[]>
@@ -2723,13 +2723,13 @@ public class ObjectSearchGrpcServiceTests
 
         var parentUlong = InvokeKeyToUlong(sharedParent);
         _vector.RetrieveNamedVectorAsync(
-                   Arg.Is<string>(c => c == "articles_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+                   Arg.Is<string>(c => c == "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
                .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
                {
                    [parentUlong] = UnitVector(), // same parent centroid (e0) for all three chunks
                });
         _vector.RetrieveNamedVectorAsync(
-                   Arg.Is<string>(c => c == "articles_chunks_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+                   Arg.Is<string>(c => c == "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
                .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
                {
                    [1] = UnitVector(),           // A: e0
@@ -2818,7 +2818,7 @@ public class ObjectSearchGrpcServiceTests
             new(2, 0.85, new Dictionary<string, string> { ["body"] = "B-near-duplicate" }),
             new(3, 1.00, new Dictionary<string, string> { ["body"] = "C-dissimilar" }),
         };
-        _vector.SearchNamedAsync("docs_test-tenant", "body_vector", queryVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", queryVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(results.AsReadOnly());
 
         var centroids = new Dictionary<ulong, float[]>
@@ -2857,7 +2857,7 @@ public class ObjectSearchGrpcServiceTests
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
                 new Dictionary<string, string> { ["title"] = $"a{i}" }))
             .ToList();
-        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(results.AsReadOnly());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -2884,7 +2884,7 @@ public class ObjectSearchGrpcServiceTests
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
                 new Dictionary<string, string> { ["body"] = $"a{i}" }))
             .ToList();
-        _vector.SearchNamedAsync("docs_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(results.AsReadOnly());
         _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
                .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
@@ -2913,7 +2913,7 @@ public class ObjectSearchGrpcServiceTests
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
                 new Dictionary<string, string> { ["text"] = $"c{i}", ["parent_id"] = Guid.NewGuid().ToString() }))
             .ToList();
-        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(results.AsReadOnly());
 
         var (writer, written) = MakeStream<ChunkSearchResponse>();
@@ -2944,7 +2944,7 @@ public class ObjectSearchGrpcServiceTests
         string? capturedCollection = null, capturedVectorName = null;
         List<ulong>? capturedIds = null;
         _vector.RetrieveNamedVectorAsync(
-                   Arg.Is<string>(c => c == "articles_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+                   Arg.Is<string>(c => c == "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
                .Returns(ci =>
                {
                    capturedCollection = (string)ci[0]!;
@@ -2953,7 +2953,7 @@ public class ObjectSearchGrpcServiceTests
                    return (IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>();
                });
         _vector.RetrieveNamedVectorAsync(
-                   Arg.Is<string>(c => c == "articles_chunks_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+                   Arg.Is<string>(c => c == "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
                .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
 
         var (writer, written) = MakeStream<ChunkSearchResponse>();
@@ -2962,9 +2962,9 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         await _vector.Received(1).RetrieveNamedVectorAsync(
-            Arg.Is<string>(c => c == "articles_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>());
+            Arg.Is<string>(c => c == "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>());
         capturedIds.Should().ContainSingle();                       // three chunks, one parent
-        capturedCollection.Should().Be("articles_test-tenant");     // the OBJECT collection
+        capturedCollection.Should().Be("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1");     // the OBJECT collection
         capturedVectorName.Should().Be("body_centroid");
         written.Should().HaveCount(3);
     }
@@ -3143,9 +3143,9 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         await _vector.Received(1).RetrieveNamedVectorAsync(
-            "articles_test-tenant", Arg.Any<IReadOnlyList<ulong>>(), "body_centroid");
+            "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>(), "body_centroid");
         await _vector.Received(1).RetrieveNamedVectorAsync(
-            "articles_chunks_test-tenant", Arg.Any<IReadOnlyList<ulong>>(), "body_vector");
+            "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>(), "body_vector");
         written.Should().HaveCount(2);
     }
 
@@ -3177,9 +3177,9 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         await _vector.Received(1).RetrieveNamedVectorAsync(
-            "articles_test-tenant", Arg.Any<IReadOnlyList<ulong>>(), "body_centroid");
+            "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>(), "body_centroid");
         await _vector.DidNotReceive().RetrieveNamedVectorAsync(
-            "articles_chunks_test-tenant", Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>());
+            "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>());
         written.Should().HaveCount(1);
     }
 
@@ -3224,13 +3224,13 @@ public class ObjectSearchGrpcServiceTests
 
         var parentUlong = InvokeKeyToUlong(sharedParent);
         _vector.RetrieveNamedVectorAsync(
-                   Arg.Is<string>(c => c == "articles_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+                   Arg.Is<string>(c => c == "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
                .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
                {
                    [parentUlong] = UnitVector(), // same parent centroid (e0) for all three chunks
                });
         _vector.RetrieveNamedVectorAsync(
-                   Arg.Is<string>(c => c == "articles_chunks_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+                   Arg.Is<string>(c => c == "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
                .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
                {
                    [1] = UnitVector(),           // A: e0
@@ -3272,10 +3272,10 @@ public class ObjectSearchGrpcServiceTests
                .Returns(results.AsReadOnly());
 
         _vector.RetrieveNamedVectorAsync(
-                   Arg.Is<string>(c => c == "articles_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+                   Arg.Is<string>(c => c == "articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
                .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
         _vector.RetrieveNamedVectorAsync(
-                   Arg.Is<string>(c => c == "articles_chunks_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+                   Arg.Is<string>(c => c == "articles_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
                .Returns<Task<IReadOnlyDictionary<ulong, float[]>>>(_ => throw new InvalidOperationException("qdrant down"));
 
         var (writer, written) = MakeStream<ChunkSearchResponse>();
@@ -3315,7 +3315,7 @@ public class ObjectSearchGrpcServiceTests
                 [SchemaDescriptor.TenantColumnName] = "test-tenant"
             });
 
-        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { vectorResult }.AsReadOnly());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -3463,8 +3463,8 @@ public class ObjectSearchGrpcServiceTests
 
     private void StubChunkDensity(ulong objectCount, ulong chunkCount)
     {
-        _vector.GetPointCountAsync("docs_test-tenant").Returns(objectCount);
-        _vector.GetPointCountAsync("docs_chunks_test-tenant").Returns(chunkCount);
+        _vector.GetPointCountAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1").Returns(objectCount);
+        _vector.GetPointCountAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1").Returns(chunkCount);
     }
 
     private static VectorSearchResult ChunkOf(ulong id, double score, string parentKey, string text) =>
@@ -3488,7 +3488,7 @@ public class ObjectSearchGrpcServiceTests
             });
 
     private void StubObjectSearchReturns(params VectorSearchResult[] results) =>
-        _vector.SearchNamedAsync("docs_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(results.ToList().AsReadOnly());
 
     // Every fallback must run the unmodified head path AND leave the chunks collection untouched:
@@ -3496,9 +3496,9 @@ public class ObjectSearchGrpcServiceTests
     private async Task AssertHeadPathRanAndChunksDidNotAsync()
     {
         await _vector.Received(1).SearchNamedAsync(
-            "docs_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+            "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
         await _vector.DidNotReceive().SearchNamedAsync(
-            "docs_chunks_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+            "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
     }
 
     // 10 objects / 13 chunks → ceil(1.3) = 2 chunks per doc, so top_k = 10 asks Qdrant for
@@ -3515,11 +3515,11 @@ public class ObjectSearchGrpcServiceTests
 
         var parents = Enumerable.Range(1, 12).Select(i => $"parent-{i}").ToList();
         var chunks  = parents.Select((p, i) => ChunkOf((ulong)(i + 1), 0.99 - i * 0.01, p, $"c{i + 1}")).ToList();
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(chunks.AsReadOnly());
 
         IReadOnlyList<ulong>? hydrated = null;
-        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Do<IReadOnlyList<ulong>>(ids => hydrated = ids))
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Do<IReadOnlyList<ulong>>(ids => hydrated = ids))
                .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads(parents));
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -3528,9 +3528,9 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         await _vector.Received(1).SearchNamedAsync(
-            "docs_chunks_test-tenant", "body_vector", fakeVector, 80UL, Arg.Any<Filter>());
+            "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, 80UL, Arg.Any<Filter>());
         await _vector.DidNotReceive().SearchNamedAsync(
-            "docs_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+            "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
 
         hydrated.Should().Equal(parents.Take(10).Select(InvokeKeyToUlong));
         written.Select(w => w.Score).Should().Equal(chunks.Take(10).Select(c => (float)c.Score));
@@ -3548,13 +3548,13 @@ public class ObjectSearchGrpcServiceTests
         StubNoCentroids();
 
         var parents = new[] { "parent-1", "parent-2" };
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>
                {
                    ChunkOf(1, 0.90, parents[0], "c1"),
                    ChunkOf(2, 0.80, parents[1], "c2")
                }.AsReadOnly());
-        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>())
                .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads(parents));
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -3563,7 +3563,7 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         await _vector.Received(1).SearchNamedAsync(
-            "docs_chunks_test-tenant", "body_vector", fakeVector, 440UL, Arg.Any<Filter>());
+            "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, 440UL, Arg.Any<Filter>());
         written.Should().HaveCount(2);
     }
 
@@ -3581,7 +3581,7 @@ public class ObjectSearchGrpcServiceTests
         StubNoCentroids();
 
         const string parent = "parent-1";
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>
                {
                    ChunkOf(1, 0.9, parent, "best"),
@@ -3589,7 +3589,7 @@ public class ObjectSearchGrpcServiceTests
                }.AsReadOnly());
 
         IReadOnlyList<ulong>? hydrated = null;
-        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Do<IReadOnlyList<ulong>>(ids => hydrated = ids))
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Do<IReadOnlyList<ulong>>(ids => hydrated = ids))
                .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads([parent]));
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -3616,7 +3616,7 @@ public class ObjectSearchGrpcServiceTests
         StubNoCentroids();
 
         var parents = new[] { "parent-1", "parent-2", "parent-3" };
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>
                {
                    ChunkOf(1, 0.9, parents[0], "c1"),
@@ -3624,7 +3624,7 @@ public class ObjectSearchGrpcServiceTests
                    ChunkOf(3, 0.7, parents[2], "c3")
                }.AsReadOnly());
         // parent-2 vanished between the chunk search and the hydration retrieve.
-        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>())
                .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
                    ParentPayloads([parents[0], parents[2]]));
 
@@ -3792,7 +3792,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(DualAnnotatedSchema());
 
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(UnitVector());
-        _vector.GetPointCountAsync("docs_test-tenant")
+        _vector.GetPointCountAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1")
                .Returns<ulong>(_ => throw new RpcException(new Status(StatusCode.Unavailable, "qdrant down")));
         StubNoCentroids();
         StubObjectSearchReturns();
@@ -3865,9 +3865,9 @@ public class ObjectSearchGrpcServiceTests
         StubNoCentroids();
 
         const string parent = "parent-1";
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
-        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>())
                .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads([parent]));
 
         var (writer, _) = MakeStream<SearchResponse>();
@@ -3903,9 +3903,9 @@ public class ObjectSearchGrpcServiceTests
         StubNoCentroids();
 
         const string parent = "parent-1";
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
-        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>())
                .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
                    new Dictionary<ulong, IReadOnlyDictionary<string, string>>
                    {
@@ -3944,9 +3944,9 @@ public class ObjectSearchGrpcServiceTests
         StubChunkDensity(objectCount: 10, chunkCount: 13);
 
         const string parent = "parent-1";
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
-        _vector.RetrieveNamedVectorAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>(), "body_centroid")
+        _vector.RetrieveNamedVectorAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>(), "body_centroid")
                .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
                {
                    [InvokeKeyToUlong(parent)] = OrthogonalUnitVector()
@@ -3990,7 +3990,7 @@ public class ObjectSearchGrpcServiceTests
         var fakeVector = UnitVector();
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
         StubChunkDensity(objectCount: 10, chunkCount: 13);
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns<Task<IReadOnlyList<VectorSearchResult>>>(
                    _ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
 
@@ -4002,7 +4002,7 @@ public class ObjectSearchGrpcServiceTests
         written.Should().BeEmpty();
         await _vector.DidNotReceive().RetrievePayloadAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>());
         await _vector.DidNotReceive().SearchNamedAsync(
-            "docs_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+            "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
     }
 
     // Spec §3.6: hydration failing with anything other than NotFound is a client-visible failure,
@@ -4019,9 +4019,9 @@ public class ObjectSearchGrpcServiceTests
         StubNoCentroids();
 
         const string parent = "parent-1";
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
-        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>())
                .Returns<Task<IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>>>(
                    _ => throw new RpcException(new Status(StatusCode.Internal, "boom")));
 
@@ -4049,9 +4049,9 @@ public class ObjectSearchGrpcServiceTests
         StubNoCentroids();
 
         const string parent = "parent-1";
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { ChunkOf(1, 0.9, parent, "c1") }.AsReadOnly());
-        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>())
                .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads([parent]));
 
         var (writer, _) = MakeStream<SearchResponse>();
@@ -4060,9 +4060,9 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         await _vector.Received(1).SearchNamedAsync(
-            "docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>());
+            "docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>());
         await _vector.DidNotReceive().SearchNamedAsync(
-            "docs_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+            "docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
     }
 
     // Spec §3.5.1: a fused chunk whose payload carries no parent_id cannot be collapsed to a parent
@@ -4082,11 +4082,11 @@ public class ObjectSearchGrpcServiceTests
         const string parent = "parent-1";
         var withParent    = ChunkOf(1, 0.9, parent, "c1");
         var withoutParent = new VectorSearchResult(2, 0.8, new Dictionary<string, string> { ["text"] = "c2" });
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { withParent, withoutParent }.AsReadOnly());
 
         IReadOnlyList<ulong>? hydrated = null;
-        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Do<IReadOnlyList<ulong>>(ids => hydrated = ids))
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Do<IReadOnlyList<ulong>>(ids => hydrated = ids))
                .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)ParentPayloads([parent]));
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -4114,9 +4114,9 @@ public class ObjectSearchGrpcServiceTests
 
         var parents = Enumerable.Range(1, 3).Select(i => $"parent-{i}").ToList();
         var chunks  = parents.Select((p, i) => ChunkOf((ulong)(i + 1), 0.9 - i * 0.1, p, $"c{i + 1}")).ToList();
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(chunks.AsReadOnly());
-        _vector.RetrievePayloadAsync("docs_test-tenant", Arg.Any<IReadOnlyList<ulong>>())
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>())
                .Returns<Task<IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>>>(
                    _ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
 
@@ -4183,7 +4183,7 @@ public class ObjectSearchGrpcServiceTests
                 ["publishedAt"] = now.ToString("O")
             })
         };
-        _vector.SearchNamedAsync("docs_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(results.AsReadOnly());
 
         var (writer, written) = MakeStream<ChunkSearchResponse>();

@@ -25,6 +25,10 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
     public IntelligenceVectorService Service { get; private set; } = null!;
     public IntelligenceCollectionManager CollectionManager { get; private set; } = null!;
 
+    /// <summary>Raw client, exposed only so PingAsync's no-side-effect tests can list collections
+    /// independently of the manager under test.</summary>
+    public QdrantClient Client { get; private set; } = null!;
+
     public async Task InitializeAsync()
     {
         await _container.StartAsync();
@@ -33,6 +37,7 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
         var mappedPort = _container.GetMappedPublicPort(GrpcPort);
 
         var qdrantClient  = new QdrantClient(host, mappedPort, https: false);
+        Client            = qdrantClient;
         Service           = new IntelligenceVectorService(qdrantClient);
         CollectionManager = new IntelligenceCollectionManager(qdrantClient, "test-api-key", NullLogger<IntelligenceCollectionManager>.Instance);
     }
@@ -46,10 +51,34 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
 {
     private readonly IntelligenceVectorService _svc = fixture.Service;
     private readonly IntelligenceCollectionManager _mgr = fixture.CollectionManager;
+    private readonly QdrantClient _rawClient = fixture.Client;
 
     // Each test gets its own collection name to avoid state leakage
     private static string UniqueName() =>
         "col_" + Guid.NewGuid().ToString("N")[..8];
+
+    // ── PingAsync (CSR finding #7 — /health's Qdrant check must not write) ────
+
+    [Fact]
+    public async Task PingAsync_ReturnsTrue_AgainstLiveInstance()
+    {
+        var result = await _mgr.PingAsync();
+
+        result.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PingAsync_CreatesNoCollection()
+    {
+        var before = (await _rawClient.ListCollectionsAsync()).ToList();
+
+        await _mgr.PingAsync();
+
+        var after = (await _rawClient.ListCollectionsAsync()).ToList();
+        after.Should().BeEquivalentTo(before,
+            "PingAsync is a read (ListCollections) — unlike the EnsureCollectionAsync call " +
+            "/health used before CSR finding #7, it must never create a collection as a side effect");
+    }
 
     // ── EnsureCollectionAsync ─────────────────────────────────────────────────
 
