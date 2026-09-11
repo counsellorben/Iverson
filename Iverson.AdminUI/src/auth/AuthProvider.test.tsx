@@ -3,12 +3,45 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const signinRedirect = vi.fn();
 const useAuthMock = vi.fn();
+const capturedOidcProps: Record<string, unknown>[] = [];
 
 vi.mock("react-oidc-context", () => ({
   useAuth: () => useAuthMock(),
+  AuthProvider: (props: { children?: React.ReactNode }) => {
+    capturedOidcProps.push(props);
+    return props.children;
+  },
 }));
 
-import { AuthGate } from "./AuthProvider";
+import { AuthGate, AuthProvider } from "./AuthProvider";
+
+describe("AuthProvider", () => {
+  beforeEach(() => {
+    capturedOidcProps.length = 0;
+  });
+
+  it("does not request the offline_access scope, so no refresh token is ever issued or stored", () => {
+    render(
+      <AuthProvider>
+        <div>child</div>
+      </AuthProvider>
+    );
+
+    expect(capturedOidcProps).toHaveLength(1);
+    const scope = capturedOidcProps[0].scope as string;
+    expect(scope.split(" ")).not.toContain("offline_access");
+  });
+
+  it("disables automaticSilentRenew, since a hidden-iframe renewal would be blocked by the CSP anyway", () => {
+    render(
+      <AuthProvider>
+        <div>child</div>
+      </AuthProvider>
+    );
+
+    expect(capturedOidcProps[0].automaticSilentRenew).toBe(false);
+  });
+});
 
 describe("AuthGate", () => {
   beforeEach(() => {
