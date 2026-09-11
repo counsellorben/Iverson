@@ -89,5 +89,5 @@ spec:
           configMap:
             name: {{ .Release.Name }}-authentik-blueprints
         - name: blueprints-service-clients
-          configMap:
-            name: {{ .Release.Name }}-authentik-blueprints-service-clients
+          secret:
+            secretName: {{ .Release.Name }}-authentik-blueprints-service-clients

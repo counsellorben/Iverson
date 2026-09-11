@@ -154,8 +154,14 @@ spec:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-admin-automation-client, key: client-id }
             - name: Authentication__ActingUser__Authority
               value: "http://{{ .Release.Name }}-authentik:9000/application/o/iverson-api/"
-            {{- if .Values.global.provisionTestIdentities }}
+            # Production acting-user audience -- ungated so it renders on every profile. Without
+            # this, ActingUser:ValidAudiences binds empty with ValidateAudience=true and every
+            # acting-user call returns Unauthenticated on production profiles.
             - name: Authentication__ActingUser__ValidAudiences__0
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-acting-user-client, key: client-id }
+            {{- if .Values.global.provisionTestIdentities }}
+            - name: Authentication__ActingUser__ValidAudiences__1
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-loadtest-human-client, key: client-id }
             {{- end }}
