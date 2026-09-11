@@ -23,7 +23,13 @@ const oidcConfig = {
   client_id: config.oidcClientId,
   redirect_uri: `${window.location.origin}${import.meta.env.DEV ? "" : "/admin"}/callback`,
   post_logout_redirect_uri: `${window.location.origin}${import.meta.env.DEV ? "" : "/admin"}/`,
-  scope: "openid profile email",
+  // CSR round-2 finding #16 follow-up: request groups/tenant_id so the id_token actually
+  // carries the claims a tenant-aware admin console needs (verified live 2026-09-11 — without
+  // these scopes the claims come back null even though the provider supports them; the
+  // .well-known/openid-configuration scopes_supported list already included both). Still
+  // deliberately no `offline_access` — see the comment above; that decision is unrelated to
+  // and unaffected by this addition.
+  scope: "openid profile email groups tenant_id",
   automaticSilentRenew: false,
 };
 
