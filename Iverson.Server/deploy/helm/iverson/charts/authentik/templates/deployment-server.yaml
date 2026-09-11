@@ -67,6 +67,11 @@ spec:
             - name: AUTHENTIK_POSTGRESQL__PASSWORD
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-postgres, key: password }
+            # CSR round-2 finding #11: Redis now requires auth (charts/redis's --requirepass) —
+            # this must match the password in that Secret exactly.
+            - name: AUTHENTIK_REDIS__PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-redis, key: password }
           resources:
             requests:
               cpu: {{ .Values.resources.server.requests.cpu | quote }}
@@ -101,6 +106,11 @@ spec:
             - name: AUTHENTIK_POSTGRESQL__PASSWORD
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-postgres, key: password }
+            # CSR round-2 finding #11: Redis now requires auth (charts/redis's --requirepass) —
+            # this must match the password in that Secret exactly.
+            - name: AUTHENTIK_REDIS__PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-redis, key: password }
             - name: AUTHENTIK_BOOTSTRAP_PASSWORD
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: bootstrap-password }

@@ -1,8 +1,7 @@
 terraform {
   required_providers {
-    aws  = { source = "hashicorp/aws", version = "~> 5.0" }
-    tls  = { source = "hashicorp/tls", version = "~> 4.0" }  # fetches the EKS OIDC issuer's cert thumbprint for IRSA
-    http = { source = "hashicorp/http", version = "~> 3.4" } # fetches the pinned AWS Load Balancer Controller IAM policy JSON
+    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+    tls = { source = "hashicorp/tls", version = "~> 4.0" } # fetches the EKS OIDC issuer's cert thumbprint for IRSA
   }
 }
 
@@ -365,16 +364,24 @@ resource "aws_iam_role" "lb_controller_irsa" {
 # The original plan never attached an IAM policy for the AWS Load Balancer
 # Controller at all (only cluster-autoscaler-adjacent worker policies) —
 # without one, it cannot actually create ALBs/NLBs regardless of IRSA.
-# The controller's own repo publishes the exact policy JSON
-# (AWSLoadBalancerControllerIAMPolicy) — fetch and pin it here rather than
-# reproducing a large, version-sensitive policy document inline.
-data "http" "lb_controller_policy" {
-  url = "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.9.0/docs/install/iam_policy.json"
-}
-
+#
+# CSR round-2 finding #12: this previously fetched the policy at `terraform
+# apply` time from a mutable git tag ref (raw.githubusercontent.com/.../v2.9.0/...)
+# with no checksum — a tag can be force-moved, and even absent that, `apply`
+# depended on a live network fetch of un-vetted content with no integrity check
+# for a resource that grants real IAM permissions. Fixed by committing a local
+# copy of the controller's own published policy JSON
+# (AWSLoadBalancerControllerIAMPolicy) under this module instead: no runtime
+# fetch, no floating ref, reviewable in the same diff as any other change here.
+# files/aws-load-balancer-controller-iam-policy-v2.9.0.json was captured from
+# https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.9.0/docs/install/iam_policy.json
+# on 2026-09-10 (tag v2.9.0 resolves to git tag object 997a6680980013c34cd91f6b5ff12c2dfedf6af2
+# as of that date; sha256 of the committed file: e4cc3dc54800481aaa1671847db4ccef1b45414bcbab87a44ea3a7b0f2de5887).
+# Bumping the controller version means deliberately replacing this file (and updating this
+# comment), never re-pointing a live fetch.
 resource "aws_iam_policy" "lb_controller" {
   name   = "${var.cluster_name}-lb-controller-policy"
-  policy = data.http.lb_controller_policy.response_body
+  policy = file("${path.module}/files/aws-load-balancer-controller-iam-policy-v2.9.0.json")
 }
 
 resource "aws_iam_role_policy_attachment" "lb_controller_irsa" {

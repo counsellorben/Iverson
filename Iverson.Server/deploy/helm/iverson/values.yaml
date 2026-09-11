@@ -31,15 +31,32 @@ global:
   # would let the pulled model and the requested model drift apart, which fails at runtime
   # with a 404 from Ollama on every generative call.
   generativeModel: "qwen2.5:3b"
+  # Pins the model-registry pull above (CSR round-2 finding #6): the ollama subchart's
+  # pull-model initContainer pulls the floating tag "qwen2.5:3b" (registry.ollama.ai has no
+  # supported CLI/API syntax to pull by digest directly — Ollama's own model-name parser
+  # documents digest support as removed pending a future re-add), so instead it verifies the
+  # digest the registry actually served against this pinned value and refuses to start on a
+  # mismatch. This is the manifest digest reported by the registry for "qwen2.5:3b" as of
+  # 2026-09-10 (also the short ID `ollama list` reports locally): confirmed against
+  # registry.ollama.ai/v2/library/qwen2.5/manifests/3b (Ollama-Content-Digest response
+  # header). Bump this deliberately if the upstream tag is ever intentionally re-pointed.
+  generativeModelDigest: "357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b"
   # Every entry is served by the tei subchart (one StatefulSet + headless Service per entry). `slug`
   # is the DNS-safe suffix of that entry's objects: <release>-tei-<slug>. The prefix keys stay
   # three-state (omitted = derive from the model family; "" = deliberately none).
   # This list must still contain every model any REGISTERED type's stored `_iverson_schema`
   # row names, not merely the active one — under TEI, trimming a still-carried entry now
   # surfaces as the API's /info identity guard, not an Ollama 404.
+  #
+  # `revision` pins the model-registry pull (CSR round-2 finding #6): TEI's `--model-id` names
+  # only org/repo, a floating pointer the Hub owner can repoint at any time — `revision` passes
+  # TEI's own `--revision` flag (an exact commit SHA, not a branch/tag) so the weights actually
+  # served are the ones this value names. Confirmed against
+  # huggingface.co/api/models/<name> ("sha" field) as of 2026-09-10.
   embeddingModels:
     - name: BAAI/bge-base-en-v1.5
       slug: bge-base
+      revision: a5beb1e3e68b9ab74eb54cfd186867f64f240e1a
   # The default model api and worker request for any registered type that does not declare its
   # own. Must name an entry above; a mismatch renders cleanly and surfaces as an identity mismatch
   # from the backend's /info naming the unpulled model on the first embed call, not at deploy.
