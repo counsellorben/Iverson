@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Iverson.Api.Tenancy;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Xunit;
 
@@ -55,34 +56,40 @@ public sealed class AuthentikAdminClientTests
         }
     }
 
-    private static IdpAdminClient CreateClient(FakeHttpMessageHandler handler, out FakeHttpMessageHandler exposedHandler)
+    private static IdpAdminClient CreateClient(FakeHttpMessageHandler handler, out FakeHttpMessageHandler exposedHandler) =>
+        CreateClient(handler, out exposedHandler, out _);
+
+    private static IdpAdminClient CreateClient(
+        FakeHttpMessageHandler handler,
+        out FakeHttpMessageHandler exposedHandler,
+        out ILogger<IdpAdminClient> logger)
     {
         exposedHandler = handler;
         var factory = Substitute.For<IHttpClientFactory>();
         factory
             .CreateClient(IdpAdminClient.HttpClientName)
             .Returns(_ => new HttpClient(handler) { BaseAddress = new Uri("http://authentik.local") });
-        return new IdpAdminClient(factory);
+        logger = Substitute.For<ILogger<IdpAdminClient>>();
+        return new IdpAdminClient(factory, logger);
     }
 
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string json) =>
         new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
     [Fact]
-    public async Task CreateUserAsync_ResolvesGroupThenCreatesUserThenSetsPassword()
+    public async Task CreateUserAsync_ResolvesGroupThenCreatesUserThenTriggersRecovery()
     {
         var groupLookup = JsonResponse(HttpStatusCode.OK,
             """{"pagination":{"next":0},"results":[{"pk":"11111111-1111-1111-1111-111111111111","name":"tenant-admins"}]}""");
         var createUser = JsonResponse(HttpStatusCode.Created,
             """{"pk":42,"username":"new-user","email":"new-user@example.invalid"}""");
-        var setPassword = JsonResponse(HttpStatusCode.OK, "{}");
+        var recovery = JsonResponse(HttpStatusCode.OK, """{"link":"http://authentik.local/if/flow/recovery/abc123"}""");
 
-        var sut = CreateClient(new FakeHttpMessageHandler(groupLookup, createUser, setPassword), out var handler);
+        var sut = CreateClient(new FakeHttpMessageHandler(groupLookup, createUser, recovery), out var handler);
 
         var userId = await sut.CreateUserAsync(
             "new-user",
             "new-user@example.invalid",
-            "s3cret!",
             "tenant-a",
             ["tenant-admins"]);
 
@@ -104,11 +111,30 @@ public sealed class AuthentikAdminClientTests
         }
 
         handler.Requests[2].Method.Should().Be(HttpMethod.Post);
-        handler.Requests[2].RequestUri!.AbsolutePath.Should().Be("/api/v3/core/users/42/set_password/");
-        using (var body = JsonDocument.Parse(handler.RequestBodies[2]!))
-        {
-            body.RootElement.GetProperty("password").GetString().Should().Be("s3cret!");
-        }
+        handler.Requests[2].RequestUri!.AbsolutePath.Should().Be("/api/v3/core/users/42/recovery/");
+    }
+
+    /// <summary>
+    /// CSR finding #4 regression coverage: CreateUserAsync must never call set_password. This
+    /// asserts on the full sequence of paths hit — including that recovery/ is the only POST
+    /// after user-creation — so a future change that reintroduces set_password (even alongside
+    /// a recovery call) fails this test.
+    /// </summary>
+    [Fact]
+    public async Task CreateUserAsync_NeverCallsSetPassword()
+    {
+        var groupLookup = JsonResponse(HttpStatusCode.OK,
+            """{"pagination":{"next":0},"results":[{"pk":"11111111-1111-1111-1111-111111111111","name":"tenant-admins"}]}""");
+        var createUser = JsonResponse(HttpStatusCode.Created,
+            """{"pk":42,"username":"new-user","email":"new-user@example.invalid"}""");
+        var recovery = JsonResponse(HttpStatusCode.OK, """{"link":"http://authentik.local/if/flow/recovery/abc123"}""");
+
+        var sut = CreateClient(new FakeHttpMessageHandler(groupLookup, createUser, recovery), out var handler);
+
+        await sut.CreateUserAsync("new-user", "new-user@example.invalid", "tenant-a", ["tenant-admins"]);
+
+        handler.Requests.Should().NotContain(r => r.RequestUri!.AbsolutePath.Contains("set_password"));
+        handler.RequestBodies.Should().NotContain(b => b != null && b.Contains("password"));
     }
 
     [Fact]
@@ -116,16 +142,35 @@ public sealed class AuthentikAdminClientTests
     {
         var createUser = JsonResponse(HttpStatusCode.Created,
             """{"pk":7,"username":"u","email":"u@example.invalid"}""");
-        var setPassword = JsonResponse(HttpStatusCode.OK, "{}");
+        var recovery = JsonResponse(HttpStatusCode.OK, """{"link":"http://authentik.local/if/flow/recovery/xyz"}""");
 
-        var sut = CreateClient(new FakeHttpMessageHandler(createUser, setPassword), out var handler);
+        var sut = CreateClient(new FakeHttpMessageHandler(createUser, recovery), out var handler);
 
-        var userId = await sut.CreateUserAsync("u", "u@example.invalid", "pw", "tenant-b", []);
+        var userId = await sut.CreateUserAsync("u", "u@example.invalid", "tenant-b", []);
 
         userId.Should().Be("7");
         handler.Requests.Should().HaveCount(2);
         using var body = JsonDocument.Parse(handler.RequestBodies[0]!);
         body.RootElement.GetProperty("groups").GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CreateUserAsync_RecoveryResponseMissingLink_LogsWarningButStillReturnsUserId()
+    {
+        var createUser = JsonResponse(HttpStatusCode.Created, """{"pk":7,"username":"u","email":"u@example.invalid"}""");
+        var recovery = JsonResponse(HttpStatusCode.OK, "{}"); // no "link" property
+
+        var sut = CreateClient(new FakeHttpMessageHandler(createUser, recovery), out _, out var logger);
+
+        var userId = await sut.CreateUserAsync("u", "u@example.invalid", "tenant-b", []);
+
+        userId.Should().Be("7");
+        logger.Received(1).Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("recovery link response")),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     [Fact]
@@ -401,12 +446,12 @@ public sealed class AuthentikAdminClientTests
         var groupLookup = JsonResponse(HttpStatusCode.OK,
             """{"pagination":{"next":0},"results":[{"pk":"11111111-1111-1111-1111-111111111111","name":"tenant-admins"}]}""");
         var createUser = JsonResponse(HttpStatusCode.Created, """{"pk":42,"username":"new-user"}""");
-        var setPassword = new HttpResponseMessage(HttpStatusCode.NoContent);
-        var sut = CreateClient(new FakeHttpMessageHandler(groupLookup, createUser, setPassword), out var handler);
+        var recovery = JsonResponse(HttpStatusCode.OK, """{"link":"http://authentik.local/if/flow/recovery/abc"}""");
+        var sut = CreateClient(new FakeHttpMessageHandler(groupLookup, createUser, recovery), out var handler);
 
-        await sut.CreateUserAsync("new-user", "new-user@example.invalid", "pw", "tenant-1", ["tenant-admins"]);
+        await sut.CreateUserAsync("new-user", "new-user@example.invalid", "tenant-1", ["tenant-admins"]);
 
-        handler.BodyFraming.Should().HaveCount(2); // create user + set password
+        handler.BodyFraming.Should().HaveCount(2); // create user + trigger recovery
         foreach (var (uri, contentLength, chunked) in handler.BodyFraming)
         {
             contentLength.Should().NotBeNull($"{uri} must carry Content-Length, not be sent chunked");

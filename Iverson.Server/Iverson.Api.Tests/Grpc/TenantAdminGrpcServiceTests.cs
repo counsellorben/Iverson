@@ -60,7 +60,6 @@ public class TenantAdminGrpcServiceTests
             .CreateUserAsync(
                 "bob",
                 "bob@acme.example",
-                "correct-horse-battery-staple",
                 "acme",
                 Arg.Is<IReadOnlyList<string>>(g => g.Count == 0))
             .Returns(Task.FromResult("user-1"));
@@ -74,7 +73,6 @@ public class TenantAdminGrpcServiceTests
             .CreateUserAsync(
                 "bob",
                 "bob@acme.example",
-                "correct-horse-battery-staple",
                 "acme",
                 Arg.Is<IReadOnlyList<string>>(g => g.Count == 0));
     }
@@ -94,7 +92,6 @@ public class TenantAdminGrpcServiceTests
                 Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),
-                Arg.Any<string>(),
                 Arg.Any<IReadOnlyList<string>>());
     }
 
@@ -110,7 +107,6 @@ public class TenantAdminGrpcServiceTests
         ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
         await _authentikAdminClient.DidNotReceive()
             .CreateUserAsync(
-                Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),

@@ -55,7 +55,6 @@ public class TenantLifecycleGrpcServiceTests
         await _authentikAdminClient.Received(1).CreateUserAsync(
             "acme-admin",
             "admin@acme.example",
-            "correct-horse-battery-staple",
             "acme",
             Arg.Is<IReadOnlyList<string>>(g => g.Contains("tenant-admins")));
         await _tenantRepository.DidNotReceive().DeleteAsync(Arg.Any<string>());
@@ -88,7 +87,6 @@ public class TenantLifecycleGrpcServiceTests
                 Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),
-                Arg.Any<string>(),
                 Arg.Any<IReadOnlyList<string>>());
     }
 
@@ -106,7 +104,6 @@ public class TenantLifecycleGrpcServiceTests
         var authentikFailure = new InvalidOperationException("Authentik is unreachable");
         _authentikAdminClient
             .CreateUserAsync(
-                Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),

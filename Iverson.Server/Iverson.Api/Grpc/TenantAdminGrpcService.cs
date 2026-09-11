@@ -24,10 +24,13 @@ public sealed class TenantAdminGrpcService(
     public override async Task<TenantUser> InviteUser(InviteUserRequest request, ServerCallContext context)
     {
         var tenantId = await RequireActiveTenantAsync(context);
+        // request.InitialPassword is intentionally unused: CSR finding #4 remediation replaced
+        // password-based onboarding with Authentik's own recovery-link flow (see
+        // IdpAdminClient.CreateUserAsync). The proto field stays on the wire — removing it
+        // ripples into all five SDKs — and is tracked as a follow-up proto cleanup.
         var userId = await authentikAdminClient.CreateUserAsync(
             request.Username,
             request.Email,
-            request.InitialPassword,
             tenantId,
             []);
         auditLog.AdminOperation(context.GetHttpContext().User, "InviteUser", request.Username);

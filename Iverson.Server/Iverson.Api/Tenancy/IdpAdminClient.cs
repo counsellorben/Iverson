@@ -8,10 +8,18 @@ namespace Iverson.Api.Tenancy;
 /// IHttpClientFactory + named-client convention as Iverson.Embeddings.EmbeddingService.
 ///
 /// CAVEAT (carried over from design/plan review): the exact JSON field names used below
-/// (attributes, groups, set_password, is_active, and the group add_user/remove_user
-/// endpoints) are grounded in Authentik's documented DRF conventions and public API docs,
-/// but have NOT been verified against a live instance or the /api/v3/schema/ OpenAPI
-/// document. Re-verify against a running Authentik before production use.
+/// (attributes, groups, is_active, and the group add_user/remove_user endpoints) are
+/// grounded in Authentik's documented DRF conventions and public API docs, but have NOT
+/// been verified against a live instance or the /api/v3/schema/ OpenAPI document.
+/// Re-verify against a running Authentik before production use.
+///
+/// CSR finding #4 remediation: CreateUserAsync no longer posts a caller-supplied password to
+/// Authentik's set_password endpoint. Instead it POSTs /api/v3/core/users/{id}/recovery/,
+/// which Authentik's docs describe as returning a one-time recovery link
+/// (<c>{"link": "..."}</c>) the user follows to set their own password directly against
+/// Authentik. That specific endpoint shape is, like the set_password endpoint it replaces,
+/// UNVERIFIED against a live instance or the OpenAPI schema — re-verify it too before
+/// production use.
 ///
 /// The user-list pagination envelope IS now verified (2026-09-10, against the compose
 /// Authentik at localhost:9000, image ghcr.io/goauthentik/server:2026.5.3):
@@ -25,14 +33,13 @@ namespace Iverson.Api.Tenancy;
 /// recognise (missing "pagination", missing/non-numeric "next", or a negative "next") rather
 /// than treating an unrecognised shape as end-of-list.
 /// </summary>
-public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory) : IIdpAdminClient
+public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger<IdpAdminClient> logger) : IIdpAdminClient
 {
     public const string HttpClientName = "iverson.authentik";
 
     public async Task<string> CreateUserAsync(
         string username,
         string email,
-        string password,
         string tenantId,
         IReadOnlyList<string> groups)
     {
@@ -59,12 +66,53 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory) : IIdpA
         using var createdDoc = await JsonDocument.ParseAsync(createdStream);
         var userId = ReadPk(createdDoc.RootElement);
 
-        using var setPasswordResponse = await client.PostAsync(
-            $"/api/v3/core/users/{userId}/set_password/",
-            JsonBody(new { password }));
-        await EnsureSuccessWithBodyAsync(setPasswordResponse, "set password");
+        await TriggerPasswordRecoveryAsync(client, userId);
 
         return userId;
+    }
+
+    /// <summary>
+    /// CSR finding #4 remediation: the platform must never transmit a user's password. Rather
+    /// than POSTing one to Authentik's set_password endpoint, this triggers Authentik's own
+    /// recovery flow — POST /api/v3/core/users/{id}/recovery/ — which Authentik's docs describe
+    /// as minting a one-time link the user follows to set their own password directly against
+    /// Authentik, never through this platform. See class remarks: this endpoint's shape is
+    /// unverified against a live instance.
+    ///
+    /// The link is surfaced via a log line, not the gRPC response: neither InviteUser's
+    /// TenantUser nor CreateTenant's Tenant response message (tenant_admin.proto /
+    /// tenant_lifecycle.proto) has a field for it, and adding one ripples into all five SDKs —
+    /// out of scope for this change and tracked as a follow-up. Until that lands, an inviting
+    /// admin retrieves the link from server logs.
+    /// </summary>
+    private async Task TriggerPasswordRecoveryAsync(HttpClient client, string userId)
+    {
+        using var recoveryResponse = await client.PostAsync(
+            $"/api/v3/core/users/{userId}/recovery/",
+            JsonBody(new { }));
+        await EnsureSuccessWithBodyAsync(recoveryResponse, "create recovery link");
+
+        await using var recoveryStream = await recoveryResponse.Content.ReadAsStreamAsync();
+        using var recoveryDoc = await JsonDocument.ParseAsync(recoveryStream);
+
+        if (recoveryDoc.RootElement.TryGetProperty("link", out var linkProp) &&
+            linkProp.ValueKind == JsonValueKind.String)
+        {
+            logger.LogInformation(
+                "[IdpAdminClient] recovery link created for new user {UserId}: {RecoveryLink}",
+                userId, linkProp.GetString());
+        }
+        else
+        {
+            // Not fatal: the user was already created successfully. But an admin has no other
+            // way to learn about this short of reading Authentik's own logs/UI, so this needs
+            // to be loud.
+            logger.LogWarning(
+                "[IdpAdminClient] recovery link response for new user {UserId} did not contain " +
+                "a \"link\" string property; the user has no way to set a password until an " +
+                "admin creates one manually in Authentik.",
+                userId);
+        }
     }
 
     public async Task<IEnumerable<IdpUser>> ListUsersByTenantAsync(string tenantId)

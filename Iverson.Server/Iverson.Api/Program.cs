@@ -249,38 +249,15 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITenantStatusCache, Iverson.Api.Tenancy.TenantStatusCache>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
-// CSR finding #4: IdpAdminClient posts a cleartext user password to Authentik's set_password
-// endpoint over whatever transport this base URL specifies. In-cluster plaintext is a deliberate,
-// accepted design decision for local/laptop profiles (deploy/helm/iverson/values.yaml,
-// values-local.yaml, values-laptop.yaml — Authentik has no externally reachable endpoint there),
-// so this does NOT force https on the in-cluster hop universally. It fails closed only when the
-// deployment itself is a production/https one.
-//
-// Signal: Authentication:ExternalIssuer's scheme. deployment.yaml renders it as
-// "{{ .Values.global.externalScheme }}://authentik.{{ .Values.global.ingressHost }}/...", i.e. it
-// is LITERALLY global.externalScheme baked into a URI — http on values.yaml/values-local.yaml/
-// values-laptop.yaml, https on values-aws.yaml/values-azure.yaml/values-gcp.yaml. This is the one
-// signal already wired into every deployed profile that tells "cloud/production" apart from
-// "local" — unlike ASPNETCORE_ENVIRONMENT, which this chart never sets (so
-// builder.Environment.IsDevelopment() reports Production for every containerized profile,
-// cloud or local, and cannot distinguish them).
+// CSR finding #4: IdpAdminClient used to post a cleartext user password to Authentik's
+// set_password endpoint over whatever transport this base URL specifies, which is what the
+// startup guard formerly here existed to fail closed against for production/https profiles. The
+// deeper fix (see IdpAdminClient.CreateUserAsync) removed the password transmission entirely —
+// the platform never sends a user password to Authentik at all — so that guard's entire
+// justification is gone. The remaining admin-token-over-plaintext-in-cluster hop is the accepted
+// architecture decision this deployment already makes elsewhere, compensated by default-deny
+// NetworkPolicy, not something this startup path needs to gate.
 var authentikBaseUrlValue = cfg["Authentik:BaseUrl"] ?? "http://authentik-server:9000";
-var externalIssuerValue   = cfg["Authentication:ExternalIssuer"];
-if (externalIssuerValue is not null &&
-    Uri.TryCreate(externalIssuerValue, UriKind.Absolute, out var externalIssuerUri) &&
-    externalIssuerUri.Scheme == Uri.UriSchemeHttps &&
-    (!Uri.TryCreate(authentikBaseUrlValue, UriKind.Absolute, out var authentikBaseUri) ||
-     authentikBaseUri.Scheme != Uri.UriSchemeHttps))
-{
-    throw new InvalidOperationException(
-        $"Authentication:ExternalIssuer ('{externalIssuerValue}') is https, indicating a " +
-        "production/cloud profile, but Authentik:BaseUrl " +
-        $"('{authentikBaseUrlValue}') is not https. IdpAdminClient posts plaintext user " +
-        "passwords to Authentik's set_password endpoint over this base URL — refusing to start " +
-        "rather than send them over an insecure transport. Set Authentik:BaseUrl to an https " +
-        "URL for this profile (local/laptop profiles are exempt: their Authentication:ExternalIssuer " +
-        "is http, so this check does not run for them).");
-}
 
 builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName, client =>
 {

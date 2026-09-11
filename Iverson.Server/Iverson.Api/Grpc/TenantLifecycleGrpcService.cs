@@ -24,10 +24,13 @@ public sealed class TenantLifecycleGrpcService(
 
         try
         {
+            // request.AdminInitialPassword is intentionally unused: CSR finding #4 remediation
+            // replaced password-based onboarding with Authentik's own recovery-link flow (see
+            // IdpAdminClient.CreateUserAsync). The proto field stays on the wire — removing it
+            // ripples into all five SDKs — and is tracked as a follow-up proto cleanup.
             await authentikAdminClient.CreateUserAsync(
                 request.AdminUsername,
                 request.AdminEmail,
-                request.AdminInitialPassword,
                 request.TenantId,
                 ["tenant-admins"]);
         }
