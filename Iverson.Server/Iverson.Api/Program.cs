@@ -259,6 +259,8 @@ if (workloadRole == "worker")
 {
     builder.Services.AddHostedService<IntelligenceStoreConsumer>();
     builder.Services.AddHostedService<Iverson.Api.Consumers.DocumentRerenderConsumer>();
+    builder.Services.AddSingleton<Iverson.Api.Consumers.PopularitySignalUpdater>();
+    builder.Services.AddHostedService<Iverson.Api.Consumers.PopularitySignalConsumer>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqMonitorConsumer>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.ReconciliationQueueWorker>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqBacklogGaugeWorker>();
