@@ -105,6 +105,8 @@ Newly introduced by this plan and verified at plan-write time:
 | P31 | Consumer impact | Nothing asserts the contract's exact key set; the drift gate compares the whole serialized document, so regeneration is the only requirement | `IngestContractTests.cs:79-104` — `Normalize(EmitContract())` vs `Normalize(File.ReadAllText(path))`, one ordinal string comparison |
 | P32 | Consumer impact | **The class doc states query prefixes are deliberately not emitted "because no Python consumer exists for one"** — §2.5 creates that consumer, so the paragraph becomes false and must be corrected in the same task | `IngestContractTests.cs:29-31` |
 | P33 | Consumer impact | The centroid vector name the chunks path resolves is `body_centroid`, and `multivector.py` carries no constant for it, so the instrument defines its own | `ObjectSearchGrpcService.cs:638` `chunkDesc.PropertyName.ToSnakeCase() + "_centroid"` over `BenchmarkDocument.Body`; `grep -n Centroid multivector.py` → no constant |
+| P34 | Code validity | `MATCH_TOLERANCE = 5e-7` yields zero ambiguous matches on the population the reconstruction scans, and no wider value does | ran the plan's own `match_pool`/`fused` over the real dump granting a perfect reproduction: screened population (2,733 groups / 9,184 rows) ambiguous rows 84 @1e-4, 8 @1e-5, 2 @1e-6, **0 @5e-7**, minimum within-group gap 8.940697e-07; whole dump (172,704 groups) 3,580 / 374 / 36 / 24, minimum gap 5.960464e-08 |
+| P35 | Code validity | `MODEL_ID` and `EMBED_URL` resolve to the model the snapshots carry and the service Task 3 starts | `ingest.py:150` `DEFAULT_EMBED_URL = "http://localhost:8091"` against `docker-compose.yml`'s `tei-embed` `ports: "8091:80"`; `"BAAI/bge-base-en-v1.5"` is a family key in the committed `ingest-contract.json`, so `query_prefix_for` resolves through the table rather than the default |
 
 ---
 
@@ -191,11 +193,15 @@ TAUS                = (0.80, 0.85, 0.90, 0.95)  # spec §2.2: the curve is publi
 TAU_PRIMARY         = 0.90                      # the pre-registered value
 BOOTSTRAP_RESAMPLES = 10_000                    # report.py:114's convention
 BOOTSTRAP_SEED      = 20260913                  # report.py:113's convention: a fixed date-shaped integer
-MATCH_TOLERANCE     = 1e-5                      # fused-score match window; V22 bounds the collision risk
+MATCH_TOLERANCE     = 5e-7                      # §3.1 pick: 0 ambiguous rows on the screened population,
+                                                #      whose minimum within-group gap is 8.94e-07 (15 ULP)
 RESIDUAL_EPS        = 1e-9
 CENTROID_VECTOR_NAME = "body_centroid"          # P33; multivector.py carries only the chunk-side name
 W_BASE              = 0.45                      # V15: VectorRankingOptions.cs:14-16, the weights this dump
 W_CENTROID          = 0.45                      #      was produced at. Step 4 of Task 3 is the only check.
+MODEL_ID            = "BAAI/bge-base-en-v1.5"   # V18: the model both snapshots were embedded with; selects
+                                                #      the query prefix through query_prefix_for
+EMBED_URL           = ingest.DEFAULT_EMBED_URL  # http://localhost:8091, the compose tei-embed port
 ```
 
   The three signals, over a **unit-normalised** `C` (normalise explicitly rather than relying on Qdrant returning normalised vectors for a Cosine collection):
@@ -231,6 +237,8 @@ def effective_rank(C):
   The reconstruction — chunk identity is recovered, and recovering it **is** the faithfulness check:
 ```python
 def fused(qhat, chunk_vec, centroid_vec, w_base, w_centroid):
+    """Every operand is unit-normalised by the caller — q̂, the chunk vector and the parent centroid
+    alike — for the same reason C is: Qdrant's Cosine normalisation is not relied on."""
     return (w_base * float(qhat @ chunk_vec) + w_centroid * float(qhat @ centroid_vec)) / (w_base + w_centroid)
 
 
@@ -250,7 +258,7 @@ def match_pool(recorded_scores, cand_vectors, centroid_vec, qhat, w_base, w_cent
     return matched, unmatched, ambiguous
 ```
 
-  Pipeline, in order: read run B's top 50 per query from `--run` (the same 6-column TREC shape `aspect_oracle.load_run` reads) → read `qrels.nugget.trec` for aspects and relevance → read `keymap.json` → read the hits dump into `{(queryId, parentKey): [score, …]}` → assert the six execution-time preconditions against the live collections via `multivector.collection_info` and abort on any failure — **E1** chunks collection reports 18,622 points and the object collection 6,000; **E2** the chunk vector is named `body_vector` and reports 768 dimensions; **E3** the object collection carries `body_centroid` at 768 dimensions; **E4** chunk payloads carry `parent_id` whose value form matches `keymap.json`'s keys; **E5** both collections' distance metric is `Cosine`; **E6** the scroll API returns vectors for both collections when asked → embed each query with `ingest.embed(text, model, ingest.query_prefix_for(model), embed_url)` → `multivector.group_rows(multivector.scroll(chunks_collection, True, ["parent_id", "chunk_index"]))` for chunk vectors by parent key, and one payload-and-vector scroll of the object collection for centroids → per `(query, parent)` run `match_pool` → compute the three signals plus `n_chunks` over the matched set → the query-clustered bootstrap → `report.holm_adjust` → write the three outputs.
+  Pipeline, in order: read run B's top 50 per query from `--run` (the same 6-column TREC shape `aspect_oracle.load_run` reads) → read `qrels.nugget.trec` for aspects and relevance → read `keymap.json` → read the hits dump into `{(queryId, parentKey): [score, …]}`, **restricted to the groups of the §2.3 primary population — 2,733 groups, 9,184 rows — not all 172,704 groups of the dump (spec §2.7)** → assert the six execution-time preconditions against the live collections via `multivector.collection_info` and abort on any failure — **E1** chunks collection reports 18,622 points and the object collection 6,000; **E2** the chunk vector is named `body_vector` and reports 768 dimensions; **E3** the object collection carries `body_centroid` at 768 dimensions; **E4** chunk payloads carry `parent_id` whose value form matches `keymap.json`'s keys; **E5** both collections' distance metric is `Cosine`; **E6** the scroll API returns vectors for both collections when asked → embed each query with `ingest.embed(text, MODEL_ID, ingest.query_prefix_for(MODEL_ID), EMBED_URL)` → `multivector.group_rows(multivector.scroll(chunks_collection, True, ["parent_id", "chunk_index"]))` for chunk vectors by parent key, and one payload-and-vector scroll of the object collection for centroids → per `(query, parent)` run `match_pool` → compute the three signals plus `n_chunks` over the matched set → the query-clustered bootstrap → `report.holm_adjust` → write the three outputs.
 
   Restricting to run B's top 50 is what makes the population the pre-registered 2,733 pairs from 610 queries (V24); ranging over the whole 550-hit pool instead would silently screen 4,360 pairs from 653 queries.
 
@@ -260,7 +268,8 @@ def match_pool(recorded_scores, cand_vectors, centroid_vec, qhat, w_base, w_cent
   - `pair-signals.tsv` — one row per relevant (query, document) pair: `queryId, docId, aspects, n_chunks,
     residual_spread, greedy_cover, effective_rank`, with `greedy_cover` emitted once per τ (four columns,
     named for their τ) so the ρ(τ) curve is reproducible from the row data alone.
-  - `faithfulness.txt` — rows checked, rows with no match, rows with an ambiguous match, the maximum residual
+  - `faithfulness.txt` — rows checked (the screened population's 9,184), rows with no match, rows with an
+    ambiguous match, the maximum residual
     over matched rows, and the verdict. It must state that the unmatched and ambiguous counts are the
     falsifying statistics and that the residual is a selection artifact of the matching.
   - `screen.txt` — ρ per candidate per population, the bootstrap CI on each difference against `n_chunks`,
@@ -321,7 +330,7 @@ python3 Iverson.Server/Iverson.LoadTest/scripts/aspect_vectors.py \
     --out-dir  ~/repositories/iverson-benchmark-corpora/family2-vector-screen-2026-09-13/
 ```
 
-- [ ] **Step 4: Read `faithfulness.txt` BEFORE any other output.** If it reports **any** unmatched row or **any** ambiguous row, stop: do not open `screen.txt`, do not write a verdict. An unmatched row means the reproduction is wrong — the candidate causes are the fusion weights, the query prefix, the model identity and the centroid lookup, and E7 cannot separate them. Diagnose and re-run. A clean pass is simultaneously the only confirmation the dump was produced at `WBase`/`WCentroid` = 0.45/0.45.
+- [ ] **Step 4: Read `faithfulness.txt` BEFORE any other output.** If it reports **any** unmatched row or **any** ambiguous row, stop: do not open `screen.txt`, do not write a verdict. An unmatched row means the reproduction is wrong — the candidate causes are the fusion weights, the query prefix, the model identity, the centroid lookup, the match tolerance, and whether the restored collections are the state the dump was produced from — and E7 cannot separate them. Diagnose and re-run. A clean pass is simultaneously the only confirmation the dump was produced at `WBase`/`WCentroid` = 0.45/0.45.
 
 - [ ] **Step 5: Confirm the population before reading any ρ.** `pair-signals.tsv` must carry **2,733** rows over **610** distinct query ids, with the chunk-count distribution `{1:450, 2:400, 3:487, 4:615, 5:674, 6:106, 7:1}` (V2, V24). A different count means the top-50 restriction did not apply and the screen ran on the wrong population — fix Task 2 and re-run rather than reporting the number.
 
