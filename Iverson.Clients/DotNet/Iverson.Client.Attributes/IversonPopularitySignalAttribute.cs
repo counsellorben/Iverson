@@ -4,5 +4,5 @@ namespace Iverson.Client.Attributes;
 /// Marks the UTC <see cref="DateTime"/> property recording when an interaction happened.
 /// Exactly one property per entity may carry this; two fail schema registration.
 /// </summary>
-[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
+[AttributeUsage(AttributeTargets.Property, Inherited = false)]
 public sealed class IversonPopularitySignalAttribute : Attribute;
