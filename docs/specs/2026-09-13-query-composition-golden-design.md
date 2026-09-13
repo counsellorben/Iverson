@@ -29,10 +29,12 @@ Yes to both. The design is the smallest change that achieves it.
 | `BAAI/bge-base-en-v1.5` | **empty** | `Represent this sentence for searching relevant passages: ` |
 | `BAAI/bge-small-en-v1.5` | **empty** | `Represent this sentence for searching relevant passages: ` |
 
-**Three of the four document goldens are identity checks** — `"" + text == text` — so for bge-base, the
-model this project actually runs, today's replay proves nothing. **None of the four query goldens is an
-identity.** The query golden is therefore the first non-vacuous cross-language prefix check for three of
-the four families.
+**Three of the four document goldens are identity checks** — `"" + text == text`. That does not make them
+worthless: a lookup returning the *query* prefix by mistake is caught on all four families today. What an
+identity golden cannot catch is a prefix that wrongly **collapses to empty** — caught on nomic, missed on
+arctic, bge-base and bge-small. **None of the four query goldens is an identity**, so the query golden closes
+the collapse-to-empty blind spot on exactly those three families — including bge-base, the model this
+project actually runs.
 
 ---
 
@@ -77,15 +79,15 @@ Composing from the golden's own `text` — rather than recovering the input by s
 unchanged; it is the reason the existing check is worth anything, and it applies identically to the query
 side.
 
-`require_known_family` requires the family to be present in **both** goldens. This is the load-bearing half
-of the change and the reason for doing both sides together rather than adding a query-only golden: a broken
-`family()` makes the wrong family string absent from every lookup, so both sides fall back to `__default__`
-where **both** compositions are the trivially-true identity. Checking one side cannot see that; checking
-membership in both closes it on both.
+`require_known_family` requires the family to be present in **both** goldens. This is symmetry, not added
+detection power: the two goldens carry identical key sets by construction, so a broken `family()` produces a
+string already absent from `documentComposition`, and today's single-sided check already rejects it.
+Requiring both is what keeps the check correct if those key sets ever stop matching.
 
-The anti-masking argument is *more* necessary here than it was, not less. With three empty document
-prefixes, `__default__` masking is currently indistinguishable from correct behaviour for those three
-families — the strict form is the only thing that separates them.
+The anti-masking argument is what makes the strict form load-bearing at all. With three empty document
+prefixes, a `__default__` fallback produces the *correct* composition for those three families, so the
+composition comparison alone cannot separate a broken `family()` from a working one — `require_known_family`
+is the only thing that does.
 
 ### 2.4 Error handling
 
@@ -128,6 +130,8 @@ Both call sites get the query side for free because the function they call cover
 | A16 | Three of four document goldens are identity; zero of four query goldens are | dumped `ingest-contract.json`: document prefixes empty for arctic, bge-base, bge-small; all four query prefixes non-empty |
 | A17 | Both goldens carry the same family set | `documentComposition` = the four families + `__default__`; `documentPrefixes` and `queryPrefixes` carry identical family lists (set equality, both directions) |
 | A18 | No test asserts `golden`'s key set | the only `documentComposition` mentions under `Iverson.Server/` are inside the emitter itself (`IngestContractTests.cs:124-135`, `:172`) |
+| A19 | `query_prefix_for` is consumed outside the process that runs the replay | its only call site is `aspect_vectors.py:633`; `grep -n "verify\|preflight" aspect_vectors.py` returns no match, so that script never calls `verify_contract`. `similar_arms.py:58` takes its prefix from `--query-prefix` and never reads the contract |
+| A20 | **The document goldens' blind spot is collapse-to-empty, not wrong-prefix** | replaying `documentComposition` with the *query* prefix substituted fails for **4 of 4** families; replaying it with `""` fails for **1 of 4** (nomic only). A broken `family()` string (`BAAI/bge-base-en-v1.5:probe-tag`) is absent from `documentComposition`, and `list(documentPrefixes) == list(queryPrefixes)` is `True` |
 
 ---
 
@@ -150,10 +154,14 @@ Both call sites get the query side for free because the function they call cover
 
 ## 5. Known issues accepted as out of scope
 
-- **The replay runs on ingest, not in CI.** Nothing automatically executes `ingest.py`, so a divergence
-  introduced today is caught at the next ingest rather than at the next commit. That is the same exposure the
-  document side has always had, and closing it means wiring the Python scripts into a pipeline — a larger
-  change than this one, and not what was asked for.
+- **The replay runs on ingest, and the query prefix is not consumed there.** Nothing automatically executes
+  `ingest.py`, so a divergence introduced today is caught at the next ingest rather than at the next commit —
+  and this is **not** the same exposure the document side has. `ingest.py`'s `main()` runs the replay at
+  `:769-771` and resolves the document prefix at `:807-808`, so no document-prefix use is reachable without a
+  passing replay; `query_prefix_for`'s only caller, `aspect_vectors.py:633`, never calls `verify_contract`.
+  The query golden is therefore verified on every ingest and on no query embedding. Accepted deliberately:
+  closing it means either gating that consumer or giving the resolver an exit side effect, both larger than
+  what was asked for.
 - **A `family()` that breaks in a way that still produces a real contract key** would defeat the strict
   check on both sides at once. `require_known_family` rejects a family string that is not a key; it cannot
   reject a wrong-but-valid key. No available check closes that, and the two sides sharing one `family()` is
