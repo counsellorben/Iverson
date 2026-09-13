@@ -2695,6 +2695,233 @@ public class ObjectSearchGrpcServiceTests
         written[0].Score.Should().BeApproximately((float)expectedFused, 1e-4f);
     }
 
+    // Task 7: RecencyBoost defaults to 0.0, and at that default the fused score MUST be bit-exactly
+    // what it was before this feature existed — N/(N+SaturationPoint) — regardless of what junk sits
+    // in the bucket-series payload. A huge, decades-old bucket series is deliberately planted here:
+    // if the recency term leaked in even at zero weight, this test would catch it.
+    [Fact]
+    public async Task SearchSimilar_PopularityRecencyBoostZero_IgnoresBucketSeriesEntirely()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WBase = wBase, WPopularity = wPopularity })),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions
+            {
+                Signals         = [new PopularitySignalEntry("Article", "Author")],
+                SaturationPoint = saturationPoint
+                // RecencyBoost left at its 0.0 default.
+            }));
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        const double baseScore = 0.80;
+        const long count = 7;
+        var results = new List<VectorSearchResult>
+        {
+            new(1, baseScore, new Dictionary<string, string>
+            {
+                ["title"]              = "a1",
+                ["authorCount"]        = count.ToString(),
+                // Huge count, decades in the past: if RecencyBoost=0 failed to zero this out, the
+                // fused score below would come out very different — and very wrong.
+                ["authorCountBuckets"] = "2000-01:999999",
+            })
+        };
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        var expectedPopularity = count / (count + saturationPoint);
+        var expectedFused = (wBase * baseScore + wPopularity * expectedPopularity) / (wBase + wPopularity);
+
+        written.Should().HaveCount(1);
+        written[0].Score.Should().BeApproximately((float)expectedFused, 1e-6f);
+    }
+
+    // Task 7: with RecencyBoost > 0, two candidates sharing the same raw count N (so the OLD
+    // formula would tie them and preserve arrival order) must be reordered by the freshness of
+    // their bucket series — the recent one, carrying its mass in the current month, outranks the
+    // ancient one, whose mass sits more than 20 half-lives in the past (D ≈ 0).
+    [Fact]
+    public async Task SearchSimilar_PopularityRecencyBoostPositive_RanksRecentSeriesAboveEqualCountAncientSeries()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WBase = 0.45, WPopularity = 5.0 })),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 1.00, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions
+            {
+                Signals         = [new PopularitySignalEntry("Article", "Author")],
+                SaturationPoint = 100.0,
+                RecencyBoost    = 1.0
+            }));
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var currentBucket = DateTime.UtcNow.ToString("yyyy-MM");
+
+        const double baseScore = 0.60;
+        const long count = 5;
+        var results = new List<VectorSearchResult>
+        {
+            new(1, baseScore, new Dictionary<string, string>
+            {
+                ["title"]              = "ancient",
+                ["authorCount"]        = count.ToString(),
+                ["authorCountBuckets"] = "2000-01:100",
+            }),
+            new(2, baseScore, new Dictionary<string, string>
+            {
+                ["title"]              = "recent",
+                ["authorCount"]        = count.ToString(),
+                ["authorCountBuckets"] = $"{currentBucket}:100",
+            }),
+        };
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written[0].Data.Fields["Title"].StringValue.Should().Be("recent");
+        written[1].Data.Fields["Title"].StringValue.Should().Be("ancient");
+    }
+
+    // Task 7: a missing "...Buckets" key (the pre-Task-6 payload shape, or a point the write path
+    // has not yet touched) must leave ranking exactly as it was before this feature existed, even
+    // with RecencyBoost configured on — ComputeRecencySum treats absence as an empty series (0.0),
+    // never a substituted value.
+    [Fact]
+    public async Task SearchSimilar_PopularityMissingBucketsKeyWithRecencyBoostEnabled_UsesPlainCountFormula()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WBase = wBase, WPopularity = wPopularity })),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions
+            {
+                Signals         = [new PopularitySignalEntry("Article", "Author")],
+                SaturationPoint = saturationPoint,
+                RecencyBoost    = 2.0
+            }));
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        const double baseScore = 0.80;
+        const long count = 12;
+        var results = new List<VectorSearchResult>
+        {
+            new(1, baseScore, new Dictionary<string, string>
+            {
+                ["title"] = "a1", ["authorCount"] = count.ToString(),
+                // No "authorCountBuckets" key at all.
+            })
+        };
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        var expectedPopularity = count / (count + saturationPoint);
+        var expectedFused = (wBase * baseScore + wPopularity * expectedPopularity) / (wBase + wPopularity);
+
+        written.Should().HaveCount(1);
+        written[0].Score.Should().BeApproximately((float)expectedFused, 1e-6f);
+    }
+
+    // Task 7, chunk path: RetrievePopularityOrDegradeAsync batches the SAME fusion by parent id.
+    // A missing "...Buckets" key on the parent's payload must degrade identically to the object
+    // path above — the plain count formula, unaffected by a configured RecencyBoost.
+    [Fact]
+    public async Task SearchChunks_PopularityMissingBucketsKeyWithRecencyBoostEnabled_UsesPlainCountFormula()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WBase = wBase, WPopularity = wPopularity })),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions
+            {
+                Signals         = [new PopularitySignalEntry("Article", "Author")],
+                SaturationPoint = saturationPoint,
+                RecencyBoost    = 2.0
+            }));
+
+        var queryVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
+
+        const string parent = "parent-1";
+        var parentId = InvokeKeyToUlong(parent);
+        const double baseScore = 0.70;
+        const long count = 9;
+
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   new(1, baseScore, new Dictionary<string, string> { ["text"] = "c1", ["parent_id"] = parent })
+               }.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
+        _vector.RetrievePayloadAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
+                   new Dictionary<ulong, IReadOnlyDictionary<string, string>>
+                   {
+                       // No "authorCountBuckets" key at all.
+                       [parentId] = new Dictionary<string, string> { ["authorCount"] = count.ToString() }
+                   });
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        var expectedPopularity = count / (count + saturationPoint);
+        var expectedFused = (wBase * baseScore + wPopularity * expectedPopularity) / (wBase + wPopularity);
+
+        written.Should().HaveCount(1);
+        written[0].Score.Should().BeApproximately((float)expectedFused, 1e-6f);
+    }
+
     // VectorRankingOptionsTests proves the diversifier honours whatever λ it is handed — it does
     // NOT prove ObjectSearchGrpcService passes the CONFIGURED per-endpoint value through. Bind
     // λ = 1.00 on ONE endpoint and assert that endpoint reduces to Take(topK) while the other

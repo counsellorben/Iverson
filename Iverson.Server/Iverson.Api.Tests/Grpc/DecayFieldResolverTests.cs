@@ -205,6 +205,97 @@ public class DecayFieldResolverTests
         Assert.Equal(0.25, nonDefault!.Value, precision: 9);
     }
 
+    [Fact]
+    public void ComputeRecencySum_NullSeries_ReturnsZero()
+    {
+        var result = DecayFieldResolver.ComputeRecencySum(null, DateTimeOffset.UtcNow, 180.0);
+
+        Assert.Equal(0.0, result);
+    }
+
+    [Fact]
+    public void ComputeRecencySum_EmptySeries_ReturnsZero()
+    {
+        var result = DecayFieldResolver.ComputeRecencySum(string.Empty, DateTimeOffset.UtcNow, 180.0);
+
+        Assert.Equal(0.0, result);
+    }
+
+    [Fact]
+    public void ComputeRecencySum_SingleCurrentBucket_ReturnsItsCount()
+    {
+        var now = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
+        var series = "2026-07:5";
+
+        var result = DecayFieldResolver.ComputeRecencySum(series, now, 180.0);
+
+        Assert.Equal(5.0, result, precision: 9);
+    }
+
+    [Fact]
+    public void ComputeRecencySum_BucketOneHalfLifeOld_ReturnsHalfItsCount()
+    {
+        // The bucket's age is measured from its START (2026-01-01), not its midpoint, so
+        // "one half-life old" means the bucket start is exactly halfLifeDays before now.
+        var halfLifeDays = 180.0;
+        var bucketStart = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var now = bucketStart.AddDays(halfLifeDays);
+        var series = "2026-01:10";
+
+        var result = DecayFieldResolver.ComputeRecencySum(series, now, halfLifeDays);
+
+        Assert.Equal(5.0, result, precision: 9);
+    }
+
+    [Fact]
+    public void ComputeRecencySum_FutureBucket_ClampsToFullCount()
+    {
+        var now = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var series = "2026-07:8"; // bucket start is months after "now"
+
+        var result = DecayFieldResolver.ComputeRecencySum(series, now, 180.0);
+
+        Assert.Equal(8.0, result, precision: 9);
+    }
+
+    [Fact]
+    public void ComputeRecencySum_MultipleBuckets_SumsDecayedContributions()
+    {
+        var now = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
+        var halfLifeDays = 180.0;
+        var oldStart = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var ageDays = (now - oldStart).TotalDays;
+        var expected = 5.0 + 10.0 * Math.Pow(0.5, ageDays / halfLifeDays);
+        var series = "2026-01:10;2026-07:5";
+
+        var result = DecayFieldResolver.ComputeRecencySum(series, now, halfLifeDays);
+
+        Assert.Equal(expected, result, precision: 9);
+    }
+
+    [Theory]
+    [InlineData("bad-key:5")]        // unparseable yyyy-MM key
+    [InlineData("2026-07:notanumber")] // unparseable count
+    [InlineData("2026-07")]           // missing colon
+    public void ComputeRecencySum_MalformedEntry_AbandonsWholeSeriesReturnsZero(string malformedSeries)
+    {
+        var result = DecayFieldResolver.ComputeRecencySum(malformedSeries, DateTimeOffset.UtcNow, 180.0);
+
+        Assert.Equal(0.0, result);
+    }
+
+    [Fact]
+    public void ComputeRecencySum_OneMalformedEntryAmongValidOnes_AbandonsWholeSeriesReturnsZero()
+    {
+        // A partial sum over the entries that DID parse would be a confidently wrong recency
+        // signal — worse than no signal at all. The whole series must be abandoned.
+        var series = "2026-01:10;2026-07:notanumber";
+
+        var result = DecayFieldResolver.ComputeRecencySum(series, DateTimeOffset.UtcNow, 180.0);
+
+        Assert.Equal(0.0, result);
+    }
+
     [Theory]
     [InlineData("0")]
     [InlineData("-1")]

@@ -285,7 +285,7 @@ public sealed class ObjectSearchGrpcService(
             BaseScore:  r.Score,
             Centroid:   centroids.TryGetValue(r.Id, out var centroid) ? centroid : null,
             Decay:      DecayFor(r, decayField, now, _decayOptions.HalfLifeDays),
-            Popularity: PopularityFor(schema, r, _popularitySignal))).ToList();
+            Popularity: PopularityFor(schema, r, _popularitySignal, now))).ToList();
 
         var byId = ResultsById(results);
 
@@ -646,14 +646,15 @@ public sealed class ObjectSearchGrpcService(
             rpcName,
             "re-ranking without the centroid signal");
 
+        var now = DateTimeOffset.UtcNow;
+
         // A chunk's popularity signal is likewise its PARENT object's, so it is batched over the
         // same distinct parent ids the centroid fetch above already collected.
         var popularities = await RetrievePopularityOrDegradeAsync(
             tenantScope.ResolveCollectionName(schema.CollectionName!, decision.TenantValue, isChunks: false),
-            parentIds, schema, _popularitySignal, rpcName);
+            parentIds, schema, _popularitySignal, now, rpcName);
 
         var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
-        var now        = DateTimeOffset.UtcNow;
 
         var candidates = results.Select(r =>
         {
@@ -953,7 +954,7 @@ public sealed class ObjectSearchGrpcService(
     /// </summary>
     private async Task<IReadOnlyDictionary<ulong, double>> RetrievePopularityOrDegradeAsync(
         string collection, IReadOnlyList<ulong> parentIds, SchemaDescriptor schema,
-        PopularitySignalOptions options, string rpcName)
+        PopularitySignalOptions options, DateTimeOffset now, string rpcName)
     {
         var signal = options.Signals.FirstOrDefault(s =>
             string.Equals(s.ParentType, schema.TypeName, StringComparison.OrdinalIgnoreCase));
@@ -978,7 +979,12 @@ public sealed class ObjectSearchGrpcService(
         var result = new Dictionary<ulong, double>();
         foreach (var (id, payload) in payloads)
             if (payload.TryGetValue(fieldName, out var stored) && long.TryParse(stored, out var count))
-                result[id] = count / (count + options.SaturationPoint);
+            {
+                var series    = payload.TryGetValue(fieldName + "Buckets", out var s) ? s : null;
+                var d         = DecayFieldResolver.ComputeRecencySum(series, now, options.RecencyHalfLifeDays);
+                var effective = count + options.RecencyBoost * d;
+                result[id]    = effective / (effective + options.SaturationPoint);
+            }
         return result;
     }
 
@@ -1006,7 +1012,8 @@ public sealed class ObjectSearchGrpcService(
     /// and squashes it into [0,1) via the standard saturating-count curve. Null when the type
     /// has no configured signal or the field is absent/unparseable (degrade, never substitute).
     /// </summary>
-    private static double? PopularityFor(SchemaDescriptor schema, VectorSearchResult result, PopularitySignalOptions options)
+    private static double? PopularityFor(
+        SchemaDescriptor schema, VectorSearchResult result, PopularitySignalOptions options, DateTimeOffset now)
     {
         var signal = options.Signals.FirstOrDefault(s =>
             string.Equals(s.ParentType, schema.TypeName, StringComparison.OrdinalIgnoreCase));
@@ -1016,7 +1023,10 @@ public sealed class ObjectSearchGrpcService(
         if (!result.Payload.TryGetValue(fieldName, out var stored) || !long.TryParse(stored, out var count))
             return null;
 
-        return count / (count + options.SaturationPoint);
+        var series    = result.Payload.TryGetValue(fieldName + "Buckets", out var s) ? s : null;
+        var d         = DecayFieldResolver.ComputeRecencySum(series, now, options.RecencyHalfLifeDays);
+        var effective = count + options.RecencyBoost * d;
+        return effective / (effective + options.SaturationPoint);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
