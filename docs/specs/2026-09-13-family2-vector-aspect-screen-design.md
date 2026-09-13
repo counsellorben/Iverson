@@ -138,6 +138,16 @@ group the instrument enumerates that parent's chunks in the chunks collection (p
 unique chunk whose recomputed value lies within float tolerance. **`C` is the matched set.** A recorded
 row with **no** match, or with **more than one**, aborts the run.
 
+**The reconstruction runs over the `(queryId, parentKey)` groups of the §2.3 primary population — 2,733
+groups, 9,184 recorded rows — not over all 172,704 groups of the dump.** That scope is load-bearing, not
+a convenience. The recorded score is a float32 (`Score = (float)ranked.FusedScore`,
+`ObjectSearchGrpcService.cs:588`), so even a perfect recomputation lands up to half a float32 ULP —
+2.98e-08 — from its target. Over the whole dump the minimum separation between two of a parent's recorded
+scores is 5.96e-08, exactly one ULP: no room for that floor, let alone for reproduction error — and the
+error is non-zero by construction, because `EmbeddingService.cs:117` narrows each query-vector component
+to `float` while `ingest.embed` keeps the JSON double. Over the screened groups the minimum separation is
+8.94e-07, fifteen ULPs.
+
 This is the check that makes every downstream number trustworthy, because it exercises the query prefix,
 the model identity, the chunk vectors, the `parent_id` payload lookup, the centroid vectors and the
 fusion constants in a single comparison — and it does so *by assigning* the chunk vectors rather than
@@ -159,7 +169,8 @@ the verdict document transcribes from it and must say so):
 
 - `pair-signals.tsv` — one row per relevant (query, document) pair: `queryId, docId, aspects, n_chunks,
   residual_spread, greedy_cover, effective_rank`, with `greedy_cover` emitted once per τ
-- `faithfulness.txt` — the §2.7 reconstruction: rows checked, rows with no match, rows with an ambiguous
+- `faithfulness.txt` — the §2.7 reconstruction: rows checked (the screened population's 9,184), rows with
+  no match, rows with an ambiguous
   match, the maximum residual over matched rows, verdict
 - `screen.txt` — ρ per candidate per population, the bootstrap CI on each difference against `n_chunks`,
   Holm-adjusted p, and the ρ(τ) curve
@@ -195,9 +206,13 @@ amended to reflect whichever way this lands.
 | V19 | The key map joins the dump to the qrels | `keymap.json` is a flat 6,000-entry `{parentKey: docId}` object; 0 unresolved keys over the whole hits dump |
 | V20 | **The dump names parents, not chunks** | header `queryId parentKey rank score`, 4 fields on all 369,601 lines; `BenchmarkQueryScenario.cs:414` types `RawHits` as `(string ParentKey, double Score)`, and `ChunkSearchResponse` (`ObjectSearchGrpcService.cs:585-590`) carries no chunk id — `ChunkText` is received and discarded |
 | V21 | The pool is a pure fused-score prefix, so pool membership is decided by score alone | 0 score inversions against rank order across all 369,600 rows — unreachable had `ResultDiversifier` reordered the over-fetched 2,200 candidates |
-| V22 | Score-matching is near-unambiguous | over 172,704 `(query, parent)` groups, 18 of 196,896 adjacent within-group score pairs lie within 1e-6; minimum gap 5.96e-08, one float32 ULP at 0.7 |
+| V22 | Score-matching is near-unambiguous **on the screened population** | over 172,704 `(query, parent)` groups, 18 of 196,896 adjacent within-group score pairs lie within 1e-6; minimum gap 5.96e-08, one float32 ULP at 0.7 — that whole-dump figure leaves no tolerance budget, which is why §2.7 scopes the reconstruction to the screened groups, where the minimum separation is 8.94e-07 |
 | V23 | The base term is recomputable from a scrolled vector | no `quantization` symbol anywhere under `Iverson.Vector/` or `Iverson.Api/`; `ingest.py:379` creates collections with no `quantization_config` |
 | V24 | `fs2048-pool.chunks.trec` is run B, and the top-50 restriction is what fixes the population | its per-query 50-document sets are set-identical to `aspect-oracle-2026-09-13/oracle-A.trec` on 672/672 queries (order differs on 596); the restricted join reproduces 2,733 / 610 / 62 and V2's distribution exactly, the unrestricted join gives 4,360 / 653; `qrels.trec` and `qrels.nugget.trec` induce the identical 5,445-pair relevance set |
+| V25 | The restored snapshot is the collection state the dump was produced from | the ingest that wrote these collections finished `2026-09-07T10:48:17Z` (`keymap.json.stats.json`); the two snapshots are stamped `10:48:59` and `10:49:03`, 42 s and 46 s later |
+| V26 | The Qdrant scroll path authenticates | `ingest.py:149`'s `QDRANT_API_KEY` is byte-identical to the `qdrant:` block's `QDRANT__SERVICE__API_KEY` in `docker-compose.yml`; `qdrant_request` attaches it at `:285` |
+| V27 | The instrument's query vector is **not** bit-identical to the server's | `EmbeddingService.cs:117` narrows each component with `(float)e.GetDouble()` while `ingest.py:558` returns the parsed JSON double — so a non-zero reproduction error is guaranteed, and §2.7's tolerance needs a positive budget |
+| V28 | **The recorded score is float32-quantized, which sets the tolerance budget** | all 369,600 recorded scores round-trip exactly through `np.float32`; the minimum within-group separation is 5.960464e-08 = `np.spacing(np.float32(0.7))` = 1.00 ULP over the whole dump and 8.940697e-07 = 15.00 ULP over the screened population, against a half-ULP reproduction floor of 2.98e-08 |
 
 ### 3.1 Execution-time preconditions
 
@@ -212,7 +227,7 @@ instrument asserts and aborts on**, not an assumption taken on faith:
 | E4 | Chunk payloads carry `parent_id`, and its value form matches `keymap.json`'s keys |
 | E5 | Both collections' distance metric is Cosine |
 | E6 | The scroll API returns vectors when asked, for both collections |
-| E7 | **§2.7's reconstruction matches every dump row to exactly one chunk** — no unmatched row, no ambiguous row — which is also the only available confirmation that the dump was produced at `WBase`/`WCentroid` = 0.45/0.45 |
+| E7 | **§2.7's reconstruction matches every recorded row of the screened population to exactly one chunk** — no unmatched row, no ambiguous row — which is also the only available confirmation that the dump was produced at `WBase`/`WCentroid` = 0.45/0.45 |
 
 ---
 
@@ -240,4 +255,5 @@ instrument asserts and aborts on**, not an assumption taken on faith:
 - **The fusion weights are not recorded in the dump's sidecar**, the same gap as λ (ranked-changes item
   16). E7 is the only check that they were 0.45/0.45, and it fires as a count of unmatched or ambiguous
   rows rather than as a score deviation; if it fails, the cause is ambiguous between the weights, the
-  prefix and the model.
+  prefix, the model, the match tolerance and whether the restored collections are the state the dump was
+  produced from.
