@@ -425,45 +425,56 @@ def query_prefix_for(model_id):
 
 
 def verify_contract(model_id, *, require_known_family=False):
-    """Replays the contract's golden document-composition case for model_id's family by
-    composing that case's own "text" through this script's own document_prefix_for and
-    comparing against its "composed" -- the same rule Task 1 implements in C#, read from the
-    same file the C# side generated. Composing from the golden's own text (rather than, say,
-    recovering the input by stripping the prefix back off "composed") is what makes this a
-    cross-language check instead of a tautology. Falls back to the "__default__" golden case
-    for a family the contract doesn't carry, so an unrecognized --model still verifies (against
-    the empty-prefix default) instead of crashing. Exits non-zero on mismatch.
+    """Replays the contract's golden document- AND query-composition cases for model_id's
+    family, one pass over both sides, by composing each case's own "text" through this
+    script's own document_prefix_for / query_prefix_for and comparing against its "composed"
+    -- the same rule Task 1 implements in C#, read from the same file the C# side generated.
+    Composing from the golden's own text (rather than, say, recovering the input by stripping
+    the prefix back off "composed") is what makes this a cross-language check instead of a
+    tautology, on both sides alike. Falls back to the "__default__" golden case for a family
+    the contract doesn't carry, so an unrecognized --model still verifies (against the
+    empty-prefix default) instead of crashing. Exits non-zero on mismatch, naming which side
+    (document or query) diverged -- a document mismatch implicates the ingest write path, a
+    query mismatch implicates the search path and anything embedding queries Python-side.
 
     Then delegates to _verify_algorithm_goldens(), which replays the model-INDEPENDENT goldens
     (chunking, point ids, centroid) -- see its own docstring.
 
     require_known_family=False (main()'s default) is deliberately permissive: a real ingest
     against an unrecognized model must still be able to run. But permissive alone makes this
-    unfalsifiable as a check on family() itself -- document_prefix_for(model_id) and this
-    function's own fam = family(model_id) call the SAME family() on the SAME input, so if
-    family() is broken (e.g. never strips the tag, or strips the wrong side), the wrong fam
-    string is simply absent from BOTH documentPrefixes and golden, and both sides fall back to
-    the same trivially-true "__default__" identity (composed == text, no prefix) for any
-    garbage family string -- a broken family() coasts through undetected. require_known_family
-    closes that: Step 7's harness passes True for tagged ids whose family IS a real contract
-    key, so a family() that stops stripping the tag (or strips the wrong side) produces a fam
-    string that is NOT a real key and this rejects it outright, before it ever reaches the
-    identity-masking fallback."""
-    prefix = document_prefix_for(model_id)
+    unfalsifiable as a check on family() itself -- document_prefix_for(model_id) /
+    query_prefix_for(model_id) and this function's own fam = family(model_id) call the SAME
+    family() on the SAME input, so if family() is broken (e.g. never strips the tag, or strips
+    the wrong side), the wrong fam string is simply absent from BOTH prefix tables and both
+    goldens, and every side falls back to the same trivially-true "__default__" identity
+    (composed == text, no prefix) for any garbage family string -- a broken family() coasts
+    through undetected. require_known_family closes that: Step 7's harness passes True for
+    tagged ids whose family IS a real contract key, so a family() that stops stripping the tag
+    (or strips the wrong side) produces a fam string that is NOT a real key and this rejects it
+    outright, on either side, before it ever reaches the identity-masking fallback. The two
+    goldens carry identical key sets by construction (both loop EmbeddingPrefixes.Table
+    C#-side), so requiring the family in both goldens adds no detection power over requiring it
+    in one -- it is symmetry, and keeps this correct if the key sets ever stop matching."""
     fam = family(model_id)
-    golden = CONTRACT["golden"]["documentComposition"]
-    if require_known_family and fam not in golden:
-        sys.exit(
-            f"contract verification failed for model '{model_id}': family '{fam}' is not a "
-            f"known key in golden.documentComposition -- family() may be broken"
-        )
-    case = golden.get(fam, golden["__default__"])
-    composed = prefix + case["text"]
-    if composed != case["composed"]:
-        sys.exit(
-            f"contract verification failed for model '{model_id}' (family '{fam}'): "
-            f"resolved prefix {prefix!r} composed {composed!r}, expected {case['composed']!r}"
-        )
+    for side, prefix_for, golden_key in (
+        ("document", document_prefix_for, "documentComposition"),
+        ("query", query_prefix_for, "queryComposition"),
+    ):
+        prefix = prefix_for(model_id)
+        golden = CONTRACT["golden"][golden_key]
+        if require_known_family and fam not in golden:
+            sys.exit(
+                f"contract verification failed for model '{model_id}' ({side} side): family "
+                f"'{fam}' is not a known key in golden.{golden_key} -- family() may be broken"
+            )
+        case = golden.get(fam, golden["__default__"])
+        composed = prefix + case["text"]
+        if composed != case["composed"]:
+            sys.exit(
+                f"contract verification failed for model '{model_id}' (family '{fam}', {side} "
+                f"side): resolved prefix {prefix!r} composed {composed!r}, expected "
+                f"{case['composed']!r}"
+            )
 
     _verify_algorithm_goldens()
 

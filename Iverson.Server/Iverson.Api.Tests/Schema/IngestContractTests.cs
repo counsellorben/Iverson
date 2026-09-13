@@ -134,6 +134,19 @@ public class IngestContractTests
             composed = ComposeDocumentInput(EmbeddingPrefixes.DefaultDocument, SampleText)
         };
 
+        var queryComposition = new Dictionary<string, object>(StringComparer.Ordinal);
+        foreach (var (family, prefix) in EmbeddingPrefixes.Table)
+            queryComposition[family] = new
+            {
+                text     = SampleText,
+                composed = ComposeQueryInput(prefix.Query, SampleText)
+            };
+        queryComposition["__default__"] = new
+        {
+            text     = SampleText,
+            composed = ComposeQueryInput(EmbeddingPrefixes.DefaultQuery, SampleText)
+        };
+
         var contract = new
         {
             // Provenance, not contract DATA — the closed-key-set rule governs what ingest.py
@@ -169,7 +182,8 @@ public class IngestContractTests
                 chunking = GoldenChunking(window),
                 pointIds = GoldenPointIds(),
                 centroid = GoldenCentroid(),
-                documentComposition
+                documentComposition,
+                queryComposition
             }
         };
 
@@ -365,6 +379,10 @@ public class IngestContractTests
 
     private static string ComposeDocumentInput(string prefix, string text) =>
         (string)NonPublicStatic(typeof(EmbeddingService), "ComposeDocumentInput")
+            .Invoke(null, [prefix, text])!;
+
+    private static string ComposeQueryInput(string prefix, string text) =>
+        (string)NonPublicStatic(typeof(EmbeddingService), "ComposeQueryInput")
             .Invoke(null, [prefix, text])!;
 
     private static IEnumerable<(string Text, int Index)> InvokeSplitIntoChunks(string text, int maxTokens, int overlap) =>
