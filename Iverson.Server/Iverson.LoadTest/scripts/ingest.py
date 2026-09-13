@@ -419,6 +419,11 @@ def document_prefix_for(model_id):
         family(model_id), CONTRACT["embedding"]["defaultDocumentPrefix"])
 
 
+def query_prefix_for(model_id):
+    return CONTRACT["embedding"]["queryPrefixes"].get(
+        family(model_id), CONTRACT["embedding"]["defaultQueryPrefix"])
+
+
 def verify_contract(model_id, *, require_known_family=False):
     """Replays the contract's golden document-composition case for model_id's family by
     composing that case's own "text" through this script's own document_prefix_for and
