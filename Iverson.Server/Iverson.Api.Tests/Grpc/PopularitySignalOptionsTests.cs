@@ -2,6 +2,7 @@ using FluentAssertions;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Sql;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -64,20 +65,36 @@ public class PopularitySignalOptionsTests
         var registry = await RegistryWith(article, userArticle);
         var options = OptionsWith("Article", "UserArticles");
 
-        var act = () => PopularitySignalValidator.ValidateAtStartup(options, registry, engagementEnabled: false);
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: false, NullLogger.Instance);
 
         act.Should().Throw<InvalidOperationException>().WithMessage("*Engagement*Enabled*");
     }
 
+    // Schemas are registered at runtime via the RegisterSchema RPC served by this same process —
+    // on a fresh deployment (or after a Postgres reset) an unregistered ParentType in config is
+    // not a misconfiguration, it is an ordering the process cannot itself resolve by crashing.
+    // ValidateAtStartup must skip the entry and log a warning rather than throw, matching the
+    // runtime's own tolerance for this condition (PopularitySignalConsumer.DispatchAsync filters
+    // on registry.Get(...) is not null; PopularitySignalReconciliationWorker.SweepSignalAsync
+    // returns early).
     [Fact]
-    public async Task ValidateAtStartup_UnregisteredParentType_Throws()
+    public async Task ValidateAtStartup_UnregisteredParentType_SkipsAndWarns()
     {
         var registry = await RegistryWith();
         var options = OptionsWith("NoSuchType", "SomeRelation");
+        var logger = Substitute.For<ILogger>();
 
-        var act = () => PopularitySignalValidator.ValidateAtStartup(options, registry, engagementEnabled: true);
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, logger);
 
-        act.Should().Throw<InvalidOperationException>().WithMessage("*NoSuchType*not a registered schema*");
+        act.Should().NotThrow();
+        logger.Received().Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("NoSuchType")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     [Fact]
@@ -87,7 +104,8 @@ public class PopularitySignalOptionsTests
         var registry = await RegistryWith(author);
         var options = OptionsWith("Author", "SomeRelation");
 
-        var act = () => PopularitySignalValidator.ValidateAtStartup(options, registry, engagementEnabled: true);
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, NullLogger.Instance);
 
         act.Should().Throw<InvalidOperationException>()
            .WithMessage("*Author*no vector or chunk fields*");
@@ -103,7 +121,8 @@ public class PopularitySignalOptionsTests
         var registry = await RegistryWith(article);
         var options = OptionsWith("Article", "NotARelation");
 
-        var act = () => PopularitySignalValidator.ValidateAtStartup(options, registry, engagementEnabled: true);
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, NullLogger.Instance);
 
         act.Should().Throw<InvalidOperationException>()
            .WithMessage("*NotARelation*is not a relation on*Article*");
@@ -119,7 +138,8 @@ public class PopularitySignalOptionsTests
         var registry = await RegistryWith(article);
         var options = OptionsWith("Article", "Author");
 
-        var act = () => PopularitySignalValidator.ValidateAtStartup(options, registry, engagementEnabled: true);
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, NullLogger.Instance);
 
         act.Should().Throw<InvalidOperationException>()
            .WithMessage("*Author*ManyToOne*not OneToMany*");
@@ -136,7 +156,8 @@ public class PopularitySignalOptionsTests
         var registry = await RegistryWith(article);
         var options = OptionsWith("Article", "UserArticles");
 
-        var act = () => PopularitySignalValidator.ValidateAtStartup(options, registry, engagementEnabled: true);
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, NullLogger.Instance);
 
         act.Should().Throw<InvalidOperationException>()
            .WithMessage("*UserArticle*not a registered schema*");
@@ -156,7 +177,8 @@ public class PopularitySignalOptionsTests
         var registry = await RegistryWith(article, userArticle);
         var options = OptionsWith("Article", "UserArticles");
 
-        var act = () => PopularitySignalValidator.ValidateAtStartup(options, registry, engagementEnabled: true);
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, NullLogger.Instance);
 
         act.Should().Throw<InvalidOperationException>()
            .WithMessage("*UserArticle*not StarRocks-eligible*");
@@ -179,8 +201,48 @@ public class PopularitySignalOptionsTests
         var registry = await RegistryWith(article, userArticle);
         var options = OptionsWith("Article", "UserArticles");
 
-        var act = () => PopularitySignalValidator.ValidateAtStartup(options, registry, engagementEnabled: true);
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, NullLogger.Instance);
 
         act.Should().NotThrow();
+    }
+
+    // FIX 1: a second entry naming the same ParentType writes every matching relation's count
+    // (PopularitySignalConsumer.DispatchAsync builds a LIST of matches) but the read side
+    // (ObjectSearchGrpcService.PopularityFor / RetrievePopularityOrDegradeAsync) resolves via
+    // FirstOrDefault — so the second entry's count is computed and written, and then silently
+    // never ranked on. That must be a loud startup failure, not a silent half-honoured config.
+    [Fact]
+    public async Task ValidateAtStartup_DuplicateParentType_Throws()
+    {
+        var article = MinimalSchema(
+            "Article",
+            vectorFields: [new VectorDescriptor("Title", 768, "nomic-embed-text")],
+            relations:
+            [
+                new RelationDescriptor("Comments", RelationKind.OneToMany, "Comment", "ArticleId"),
+                new RelationDescriptor("Likes", RelationKind.OneToMany, "Like", "ArticleId")
+            ]);
+        var comment = MinimalSchema(
+            "Comment",
+            relations: [new RelationDescriptor("Article", RelationKind.ManyToOne, "Article", "ArticleId")]);
+        var like = MinimalSchema(
+            "Like",
+            relations: [new RelationDescriptor("Article", RelationKind.ManyToOne, "Article", "ArticleId")]);
+        var registry = await RegistryWith(article, comment, like);
+        var options = new PopularitySignalOptions
+        {
+            Signals =
+            [
+                new PopularitySignalEntry("Article", "Comments"),
+                new PopularitySignalEntry("Article", "Likes")
+            ]
+        };
+
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, NullLogger.Instance);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*Article*configured more than once*");
     }
 }

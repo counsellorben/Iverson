@@ -2601,6 +2601,47 @@ public class ObjectSearchGrpcServiceTests
         written.Should().HaveCount(5);
     }
 
+    // FIX 3 regression: neither centroid nor decay can be present (ArticleSchema, Title is
+    // embedding-only and the schema has no timestamp metadata column) but a PopularitySignalEntry
+    // IS configured for the type — popularityPossible must alone keep rerankIsIdentity false and
+    // preserve the 4x over-fetch, exactly like the decay-only case above does for decayField.
+    [Fact]
+    public async Task SearchSimilar_NoCentroidOrDecayButPopularityConfigured_StillOverFetchesFourTimesTopK()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions
+            {
+                Signals = [new PopularitySignalEntry("Article", "Author")]
+            }));
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var results = Enumerable.Range(1, 8)
+            .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
+                new Dictionary<string, string> { ["title"] = $"a{i}" }))
+            .ToList();
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        CapturedLimit(_vector).Should().Be(20);   // 4 × top_k — popularityPossible alone must gate this
+        written.Should().HaveCount(5);
+    }
+
     // DecayFieldResolverTests proves ComputeDecay honours whatever half-life it is handed
     // directly — it does NOT prove ObjectSearchGrpcService passes the CONFIGURED half-life
     // through rather than a hard-coded one. Bind a non-default DecayOptions and assert a fused

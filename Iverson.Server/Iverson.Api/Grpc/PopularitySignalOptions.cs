@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Iverson.Api.Schema;
 using Iverson.StarRocks;
@@ -39,24 +40,46 @@ public static class PopularitySignalOptionsExtensions
 internal static class PopularitySignalValidator
 {
     /// <summary>
-    /// Called once at startup, after SchemaRegistry.LoadAsync() — the four checks the design
-    /// mandates, all fail-fast. A misconfigured entry throws InvalidOperationException.
+    /// Called once at startup, after SchemaRegistry.LoadAsync() — a series of fail-fast checks
+    /// on each configured entry. A misconfigured entry throws InvalidOperationException, EXCEPT
+    /// an unregistered ParentType, which only logs a warning and skips that entry: schemas are
+    /// registered at runtime via the RegisterSchema RPC served by this same process, so on a
+    /// fresh deployment (or after a Postgres reset) failing fast here would crash-loop both the
+    /// api and worker roles with no way to ever register the schema that would clear the error.
+    /// The runtime is already fully tolerant of this exact condition — PopularitySignalConsumer
+    /// filters on registry.Get(...) is not null, and PopularitySignalReconciliationWorker
+    /// returns early — so only this startup check needed to stop being fatal.
     /// </summary>
     internal static void ValidateAtStartup(
-        PopularitySignalOptions options, SchemaRegistry registry, bool engagementEnabled)
+        PopularitySignalOptions options, SchemaRegistry registry, bool engagementEnabled, ILogger logger)
     {
+        var seenParentTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var signal in options.Signals)
         {
+            if (!seenParentTypes.Add(signal.ParentType))
+                throw new InvalidOperationException(
+                    $"{PopularitySignalOptions.Section}: ParentType '{signal.ParentType}' is " +
+                    "configured more than once. Only one signal per ParentType is supported — " +
+                    "the read side resolves a single signal per type via FirstOrDefault, so a " +
+                    "second entry would be written but silently never ranked on.");
+
             if (!engagementEnabled)
                 throw new InvalidOperationException(
                     $"{PopularitySignalOptions.Section}: Signals is non-empty but " +
                     $"{EngagementStoreOptions.Section}:Enabled is false — this feature has no " +
                     "runtime degrade path for a disabled engagement store.");
 
-            var parentSchema = registry.Get(signal.ParentType)
-                ?? throw new InvalidOperationException(
-                    $"{PopularitySignalOptions.Section}: ParentType '{signal.ParentType}' is not a " +
-                    "registered schema.");
+            var parentSchema = registry.Get(signal.ParentType);
+            if (parentSchema is null)
+            {
+                logger.LogWarning(
+                    "{Section}: ParentType '{ParentType}' is not (yet) a registered schema; " +
+                    "skipping this signal at startup. It will take effect once the schema is " +
+                    "registered — PopularitySignalConsumer and the reconciliation worker both " +
+                    "already tolerate an unregistered ParentType at runtime.",
+                    PopularitySignalOptions.Section, signal.ParentType);
+                continue;
+            }
 
             if (!StoreTargeting.HasVectorOrChunkFields(parentSchema))
                 throw new InvalidOperationException(

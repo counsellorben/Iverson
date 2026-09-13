@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 namespace Iverson.Vector;
 
 /// <summary>
-/// Fuses base similarity, centroid similarity and decay signals into a single score.
+/// Fuses base similarity, centroid similarity, decay, and popularity signals into a single score.
 /// Pure and I/O-free: performs no network calls and reads no clock. The decay signal
 /// is consumed as a pre-computed value in [0,1]; the decay curve itself is owned elsewhere.
 /// </summary>
