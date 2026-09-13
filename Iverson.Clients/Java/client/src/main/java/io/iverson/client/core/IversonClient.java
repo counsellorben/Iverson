@@ -124,8 +124,9 @@ public final class IversonClient implements AutoCloseable {
 
     /**
      * Equivalent to {@link #plaintext(String, int, CallCredentials, String, boolean)} with
-     * {@code allowInsecureCredentials=false} — since that always refuses non-null credentials,
-     * this overload only remains usable when {@code credentials} is null.
+     * {@code allowInsecureCredentials=false} — since that always refuses a non-null
+     * {@code credentials} or {@code actingUserToken}, this overload only remains usable when
+     * both are null.
      *
      * @deprecated call {@link #plaintext(String, int, CallCredentials, String, boolean)} and
      *     pass {@code allowInsecureCredentials=true} explicitly for a known-local, non-TLS
@@ -144,8 +145,8 @@ public final class IversonClient implements AutoCloseable {
      * {@link #IversonClient(String, int, CallCredentials, String)}.
      *
      * @param allowInsecureCredentials see {@link #plaintext(String, int, CallCredentials, boolean)}.
-     * @throws IllegalArgumentException if {@code credentials} is non-null and
-     *     {@code allowInsecureCredentials} is false.
+     * @throws IllegalArgumentException if {@code credentials} or {@code actingUserToken} is
+     *     non-null and {@code allowInsecureCredentials} is false.
      */
     public static IversonClient plaintext(
             String host, int port, CallCredentials credentials, String actingUserToken,
@@ -200,8 +201,9 @@ public final class IversonClient implements AutoCloseable {
 
     /**
      * Equivalent to {@link #IversonClient(ManagedChannel, CallCredentials, String, boolean)}
-     * with {@code allowInsecureCredentials=false} — since that always refuses non-null
-     * credentials, this overload only remains usable when {@code credentials} is null.
+     * with {@code allowInsecureCredentials=false} — since that always refuses a non-null
+     * {@code credentials} or {@code actingUserToken}, this overload only remains usable when
+     * both are null.
      *
      * @deprecated call {@link #IversonClient(ManagedChannel, CallCredentials, String, boolean)}
      *     and pass {@code allowInsecureCredentials=true} explicitly when {@code channel} is a
@@ -220,8 +222,8 @@ public final class IversonClient implements AutoCloseable {
      *
      * @param allowInsecureCredentials see
      *     {@link #IversonClient(ManagedChannel, CallCredentials, boolean)}.
-     * @throws IllegalArgumentException if {@code credentials} is non-null and
-     *     {@code allowInsecureCredentials} is false.
+     * @throws IllegalArgumentException if {@code credentials} or {@code actingUserToken} is
+     *     non-null and {@code allowInsecureCredentials} is false.
      */
     public IversonClient(ManagedChannel channel, CallCredentials credentials, String actingUserToken,
                           boolean allowInsecureCredentials) {
