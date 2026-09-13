@@ -73,8 +73,8 @@ silently switch off on the common case.
 - **Two marked properties fail `RegisterSchema`** with a named error. Failing at registration beats
   the convention's refuse-and-log: the developer gets an immediate error instead of a signal that
   quietly does nothing.
-- **Zero marked properties** means no buckets are written, `D = 0`, and popularity is the lifetime
-  count — today's behavior. There is deliberately **no fallback** to the `[IversonMetadata]`
+- **Zero marked properties** means no bucket series is computed: the consumer still writes the
+  series key, as `""`, so `D = 0` and popularity is the lifetime count — today's behavior. There is deliberately **no fallback** to the `[IversonMetadata]`
   convention; an implicit fallback would reintroduce the ambiguity this removes.
 
 **It marks the timestamp only.** `PopularitySignal.Signals` still names which `ParentType`/`Relation`
@@ -128,14 +128,22 @@ where a bucket's contribution falls below ~1.6%, and 60 months covers half-lives
 Beyond that the tail would be silently lost, so the validator rejects it rather than degrading
 quietly.
 
-**One write, two keys.** `SetPayloadAsync` already takes a dictionary:
+**One write, two keys — both written unconditionally.** `SetPayloadAsync` already takes a
+dictionary:
 
 ```csharp
 new Dictionary<string, object> {
-    [fieldName]             = count,                          // unchanged
-    [fieldName + "Buckets"] = "2026-07:3;2026-08:11;2026-09:2"
-}
+    [fieldName]             = count,   // unchanged
+    [fieldName + "Buckets"] = series   // "2026-07:3;2026-08:11;2026-09:2", or "" when the child
+}                                      // has no marked column, or the histogram call failed
 ```
+
+The series key is written on **every** update, never omitted. Qdrant's `SetPayload` is a *merge*:
+omitting the key leaves whatever was written there last time, so a parent whose series was ever
+written would carry a fresh `N` beside a stale `D`. With the children deleted and the histogram
+then failing, that is `N = 0` with `β·D > 0` — violating `D ≤ N`, the invariant the structural
+floor rests on. Writing `""` overwrites the stale value instead. Deleting the key is not an
+option: `IVectorWriteService` exposes no `ClearPayloadAsync`/`OverwritePayloadAsync`.
 
 The series is a **string this code encodes and parses itself**, not a Qdrant list:
 `ToCanonicalString` returns `StringValue` verbatim but falls through to protobuf's `ToString()` for
@@ -144,9 +152,18 @@ encoding is a join, and the format stays readable for debugging.
 
 **Cost:** two StarRocks queries per popularity update instead of one.
 
-**Failure behavior** follows the existing pattern: the histogram call sits in the same `try`, and any
-failure leaves the count written and the series absent — degrading to today's ranking, never to a
-wrong one.
+**Failure behavior.** The histogram gets its **own** `try`/`catch` — *not* the Count aggregation's.
+The Count `try`'s catch `return`s (`PopularitySignalConsumer.cs:76-82`) and the only write comes
+after it (`:100-105`), so placing the histogram in that block would abort the whole update on a
+histogram failure and leave the count stale — a regression against shipped behavior, where the
+count depends on nothing but the Count aggregation. The two contracts, stated separately:
+
+- **Histogram fails** → write `{count, ""}`; the parent degrades to `D = 0`, today's ranking.
+- **Count fails** → write nothing at all; the parent keeps its previous count, exactly as today.
+
+This mirrors the existing degrade-never-substitute precedent: `RetrievePopularityOrDegradeAsync`
+returns an empty dictionary rather than propagating (`ObjectSearchGrpcService.cs:970-975`), and
+`ComputeDecay` returns `null` rather than a neutral value (`DecayFieldResolver.cs:76-80`).
 
 ## Read path
 
@@ -166,8 +183,9 @@ consumers already duplicate by plan mandate.
 | Condition | Result |
 |---|---|
 | No bucket key in payload | `D = 0` → `saturate(N)`, today's ranking |
-| Bucket string malformed anywhere | **Whole series absent**, `D = 0` |
-| Child has no `[IversonPopularitySignal]` | Consumer wrote no buckets → `D = 0` |
+| Bucket string malformed anywhere | **Whole series ignored**, `D = 0` |
+| Child has no `[IversonPopularitySignal]` | Consumer wrote `""` → `D = 0` |
+| Empty bucket string (`""`) | `D = 0` → `saturate(N)`, today's ranking |
 | `N` missing but buckets present | Popularity **absent** entirely, as today — the floor needs `N` |
 | Future-dated bucket (clock skew) | Clamped to 1.0, matching `ComputeDecay` |
 | `β = 0` (default) | Reduces to `N/(N+S)` exactly |
@@ -290,13 +308,21 @@ neither ranks nor clicks.
 | A23 | No reranker signature change | `RerankCandidate.Popularity` is already `double?`; the value is pre-computed by the caller |
 | A25 | `PopularitySignalOptions` is the right home | already holds `SaturationPoint`, validated in `AddPopularitySignalOptions` |
 | A26 | Env binding works for new doubles | executed earlier this session: `PopularitySignal__SaturationPoint=186` bound, alongside `Signals__0__*` into the positional record |
-| A28 | An existing test breaks | `PopularitySignalConsumerTests.cs:163` asserts `p.Count == 1` on the payload dictionary — fails once buckets are added |
+| A28 | An existing test breaks | `PopularitySignalConsumerTests.cs:163` asserts `p.Count == 1` on the payload dictionary — fails on every path, since both keys are now written unconditionally |
 | — | The `max()` formulation is degenerate | `D ≤ N` by construction, so `max(sat(N), sat(D)) = sat(N)` always; the floor must be structural |
 | — | No feedback write path exists | grep for impression/click/feedback across `Iverson.Api` returns nothing |
+| SP1 | The object-vector read path sees the new payload key | `IntelligenceVectorService.cs:143`, `:148-152` — `payloadSelector: true` and the whole payload dict is mapped, with no key allow-list |
+| SP2 | The marked column is a StarRocks `DATETIME` | `SchemaBuilder.cs:374` — `[ClrType.ClrDatetime] = new("TIMESTAMPTZ", "DATETIME", PayloadIndexKind.Datetime)`; `EngagementTypeFor` (`:288-295`) only re-types `STRING` mappings |
+| SP3 | `PopularitySignalColumn` survives the `_iverson_schema` round trip | `SchemaRegistry.cs:212` serializes the whole descriptor, `:116` deserializes it; a defaulted nullable tolerates an absent key on a legacy row (`SchemaDescriptor.cs:46-71`) |
+| SP4 | `childSchema` is in hand at both write call sites | consumer `PopularitySignalConsumer.cs:166`; worker `PopularitySignalReconciliationWorker.cs:51-52` — both resolve it and return early when null |
+| SP5 | The histogram `Field` clears `IsFieldAllowed` for **every** marked column | `StarRocksQueryBuilder.cs:544-545` returns true whenever `constraint.AllowedFields is null`, and the updater's only constraint sets `AllowedFields: null` (`PopularitySignalConsumer.cs:72`). **Discharges A14** |
+| SP6 | `ResolveColumn` accepts **any** casing of the marked column | `StarRocksQueryBuilder.cs:661-667` indexes `ColumnNames` plus the key column via `.ToDictionary(n => n, n => n, StringComparer.OrdinalIgnoreCase)` and returns the canonical name. **Discharges A13** |
+| SP7 | `β = 0` is bit-identical to today | `0.0 * D == 0.0` and `x + 0.0 == x` for every finite `D ≥ 0` and every `long` count |
+| SP8 | `SetPayload` **merges**; omitting a key preserves its previous value | `QdrantVectorServiceTests.cs:259-275` (live-container): upsert `{["title"]="original"}`, `SetPayloadAsync({["popularity"]=7L})`, then `payload[1UL]["title"].Should().Be("original")` |
+| SP9 | An empty-string payload value round-trips through Qdrant | **UNVERIFIED** — `ToQdrantValue` maps `string s => s` (`:267`) and `ToCanonicalString` maps `StringValue => v.StringValue` (`:256`), and protobuf oneof presence holds for `""`; but no test covers an empty value server-side. Plan-time check: extend the live-container fixture in `QdrantVectorServiceTests` to set `""` over an existing value and assert the prior value is replaced |
 
 Carried as risk, not verified: A8 (old-server/new-client forward compatibility for the new field),
-A13/A14 (the marked column's casing as `AggregationDescriptor.Field` expects it, and that
-`CheckFieldAllowed`/`ResolveStrict` accept it), A19 (nothing rate-limits the doubled StarRocks call
-rate), A29/A30 (`DecayFieldResolver` remains correct for parent decay; the client conformance matrix
-survives the new field). A13/A14 are the sharpest of these — they are a plan-time check against
-`ResolveStrict`, and getting the casing wrong throws rather than failing silently.
+A19 (nothing rate-limits the doubled StarRocks call rate), A29/A30 (`DecayFieldResolver` remains
+correct for parent decay; the client conformance matrix survives the new field), and SP9 (the
+empty-string payload round trip, which has a named plan-time test above). A13 and A14 were
+previously the sharpest of these and are now discharged outright by SP6 and SP5.
