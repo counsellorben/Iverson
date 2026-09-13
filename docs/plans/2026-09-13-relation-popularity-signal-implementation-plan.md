@@ -24,6 +24,8 @@
 - **Create** `Iverson.Server/Iverson.Api/Consumers/PopularitySignalConsumer.cs` — event trigger + shared update logic (`PopularitySignalUpdater`)
 - **Create** `Iverson.Server/Iverson.Api/Reconciliation/PopularitySignalReconciliationWorker.cs` — periodic sweep
 - **Modify** `Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs` — wire `Popularity` into both search paths
+- **Modify** `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs` — thread the new constructor parameter through 7 existing call sites
+- **Modify** `Iverson.Server/Iverson.Api.Tests/Schema/DocumentTemplateValidationTests.cs` — thread the new constructor parameter through 1 existing call site
 - **Modify** `Iverson.Server/Iverson.Api/Program.cs` — registration + post-`LoadAsync` validation call
 - **Test:** `Iverson.Server/Iverson.Vector.Tests/VectorRankingOptionsTests.cs`, `ResultRerankerTests.cs`, `QdrantVectorServiceTests.cs` (extended)
 - **Test:** `Iverson.Server/Iverson.Api.Tests/Grpc/PopularitySignalOptionsTests.cs` (new)
@@ -73,6 +75,7 @@ Trusted as ground truth (thorough-brainstorming's 12 verified assumptions, unmod
 | 19 | Consumer impact (Cat. 6) | `EngagementNotReadyException`/`EngagementStoreDisabledException` are `public` in `Iverson.StarRocks`, reachable from `Iverson.Api`. Since startup validation (Task 1) already guarantees `Engagement__Enabled=true` and the child type is Engagement-eligible before this consumer ever runs, `EngagementStoreDisabledException` is not expected at runtime; `EngagementNotReadyException` (a transient StarRocks-readiness state) *can* still occur and is handled by the broad per-parent-id isolation catch (Task 4), mirroring `DocumentRerenderConsumer`'s existing "isolate per-dependent, log, and keep going" pattern rather than a narrow dedicated catch. | `Iverson.Server/Iverson.StarRocks/EngagementNotReadyException.cs:3`, `EngagementStoreDisabledException.cs:3`; `DocumentRerenderConsumer.cs:80-127` (the per-dependent `try`/`catch (Exception ex)` isolation this plan mirrors). |
 | 20 | Test convention | Consumer/service tests use xUnit + NSubstitute + FluentAssertions, with dependencies injected via primary constructors and mocked with `Substitute.For<T>()`. | `Iverson.Server/Iverson.Api.Tests/Consumers/EnrichmentConsumerTests.cs:1-30`. |
 | 21 | Sibling-set sweep (options binding vs. schema-dependent validation) | Two existing options-registration idioms coexist in this codebase: (a) validate-then-`Options.Create()` singleton (`DecayOptions`, `VectorRankingOptions` — self-contained, no external state needed) and (b) plain `services.Configure<T>(section)` with no validation (`DocumentRerenderOptions`, `EngagementStoreOptions`). Neither fits `PopularitySignalOptions` alone: its numeric field (`SaturationPoint`) fits (a); its relation fields need `SchemaRegistry`, which isn't available until after (a)'s registration point. Resolved by splitting: bind + validate `SaturationPoint` via pattern (a) at the normal pre-`Build()` point; resolve/validate the relation entries via a separate static method called explicitly after `LoadAsync()` (see assumption #1). No new third options-pattern is introduced. | Re-read of `DecayOptions.cs` and `Program.cs:239,265-266` (the `Configure<T>` sites) confirms both existing idioms; this plan does not add a third. |
+| 22 | Consumer impact (Cat. 6) | `ObjectSearchGrpcService`'s own constructor — distinct from `RerankCandidate` (assumption #4) — has 8 existing direct-construction call sites across 2 test files, none in Task 6's original file list; every one already threads `Options.Create(new DecayOptions())` as its trailing (12th) positional argument, so appending a 13th (`Options.Create(new PopularitySignalOptions())`) is a mechanical, already-precedented edit at each site. Added 2026-09-13 per critical-implementation-review round 1, finding 2.3. | `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs:74,2613,2686,2740,2759,3956,4152`; `Iverson.Server/Iverson.Api.Tests/Schema/DocumentTemplateValidationTests.cs:332`; `ObjectSearchGrpcServiceTests.cs:74-80` read in full, confirming the `Options.Create(new DecayOptions())`-trailing shape. |
 
 ## Tasks
 
@@ -96,6 +99,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Iverson.Api.Schema;
+using Iverson.StarRocks;
 
 namespace Iverson.Api.Grpc;
 
@@ -396,7 +400,7 @@ internal sealed class PopularitySignalUpdater(
     IEngagementStoreSearchService search,
     IVectorWriteService vector,
     IntelligenceTenantScope tenantScope,
-    ILogger logger)
+    ILogger<PopularitySignalUpdater> logger)
 {
     internal async Task UpdateAsync(
         SchemaDescriptor parentSchema, PopularitySignalEntry signal, SchemaDescriptor childSchema,
@@ -683,6 +687,8 @@ git commit -m "add PopularitySignalReconciliationWorker"
 
 **Files:**
 - Modify: `Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs`
+- Modify: `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs`
+- Modify: `Iverson.Server/Iverson.Api.Tests/Schema/DocumentTemplateValidationTests.cs`
 - Test: `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchVectorIntegrationTests.cs`
 
 **Interfaces:**
@@ -690,7 +696,9 @@ git commit -m "add PopularitySignalReconciliationWorker"
 
 - [ ] **Step 1: Inject `IOptions<PopularitySignalOptions>`**
 
-Add to `ObjectSearchGrpcService`'s primary constructor parameter list, stored as `_popularitySignal = popularitySignalOptions.Value` (matches the existing `_decayOptions`/`_ranking` field pattern).
+Add to `ObjectSearchGrpcService`'s primary constructor parameter list, stored as `_popularitySignal = popularitySignalOptions.Value` (matches the existing `_decayOptions`/`_ranking` field pattern). This is a new *required* parameter with no default, so it breaks every existing direct `new ObjectSearchGrpcService(...)` call — update each of the 8 sites below by appending `Options.Create(new PopularitySignalOptions())` as a 13th positional argument, mirroring how `Options.Create(new DecayOptions())` is already the trailing argument at every one of them:
+- `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs:74,2613,2686,2740,2759,3956,4152`
+- `Iverson.Server/Iverson.Api.Tests/Schema/DocumentTemplateValidationTests.cs:332`
 
 - [ ] **Step 2: Object-vector path (`SearchSimilar`) — sourcing + fetch-limit gate**
 
@@ -776,6 +784,8 @@ In the chunk `RerankCandidate` construction (`:646-654`), populate `Popularity` 
 - [ ] **Step 5: Commit**
 ```bash
 git add Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs \
+        Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs \
+        Iverson.Server/Iverson.Api.Tests/Schema/DocumentTemplateValidationTests.cs \
         Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchVectorIntegrationTests.cs
 git commit -m "wire Popularity into SearchSimilar and SearchChunks"
 ```
