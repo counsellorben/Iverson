@@ -1706,4 +1706,46 @@ public class StarRocksPipelineBuilderTests
 
         act.Should().Throw<EngagementQueryTranslationException>();
     }
+
+    // ── CSR finding #6 fix-round 1: PipelineRequest.Limit at/over MaxGroupByLimit ──────────────
+    // Coverage gap flagged in review: StarRocksQueryBuilderTests covers GroupByRequest.Limit both
+    // ways, but the identical CheckGroupByLimit call in StarRocksPipelineBuilder's ValidateLimits
+    // (for PipelineRequest.Limit) had no dedicated test pair of its own.
+
+    [Fact]
+    public void Build_LimitAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByLimit = 500 };
+        var request = Request();
+        request.Limit = 500;
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry(), limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Build_LimitOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByLimit = 500 };
+        var request = Request();
+        request.Limit = 501;
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry(), limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*501*500*");
+    }
+
+    [Fact]
+    public void Build_DefaultResolvedLimit_MatchesMaxGroupByLimitDefault_DoesNotThrow()
+    {
+        // PipelineRequest.Limit <= 0 resolves to the implicit default of 10,000 (unchanged
+        // behavior) — MaxGroupByLimit's own default (10,000) must not reject that default.
+        var request = Request();
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+
+        act.Should().NotThrow();
+    }
 }

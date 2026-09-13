@@ -1152,6 +1152,26 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
+    public async Task SearchChunks_TopKAtLimit_Passes()
+    {
+        // Fix-round 1 (Low finding): the boundary-passes side was only covered for SearchSimilar;
+        // SearchChunks' own MaxTopK enforcement had rejection coverage but no at-limit coverage.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var sut = SutWithTopKLimit(10);
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+
+        var act = () => sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
     public async Task SearchChunks_TopKOverLimit_ThrowsInvalidArgument_WithoutEmbeddingOrQueryingQdrant()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());

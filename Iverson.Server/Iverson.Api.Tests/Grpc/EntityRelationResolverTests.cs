@@ -160,6 +160,69 @@ public class EntityRelationResolverTests
     }
 
     [Fact]
+    public async Task ResolveRelationsAsync_WithDiamondReference_ExpandsBothOccurrencesFully()
+    {
+        // Fix-round 1 (Medium finding): a DIAMOND, not a cycle — DiamondDocument.CreatedBy and
+        // .UpdatedBy are two DIFFERENT relations that both happen to point at the SAME
+        // DiamondUser. A traversal-global "seen anywhere in this request" cycle guard would mark
+        // that user visited while expanding CreatedBy and then silently skip expanding
+        // User.Team on the second occurrence (UpdatedBy) — even though nothing here is cyclic and
+        // depth (3) is never exhausted. The path-scoped fix must expand Team on BOTH occurrences.
+        var docId  = "66666666-0000-0000-0000-000000000001";
+        var userId = "66666666-0000-0000-0000-000000000002"; // SAME user for both relations
+        var teamId = "66666666-0000-0000-0000-000000000003";
+
+        await _registry.RegisterAsync(SchemaFixtures.DiamondDocumentSchema());
+        await _registry.RegisterAsync(SchemaFixtures.DiamondUserSchema());
+        await _registry.RegisterAsync(SchemaFixtures.DiamondTeamSchema());
+
+        var docJson  = $$"""{"Id":"{{docId}}","Title":"Spec","CreatedById":"{{userId}}","UpdatedById":"{{userId}}","TenantId":"test-tenant"}""";
+        var userJson = $$"""{"Id":"{{userId}}","Name":"Alice","TeamId":"{{teamId}}","TenantId":"test-tenant"}""";
+        var teamJson = $$"""{"Id":"{{teamId}}","Name":"Platform","TenantId":"test-tenant"}""";
+
+        _entities
+            .FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "diamond_users"),
+                Arg.Is<string>(k => k == userId),
+                Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(userJson);
+        _entities
+            .FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "diamond_teams"),
+                Arg.Is<string>(k => k == teamId),
+                Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(teamJson);
+
+        var entityStruct = JsonParser.Default.Parse<Struct>(docJson);
+        var schema = _registry.Get("DiamondDocument")!;
+
+        // depth: 3 so User -> Team (the second hop) actually has room to expand; nothing here
+        // approaches MaxRelationDepth's real-world default of 5.
+        await _sut.ResolveRelationsAsync(entityStruct, schema, depth: 3, ActingUser, CancellationToken.None);
+
+        var createdBy = entityStruct.Fields["CreatedBy"].StructValue;
+        var updatedBy = entityStruct.Fields["UpdatedBy"].StructValue;
+
+        createdBy.Fields["Name"].StringValue.Should().Be("Alice");
+        updatedBy.Fields["Name"].StringValue.Should().Be("Alice");
+
+        // The actual regression: BOTH occurrences must have their own Team relation expanded.
+        createdBy.Fields.Should().ContainKey("Team");
+        updatedBy.Fields.Should().ContainKey("Team");
+        createdBy.Fields["Team"].StructValue.Fields["Name"].StringValue.Should().Be("Platform");
+        updatedBy.Fields["Team"].StructValue.Fields["Name"].StringValue.Should().Be("Platform");
+
+        // The user is fetched independently for each relation (CreatedBy/UpdatedBy don't share a
+        // cache) and its Team is fetched once per fetch of the user — 2 users, 2 teams.
+        await _entities.Received(2).FetchByKeyAsync(
+            Arg.Is<TableSchema>(s => s.TableName == "diamond_users"),
+            Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>());
+        await _entities.Received(2).FetchByKeyAsync(
+            Arg.Is<TableSchema>(s => s.TableName == "diamond_teams"),
+            Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>());
+    }
+
+    [Fact]
     public async Task ResolveRelationsAsync_OmitsTheServerOwnedTenantColumnFromTheResolvedRelation()
     {
         // A nested relation struct is built from the RELATED row's row_to_json, so it carries the

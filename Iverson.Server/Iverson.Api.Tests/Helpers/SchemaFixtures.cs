@@ -142,6 +142,70 @@ public static class SchemaFixtures
         TenantColumn   = "TenantId"
     };
 
+    // Team / User(->Team) / Document(->User x2): a DIAMOND relation shape — Document.CreatedBy and
+    // Document.UpdatedBy are two DIFFERENT relations that can both point at the SAME User row.
+    // Not a cycle (User -> Team is a dead end), but a real regression risk for a traversal-global
+    // "seen anywhere in this request" cycle guard, which would silently fail to expand
+    // User.Team on the second occurrence even though it's well within MaxRelationDepth. Used by
+    // EntityRelationResolverTests' diamond-reference coverage (CSR finding #6 fix-round 1).
+    public static SchemaDescriptor DiamondTeamSchema() => new()
+    {
+        TypeName       = "DiamondTeam",
+        TableName      = "diamond_teams",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Name", "text", false)],
+        FkColumns      = [],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      = [],
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
+    };
+
+    public static SchemaDescriptor DiamondUserSchema() => new()
+    {
+        TypeName       = "DiamondUser",
+        TableName      = "diamond_users",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Name", "text", false), new ColumnDescriptor("TeamId", "uuid", true)],
+        FkColumns      = [new ForeignKeyDescriptor("TeamId", "DiamondTeam")],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      = [new RelationDescriptor("Team", RelationKind.ManyToOne, "DiamondTeam", "TeamId")],
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
+    };
+
+    public static SchemaDescriptor DiamondDocumentSchema() => new()
+    {
+        TypeName       = "DiamondDocument",
+        TableName      = "diamond_documents",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  =
+        [
+            new ColumnDescriptor("Title", "text", false),
+            new ColumnDescriptor("CreatedById", "uuid", false),
+            new ColumnDescriptor("UpdatedById", "uuid", false)
+        ],
+        FkColumns      =
+        [
+            new ForeignKeyDescriptor("CreatedById", "DiamondUser"),
+            new ForeignKeyDescriptor("UpdatedById", "DiamondUser")
+        ],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      =
+        [
+            new RelationDescriptor("CreatedBy", RelationKind.ManyToOne, "DiamondUser", "CreatedById"),
+            new RelationDescriptor("UpdatedBy", RelationKind.ManyToOne, "DiamondUser", "UpdatedById")
+        ],
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
+    };
+
     public static SchemaDescriptor TagSchema() => new()
     {
         TypeName       = "Tag",
