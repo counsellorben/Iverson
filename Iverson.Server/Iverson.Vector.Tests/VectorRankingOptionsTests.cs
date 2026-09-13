@@ -96,6 +96,51 @@ public sealed class VectorRankingOptionsTests
     }
 
     [Fact]
+    public void AddVectorRanking_NegativeWPopularity_Throws()
+    {
+        var config = BuildConfig(
+            ("WBase", "0.45"),
+            ("WCentroid", "0.45"),
+            ("WDecay", "0.10"),
+            ("WPopularity", "-0.1"),
+            ("LambdaSimilar", "0.70"), ("LambdaChunks", "0.70"));
+
+        var act = () => new ServiceCollection().AddVectorRanking(config);
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void AddVectorRanking_NonFiniteWPopularity_NaN_Throws()
+    {
+        var config = BuildConfig(
+            ("WBase", "0.45"),
+            ("WCentroid", "0.45"),
+            ("WDecay", "0.10"),
+            ("WPopularity", "NaN"),
+            ("LambdaSimilar", "0.70"), ("LambdaChunks", "0.70"));
+
+        var act = () => new ServiceCollection().AddVectorRanking(config);
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void AddVectorRanking_AllFourWeightsZero_Throws()
+    {
+        var config = BuildConfig(
+            ("WBase", "0"),
+            ("WCentroid", "0"),
+            ("WDecay", "0"),
+            ("WPopularity", "0"),
+            ("LambdaSimilar", "0.70"), ("LambdaChunks", "0.70"));
+
+        var act = () => new ServiceCollection().AddVectorRanking(config);
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
     public void AddVectorRanking_LambdaSimilarOutOfRange_Throws()
     {
         var config = BuildConfig(

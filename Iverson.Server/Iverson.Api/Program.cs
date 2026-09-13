@@ -187,6 +187,7 @@ builder.Services.AddQdrant(
 
 builder.Services.AddVectorRanking(cfg);
 builder.Services.AddDecayOptions(cfg);
+builder.Services.AddPopularitySignalOptions(cfg);
 
 builder.Services.AddKafka(cfg);
 
@@ -416,6 +417,11 @@ catch (Exception ex)
 }
 var schemaRegistry = app.Services.GetRequiredService<SchemaRegistry>();
 await schemaRegistry.LoadAsync();
+
+PopularitySignalValidator.ValidateAtStartup(
+    app.Services.GetRequiredService<IOptions<PopularitySignalOptions>>().Value,
+    schemaRegistry,
+    cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true));
 
 // Plumbing table for the enrichment loop breaker — created the same way SchemaRegistry creates
 // its own backing table (SchemaRegistry.LoadAsync → repository.EnsureTableAsync).
