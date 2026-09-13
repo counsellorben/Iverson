@@ -119,6 +119,14 @@ score α-nDCG 0 under all four rankings, contributing exactly 0 to every delta; 
 restriction is reported as a sensitivity, and per the parent gate's convention the **per-population
 primary decides** while the other is context.
 
+The sensitivity is obtained by re-running the same three declared pairs against **query-filtered copies
+of both qrels files** — `--qrels` and `--nugget-qrels` — restricted to the 610 queries that have at
+least one relevant document in their 50. The run files are *not* filtered: `ir_measures` fixes the
+averaged population from the qrels, back-filling every qrels query the run did not score with
+`measure.DEFAULT = 0.0` (`ir_measures/providers/base.py:22-27`), so filtering the run files leaves the
+672-query figure unchanged and merely relabels it (A23). Only the point estimate rescales by 672/610;
+the sensitivity's CI cannot be derived arithmetically from the primary's.
+
 ### 2.6 Decision rule, pre-specified
 
 The materiality bar is **0.02 α-nDCG@10**, fixed before the measurement runs.
@@ -181,6 +189,8 @@ scripts. It reads the run and both qrels files and writes, into one output direc
   per-document score. `ir_measures.read_trec_run` discards the rank column and every scorer re-sorts each
   query by score descending, so the score column — not the rank column and not file order — is what
   determines the ranking that actually gets scored.
+- `qrels.610.trec` and `qrels.nugget.610.trec` — the two qrels files filtered to the 610 queries, the
+  inputs §2.5's sensitivity re-run consumes. The run files are reused unfiltered.
 - `aspect-summary.tsv` — one row per query: relevant count in 50, distinct nuggets, nuggets reachable in
   the top 10 under each of the four rankings
 
@@ -219,6 +229,7 @@ row in the ranked-changes doc's §0 table.
 | A20 | Every run query is present in both qrels files, so none is silently dropped from the denominator | run ∖ `qrels.trec` = 0 and run ∖ `qrels.nugget.trec` = 0 over all 672 queries; `pyndeval/__init__.py:93` scores only `if qid in self.qrels`, with no else-branch — a missing query would shrink the denominator invisibly rather than score 0 |
 | A21 | B's file order is score-descending, and the scorer's tie-break diverges from it only where §2.3 does not gate | score-descending on 672/672; 99 queries carry tied scores; the scorer's `(-score, doc_id)` order (`pyndeval/__init__.py:153`, `:160`) differs from file order on 58/672 queries and on 7/672 within the top 10. The divergence touches R − B only — A − R and G − R are computed between files all written under §2.8's score contract |
 | A22 | Under the α-discounted objective the prefix restriction is a no-op | greedy over all 50 gives the ranking identical to greedy within the prefix plus a B-order tail, on 672/672 queries: every relevant document has strictly positive gain and every unjudged document exactly zero |
+| A23 | The averaged population is fixed by the **qrels**, not the run — so a population restriction must filter the qrels | `PyNdEvalEvaluator` takes `query_ids = {q.query_id for q in qrels}` (`pyndeval_provider.py:98`) and `Evaluator.iter_calc` yields `Metric(..., value=measure.DEFAULT)` for every qrels query the run did not score (`providers/base.py:22-27`; `DEFAULT = 0.` at `measures/base.py:40`). Observed: qrels over 3 queries with a run covering 2 gives per-query `{1.0, 1.0, 0.0}` and aggregate 0.6667, while restricting the qrels instead gives 1.0 |
 
 ---
 
