@@ -16,7 +16,7 @@ do by reordering the already-retrieved 50 on aspect structure — not a term.
 
 ## Verdict: GO — G − R = +0.0609 α-nDCG@10, 95 % CI [+0.0541, +0.0678]
 
-Spec §2.6, applied verbatim:
+Spec §2.6's rule, as carried into the plan's Global Constraints:
 
 > **GO** iff **G − R ≥ +0.02** on the 672-query primary population **and** its 95 % CI lower bound > 0.
 > **NO-GO** otherwise, including any point estimate below +0.02 whatever its p-value.
@@ -43,8 +43,9 @@ Cohen's d_z: 0.677 (G − R), 0.647 (A − R), 1.301 (R − B). MDE @ 80 % power
 
 ### What the split between G − R and A − R says
 
-A − R = +0.0570 is **93.6 %** of G − R = +0.0609. Nearly the whole ceiling is reachable by ordering on a
-per-document **aspect count** alone; the α-discounted greedy adds +0.0039 beyond it. Spec §2.6 anticipated
+A − R = +0.0570 is **93.5 %** of G − R = +0.0609 (derived: 0.056955 / 0.060947). Nearly the whole ceiling
+is reachable by ordering on a per-document **aspect count** alone; the α-discounted greedy adds **+0.0040**
+beyond it (derived: 0.060947 − 0.056955). Spec §2.6 anticipated
 the opposite split ("headroom *but not through a per-document aspect count*") as the interesting case —
 this is the other branch: the simpler signal captures almost all of the available headroom. That is a
 statement about the ceiling, not about any realised term.
@@ -222,7 +223,7 @@ off, which is precisely the error spec §1.1 was written to avoid.
 conversion at single-digit percentages of an oracle; at 3.7 % this ceiling predicts about +0.002, below
 this project's measurement floor. The GO is a licence to *design and then measure*, not a prediction.
 
-### Known limits, carried forward verbatim from spec §5
+### Known limits, carried forward from spec §5 and §2.7
 
 - **The ceiling is a ceiling on what α-nDCG can reward, not on true aspect coverage.** 48.6 % of top-10
   documents are unjudged and score as covering nothing. The measurement is still the right one: a term

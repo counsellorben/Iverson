@@ -21,21 +21,29 @@ import aspect_oracle  # noqa: E402
 # q_greedy -- the discriminator fixture from the plan: B order d3, d2, d1; d1 and d2 both
 #             cover {n1, n2}, d3 covers only {n1}. The alpha-discounted greedy and a
 #             not-yet-covered-count greedy diverge on their SECOND pick.
+# q_discount -- discriminates rank_G's alpha-DISCOUNT from a static per-document nugget
+#             COUNT (rank_A's objective): B order dBig, dA, dB; dBig covers {n1, n2, n3},
+#             dA covers only {n1}, dB covers only {n4}. dBig is first either way, but a
+#             static count breaks the dA/dB tie by B order (dA before dB) while the
+#             alpha-discount favours dB, whose nugget dBig never touched.
 
 RUN = collections.OrderedDict([
     ("q_none", ["a1", "a2", "a3"]),
     ("q_tie", ["x1", "x2", "x3"]),
     ("q_greedy", ["d3", "d2", "d1"]),
+    ("q_discount", ["dBig", "dA", "dB"]),
 ])
 
 REL = {
     "q_tie": {"x1", "x2"},
     "q_greedy": {"d1", "d2", "d3"},
+    "q_discount": {"dBig", "dA", "dB"},
 }
 
 NUG = {
     "q_tie": {"x1": {"n1"}, "x2": {"n2"}},
     "q_greedy": {"d1": {"n1", "n2"}, "d2": {"n1", "n2"}, "d3": {"n1"}},
+    "q_discount": {"dBig": {"n1", "n2", "n3"}, "dA": {"n1"}, "dB": {"n4"}},
 }
 
 
@@ -136,6 +144,48 @@ def test_rank_G_does_not_stop_once_all_nuggets_are_covered():
     assert set(result) == {"d1", "d2", "d3"}
     # and the still-covered-but-relevant d3 is ordered last, by its (now-zero) discounted gain
     assert result[-1] == "d3"
+
+
+def test_alpha_is_the_pre_registered_value():
+    # Spec §2.4: pyndeval's default, pre-registered so the greedy's objective and the
+    # metric's objective are the same constant by construction. Not a CLI flag.
+    assert aspect_oracle.ALPHA == 0.5
+
+
+def test_rank_R_prefix_preserves_b_order_when_all_relevant():
+    # q_greedy's three docs are all relevant, so rank_R's entire output is just B's order
+    # carried through unchanged -- this pins the "in B's order" half of rank_R's docstring,
+    # which the permutation/prefix-membership checks above cannot: they hold for any
+    # ordering of the relevant prefix, not just B's.
+    docs = RUN["q_greedy"]
+    result = aspect_oracle.rank_R(docs, REL["q_greedy"], NUG["q_greedy"])
+    assert result == ["d3", "d2", "d1"]
+
+
+def test_rank_A_orders_by_descending_nugget_count():
+    # Same fixture as rank_G's discriminator above: d1 and d2 both cover 2 nuggets, d3
+    # covers 1. This pins the sort DIRECTION (descending count, not ascending) and that
+    # the key is the nugget count at all (not a constant that just falls through to B
+    # order) -- an ascending sort or a constant key would both produce d3, d2, d1 instead.
+    docs = RUN["q_greedy"]
+    result = aspect_oracle.rank_A(docs, REL["q_greedy"], NUG["q_greedy"])
+    assert result == ["d2", "d1", "d3"]
+
+
+def test_rank_G_applies_alpha_discount_not_static_count():
+    # dBig covers all three nuggets outright; dA and dB each cover a single nugget dBig
+    # doesn't touch. After dBig is picked, its nuggets are discounted to (1 - ALPHA) ** 1
+    # = 0.5 each, so dB's still-untouched nugget (gain 1) beats dA's half-covered one
+    # (gain 0.5) for second place.
+    docs = RUN["q_discount"]
+    result = aspect_oracle.rank_G(docs, REL["q_discount"], NUG["q_discount"])
+    assert result == ["dBig", "dB", "dA"]
+
+    # A static per-document nugget COUNT (no discount -- rank_A's own objective) ties dA
+    # and dB at count 1 and breaks the tie by B order, giving dA before dB: this is what
+    # separates rank_G's ordering from rank_A's on this fixture, not just from a
+    # not-yet-covered-count greedy (already covered by the q_greedy tests above).
+    assert aspect_oracle.rank_A(docs, REL["q_discount"], NUG["q_discount"]) == ["dBig", "dA", "dB"]
 
 
 # --- b_index --------------------------------------------------------------------------------

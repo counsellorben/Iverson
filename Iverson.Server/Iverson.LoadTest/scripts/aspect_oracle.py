@@ -152,8 +152,10 @@ def select_610(run, rel):
 
 
 def summary_rows(run, rel, nug, rankings):
-    """One row per query: relevant count in 50, distinct nuggets covered by relevant
-    documents, and nuggets reachable in the top 10 under each named ranking.
+    """One row per query: relevant count in 50, distinct nuggets covered by any document
+    carrying nugget rows for this query (not filtered by `rel` -- these coincide only
+    because relevance is exactly the nugget union on this corpus, spec A8), and nuggets
+    reachable in the top 10 under each named ranking.
 
     `rankings` is an OrderedDict/dict of label -> {qid: [docid, ...]}, e.g.
     {"B": ..., "R": ..., "A": ..., "G": ...}, each value a permutation of run[qid]."""
