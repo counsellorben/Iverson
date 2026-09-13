@@ -99,6 +99,8 @@ Newly introduced by this plan and verified at plan-write time.
 | P19 | Code validity | `report.py` emits one `[scores]` block per `--run` given, so passing all four yields four | `report.py:915-917` loops `for path in run_paths: score_run(...)` |
 | P20 | Consumer impact | Adding a §0 row breaks no consumer — no code reads the ranked-changes doc | `grep -rln "2026-09-06-ranked-changes" --include=*.py --include=*.cs --include=*.sh` → no hits |
 | P21 | Command | `docs/plans/` is gitignored so the gate doc needs `git add -f`; the scripts directory and the `docs/`-root ranked-changes doc are **not** ignored | `.gitignore:49` is `**/docs/plans/`; `git check-ignore -v docs/plans/<new>.md` → exit 0 matching that rule, while `Iverson.Server/Iverson.LoadTest/scripts/` matches no rule |
+| P22 | Code validity | Task 1's `rank_G` block **as written** produces the ranking A13 describes, so the `G=R` pair clears `check_pool`'s floor | the block extracted verbatim and run over all 672 queries against the real run and both qrels gives G ≠ R on **324/672 = 48.2 %**, matching A13 and clearing `POOL_MIN_REORDERED_FRACTION = 0.25`. A block implementing a slightly different rule would `sys.exit` the whole report before any figure existed |
+| P23 | Command | Every command block in both tasks is written to run from the repository root | all four `python3` blocks and both `git` blocks use repo-root-relative paths; the same shape is the documented convention at `test_beta_invariant.py:3` |
 
 ---
 
@@ -184,7 +186,7 @@ Newly introduced by this plan and verified at plan-write time.
 
   - `rank_R`, `rank_A`, `rank_G` each return a permutation of the input (same multiset, same length).
   - All three place exactly the relevant documents in the prefix, and the identical set — spec §2.2's load-bearing property.
-  - `rank_G`'s first pick maximises α-discounted gain, and on the already-covered fixture it differs from what a not-yet-covered **count** greedy would pick. Assert the specific ordering, not just that one exists.
+  - `rank_G` **ranks** the already-covered fixture differently from a not-yet-covered **count** greedy given the same documents, nuggets and B-order tie-break. Assert the specific ordering, not just that one exists. Note that the **first** pick is provably identical under both objectives — at the first pick `seen` is empty, so `(1 - ALPHA) ** 0 == 1` makes the α-discounted gain exactly the not-yet-covered count — so the assertion must be on the full ordering, never the first pick. A fixture that discriminates: B order `d3, d2, d1` with `d1 → {n1,n2}`, `d2 → {n1,n2}`, `d3 → {n1}`, where `rank_G` returns `['d2','d1','d3']` and a count greedy returns `['d2','d3','d1']`.
   - `rank_G` on a query whose nuggets are all covered early still orders the remaining relevant documents by discounted gain rather than stopping.
   - `write_trec` emits strictly decreasing scores within every query, and 6 columns per line.
   - `filter_qrels` keeps exactly the requested query ids and drops every other row.
@@ -237,12 +239,17 @@ Newly introduced by this plan and verified at plan-write time.
     | tee "$OUT/report-primary.txt"
   ```
 
-- [ ] **Step 3: Apply the writer's self-check BEFORE reading any other figure.** Spec §2.8: R − B must be non-zero on this corpus. If the `R vs B` block reports `delta +0.0000` with `0 / 672` queries changed, the score column still encodes B — that is a writer bug in Task 1, **not** a result. Fix Task 1 and re-run; do not proceed to the verdict. A non-zero `[pool] sequence differs` line does **not** clear this check: the pool check reads file order and cannot see the score column (A19).
+- [ ] **Step 3: Apply the writer's self-check BEFORE reading any other figure.** Spec §2.8: R − B must be non-zero on this corpus. If the `R vs B` block **for `alpha_nDCG@10`** reports `delta +0.0000` with `0 / 672` queries changed, the score column still encodes B — that is a writer bug in Task 1, **not** a result. Fix Task 1 and re-run; do not proceed to the verdict. A non-zero `[pool] sequence differs` line does **not** clear this check: the pool check reads file order and cannot see the score column (A19).
+
+  **Seven of the twelve `[compare]` blocks print `delta +0.0000` with `0 / 672` on a correct run and are not the check.** `report.py` scores four measures (`measures = [nDCG @ 10, R @ 50, AP]` at `report.py:876`, plus `alpha_nDCG @ 10` at `:911`), so each pair gets four blocks. Expected zeros: `R@50` for all three pairs (identical pools at depth 50), and `nDCG@10` and `AP` for `G vs R` and `A vs R` — R, A and G place the identical relevant set in the identical positions and differ only in the order within it, which binary-relevance measures cannot see. **Only `alpha_nDCG@10` separates the three oracles.**
 
   Second self-check, from spec §2.4: **R@50 must be identical across all four `[scores]` blocks.** The pools are identical by construction, so any difference means a run file lost or gained a document — a writer bug, not a result.
 
 - [ ] **Step 4: Score the 610-query sensitivity.** Same three pairs, the same **unfiltered** run files, and the two **filtered** qrels files — filtering the run files would silently reproduce the 672 figure (A23).
   ```bash
+  export PYTHONPATH=~/repositories/iverson-benchmark-corpora/python-libs
+  OUT=~/repositories/iverson-benchmark-corpora/aspect-oracle-2026-09-13
+  ARMS=~/repositories/iverson-benchmark-corpora/chunk-coverage-phase2-arms-2026-09-09
   python3 Iverson.Server/Iverson.LoadTest/scripts/report.py \
     --run "$ARMS/fs2048-b0.chunks.trec" --run "$OUT/oracle-R.trec" \
     --run "$OUT/oracle-A.trec" --run "$OUT/oracle-G.trec" \
