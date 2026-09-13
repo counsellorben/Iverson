@@ -310,7 +310,7 @@ entries:
   #
   # This copy is ALSO what Iverson.Api.Tests' AuthentikContainerFixture applies (authentik's
   # blueprint discovery rglobs the bind-mounted directory, so compose-only/ is picked up),
-  # which is what makes AuthentikOrchestratorRoleIntegrationTests a test of the shipped
+  # which is what makes AuthentikRecoveryFlowIntegrationTests a test of the shipped
   # blueprint rather than of a test-local reconstruction of it. Keep it in sync with the Helm
   # template.
   - model: authentik_rbac.role

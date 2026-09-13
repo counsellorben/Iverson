@@ -14,7 +14,7 @@ public sealed class AuthentikAdminClientTests
     /// <summary>
     /// Mirrors EmbeddingServiceTests' FakeHttpMessageHandler, extended to return a queue of
     /// responses in order (AuthentikAdminClient often issues more than one HTTP call per logical
-    /// operation, e.g. resolve-group-pk then create-user then set-password). If fewer responses
+    /// operation, e.g. resolve-group-pk then create-user then recovery-link). If fewer responses
     /// are supplied than requests made, the last response is reused for any remaining requests.
     /// </summary>
     private sealed class FakeHttpMessageHandler(params HttpResponseMessage[] responses) : HttpMessageHandler

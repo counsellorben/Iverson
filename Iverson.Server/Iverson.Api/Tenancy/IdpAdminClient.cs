@@ -14,7 +14,7 @@ namespace Iverson.Api.Tenancy;
 /// production use. (The group add_user/remove_user endpoints this caveat used to also
 /// cover are gone — see <see cref="AddGroupAsync"/>, CSR round-3 finding #1; the
 /// replacement groups-PATCH path IS exercised against a live Authentik by
-/// Iverson.Api.Tests' AuthentikOrchestratorRoleIntegrationTests.)
+/// Iverson.Api.Tests' AuthentikRecoveryFlowIntegrationTests.)
 ///
 /// CSR finding #4 remediation: CreateUserAsync no longer posts a caller-supplied password to
 /// Authentik's set_password endpoint. Instead it POSTs /api/v3/core/users/{id}/recovery/,
