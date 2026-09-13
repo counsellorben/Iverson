@@ -85,6 +85,19 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
+    public async Task SetPayloadAsync(
+        string collectionName, ulong id, IReadOnlyDictionary<string, object> payload)
+    {
+        using var activity = Telemetry.Source.StartActivity("qdrant.set_payload", ActivityKind.Client);
+        activity?.SetTag("db.system", "qdrant");
+        activity?.SetTag("qdrant.collection", collectionName);
+        activity?.SetTag("qdrant.point_id", id);
+
+        var qdrantPayload = payload.ToDictionary(kv => kv.Key, kv => ToQdrantValue(kv.Value));
+        await client.SetPayloadAsync(collectionName, qdrantPayload, id);
+        activity?.SetStatus(ActivityStatusCode.Ok);
+    }
+
     public async Task<IReadOnlyList<VectorSearchResult>> SearchAsync(
         string collectionName,
         float[] queryVector,
