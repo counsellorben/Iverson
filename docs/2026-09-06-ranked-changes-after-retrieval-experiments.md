@@ -134,8 +134,17 @@ collapse onto the count is untested. FreshStack-2048 and its snapshots are on di
 is built, so the open work is a term, not an instrument. Record this explicitly so the Phase 2 result is
 not mis-cited as "coverage was tried and failed" — a misreading `docs/plans/2026-09-GATE-chunk-coverage-phase2.md`
 itself warns against. `docs/plans/2026-09-GATE-aspect-coverage-oracle.md` has since measured that headroom
-directly and returned **GO** (G − R = +0.0609, 95 % CI [+0.0541, +0.0678]), so the term is now licensed to
-be designed.
+directly and returned **GO** (G − R = +0.0609, 95 % CI [+0.0541, +0.0678]).
+
+**CLOSED 2026-09-13 — the headroom is real and no available signal reaches it.** That gate's 2026-09-13
+amendment records four offline probes: chunk-score-derived signals proxy the oracle's per-document aspect
+count at ρ ≤ 0.0790 over 2,733 relevant pairs (a scalar score per chunk cannot say *which* part of the
+query a chunk answered); FreshStack ships no nugget text, so a query-decomposition term has no offline
+validation path; MMR moves α-nDCG@10 by 0.0027 across its whole λ range, with λ = 1.00 (MMR off) tying
+λ = 0.70, so retuning the shipped diversity mechanism on the diversity metric is dead; and the
+oracle→realised conversion reproduces at 3.63 %, which puts a realised term at ≈ +0.002 against a measured
+MDE of 0.0097. The idea is not refuted — the signals are absent. Reopen on nugget text, a larger
+subtopic-labelled corpus, or a query-side multi-vector representation.
 
 ---
 

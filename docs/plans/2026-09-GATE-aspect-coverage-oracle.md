@@ -244,3 +244,82 @@ this project's measurement floor. The GO is a licence to *design and then measur
 
 **Harness only.** `Iverson.Server/Iverson.LoadTest/scripts/aspect_oracle.py` and its 27-test suite. No
 `VectorRankingOptions` constant, no ranking code, no configuration, no server change.
+
+---
+
+## Amendment, 2026-09-13: the licensed term has no reachable signal
+
+The GO above licensed *designing* an aspect-coverage term. A design session ran four probes before
+proposing one. All four are offline, over artefacts already on disk. Together they close the question:
+the ceiling is real, and nothing the system can compute reaches it.
+
+**1. No cheap signal proxies the oracle's per-document aspect count.** Over all **2,733** relevant
+(query, document) pairs with chunk hits — joined from `chunk-coverage-phase1-2026-09-09/runs/fs2048-pool.chunks.hits.tsv`
+through `keymap.json`, 0 unresolved keys — Spearman ρ against the aspect count `rank_A` orders by:
+
+| signal | ρ |
+|---|---|
+| `spread` (max − min chunk score) | +0.0790 |
+| `mean_tail` | +0.0761 |
+| `dispersion` | +0.0722 |
+| `n_chunks` | +0.0714 |
+| `max_score` | +0.0572 |
+| `n_within_095` | +0.0428 |
+
+All six cluster, which is the signature of one weak size effect rather than six independent signals.
+The reason is structural, not incidental: a **scalar score per chunk destroys the aspect information**.
+One query embedding yields one number per chunk, and nothing in that number records *which part* of the
+query the chunk answered. Aspect count is exactly "how many different parts", so no function of those
+scalars can recover it.
+
+**2. There is no nugget text, so a query-decomposition term cannot be validated offline.** FreshStack
+ships nugget **ids** only — `queries.jsonl` and `corpus.jsonl` carry text, `qrels.tsv` carries
+`queryId nuggetId corpusId rel`, and no file anywhere in the topic tree carries nugget text. A term that
+decomposed the query into aspects could only ever be measured end-to-end; there is no intermediate check
+that it found the right aspects.
+
+**3. MMR neither occupies the headroom nor can reach it.** The λ sweep arms in
+`freshstack-2048-2026-09-07/runs/` scored on α-nDCG@10:
+
+| λ | α-nDCG@10 |
+|---|---|
+| 0.50 | 0.3525 |
+| 0.70 | 0.3552 |
+| 0.85 | 0.3551 |
+| 1.00 | 0.3551 |
+
+Whole-range spread **0.0027**, about 4 % of the +0.0609 ceiling and well under the 0.02 bar — and
+λ = 1.00, which is MMR **off**, ties λ = 0.70 exactly. This is worth recording because λ was tuned on
+nDCG@10, a binary-relevance measure that structurally cannot see diversity (§"The seven expected-zero
+`[compare]` blocks" above is the same fact in the other direction). Retuning λ on the diversity metric
+was the obvious cheap route; it is dead. Relatedly, no artefact records the λ that produced B (ranked-changes
+item 16), but the question is moot: B's α-nDCG@10 of 0.3551 is identical to the λ = 1.00 and λ = 0.85 arms.
+
+**4. The conversion premise reproduces, and the population to test it further does not exist.** Applying
+the reranker gate's own quantity — realised ÷ (ideal reordering of the control's pool − control) — to
+`rerank-a0`/`rerank-a1` on SciFact gives A0 0.6960, A1 0.7043, ceiling 0.9229, **conversion 3.63 %**,
+against the 3.7 % that gate records. (The ceiling differs from its recorded 0.9216 because that figure
+was computed on `chunked-512`'s pool; this one uses the control's own pool, which is what a ratio requires.)
+Widening that from n = 1 was attempted and failed on eligibility: a conversion ratio needs an arm that
+**reorders a fixed pool**, and only rerankers do. SciFact `a1`/`a2`/`a4` qualify at 300/300 identical
+pools; `a3` and `a0′` fail at 7/300 (different λ, so different selection); the centroid-weight sweep has
+no control on disk (`sweep-w0333` does not exist); and **all five coverage β arms fail** — 29, 2, 0, 0 and
+0 of 672 — because the β term reweights the chunk→document collapse and so changes which documents
+survive. NFCorpus `a1` qualifies at 323/323 but its qrels are graded (rel ∈ {1,2}), so relevant-first is
+not its nDCG ideal. Net population: four arms, three from one experiment on one corpus, two of them
+known-negative.
+
+### What this changes
+
+**The GO stands as measured.** Nothing above touches the +0.0609 or how it was obtained.
+
+**The licence it granted is now spent.** Designing a term requires a signal, and the only construction
+that can express aspect coverage — decomposing the query into aspects at request time — carries a
+hot-path model dependency, has no offline validation path (probe 2), and would produce an effect the
+gate itself predicts at ≈ +0.002 against a measured MDE of 0.0097. It is not designable on current
+evidence, and that is a conclusion about the available signals, not about the idea.
+
+**What would reopen it:** nugget text for FreshStack (making probe 2's validation possible), a corpus
+with subtopic labels large enough to lift the MDE below the predicted effect, or a query-side multi-vector
+representation that survives its own gate — the document-side multivector question is separately closed
+(`2026-09-GATE-multivector.md`).
