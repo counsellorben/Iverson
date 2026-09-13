@@ -40,6 +40,15 @@ namespace Iverson.Api.Tests.Tenancy;
 public sealed class AuthentikContainerFixture : IAsyncLifetime
 {
     private const string AuthentikImage = "ghcr.io/goauthentik/server:2026.5.3"; // pinned to match docker-compose.yml / the Helm chart's default
+
+    /// <summary>
+    /// Blueprint path (relative to Authentik's blueprints dir) of the service-clients blueprint
+    /// that provisions the scoped <c>iverson-admin-orchestrator</c> role, its InitialPermissions
+    /// object-scoping entry, the orchestrator user and its API token — the subject of CSR round-3
+    /// finding #1. The bind mount puts the repo's <c>blueprints/</c> at <c>/blueprints/custom</c>,
+    /// so <c>compose-only/service-clients.yaml</c> lands here.
+    /// </summary>
+    private const string ServiceClientsBlueprintPath = "custom/compose-only/service-clients.yaml";
     private const string AuthentikDbName = "authentik";
     private const string AuthentikDbUser = "authentik";
     private const string AuthentikDbPassword = "authentik";
@@ -88,6 +97,16 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
     /// <summary>The API bootstrap token (superuser-equivalent), for constructing an <see cref="Iverson.Api.Tenancy.IdpAdminClient"/> against this instance.</summary>
     public string AdminToken => BootstrapToken;
 
+    /// <summary>
+    /// The API token of the LEAST-PRIVILEGED <c>iverson-admin-orchestrator</c> service identity —
+    /// the credential Iverson.Api actually runs with (<c>Authentik__AdminToken</c>). Its literal
+    /// value is fixed by the shipped <c>compose-only/service-clients.yaml</c> blueprint, so a test
+    /// using it is exercising the real, shipped RBAC role rather than a reconstruction of it. Use
+    /// this — not <see cref="AdminToken"/> — for anything asserting what the orchestrator may and
+    /// may not do; the bootstrap token is a superuser and would pass every check vacuously.
+    /// </summary>
+    public const string OrchestratorToken = "dev-only-not-for-production-admin-orchestrator-token";
+
     public async Task InitializeAsync()
     {
         await _network.CreateAsync();
@@ -104,6 +123,7 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
         BaseUrl = $"http://{_authentikServer.Hostname}:{_authentikServer.GetMappedPublicPort(AuthentikPort)}";
 
         await WaitForRecoveryFlowBlueprintAsync();
+        await EnsureServiceClientsBlueprintAppliedAsync();
     }
 
     public async Task DisposeAsync()
@@ -233,9 +253,137 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
         if (!File.Exists(Path.Combine(blueprintsDir, "recovery-flow.yaml")))
             throw new FileNotFoundException(
                 $"'{blueprintsDir}' does not contain recovery-flow.yaml — the CSR round-2 finding #4 blueprint fix may have been reverted or moved.");
+        if (!File.Exists(Path.Combine(blueprintsDir, "compose-only", "service-clients.yaml")))
+            throw new FileNotFoundException(
+                $"'{blueprintsDir}' does not contain compose-only/service-clients.yaml — the blueprint " +
+                "carrying the scoped iverson-admin-orchestrator role (CSR round-3 finding #1) may have been moved.");
 
         return blueprintsDir;
     }
+
+    /// <summary>
+    /// Applies <c>compose-only/service-clients.yaml</c> and waits for the scoped orchestrator
+    /// identity it provisions to be usable.
+    /// <para>
+    /// Authentik's own discovery DOES pick this file up (its blueprint loader rglobs the mounted
+    /// directory, subdirectories included), but on a cold start it reliably FAILS: discovery
+    /// enqueues this blueprint in the same batch as Authentik's stock ones, and its
+    /// <c>!Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]</c>
+    /// references resolve to null while that default flow is still being created — observed
+    /// directly, the instance sits at <c>status: error</c> with
+    /// <c>{'authorization_flow': ['This field may not be null.']}</c>. Authentik only retries it on
+    /// the next scheduled discovery pass, which is far longer than a test run. So rather than wait
+    /// on the worker, this drives the SYNCHRONOUS import endpoint
+    /// (<c>POST /api/v3/managed/blueprints/import/</c>, which validates and applies inline and
+    /// returns the result) against the very same on-disk file, by path. It is the shipped
+    /// blueprint that gets applied either way — only the trigger differs.
+    /// </para>
+    /// </summary>
+    private async Task EnsureServiceClientsBlueprintAppliedAsync()
+    {
+        using var client = new HttpClient { BaseAddress = new Uri(BaseUrl) };
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", BootstrapToken);
+
+        var deadline = DateTime.UtcNow.AddMinutes(3);
+        string? lastImportBody = null;
+        Exception? lastError = null;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using var form = new MultipartFormDataContent
+                {
+                    { new StringContent(ServiceClientsBlueprintPath), "path" }
+                };
+                using var importResponse = await client.PostAsync("/api/v3/managed/blueprints/import/", form);
+                lastImportBody = await importResponse.Content.ReadAsStringAsync();
+
+                if (importResponse.IsSuccessStatusCode && await OrchestratorIdentityIsUsableAsync(client))
+                    return;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex; // server still warming up, or a transient apply race — keep retrying
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(3));
+        }
+
+        throw new TimeoutException(
+            "The scoped iverson-admin-orchestrator identity did not become usable within 3 minutes. " +
+            $"Last import response: {Truncate(lastImportBody)}. Last error: {lastError}");
+    }
+
+    /// <summary>
+    /// Functional readiness probe for the orchestrator identity: the role must exist AND its token
+    /// must authenticate as a NON-superuser. The superuser check is not incidental — the previous
+    /// version of this blueprint made the orchestrator's group <c>is_superuser: true</c>, which
+    /// would let every "the orchestrator is refused X" assertion pass for the wrong reason (it
+    /// would in fact be allowed everything). Failing readiness here is better than a green suite
+    /// asserting nothing.
+    /// </summary>
+    private static async Task<bool> OrchestratorIdentityIsUsableAsync(HttpClient bootstrapClient)
+    {
+        using var roleResponse = await bootstrapClient.GetAsync(
+            "/api/v3/rbac/roles/?name=iverson-admin-orchestrator");
+        if (!roleResponse.IsSuccessStatusCode)
+            return false;
+
+        using var roleDoc = await JsonDocument.ParseAsync(await roleResponse.Content.ReadAsStreamAsync());
+        if (roleDoc.RootElement.GetProperty("results").GetArrayLength() == 0)
+            return false;
+
+        using var orchestratorClient = new HttpClient { BaseAddress = bootstrapClient.BaseAddress };
+        orchestratorClient.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", OrchestratorToken);
+
+        using var meResponse = await orchestratorClient.GetAsync("/api/v3/core/users/me/");
+        if (!meResponse.IsSuccessStatusCode)
+            return false;
+
+        using var meDoc = await JsonDocument.ParseAsync(await meResponse.Content.ReadAsStreamAsync());
+        var me = meDoc.RootElement.GetProperty("user");
+        return me.GetProperty("username").GetString() == "iverson-admin-orchestrator"
+               && !me.GetProperty("is_superuser").GetBoolean();
+    }
+
+    /// <summary>
+    /// Enrols a confirmed TOTP device on an existing user, for the CSR round-3 finding #2
+    /// assertion that an account WITH a second factor cannot complete the recovery flow without
+    /// presenting it.
+    /// <para>
+    /// This goes through <c>ak shell</c> rather than the REST API on purpose, and it is the one
+    /// place this fixture reaches past Authentik's public API: Authentik 2026.5.3 exposes no way
+    /// to enrol a device ON BEHALF OF another user. <c>TOTPDeviceSerializer.user</c> is
+    /// <c>read_only</c> (so neither the admin device endpoints nor a blueprint entry can set it),
+    /// and <c>POST /api/v3/authenticators/admin/totp/</c> answers 405 in any case — checked
+    /// against the running image, not assumed. The only API-shaped alternative would be to drive
+    /// the whole interactive TOTP-setup flow, which tests the setup flow rather than the thing
+    /// under test here.
+    /// </para>
+    /// </summary>
+    public async Task EnrollTotpDeviceAsync(string username)
+    {
+        var script =
+            "from authentik.core.models import User\n" +
+            "from authentik.stages.authenticator_totp.models import TOTPDevice\n" +
+            $"u = User.objects.get(username='{username}')\n" +
+            "d, _ = TOTPDevice.objects.get_or_create(user=u, name='csr3-test-totp', defaults={'confirmed': True})\n" +
+            "d.confirmed = True\n" +
+            "d.save()\n" +
+            "print('ENROLLED', d.pk)\n";
+
+        var result = await _authentikServer.ExecAsync(["ak", "shell", "-c", script]);
+        if (result.ExitCode != 0 || !result.Stdout.Contains("ENROLLED"))
+            throw new InvalidOperationException(
+                $"Failed to enrol a TOTP device for '{username}' (exit {result.ExitCode}).\n" +
+                $"stdout: {Truncate(result.Stdout)}\nstderr: {Truncate(result.Stderr)}");
+    }
+
+    private static string Truncate(string? value) =>
+        value is null ? "<none>" : value.Length <= 2000 ? value : value[..2000] + "…";
 
     /// <summary>
     /// Blueprint application by the worker is asynchronous relative to container startup — poll

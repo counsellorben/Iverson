@@ -7,9 +7,21 @@ metadata:
 # so passwordless onboarding fails at runtime ("No recovery flow set.") without this.
 #
 # This is an admin-link-initiated recovery flow: the recovery token identifies the
-# pending user, so no identification or email stage is required. The user simply sets
-# a new password (validated by the password policy) and is logged in.
+# pending user, so no identification or email stage is required. The user sets a new
+# password (validated by the password policy), presents any MFA factor they already
+# have enrolled, and is logged in.
+#
+# CSR round-3 finding #2 remediation: this flow is bound brand-wide
+# (authentik_brands.brand -> flow_recovery below), so it is the recovery flow for EVERY
+# account in the IdP, including accounts with TOTP/WebAuthn enrolled by
+# mfa-enforcement.yaml. Without an authenticator-validation stage, anyone holding a
+# recovery link could set a password and reach an authenticated session without the
+# second factor ever being consulted -- the MFA bypass half of the report's worst attack
+# chain. iverson-recovery-mfa-validation (order 1, below) closes that.
 entries:
+  # CSR round-3 finding #2, defence-in-depth half: checked 2026-09-13 against the review's
+  # stated floor (length_min >= 8 AND zxcvbn_score_threshold >= 2). This policy already met
+  # it exactly, so it is left as-is rather than "strengthened" to the same values.
   - id: iverson-recovery-password-policy
     model: authentik_policies_password.passwordpolicy
     identifiers:
@@ -69,6 +81,34 @@ entries:
       validation_policies:
         - !KeyOf iverson-recovery-password-policy
 
+  # Second factor, consulted between "choose a new password" and "write it / log in".
+  #
+  # not_configured_action: skip is deliberate and load-bearing in BOTH directions:
+  #   - a brand-new invitee (the passwordless-onboarding case IdpAdminClient.CreateUserAsync
+  #     drives) has no enrolled device, so the stage skips and onboarding still completes;
+  #   - an account that HAS a TOTP/WebAuthn device must present it before the password
+  #     reset is written, so a leaked recovery link alone is no longer sufficient.
+  #
+  # device_classes mirrors mfa-enforcement.yaml's default-authentication-mfa-validation
+  # stage exactly (totp + webauthn). That alignment is intentional: the recovery path must
+  # accept precisely the factor classes the authentication path enrols, no more (a class
+  # listed here but never enrolled is dead weight) and no fewer (a class enrolled there but
+  # missing here would make this stage find "no allowed devices" and silently skip --
+  # re-opening the bypass for exactly the users who did enrol a factor).
+  #
+  # No configuration_stages: those are only consulted for not_configured_action: configure.
+  # Enrolment stays owned by the authentication flow (mfa-enforcement.yaml), so this stage
+  # never enrols a factor -- it only validates one that already exists.
+  - id: iverson-recovery-mfa-validation
+    model: authentik_stages_authenticator_validate.authenticatorvalidatestage
+    identifiers:
+      name: iverson-recovery-mfa-validation
+    attrs:
+      not_configured_action: skip
+      device_classes:
+        - totp
+        - webauthn
+
   - id: iverson-recovery-user-write
     model: authentik_stages_user_write.userwritestage
     identifiers:
@@ -81,23 +121,43 @@ entries:
     identifiers:
       name: iverson-recovery-user-login
 
+  # Stage chain: prompt (0) -> MFA validation (1) -> user_write (2) -> user_login (3).
+  #
+  # `order` lives in attrs, NOT in identifiers (authentik's own default blueprints put it in
+  # identifiers, but they only ever APPEND stages at sparse orders). Inserting the MFA stage
+  # shifted user_write 1->2 and user_login 2->3; with `order` in the identifiers, an existing
+  # deployment's `(flow, user_write, order=1)` row would not match `(flow, user_write,
+  # order=2)` and the importer would CREATE a second binding rather than move the existing
+  # one -- leaving the flow with user_write bound twice. Keying on (target, stage) instead
+  # updates the existing row's order in place, so a fresh install and an upgrade converge on
+  # the same four bindings.
   - model: authentik_flows.flowstagebinding
     identifiers:
       target: !KeyOf flow
       stage: !KeyOf iverson-recovery-prompt
+    attrs:
       order: 0
 
   - model: authentik_flows.flowstagebinding
     identifiers:
       target: !KeyOf flow
-      stage: !KeyOf iverson-recovery-user-write
+      stage: !KeyOf iverson-recovery-mfa-validation
+    attrs:
       order: 1
 
   - model: authentik_flows.flowstagebinding
     identifiers:
       target: !KeyOf flow
-      stage: !KeyOf iverson-recovery-user-login
+      stage: !KeyOf iverson-recovery-user-write
+    attrs:
       order: 2
+
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf flow
+      stage: !KeyOf iverson-recovery-user-login
+    attrs:
+      order: 3
 
   # Partial update of the existing default brand: attrs carries only flow_recovery,
   # which authentik merges, leaving flow_authentication/flow_invalidation/etc intact.

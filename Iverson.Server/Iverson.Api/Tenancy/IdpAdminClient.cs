@@ -8,10 +8,13 @@ namespace Iverson.Api.Tenancy;
 /// IHttpClientFactory + named-client convention as Iverson.Embeddings.EmbeddingService.
 ///
 /// CAVEAT (carried over from design/plan review): the exact JSON field names used below
-/// (attributes, groups, is_active, and the group add_user/remove_user endpoints) are
-/// grounded in Authentik's documented DRF conventions and public API docs, but have NOT
-/// been verified against a live instance or the /api/v3/schema/ OpenAPI document.
-/// Re-verify against a running Authentik before production use.
+/// (attributes, groups, is_active) are grounded in Authentik's documented DRF conventions
+/// and public API docs, but have NOT been verified against a live instance or the
+/// /api/v3/schema/ OpenAPI document. Re-verify against a running Authentik before
+/// production use. (The group add_user/remove_user endpoints this caveat used to also
+/// cover are gone — see <see cref="AddGroupAsync"/>, CSR round-3 finding #1; the
+/// replacement groups-PATCH path IS exercised against a live Authentik by
+/// Iverson.Api.Tests' AuthentikOrchestratorRoleIntegrationTests.)
 ///
 /// CSR finding #4 remediation: CreateUserAsync no longer posts a caller-supplied password to
 /// Authentik's set_password endpoint. Instead it POSTs /api/v3/core/users/{id}/recovery/,
@@ -81,12 +84,19 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
     /// Authentik, never through this platform. See class remarks: this endpoint's shape is
     /// unverified against a live instance.
     ///
-    /// The link is now ALSO returned to the caller (not only logged): TenantUser.recovery_link
-    /// (tenant_admin.proto) and Tenant.admin_recovery_link (tenant_lifecycle.proto) carry it back
-    /// through InviteUser/CreateTenant's gRPC response respectively (CSR round-2 finding #4
-    /// follow-up — this used to be log-only, requiring an inviting admin to read server logs).
-    /// The log line is kept alongside the return value: it's the only record once the gRPC
-    /// response has been read once, and it costs nothing to keep.
+    /// The link is returned to the caller: TenantUser.recovery_link (tenant_admin.proto) and
+    /// Tenant.admin_recovery_link (tenant_lifecycle.proto) carry it back through
+    /// InviteUser/CreateTenant's gRPC response respectively (CSR round-2 finding #4 follow-up —
+    /// this used to be log-only, requiring an inviting admin to read server logs).
+    ///
+    /// CSR round-3 finding #3 remediation: the link itself is NOT logged. It is a bearer
+    /// credential — anyone holding it can set the account's password and, via the recovery flow,
+    /// reach an authenticated session — so writing it to an Information-level log put a working
+    /// account-takeover token into every log sink, retained for the life of the logs and readable
+    /// by anyone with log access. Round 2's justification for keeping the log line ("it's the only
+    /// record once the gRPC response has been read once") argues for re-issuing a fresh link on
+    /// demand, not for retaining a live one in plaintext; the gRPC return path above is the
+    /// supported way to get it, and a lost link is recoverable by inviting again.
     /// </summary>
     private async Task<string?> TriggerPasswordRecoveryAsync(HttpClient client, string userId)
     {
@@ -103,8 +113,9 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
         {
             var link = linkProp.GetString();
             logger.LogInformation(
-                "[IdpAdminClient] recovery link created for new user {UserId}: {RecoveryLink}",
-                userId, link);
+                "[IdpAdminClient] recovery link created for new user {UserId} " +
+                "(link returned to caller, not logged)",
+                userId);
             return link;
         }
         else
@@ -200,30 +211,98 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
             await PatchIsActiveAsync(client, user.Id, isActive: false);
     }
 
+    /// <summary>
+    /// CSR round-3 finding #1 remediation. This used to POST
+    /// <c>/api/v3/core/groups/{pk}/add_user/</c>, which Authentik gates on the GLOBAL
+    /// <c>authentik_core.add_user_to_group</c> permission — and that permission means "add ANY
+    /// user to ANY group". Authentik's <c>GroupViewSet.add_user</c> has no
+    /// <c>enable_group_superuser</c> check (unlike its user serializer), so an orchestrator token
+    /// holding it could add any account to <c>authentik Admins</c> and become superuser.
+    /// Authentik 2026.5.3 cannot express a per-object grant of that permission in a blueprint
+    /// (<c>RoleObjectPermission</c> is in the blueprint importer's <c>excluded_models()</c>), so
+    /// the permission is dropped entirely and membership is written through the USER instead:
+    /// <c>PATCH /api/v3/core/users/{id}/</c> with the new <c>groups</c> list. That path needs only
+    /// <c>change_user</c>, which the blueprint object-scopes to users this service created, and
+    /// Authentik's own <c>UserSerializer.validate_groups</c> independently refuses to add a member
+    /// to a superuser group without <c>enable_group_superuser</c> (which this role does not hold).
+    /// <para>
+    /// Trade-off, accepted deliberately: <c>groups</c> is a whole-list write, so this is a
+    /// read-modify-write where the old endpoint was atomic. The only caller is
+    /// <c>TenantAdminGrpcService.SetTenantAdmin</c> — a rare, human-driven admin action on a
+    /// single user — so the lost-update window is not worth holding a superuser-equivalent
+    /// permission to close.
+    /// </para>
+    /// </summary>
     public async Task AddGroupAsync(string userId, string groupName)
     {
         using var client = httpClientFactory.CreateClient(HttpClientName);
         var groupPk = await ResolveGroupPkAsync(client, groupName);
-
-        // NOTE: authentik_core.group's add_user/remove_user actions are this class's own
-        // extrapolation from general Authentik API conventions (mirroring the Django-admin-style
-        // bulk membership actions Authentik exposes) — not explicitly named in the task brief and
-        // not verified against a live instance or OpenAPI schema.
-        using var response = await client.PostAsync(
-            $"/api/v3/core/groups/{groupPk}/add_user/",
-            JsonBody(new { pk = UserPkJsonValue(userId) }));
-        await EnsureSuccessWithBodyAsync(response, "add user to group");
+        await SetGroupMembershipAsync(client, userId, groupPk, shouldBeMember: true);
     }
 
+    /// <inheritdoc cref="AddGroupAsync"/>
     public async Task RemoveGroupAsync(string userId, string groupName)
     {
         using var client = httpClientFactory.CreateClient(HttpClientName);
         var groupPk = await ResolveGroupPkAsync(client, groupName);
+        await SetGroupMembershipAsync(client, userId, groupPk, shouldBeMember: false);
+    }
 
-        using var response = await client.PostAsync(
-            $"/api/v3/core/groups/{groupPk}/remove_user/",
-            JsonBody(new { pk = UserPkJsonValue(userId) }));
-        await EnsureSuccessWithBodyAsync(response, "remove user from group");
+    /// <summary>
+    /// Reads the user's current group list and PATCHes it back with <paramref name="groupPk"/>
+    /// added or removed. See <see cref="AddGroupAsync"/> for why membership goes through the user
+    /// rather than the group's own add_user/remove_user actions.
+    /// <para>
+    /// A user whose membership already matches the requested state is left alone rather than
+    /// PATCHed with an identical list — this preserves the idempotence the group add_user/
+    /// remove_user actions had (Django's <c>m2m.add</c>/<c>.remove</c> are both no-ops on a
+    /// no-change call) without spending a write.
+    /// </para>
+    /// </summary>
+    private static async Task SetGroupMembershipAsync(
+        HttpClient client,
+        string userId,
+        string groupPk,
+        bool shouldBeMember)
+    {
+        var operation = shouldBeMember ? "add user to group" : "remove user from group";
+
+        using var readResponse = await client.GetAsync($"/api/v3/core/users/{userId}/");
+        await EnsureSuccessWithBodyAsync(readResponse, operation);
+
+        await using var stream = await readResponse.Content.ReadAsStreamAsync();
+        using var doc = await JsonDocument.ParseAsync(stream);
+
+        // Refuse to guess. A missing/!array "groups" property would make the PATCH below
+        // overwrite the user's real membership with a list reconstructed from nothing, silently
+        // dropping every other group they belong to.
+        if (!doc.RootElement.TryGetProperty("groups", out var groupsProp) ||
+            groupsProp.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException(
+                $"Authentik user {userId} response has no \"groups\" array; refusing to rewrite " +
+                "group membership from an unrecognised payload.");
+        }
+
+        var groups = new List<string>();
+        foreach (var group in groupsProp.EnumerateArray())
+            groups.Add(group.ValueKind == JsonValueKind.Number ? group.GetRawText() : group.GetString()!);
+
+        var isMember = groups.Contains(groupPk);
+        if (isMember == shouldBeMember)
+            return;
+
+        if (shouldBeMember)
+            groups.Add(groupPk);
+        else
+            groups.RemoveAll(group => group == groupPk);
+
+        using var request = new HttpRequestMessage(HttpMethod.Patch, $"/api/v3/core/users/{userId}/")
+        {
+            Content = JsonBody(new { groups })
+        };
+        using var patchResponse = await client.SendAsync(request);
+        await EnsureSuccessWithBodyAsync(patchResponse, operation);
     }
 
     private static async Task PatchIsActiveAsync(HttpClient client, string userId, bool isActive)
@@ -250,13 +329,6 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
 
         return ReadPk(results[0]);
     }
-
-    // Authentik user pks are integers; group pks are UUIDs. Both are carried through this class
-    // as opaque strings (matching IAuthentikAdminClient's string-typed ids), so when a user pk
-    // needs to go back into a request body we re-emit it as a JSON number if it parses as one,
-    // to match the integer type Authentik's user model actually uses.
-    private static object UserPkJsonValue(string userId) =>
-        int.TryParse(userId, out var numeric) ? numeric : userId;
 
     /// <summary>
     /// Serializes a request body to a length-delimited <see cref="StringContent"/>.
