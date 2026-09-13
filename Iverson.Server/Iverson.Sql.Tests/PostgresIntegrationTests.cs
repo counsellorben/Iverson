@@ -410,8 +410,11 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
             var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
             // Names the statement to run, not a bare 42501 — and names iverson_runtime, the first
-            // of the two roles probed, so the message is the one the operator can act on.
-            thrown.Which.Message.Should().Contain("GRANT iverson_runtime TO CURRENT_USER");
+            // of the two roles probed, so the message is the one the operator can act on. The
+            // grant target is this connection's own role name, not the literal text
+            // "CURRENT_USER" (which, run inside the operator's superuser psql session, would grant
+            // to the superuser instead of the app's role).
+            thrown.Which.Message.Should().Contain($"GRANT iverson_runtime TO {login};");
             thrown.Which.InnerException.Should().BeOfType<PostgresException>()
                   .Which.SqlState.Should().Be("42501");
         }

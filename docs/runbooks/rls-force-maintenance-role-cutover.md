@@ -64,7 +64,7 @@ authoritative tenant or owner value, while the health endpoint kept reporting he
 
 `EnsureRolesAsync` closes that hole by **probing** rather than inspecting the catalogue: it issues
 the same `SET LOCAL ROLE` the runtime issues, inside a rolled-back transaction, for both roles, and
-converts a `42501` into a startup failure naming `GRANT … TO CURRENT_USER`. So the forgotten-`GRANT`
+converts a `42501` into a startup failure naming `GRANT … TO iverson`. So the forgotten-`GRANT`
 case now also crash-loops at deploy time instead of degrading silently later. Read the pod's first
 log line; it names the statement to run.
 
@@ -80,10 +80,16 @@ WHERE rolname IN ('iverson_runtime', 'iverson_maintenance');
 --  iverson_runtime      | f | f
 --  iverson_maintenance  | f | t
 
--- the app user is a member of both (this is the check people skip)
-SELECT pg_has_role('iverson', 'iverson_runtime', 'MEMBER'),
-       pg_has_role('iverson', 'iverson_maintenance', 'MEMBER');
---  t | t
+-- the app user can actually SET ROLE to both (this is the check people skip).
+-- Don't use pg_has_role(..., 'MEMBER') here: a WITH SET FALSE grant reports
+-- MEMBER = t while SET ROLE still fails with 42501 -- exactly the gap
+-- EnsureRolesAsync's own functional probe exists to catch. Run the real
+-- statement instead, as the app user, then roll back:
+BEGIN;
+SET LOCAL ROLE iverson_runtime;
+SET LOCAL ROLE iverson_maintenance;
+ROLLBACK;
+--  no error means both grants are usable; a 42501 here is what the app saw
 
 -- every entity table is FORCEd, not merely ENABLEd
 SELECT relname, relrowsecurity, relforcerowsecurity

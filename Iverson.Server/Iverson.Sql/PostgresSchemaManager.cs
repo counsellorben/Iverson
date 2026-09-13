@@ -279,8 +279,10 @@ public sealed class PostgresSchemaManager(
             throw new InvalidOperationException(
                 $"Role {roleName} exists but this connection is not a member of it, so no statement "
                 + "can enter it. Every access that names this role would fail at runtime with 42501. "
-                + $"Run `GRANT {roleName} TO CURRENT_USER;` as a superuser "
-                + "(`kubectl cnpg psql <release>-postgres -- -d iverson`), then restart. See "
+                + $"Run `GRANT {roleName} TO {conn.UserName};` as a superuser "
+                + "(`kubectl cnpg psql <release>-postgres -- -d iverson`), then restart — the grant "
+                + $"target is this connection's own role ({conn.UserName}), not CURRENT_USER as "
+                + "evaluated inside that psql session, which connects as the cluster superuser. See "
                 + "docs/runbooks/rls-force-maintenance-role-cutover.md.", ex);
         }
 
