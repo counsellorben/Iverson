@@ -64,7 +64,11 @@ The same startup validation also rejects a configured relation whose child type 
 is not itself `StoreTarget.Engagement`-eligible (`StoreTargeting.IsEngagementEligible`) — a child
 type that itself declares any `OneToMany` relation is never written to StarRocks at all
 (`EngagementStoreConsumer` early-returns on `!TargetStores.HasFlag(StoreTarget.Engagement)`), so
-every count for it would fail permanently with no signal otherwise. It fails fast if any
+every count for it would fail permanently with no signal otherwise. Symmetrically, it also rejects a
+configured entry whose `ParentType` is not itself `StoreTarget.Intelligence`-eligible
+(`StoreTargeting.HasVectorOrChunkFields` — the type declares no vector or chunk fields, so
+`IntelligenceStoreConsumer` never writes it a Qdrant point at all) — otherwise the count would be
+computed and then permanently, silently discarded with no Qdrant point to patch. It fails fast if any
 `PopularitySignal.Signals` entry is configured while `Engagement__Enabled=false` — this feature has
 no runtime degrade path for a disabled engagement store (`DisabledEngagementStoreSearchService`
 throws unconditionally on every call), so the combination is rejected at startup rather than
@@ -92,7 +96,11 @@ On each event:
 3. For each affected parent id, run a fresh `COUNT(*)` via the *existing*
    `IEngagementStoreSearchService.AggregateAsync` (`AggregationType.Count`, filtered
    `<ForeignKey> = <parentId>`) — no new StarRocks query-building code. Always a full recompute,
-   never an increment/decrement, so redelivery and out-of-order events are naturally idempotent.
+   never an increment/decrement, so redelivery and out-of-order events are naturally idempotent. A
+   `null` result (the tenant-scoped branch's own graceful outcome for an unprovisioned tenant/table
+   — exactly what the cross-consumer race below can produce) skips the write for that parent this
+   event, mirroring the codebase's existing `if (result is not null)` idiom
+   (`ObjectSearchGrpcService.RunAggregationAsync`).
 4. Patch the raw count onto the parent's Qdrant object-collection point via a new
    `IVectorWriteService.SetPayloadAsync(collection, id, payload)`, wrapping the Qdrant client's
    native `SetPayloadAsync` RPC (payload-only — does not touch vectors, unlike `UpsertAsync`, which
@@ -102,16 +110,18 @@ On each event:
 Tenant scoping and the collection/point-id lookup reuse `IntelligenceTenantScope` exactly as
 `ObjectSearchGrpcService` already does.
 
-**Failure handling — degrade, don't retry.** If the parent's Qdrant point doesn't exist yet, the
-consumer expects `SetPayloadAsync` to raise `NotFound`, in which case it logs and drops the update;
-the signal is then simply absent for that candidate (treated as "no signal," not zero) until the
-next event on that parent refreshes it. No DLQ, no retry queue — mirrors
-`RetrieveVectorsOrDegradeAsync`'s existing degrade-not-fail convention. **Unverified as of this
-design:** whether `SetPayloadAsync` actually raises `NotFound` for a missing point id within an
-*already-created* collection (as opposed to a missing collection, which is an established pattern
-elsewhere) could not be confirmed without a live Qdrant instance — treat this failure-handling text
-as best-effort documentation to be confirmed at implementation time, not a verified behavioral
-claim.
+**Failure handling — degrade, don't retry.** Two outcomes are both treated as "no update this
+event," never as an error: `AggregateAsync` returning `null` (step 3, above) skips straight to the
+next event; and if the parent's Qdrant point doesn't exist yet, the consumer expects
+`SetPayloadAsync` to raise `NotFound`, in which case it logs and drops the update. Either way the
+signal is then simply absent for that candidate (treated as "no signal," not zero) until the next
+event on that parent — or the periodic reconciliation sweep below — refreshes it. No DLQ, no retry
+queue — mirrors `RetrieveVectorsOrDegradeAsync`'s existing degrade-not-fail convention.
+**Unverified as of this design:** whether `SetPayloadAsync` actually raises `NotFound` for a missing
+point id within an *already-created* collection (as opposed to a missing collection, which is an
+established pattern elsewhere) could not be confirmed without a live Qdrant instance — treat this
+one failure-handling claim as best-effort documentation to be confirmed at implementation time, not
+a verified behavioral claim.
 
 **Tenant resolution and authorization.** This consumer runs as an internal backend service, the
 same trust level as `EnrichmentConsumer`/`IntelligenceStoreConsumer`, not on behalf of a caller —
@@ -165,6 +175,27 @@ already is: read the raw count from the payload if present, apply the saturation
 absent → bit-exact `BaseScore`, so today's ranking is unchanged wherever no signal is configured)
 and the weighted-mean branch (`weightedSum += WPopularity * popularity; weightTotal += WPopularity`).
 
+`SearchChunks` (and the chunk-routed `SearchSimilar` variant) reads *chunk* points, not object
+points, so the count patched onto the parent's *object* point is never directly present there. This
+path gains a batched popularity lookup mirroring the existing Centroid pattern
+(`RetrieveVectorsOrDegradeAsync` over the chunk results' distinct `parent_id`s against the object
+collection): after collecting each chunk result's parent id, batch-fetch each parent's raw count
+from the object collection via `IVectorQueryService.RetrievePayloadAsync` (an existing, generic
+batched payload-by-id fetch — no new Qdrant-facing primitive needed), apply the same saturation
+formula, and populate `RerankCandidate.Popularity` from that lookup instead of from the chunk
+point's own (nonexistent) field.
+
+`SearchSimilar`'s object-vector path has a separate, earlier identity gate deciding how many
+candidates get fetched from Qdrant before fusion even runs
+(`rerankIsIdentity = !centroidPossible && decayField is null`) — this gate also gains a third
+input, `popularityPossible` (computed once per request from schema/property against the configured
+`PopularitySignal.Signals`, the same way `centroidPossible`/`decayField` already are):
+`rerankIsIdentity = !centroidPossible && decayField is null && !popularityPossible`. Without this, a
+type where popularity is the only active signal would still only fetch `topK` candidates, and
+popularity could never promote anything beyond raw vector similarity's own top-`topK`.
+(`SearchChunks`'s own path has no analogous gate — it always over-fetches unconditionally — so it
+does not need this change.)
+
 **Config.** `VectorRankingOptions` gains `WPopularity` (default **0.0**) alongside `WBase`/
 `WCentroid`/`WDecay`, validated with the same finiteness-first rule as the other three. Defaulting
 to 0 means this ships inert until an operator both configures a `PopularitySignal` entry and sets a
@@ -201,3 +232,5 @@ nonzero weight.
 | 8 | `RelationKind` has exactly `{OneToOne, OneToMany, ManyToOne, ManyToMany}`, so a config-time check can reject a misconfigured non-`OneToMany` relation | `SchemaDescriptor.cs:132`. |
 | 9 | The entity-event envelope (`TypeName`, `PayloadJson`, `PriorPayloadJson`, `EventType`) is a shared type, not specific to `DocumentRerenderConsumer` | Same `EntityEvent` shape consumed identically by `DocumentRerenderConsumer`, `IntelligenceStoreConsumer`, `EnrichmentConsumer`. |
 | 10 | The child relation type must itself be `StoreTarget.Engagement`-eligible (`StoreTargeting.IsEngagementEligible`) for its count to ever be producible — a child type with any `OneToMany` relation of its own is disqualified and never written to StarRocks | `Iverson.Api/Schema/StoreTargeting.cs:27-40` (eligibility predicate); `EngagementStoreConsumer.cs:46,100` (both handlers early-return on `!TargetStores.HasFlag(StoreTarget.Engagement)`). Added 2026-09-13 per critical-design-review round 1, finding 2.2. |
+| 11 | The parent type must itself be `StoreTarget.Intelligence`-eligible (`StoreTargeting.HasVectorOrChunkFields`) for its Qdrant point to exist at all — a type with no vector or chunk fields never receives a point from `IntelligenceStoreConsumer` | `Iverson.Api/Schema/StoreTargeting.cs:17,42-43` (`internal static class StoreTargeting`; `HasVectorOrChunkFields(schema) => schema.VectorFields.Count > 0 \|\| schema.ChunkFields.Count > 0`). Added 2026-09-13 per critical-design-review round 2, finding 2.4. |
+| 12 | `IVectorQueryService.RetrievePayloadAsync(collectionName, ids)` exists as a batched payload-by-id fetch, returning per-id string-keyed payload dictionaries with absent ids simply missing from the result | `Iverson.Server/Iverson.Vector/IVectorRoles.cs:27-28`. Added 2026-09-13 per critical-design-review round 2, finding 2.2. |
