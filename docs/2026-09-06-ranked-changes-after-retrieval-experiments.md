@@ -8,7 +8,7 @@
 Supersedes `docs/2026-08-28-proposed-code-changes-from-retrieval-experiments.md`, which was written while
 ArguAna was still running and lists four items that have since shipped. This document originated against
 local main at `9eb99f7` (2026-09-06) and has been kept current since; §0 is reconciled against whatever gate
-documents exist under `docs/plans/*GATE*.md` at the time it is read — currently eight. Nothing here has been
+documents exist under `docs/plans/*GATE*.md` at the time it is read — currently nine. Nothing here has been
 through `thorough-brainstorming`; each item is the input to that, not a substitute for it.
 
 The experiments this closes out are the ones scored on top-k relevance metrics (nDCG@10, R@50, AP) through
@@ -45,14 +45,15 @@ still counts.
 | `SearchSimilar` centroid retrieval (rule 7.3 follow-up) | **FAIL** — head retrieval stands, `SimilarRetrievalVector` deleted; reconciled in the 2026-09-08 amendment | nothing; Task 1's wiring reverted | `2026-09-GATE-similar-centroid.md` |
 | Chunk-coverage signal, Phase 1 | **Phase 2 warranted** — 85.0 % of top-50 slots carry a tail; β calibrated | harness only (`beta_invariant.py` and the β ladder) | `2026-09-GATE-chunk-coverage.md` |
 | Chunk-coverage signal, Phase 2 | **NO β QUALIFIES** — all five arms negative and monotone on nDCG@10; the top three are Holm-significant (p_adj 0.0010), not a null | nothing | `2026-09-GATE-chunk-coverage-phase2.md` |
+| Aspect-coverage oracle ceiling (α-nDCG@10, FreshStack-2048) | **GO** — G − R = **+0.0609** α-nDCG@10, 95 % CI [+0.0541, +0.0678], Holm p_adj 0.0006; clears the pre-registered 0.02 bar by ~3×. A − R = +0.0570 (93.5 % of the ceiling, derived: 0.056955 / 0.060947) is reported and does not gate; R − B = +0.3364 is context. A ceiling, not a realised gain — it licenses designing a term, not shipping one | harness only (`aspect_oracle.py`); no server change | `2026-09-GATE-aspect-coverage-oracle.md` |
 
 The rows above finalized before 2026-09-07 — prefixes, the chunk-window ablation itself, centroid weight,
 request-scaled centroid, MMR λ, reranker Phase 1, embedding migration Phases 1 and 2, and the multivector
 layout — were all measured at the **512/448-character window on SciFact**, with NFCorpus and FreshStack as
-secondary corpora. That was the evidence gap item 1 closed. The four rows added since were measured at the
+secondary corpora. That was the evidence gap item 1 closed. The five rows added since were measured at the
 shipped window instead: Tier 1 retrieval defaults ran `sci-2048`, `fs-2048` and `fs-512`; `SearchSimilar`
-centroid retrieval ran the two FreshStack arms (`fs-2048`, `fs-512`); both chunk-coverage phases ran
-`fs2048` only.
+centroid retrieval ran the two FreshStack arms (`fs-2048`, `fs-512`); both chunk-coverage phases and the
+aspect-coverage oracle ran `fs2048` only.
 
 ---
 
@@ -132,7 +133,9 @@ falsified is count-weighted promotion of multi-chunk documents; a coverage term 
 collapse onto the count is untested. FreshStack-2048 and its snapshots are on disk and `beta_invariant.py`
 is built, so the open work is a term, not an instrument. Record this explicitly so the Phase 2 result is
 not mis-cited as "coverage was tried and failed" — a misreading `docs/plans/2026-09-GATE-chunk-coverage-phase2.md`
-itself warns against.
+itself warns against. `docs/plans/2026-09-GATE-aspect-coverage-oracle.md` has since measured that headroom
+directly and returned **GO** (G − R = +0.0609, 95 % CI [+0.0541, +0.0678]), so the term is now licensed to
+be designed.
 
 ---
 
