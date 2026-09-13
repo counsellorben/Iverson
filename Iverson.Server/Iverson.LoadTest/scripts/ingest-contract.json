@@ -187,6 +187,28 @@
         "text": "the quick brown fox",
         "composed": "the quick brown fox"
       }
+    },
+    "queryComposition": {
+      "nomic-embed-text": {
+        "text": "the quick brown fox",
+        "composed": "search_query: the quick brown fox"
+      },
+      "snowflake-arctic-embed": {
+        "text": "the quick brown fox",
+        "composed": "Represent this sentence for searching relevant passages: the quick brown fox"
+      },
+      "BAAI/bge-base-en-v1.5": {
+        "text": "the quick brown fox",
+        "composed": "Represent this sentence for searching relevant passages: the quick brown fox"
+      },
+      "BAAI/bge-small-en-v1.5": {
+        "text": "the quick brown fox",
+        "composed": "Represent this sentence for searching relevant passages: the quick brown fox"
+      },
+      "__default__": {
+        "text": "the quick brown fox",
+        "composed": "the quick brown fox"
+      }
     }
   }
 }
