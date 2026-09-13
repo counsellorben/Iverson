@@ -481,7 +481,7 @@ services:
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
       - Tenancy__SeedLegacyTenants=true
     # Kestrel does not begin listening until Program.cs's startup block has finished — the
-    # bootstrap DDL (EnsureRuntimeRoleAsync, the plumbing-table EnsureTableAsync calls, and every
+    # bootstrap DDL (EnsureRolesAsync, the plumbing-table EnsureTableAsync calls, and every
     # ApplySchemaAsync) is awaited BEFORE app.Run(). A successful TCP connect to 8080 is therefore
     # a precise "this replica's bootstrap DDL is complete" signal, which is exactly what
     # iverson-worker's depends_on needs. A bash /dev/tcp redirect rather than curl/wget: the
@@ -586,7 +586,7 @@ services:
       # one. Both roles run the identical startup block (it sits outside Program.cs's
       # `workloadRole == "api"` guard), and that block is genuinely concurrency-safe by design —
       # every statement is CREATE/ALTER ... IF [NOT] EXISTS or ON CONFLICT DO NOTHING, and the two
-      # CREATE-then-catch paths (EnsureRuntimeRoleAsync, the RLS policy) both swallow SQLSTATE
+      # CREATE-then-catch paths (EnsureRolesAsync, the RLS policy) both swallow SQLSTATE
       # 42710 with an explicit "another replica created it concurrently" comment. Helm already
       # runs api x2 plus a worker against one database on that basis.
       #

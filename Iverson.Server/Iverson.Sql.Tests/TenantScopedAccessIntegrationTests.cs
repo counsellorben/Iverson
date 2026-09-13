@@ -12,8 +12,11 @@ namespace Iverson.Sql.Tests;
 /// RLS, rather than the app-level <c>WHERE</c> clause being the only thing doing the filtering —
 /// and that the deliberately cross-tenant calls go through the <c>BYPASSRLS</c>
 /// <c>iverson_maintenance</c> role rather than through whatever the connection happens to be.
-/// Shares <see cref="PostgresContainerFixture"/> with <see cref="PostgresIntegrationTests"/> (which
-/// already runs <c>EnsureRolesAsync</c> on fixture init).
+/// Uses <see cref="PostgresContainerFixture"/> — via <c>IClassFixture</c>, so this class gets its
+/// OWN instance and its own container, not one shared with <see cref="PostgresIntegrationTests"/>.
+/// That isolation is load-bearing: the sibling file's EnsureRolesAsync tests deliberately strip
+/// BYPASSRLS off iverson_maintenance mid-run, which would race these tests on a shared cluster.
+/// The fixture runs <c>EnsureRolesAsync</c> on init.
 /// </summary>
 public sealed class TenantScopedAccessIntegrationTests(PostgresContainerFixture fixture)
     : IClassFixture<PostgresContainerFixture>
@@ -286,6 +289,51 @@ public sealed class TenantScopedAccessIntegrationTests(PostgresContainerFixture 
         var outboxCount = await _repo.QuerySingleOrDefaultAsync<int>(
             $"SELECT COUNT(*) FROM \"{outboxTable}\" WHERE \"Id\" = @Id", new { Id = outboxRowId });
         outboxCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task UpdateColumnsAsync_TenantScoped_ThenPlumbingTableInsert_InSameTransaction_Commits()
+    {
+        // The DeleteAsync sibling below, for the writeback path. UpdateColumnsAsync took over the
+        // role enter/exit from EnrichmentConsumer (fix round 1, low item 1), so the "reset before
+        // the plumbing write" guarantee now has to hold inside the repository — against a real
+        // Postgres, not a mocked transaction context. EnrichmentConsumer's real sequence is
+        // UpdateColumnsAsync, then the enrichment-state upsert, then the outbox insert, all in one
+        // ExecuteInTransactionAsync, and iverson_runtime has a grant on none of the latter.
+        var entityTable = await SeedTenantScopedTableAsync();
+        var plumbingTable = UniqueTable();
+        await _schemaManager.ApplySchemaAsync(new TableSchema(
+            plumbingTable,
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            [new ColumnSchema("note", "text", IsNullable: false)]));
+
+        var updatedId = await _repo.QuerySingleOrDefaultAsync<Guid>(
+            $"SELECT id FROM \"{entityTable}\" WHERE tenant_id = @Tenant", new { Tenant = "tenant-a" });
+
+        var entityRepo = new EntityRepository(_repo);
+        var plumbingRowId = Guid.NewGuid();
+
+        var act = async () => await _repo.ExecuteInTransactionAsync(async tx =>
+        {
+            await entityRepo.UpdateColumnsAsync(
+                tx, TenantScopedSchema(entityTable), updatedId.ToString(),
+                new Dictionary<string, object?> { ["name"] = "enriched" },
+                EntityAccess.ForTenant("tenant-a"));
+
+            await tx.ExecuteAsync(
+                $"INSERT INTO \"{plumbingTable}\" (id, note) VALUES (@Id, @Note)",
+                new { Id = plumbingRowId, Note = "enrichment-state" });
+        });
+
+        await act.Should().NotThrowAsync();
+
+        var updatedName = await _repo.QuerySingleOrDefaultAsync<string>(
+            $"SELECT name FROM \"{entityTable}\" WHERE id = @Id", new { Id = updatedId });
+        updatedName.Should().Be("enriched");
+
+        var plumbingCount = await _repo.QuerySingleOrDefaultAsync<int>(
+            $"SELECT COUNT(*) FROM \"{plumbingTable}\" WHERE id = @Id", new { Id = plumbingRowId });
+        plumbingCount.Should().Be(1);
     }
 
     // ── EntityRepository.DeleteAsync + plumbing-table write, one transaction ──

@@ -380,6 +380,83 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     }
 
     [Fact]
+    public async Task EnsureRolesAsync_WhenTheConnectionIsNotAMemberOfTheRoles_ThrowsNamingTheMissingGrant()
+    {
+        // Fix round 1, required fix 1. The forgotten-GRANT half of the cutover used to pass every
+        // check: EnsureRoleAsync short-circuits on the existence check, rolbypassrls is fine, and
+        // ApplySchemaAsync's GRANT to the role succeeds because a table's OWNER may grant to a
+        // role it is not a member of. Startup came up green and the first SET LOCAL ROLE threw
+        // 42501 in production instead.
+        //
+        // The fixture's own connection is a superuser, which can enter any role, so this needs a
+        // separate non-superuser login role that was never granted membership — which is exactly
+        // the state an operator leaves behind by running CREATE ROLE without GRANT.
+        await _schemaManager.EnsureRolesAsync();
+
+        var login = "nomember_" + Guid.NewGuid().ToString("N")[..8];
+        await _repo.ExecuteAsync($"CREATE ROLE \"{login}\" LOGIN PASSWORD 'probe-only'");
+
+        try
+        {
+            var builder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+            {
+                Username = login,
+                Password = "probe-only"
+            };
+            var asNonMember = new PostgresSchemaManager(
+                builder.ConnectionString, NullLogger<PostgresSchemaManager>.Instance);
+
+            var act = async () => await asNonMember.EnsureRolesAsync();
+
+            var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
+            // Names the statement to run, not a bare 42501 — and names iverson_runtime, the first
+            // of the two roles probed, so the message is the one the operator can act on.
+            thrown.Which.Message.Should().Contain("GRANT iverson_runtime TO CURRENT_USER");
+            thrown.Which.InnerException.Should().BeOfType<PostgresException>()
+                  .Which.SqlState.Should().Be("42501");
+        }
+        finally
+        {
+            await _repo.ExecuteAsync($"DROP ROLE \"{login}\"");
+        }
+    }
+
+    [Fact]
+    public async Task EnsureRolesAsync_WhenTheConnectionIsAMemberOfBothRoles_DoesNotThrow()
+    {
+        // The positive half: membership granted, so the probe passes and startup proceeds. Without
+        // this, the test above would also pass against a mutant that throws unconditionally.
+        await _schemaManager.EnsureRolesAsync();
+
+        var login = "member_" + Guid.NewGuid().ToString("N")[..8];
+        await _repo.ExecuteAsync($"CREATE ROLE \"{login}\" LOGIN PASSWORD 'probe-only'");
+
+        try
+        {
+            await _repo.ExecuteAsync($"GRANT iverson_runtime TO \"{login}\"");
+            await _repo.ExecuteAsync($"GRANT iverson_maintenance TO \"{login}\"");
+
+            var builder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+            {
+                Username = login,
+                Password = "probe-only"
+            };
+            var asMember = new PostgresSchemaManager(
+                builder.ConnectionString, NullLogger<PostgresSchemaManager>.Instance);
+
+            var act = async () => await asMember.EnsureRolesAsync();
+
+            await act.Should().NotThrowAsync();
+        }
+        finally
+        {
+            await _repo.ExecuteAsync($"REVOKE iverson_runtime FROM \"{login}\"");
+            await _repo.ExecuteAsync($"REVOKE iverson_maintenance FROM \"{login}\"");
+            await _repo.ExecuteAsync($"DROP ROLE \"{login}\"");
+        }
+    }
+
+    [Fact]
     public async Task ApplySchemaAsync_TenantScopedTable_GetsPolicyRlsAndGrant()
     {
         var table = UniqueTable();

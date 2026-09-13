@@ -222,10 +222,63 @@ public class EntityRepositoryTests
         var tx = Substitute.For<IDbTransactionContext>();
         var repo = new EntityRepository(sql);
 
-        await repo.UpdateColumnsAsync(tx, ArticleSchema, "k1", new Dictionary<string, object?> { ["Title"] = "New Title" });
+        await repo.UpdateColumnsAsync(
+            tx, ArticleSchema, "k1",
+            new Dictionary<string, object?> { ["Title"] = "New Title" },
+            EntityAccess.ForTenant("tenant-a"));
 
         await tx.Received(1).ExecuteAsync(Arg.Is<string>(s => s.Contains("UPDATE \"articles\"")), Arg.Any<object?>());
         await sql.DidNotReceive().ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>());
+    }
+
+    [Fact]
+    public async Task UpdateColumnsAsync_ForTenant_EntersTenantScopeBeforeTheUpdate_AndResetsRoleAfter()
+    {
+        // This guarantee used to live in EnrichmentConsumer, which hand-rolled the
+        // EnterTenantScopeAsync/ExitRoleScopeAsync pair around this call. It moved here when
+        // UpdateColumnsAsync took an EntityAccess (fix round 1, low item 1) — so it is asserted
+        // here, not merely relocated. The reset is the load-bearing half: EnrichmentConsumer goes
+        // on to write the enrichment-state row and the outbox row in this SAME transaction, and
+        // iverson_runtime has no grant on either plumbing table.
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        var tx = Substitute.For<IDbTransactionContext>();
+        var calls = new List<string>();
+        tx.WhenForAnyArgs(t => t.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
+          .Do(call => calls.Add(call.ArgAt<string>(0)));
+        var repo = new EntityRepository(sql);
+
+        await repo.UpdateColumnsAsync(
+            tx, ArticleSchema, "k1",
+            new Dictionary<string, object?> { ["Title"] = "New Title" },
+            EntityAccess.ForTenant("tenant-a"));
+
+        calls.Should().HaveCount(4);
+        calls[0].Should().Contain("SET LOCAL ROLE iverson_runtime");
+        calls[1].Should().Contain("set_config");
+        calls[2].Should().Contain("UPDATE \"articles\"");
+        calls[3].Should().Contain("RESET ROLE");
+    }
+
+    [Fact]
+    public async Task UpdateColumnsAsync_CrossTenantMaintenance_SwitchesToTheBypassrlsRole_SetsNoTenantGuc_AndStillResets()
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        var tx = Substitute.For<IDbTransactionContext>();
+        var calls = new List<string>();
+        tx.WhenForAnyArgs(t => t.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
+          .Do(call => calls.Add(call.ArgAt<string>(0)));
+        var repo = new EntityRepository(sql);
+
+        await repo.UpdateColumnsAsync(
+            tx, ArticleSchema, "k1",
+            new Dictionary<string, object?> { ["Title"] = "New Title" },
+            EntityAccess.CrossTenantMaintenance);
+
+        calls.Should().HaveCount(3);
+        calls[0].Should().Contain("SET LOCAL ROLE iverson_maintenance");
+        calls[1].Should().Contain("UPDATE \"articles\"");
+        calls[2].Should().Contain("RESET ROLE");
+        calls.Should().NotContain(c => c.Contains("set_config"));
     }
 
     [Fact]
@@ -237,7 +290,8 @@ public class EntityRepositoryTests
 
         await repo.UpdateColumnsAsync(
             tx, ArticleSchema, "k1",
-            new Dictionary<string, object?> { ["Title"] = "New Title", ["Body"] = "New Body" });
+            new Dictionary<string, object?> { ["Title"] = "New Title", ["Body"] = "New Body" },
+            EntityAccess.ForTenant("tenant-a"));
 
         await tx.Received(1).ExecuteAsync(
             Arg.Is<string>(s =>

@@ -11,11 +11,19 @@ namespace Iverson.Sql;
 public enum RecordStoreRole
 {
     /// <summary>
-    /// The connection's own role — the table owner. Correct only for plumbing tables that carry
-    /// no RLS policy and no <c>iverson_runtime</c>/<c>iverson_maintenance</c> grant (the outbox /
-    /// reconciliation queue, the DLQ, the tenant registry, the schema registry, the enrichment
-    /// state table). Never correct for an entity table: see <see cref="EntityAccess"/>, which is
-    /// what <see cref="IEntityRepository"/> takes instead of this.
+    /// The connection's own role — the table owner. Correct only for the plumbing tables, which
+    /// carry no RLS policy: the outbox / reconciliation queue, the DLQ, the tenant registry, the
+    /// schema registry and the enrichment state table. Never correct for an entity table: see
+    /// <see cref="EntityAccess"/>, which is what <see cref="IEntityRepository"/> takes instead of
+    /// this.
+    /// <para>
+    /// Note that "no RLS policy" is the criterion, not "no grant". Three of those plumbing tables
+    /// (reconciliation queue, DLQ, tenant registry) are created through
+    /// <c>ApplySchemaAsync</c> and so do carry an <c>iverson_maintenance</c> grant, which that
+    /// method issues unconditionally — nothing runs them under the Maintenance role, and the grant
+    /// buys them nothing, but it exists. None of them carries an <c>iverson_runtime</c> grant, and
+    /// none of them carries a policy, so the connection's own role is the only one that reads them.
+    /// </para>
     /// </summary>
     Connection = 0,
 
@@ -163,7 +171,7 @@ public interface IEntityRepository
     Task<IEnumerable<string>> FetchAllAsync(TableSchema schema, EntityAccess access);
     Task<IEnumerable<KeyedTenantRow>> FetchKeysAndTenantsPagedAsync(TableSchema schema, string? afterKey, int pageSize, EntityAccess access);
     Task DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key, EntityAccess access);
-    Task UpdateColumnsAsync(IDbTransactionContext tx, TableSchema schema, string key, IReadOnlyDictionary<string, object?> columns);
+    Task UpdateColumnsAsync(IDbTransactionContext tx, TableSchema schema, string key, IReadOnlyDictionary<string, object?> columns, EntityAccess access);
 }
 
 public interface IEnrichmentStateRepository

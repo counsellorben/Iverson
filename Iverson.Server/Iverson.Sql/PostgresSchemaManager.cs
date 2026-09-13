@@ -242,6 +242,51 @@ public sealed class PostgresSchemaManager(
                     + "(`kubectl cnpg psql <release>-postgres -- -d iverson`) and restart.", ex);
             }
         }
+
+        // Existence and BYPASSRLS are not enough: this connection must also be able to ENTER each
+        // role. An operator who runs the CREATE ROLE half of the cutover but forgets
+        // `GRANT ... TO iverson` produces a cluster where every check above passes — the role
+        // exists, its attributes are right, and ApplySchemaAsync's GRANT to it succeeds, because a
+        // table's owner may grant to a role it is not a member of. Startup then comes up green and
+        // the failure lands at runtime instead: the first `SET LOCAL ROLE` throws 42501 and every
+        // tenant-scoped read, every reconciliation replay, every re-render queue item and every
+        // consumer tenant/owner re-derivation starts failing in production.
+        await EnsureCanEnterRoleAsync(conn, "iverson_runtime");
+        await EnsureCanEnterRoleAsync(conn, "iverson_maintenance");
+    }
+
+    /// <summary>
+    /// Asserts this connection can enter <paramref name="roleName"/> by issuing the very statement
+    /// the runtime issues, inside a transaction that is then rolled back.
+    /// <para>
+    /// A functional probe rather than a <c>pg_has_role</c> catalogue lookup: <c>SET ROLE</c> is
+    /// gated by the role's SET option in PostgreSQL 16+ but by plain membership before it, so no
+    /// single privilege name is both version-portable and exact — whereas the statement itself is
+    /// exact by construction on every version. A superuser passes unconditionally, which is what
+    /// docker-compose and the Testcontainers fixtures are.
+    /// </para>
+    /// </summary>
+    private static async Task EnsureCanEnterRoleAsync(NpgsqlConnection conn, string roleName)
+    {
+        await using var tx = await conn.BeginTransactionAsync();
+        try
+        {
+            // roleName is a compile-time constant from EnsureRolesAsync, never caller input.
+            await conn.ExecuteAsync($"SET LOCAL ROLE {roleName}", null, tx);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42501")
+        {
+            throw new InvalidOperationException(
+                $"Role {roleName} exists but this connection is not a member of it, so no statement "
+                + "can enter it. Every access that names this role would fail at runtime with 42501. "
+                + $"Run `GRANT {roleName} TO CURRENT_USER;` as a superuser "
+                + "(`kubectl cnpg psql <release>-postgres -- -d iverson`), then restart. See "
+                + "docs/runbooks/rls-force-maintenance-role-cutover.md.", ex);
+        }
+
+        // No commit: SET LOCAL unwinds with the transaction, so the pooled connection is handed
+        // back on its original role either way.
+        await tx.RollbackAsync();
     }
 
     private static async Task EnsureRoleAsync(NpgsqlConnection conn, string roleName, string createSql)

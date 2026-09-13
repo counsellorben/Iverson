@@ -181,13 +181,13 @@ public sealed class EnrichmentConsumer(
 
             await txRunner.ExecuteInTransactionAsync(async tx =>
             {
-                // SET LOCAL ROLE iverson_runtime persists for the remainder of the
-                // transaction, and neither the enrichment-state table nor the outbox has a
-                // grant for that role — so tenant scope must be exited before either write.
-                // OutboxWriter.UpsertAndEnqueueOutboxAsync performs the identical sequence.
-                await tx.EnterTenantScopeAsync(tenantValue);
-                await entities.UpdateColumnsAsync(tx, tableSchema, ev.Key, columns);
-                await tx.ExitRoleScopeAsync();
+                // UpdateColumnsAsync enters and exits the tenant role itself. That matters here:
+                // SET LOCAL ROLE iverson_runtime persists for the remainder of the transaction,
+                // and neither the enrichment-state table nor the outbox has a grant for that role,
+                // so the two writes below must run after the reset. This used to be a hand-rolled
+                // Enter/Exit pair around the call — see EntityRepository.UpdateColumnsAsync.
+                await entities.UpdateColumnsAsync(
+                    tx, tableSchema, ev.Key, columns, EntityAccess.ForTenant(tenantValue));
 
                 await state.UpsertAsync(
                     tx, tenantValue, schema.TypeName, ev.Key, hash, DateTimeOffset.UtcNow);

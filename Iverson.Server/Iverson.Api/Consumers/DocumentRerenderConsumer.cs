@@ -47,7 +47,7 @@ public sealed class DocumentRerenderConsumer(
 
         // Tenant sourcing deliberately splits by event type — the same split
         // IntelligenceStoreConsumer makes between HandleAsync and HandleDeleteAsync. A null
-        // tenant is not an error (RunTenantScopedAsync sets the RLS GUC to NULL and any scoped
+        // tenant is not an error (RunAsRoleAsync sets the RLS GUC to NULL and any scoped
         // lookup below would silently return zero rows), but the OneToMany branch below reads
         // its parent key straight out of the payload with no query in between, bypassing that
         // natural zero-rows gate. Returning early here is what keeps a null tenant from ever

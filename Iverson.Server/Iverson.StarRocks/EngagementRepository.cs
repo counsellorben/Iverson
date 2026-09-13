@@ -192,7 +192,7 @@ public sealed class EngagementRepository(
                     {
                         // The connection is being disposed either way; a broken connection here must
                         // never replace the operation's own result or exception — same discipline as
-                        // PostgresRepository.RunTenantScopedAsync's rollback-failure handling.
+                        // PostgresRepository.ExecuteInTransactionAsync's rollback-failure handling.
                         logger.LogWarning(ex, "SET ROLE NONE failed while releasing a tenant-scoped StarRocks connection");
                     }
                 }

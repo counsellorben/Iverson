@@ -92,9 +92,15 @@ public sealed class EntityRepository(IRecordStoreQueryExecutor sql) : IEntityRep
         await tx.ExitRoleScopeAsync();
     }
 
-    public Task UpdateColumnsAsync(
+    // Enters and exits the role itself, exactly like DeleteAsync above. Its one caller
+    // (EnrichmentConsumer) used to hand-roll the EnterTenantScopeAsync/ExitRoleScopeAsync pair
+    // around this call — the very duplication TenantScopeTransactionExtensions' doc comment warns
+    // is how the pairing gets missed — and leaving this method as the only IEntityRepository
+    // member that does not name its role would have left a future caller one forgotten Enter away
+    // from the silent unscoped write this batch exists to prevent.
+    public async Task UpdateColumnsAsync(
         IDbTransactionContext tx, TableSchema schema, string key,
-        IReadOnlyDictionary<string, object?> columns)
+        IReadOnlyDictionary<string, object?> columns, EntityAccess access)
     {
         var setClause = string.Join(", ", columns.Keys.Select(c => $"\"{c}\" = @{c}"));
         var parameters = new DynamicParameters();
@@ -104,8 +110,18 @@ public sealed class EntityRepository(IRecordStoreQueryExecutor sql) : IEntityRep
         }
         parameters.Add("Key", key);
 
-        return tx.ExecuteAsync(
+        if (access.CrossTenant)
+            await tx.EnterMaintenanceScopeAsync();
+        else
+            await tx.EnterTenantScopeAsync(access.TenantId);
+
+        await tx.ExecuteAsync(
             $"UPDATE \"{schema.TableName}\" SET {setClause} WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
             parameters);
+
+        // SET LOCAL ROLE persists for the rest of the transaction. EnrichmentConsumer goes on to
+        // write the enrichment-state row and the outbox row in this same transaction, and neither
+        // entity role has a grant on those plumbing tables — reset before returning.
+        await tx.ExitRoleScopeAsync();
     }
 }

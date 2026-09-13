@@ -55,7 +55,7 @@ public class EnrichmentConsumerTests
 
         _entities.UpdateColumnsAsync(
                 Arg.Any<IDbTransactionContext>(), Arg.Any<TableSchema>(), Arg.Any<string>(),
-                Arg.Any<IReadOnlyDictionary<string, object?>>())
+                Arg.Any<IReadOnlyDictionary<string, object?>>(), Arg.Any<EntityAccess>())
             .Returns(_ => { _txCalls.Add("UPDATE_COLUMNS"); return Task.CompletedTask; });
 
         _state.UpsertAsync(
@@ -210,7 +210,7 @@ public class EnrichmentConsumerTests
         await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
 
         await _enrichment.ReceivedWithAnyArgs().GenerateAsync(default!, default);
-        await _entities.ReceivedWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!);
+        await _entities.ReceivedWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!, default);
     }
 
     // ── Targeted writeback ────────────────────────────────────────────────────
@@ -222,7 +222,7 @@ public class EnrichmentConsumerTests
 
         IReadOnlyDictionary<string, object?>? written = null;
         _entities.UpdateColumnsAsync(Arg.Any<IDbTransactionContext>(), Arg.Any<TableSchema>(),
-                Arg.Any<string>(), Arg.Any<IReadOnlyDictionary<string, object?>>())
+                Arg.Any<string>(), Arg.Any<IReadOnlyDictionary<string, object?>>(), Arg.Any<EntityAccess>())
             .Returns(ci => { written = (IReadOnlyDictionary<string, object?>)ci[3]!; return Task.CompletedTask; });
 
         var sut = BuildSut();
@@ -239,19 +239,33 @@ public class EnrichmentConsumerTests
     }
 
     [Fact]
-    public async Task HandleUpdated_ExitsTenantScopeBeforeStateAndOutboxWrites()
+    public async Task HandleUpdated_WritesColumnsUnderTheRowsOwnTenantScope_BeforeStateAndOutboxWrites()
     {
+        // The role enter/exit around the writeback moved into EntityRepository.UpdateColumnsAsync
+        // (fix round 1, low item 1), so the ordering of the ROLE statements themselves is asserted
+        // there — EntityRepositoryTests.UpdateColumnsAsync_ForTenant_EntersTenantScopeBefore... —
+        // against a real IDbTransactionContext. What is this consumer's own responsibility, and
+        // what is asserted here, is threefold:
+        //
+        //   * the writeback names the tenant re-derived from the AUTHORITATIVE row, not the
+        //     unsigned event payload (EntityAccess.ForTenant(Tenant));
+        //   * the two plumbing writes happen AFTER it, so they land on the connection's own role
+        //     once UpdateColumnsAsync has reset — neither plumbing table has a grant for
+        //     iverson_runtime;
+        //   * the consumer issues no role statement of its own. It used to hand-roll the
+        //     Enter/Exit pair, and a re-added Enter without its Exit is exactly the leak this
+        //     asserts against.
         await _registry.RegisterAsync(EnrichedArticle());
 
         var sut = BuildSut();
         await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
 
-        _txCalls.Should().ContainInOrder(
-            "SET LOCAL ROLE iverson_runtime",
-            "UPDATE_COLUMNS",
-            "RESET ROLE",
-            "STATE_UPSERT",
-            "OUTBOX_ENQUEUE");
+        await _entities.Received(1).UpdateColumnsAsync(
+            Arg.Any<IDbTransactionContext>(), Arg.Any<TableSchema>(), Key,
+            Arg.Any<IReadOnlyDictionary<string, object?>>(), EntityAccess.ForTenant(Tenant));
+
+        _txCalls.Should().ContainInOrder("UPDATE_COLUMNS", "STATE_UPSERT", "OUTBOX_ENQUEUE");
+        _txCalls.Should().NotContain(c => c.Contains("ROLE"));
     }
 
     [Fact]
@@ -394,7 +408,7 @@ public class EnrichmentConsumerTests
         await sut.HandleDeleteAsync(Key, Event(EntityEventType.Deleted, RowJson()), CancellationToken.None);
         await sut.HandleAsync(Key, Event(EntityEventType.Created), CancellationToken.None);
 
-        await _entities.ReceivedWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!);
+        await _entities.ReceivedWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!, default);
     }
 
     // ── Failure handling ──────────────────────────────────────────────────────
@@ -410,7 +424,7 @@ public class EnrichmentConsumerTests
         var act = async () => await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
 
         await act.Should().NotThrowAsync();
-        await _entities.DidNotReceiveWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!);
+        await _entities.DidNotReceiveWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!, default);
         await _state.DidNotReceiveWithAnyArgs().UpsertAsync(
             default!, default!, default!, default!, default!, default);
         await _outboxPublisher.DidNotReceiveWithAnyArgs().PublishAsync(
@@ -443,7 +457,7 @@ public class EnrichmentConsumerTests
 
         IReadOnlyDictionary<string, object?>? written = null;
         _entities.UpdateColumnsAsync(Arg.Any<IDbTransactionContext>(), Arg.Any<TableSchema>(),
-                Arg.Any<string>(), Arg.Any<IReadOnlyDictionary<string, object?>>())
+                Arg.Any<string>(), Arg.Any<IReadOnlyDictionary<string, object?>>(), Arg.Any<EntityAccess>())
             .Returns(ci => { written = (IReadOnlyDictionary<string, object?>)ci[3]!; return Task.CompletedTask; });
 
         var sut = BuildSut();
@@ -478,7 +492,7 @@ public class EnrichmentConsumerTests
         await act.Should().NotThrowAsync();
         await _state.Received(1).UpsertAsync(
             Arg.Any<IDbTransactionContext>(), Tenant, "Article", Key, Arg.Any<string>(), Arg.Any<DateTimeOffset>());
-        await _entities.DidNotReceiveWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!);
+        await _entities.DidNotReceiveWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!, default);
         await _outboxWriter.DidNotReceiveWithAnyArgs().EnqueueUpdateOutboxRowAsync(
             default!, default, default!, default!, default!);
         await _outboxPublisher.DidNotReceiveWithAnyArgs().PublishAsync(
