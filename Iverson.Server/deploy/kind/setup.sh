@@ -78,9 +78,16 @@ echo "Installing ingress-nginx..."
 # security headers through AGIC's own rewrite-rule-set mechanism instead (see
 # charts/api/templates/ingress.yaml's `securityHeadersRuleSet`), and none of the cloud
 # ingress classes support or need nginx's snippet-annotation feature at all.
+# CSR round-3 finding #7: chart 4.11.3 shipped controller v1.11.3, which predates the
+# March-2025 "IngressNightmare" CVE fixes (CVE-2025-1097, CVE-2025-1098, CVE-2025-1974,
+# CVE-2025-24513, CVE-2025-24514), landed in controller v1.11.5 / v1.12.1. Bumped to
+# chart 4.12.8 (controller v1.12.8, confirmed via the ingress-nginx Helm repo's
+# index.yaml chart-version-to-appVersion mapping as of this fix), well past the fixed
+# versions. Re-verified `helm template` output with this repo's exact --set flags
+# renders cleanly at this chart version.
 helm upgrade --install ingress-nginx ingress-nginx \
   --repo https://kubernetes.github.io/ingress-nginx \
-  --version 4.11.3 \
+  --version 4.12.8 \
   --namespace ingress-nginx --create-namespace \
   --set controller.hostPort.enabled=true \
   --set controller.service.type=ClusterIP \
