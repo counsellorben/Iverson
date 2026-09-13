@@ -9,8 +9,10 @@ namespace Iverson.Api.Tests.Tenancy;
 /// TWO places it is declared, and guards them against each other.
 ///
 /// WHY THIS EXISTS. The role is declared twice: once in the Helm template
-/// (<c>charts/authentik/templates/blueprints-secret-service-clients.yaml</c>, which is what
-/// kind/cloud deploys) and once in the hand-rendered docker-compose mirror
+/// (<c>charts/authentik/templates/secret-service-clients.yaml</c>, which is what
+/// kind/cloud deploys — CSR round-3 finding #15 merged this blueprint into the same file that
+/// emits the real Secrets, so there is no longer a separate blueprints-secret-service-clients.yaml)
+/// and once in the hand-rendered docker-compose mirror
 /// (<c>charts/authentik/blueprints/compose-only/service-clients.yaml</c>, which is also what
 /// <see cref="AuthentikContainerFixture"/> applies). CSR round 1 replaced the orchestrator's
 /// blanket superuser grant with a scoped role in the Helm template ONLY — the compose mirror kept
@@ -47,7 +49,7 @@ public sealed class AuthentikOrchestratorRoleBlueprintTests
 
     public static TheoryData<string> BlueprintFiles() => new()
     {
-        Path.Combine(AuthentikChartDirectory(), "templates", "blueprints-secret-service-clients.yaml"),
+        Path.Combine(AuthentikChartDirectory(), "templates", "secret-service-clients.yaml"),
         Path.Combine(AuthentikChartDirectory(), "blueprints", "compose-only", "service-clients.yaml")
     };
 

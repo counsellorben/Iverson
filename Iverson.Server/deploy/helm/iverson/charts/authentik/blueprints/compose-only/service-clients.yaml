@@ -299,8 +299,11 @@ entries:
       name: tenant-admins
     attrs: {}
   # CSR round-3 finding #1 remediation: this file is a hand-maintained mirror of the Helm
-  # template at ../../templates/blueprints-secret-service-clients.yaml (rendered, with the
-  # dev-only static credentials substituted for Helm's generated ones). Round 1 replaced the
+  # template at ../../templates/secret-service-clients.yaml (rendered, with the
+  # dev-only static credentials substituted for Helm's generated ones — finding #15 later
+  # merged that template's blueprint content into the same file that emits the real Secrets,
+  # so there is no separate blueprints-secret-service-clients.yaml to point at anymore).
+  # Round 1 replaced the
   # orchestrator's blanket superuser grant with a scoped RBAC role in the HELM template only —
   # this copy was left on `is_superuser: true`, so the docker-compose target kept running the
   # tenant orchestrator as a full authentik superuser and no test exercised the scoped role

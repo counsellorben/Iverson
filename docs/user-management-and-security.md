@@ -62,10 +62,13 @@ blueprint file for your target environment:
 - **docker-compose:** `Iverson.Server/deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml`
   — hardcoded dev `client_id`/`client_secret` literal strings (fine for local
   dev only; never use this file's pattern for a real deployment).
-- **kind/Helm:** `Iverson.Server/deploy/helm/iverson/charts/authentik/templates/blueprints-configmap-service-clients.yaml`
+- **kind/Helm:** `Iverson.Server/deploy/helm/iverson/charts/authentik/templates/secret-service-clients.yaml`
   — client_id/secret are generated once via `randAlphaNum` and persisted in a
-  `lookup`-guarded Kubernetes Secret (`templates/secret-service-clients.yaml`),
-  so re-running `helm upgrade` never rotates them.
+  `lookup`-guarded Kubernetes Secret, so re-running `helm upgrade` never rotates
+  them. The blueprint carrying these credentials into Authentik and the Secrets
+  handed to the api/worker Deployments are emitted from this same file (CSR
+  round-3 finding #15 merged what used to be two independently-random files),
+  so both sides always agree from the very first `helm install`.
 
 Minimal provider block (mirrors the existing `iverson-loadtest` entry):
 
