@@ -281,4 +281,24 @@ public sealed class QdrantVectorServiceTests(QdrantContainerFixture fixture) : I
         results.Should().ContainSingle().Which.Id.Should().Be(1UL);
         results[0].Score.Should().BeApproximately(1.0, 0.0001);
     }
+
+    [Fact]
+    public async Task SetPayloadAsync_EmptyStringReplacesPriorValue()
+    {
+        var svc    = fixture.Service;
+        var mgr    = fixture.CollectionManager;
+        var name   = "col_" + Guid.NewGuid().ToString("N")[..8];
+        var vector = new float[] { 1f, 0f, 0f, 0f };
+
+        await mgr.EnsureCollectionAsync(name, vectorSize: 4);
+        await svc.UpsertAsync(name, 1UL, vector, new Dictionary<string, object> { ["series"] = "2026-01:5" });
+
+        await svc.SetPayloadAsync(name, 1UL, new Dictionary<string, object> { ["series"] = "" });
+
+        var payload = await svc.RetrievePayloadAsync(name, [1UL]);
+        // The whole point: a stale series must not survive an empty write. Either the key reads
+        // back as "" or it is gone — both yield D = 0. What must NOT happen is "2026-01:5".
+        var survived = payload[1UL].TryGetValue("series", out var s) ? s : "";
+        survived.Should().BeEmpty();
+    }
 }
