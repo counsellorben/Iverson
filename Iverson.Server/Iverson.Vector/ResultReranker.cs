@@ -20,9 +20,10 @@ public sealed class ResultReranker(IOptions<VectorRankingOptions> options) : IRe
         {
             var hasCentroid = candidate.Centroid is not null && candidate.Centroid.Length == queryVector.Length;
             var hasDecay = candidate.Decay is not null;
+            var hasPopularity = candidate.Popularity is not null;
 
             double fusedScore;
-            if (!hasCentroid && !hasDecay)
+            if (!hasCentroid && !hasDecay && !hasPopularity)
             {
                 // No other signal present: the weighted mean over signals present is
                 // (WBase * BaseScore) / WBase, which must equal BaseScore exactly rather
@@ -47,6 +48,12 @@ public sealed class ResultReranker(IOptions<VectorRankingOptions> options) : IRe
                 {
                     weightedSum += _o.WDecay * candidate.Decay!.Value;
                     weightTotal += _o.WDecay;
+                }
+
+                if (hasPopularity)
+                {
+                    weightedSum += _o.WPopularity * candidate.Popularity!.Value;
+                    weightTotal += _o.WPopularity;
                 }
 
                 fusedScore = weightedSum / weightTotal;

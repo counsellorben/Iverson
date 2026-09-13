@@ -15,6 +15,11 @@ public sealed class ResultRerankerTests
     private static readonly float[] CentroidCos1 = { 1f, 0f };
 
     private readonly ResultReranker _reranker = new(Options.Create(new VectorRankingOptions()));
+    private readonly ResultReranker _rerankerWithPopularity = new(Options.Create(new VectorRankingOptions
+    {
+        WDecay = 0.0,
+        WPopularity = 0.1
+    }));
 
     [Fact]
     public void Rerank_AllThreeSignalsPresent_ComputesWeightedMean()
@@ -135,5 +140,82 @@ public sealed class ResultRerankerTests
         // Same as centroid-absent case: (0.45*0.8 + 0.1*0.6) / 0.55.
         var expected = (0.45 * 0.8 + 0.1 * 0.6) / 0.55;
         results.Single().FusedScore.Should().BeApproximately(expected, 1e-9);
+    }
+
+    [Fact]
+    public void Rerank_PopularitySignal_BreaksTieBetweenEqualBaseAndCentroid()
+    {
+        var candidates = new[]
+        {
+            new RerankCandidate(1, BaseScore: 0.5, Centroid: CentroidCos0Point5, Decay: null, Popularity: 1.0),
+            new RerankCandidate(2, BaseScore: 0.5, Centroid: CentroidCos0Point5, Decay: null, Popularity: 0.0)
+        };
+
+        var results = _rerankerWithPopularity.Rerank(Query, candidates);
+
+        // Both: 0.45*0.5 + 0.45*0.5 = 0.45 before popularity (unchanged: base and centroid are equal here).
+        // Candidate 1: 0.45 + 0.1*1.0 = 0.55. Candidate 2: 0.45 + 0.1*0.0 = 0.45.
+        results[0].Id.Should().Be(1);
+        results[0].FusedScore.Should().BeApproximately(0.55, 1e-6);
+        results[1].Id.Should().Be(2);
+        results[1].FusedScore.Should().BeApproximately(0.45, 1e-6);
+    }
+
+    [Fact]
+    public void Rerank_PopularityAbsent_RenormalizesOverBaseAndCentroidOnly()
+    {
+        var candidates = new[]
+        {
+            new RerankCandidate(1, BaseScore: 0.7, Centroid: CentroidCos1, Decay: null, Popularity: null)
+        };
+
+        var results = _rerankerWithPopularity.Rerank(Query, candidates);
+
+        // (0.45*0.7 + 0.45*1.0) / 0.9 = 0.85
+        var expected = (0.45 * 0.7 + 0.45 * 1.0) / 0.9;
+        expected.Should().BeApproximately(0.5 * 0.7 + 0.5 * 1.0, 1e-6);
+        results.Single().FusedScore.Should().BeApproximately(expected, 1e-9);
+        results.Single().FusedScore.Should().BeApproximately(0.85, 1e-6);
+    }
+
+    [Fact]
+    public void Rerank_PopularityOnly_Renormalizes()
+    {
+        var candidates = new[]
+        {
+            new RerankCandidate(1, BaseScore: 0.8, Centroid: null, Decay: null, Popularity: 0.6)
+        };
+
+        var results = _rerankerWithPopularity.Rerank(Query, candidates);
+
+        // weightedSum = 0.36 + 0.06 = 0.42; weightTotal = 0.55; fused = 0.42/0.55.
+        // Popularity's share is 0.1/0.55 = 18.18% here, against 10.00% when other signals are present.
+        var expected = (0.45 * 0.8 + 0.1 * 0.6) / 0.55;
+        expected.Should().BeApproximately(0.818181818 * 0.8 + 0.181818182 * 0.6, 1e-6);
+        results.Single().FusedScore.Should().BeApproximately(expected, 1e-9);
+    }
+
+    [Fact]
+    public void Rerank_AllSignalsPresent_WithPopularityWeight_ComputesWeightedMean()
+    {
+        var optionsWithAllWeights = new VectorRankingOptions
+        {
+            WBase = 0.4,
+            WCentroid = 0.4,
+            WDecay = 0.1,
+            WPopularity = 0.1
+        };
+        var rerankerWithAllWeights = new ResultReranker(Options.Create(optionsWithAllWeights));
+
+        var candidates = new[]
+        {
+            new RerankCandidate(1, BaseScore: 0.9, Centroid: CentroidCos0Point5, Decay: 0.8, Popularity: 0.7)
+        };
+
+        var results = rerankerWithAllWeights.Rerank(Query, candidates);
+
+        // (0.4*0.9 + 0.4*0.5 + 0.1*0.8 + 0.1*0.7) / 1.0 = 0.69
+        var expected = (0.4 * 0.9 + 0.4 * 0.5 + 0.1 * 0.8 + 0.1 * 0.7) / 1.0;
+        results.Single().FusedScore.Should().BeApproximately(expected, 1e-6);
     }
 }
