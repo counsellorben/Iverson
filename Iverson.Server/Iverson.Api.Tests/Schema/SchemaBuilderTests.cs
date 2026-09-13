@@ -713,7 +713,7 @@ public class SchemaBuilderTests
 
         var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
-        act.Should().Throw<ArgumentException>()
+        act.Should().Throw<InvalidOperationException>()
            .WithMessage("*PostedAt*EditedAt*");
     }
 }

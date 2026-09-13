@@ -140,7 +140,7 @@ internal static class SchemaBuilder
                 : $"Properties {string.Join(", ", reservedMetadata.Select(n => $"'{n}'"))} cannot have [IversonMetadata]: their payload keys collide with reserved chunk payload keys ({string.Join(", ", s_reservedChunkPayloadKeys)}).");
 
         if (popularitySignalColumns.Count > 1)
-            throw new ArgumentException(
+            throw new InvalidOperationException(
                 $"Properties {string.Join(", ", popularitySignalColumns.Select(n => $"'{n}'"))} all carry " +
                 "[IversonPopularitySignal]. Exactly one property may mark the interaction timestamp.");
 
