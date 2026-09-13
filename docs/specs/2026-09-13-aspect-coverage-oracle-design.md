@@ -61,8 +61,10 @@ re-retrieved, no container is started, and no server code is touched.
 ### 2.2 Four rankings over one pool
 
 Every ranking below is a **permutation of B's own 50 documents for that query**. No document enters or
-leaves any list. `report.py`'s pool check (`check_pool`, `report.py:732`) enforces exactly this and will
-exit non-zero if it is ever violated.
+leaves any list. `report.py`'s pool check (`check_pool`, `report.py:732`) enforces set identity and will
+exit non-zero if a document ever enters or leaves a list. It reads file order, not the score column, so it
+cannot detect a run file whose score column still encodes B's ordering — that property is the writer's
+responsibility (§2.8).
 
 | | Ranking | What it knows |
 |---|---|---|
@@ -84,7 +86,7 @@ nugget, so "relevant first" and "nugget-covering first" select the same prefix. 
 | Quantity | Reads as |
 |---|---|
 | **R − B** | the value of knowing relevance. Reported for context; **not** the question, and not subject to the bar. |
-| **A − R** | the ceiling for the per-document count term the parent gate described, with relevance held fixed. |
+| **A − R** | the ceiling for ordering on a per-document **aspect** count — how many of the query's nuggets one document covers — with relevance held fixed. This is **not** the parent gate's term: that one counted a document's own pooled **chunks**, an operand these inputs do not carry. |
 | **G − R** | **the ceiling for aspect coverage as an idea** — the most any mechanism could win by ordering on aspects. This is what the bar applies to. |
 
 ### 2.4 Metric
@@ -109,7 +111,7 @@ permutation over `PERMUTATION_RESAMPLES = 10_000` at `PERMUTATION_SEED = 2026083
 
 The pool check's second condition — ranked order must differ from the control on ≥ 25 % of queries
 (`POOL_MIN_REORDERED_FRACTION`, `report.py:700`) — is satisfied with margin: R differs from B on 88.2 %
-of queries and A differs from R on 43.8 % (verified, A13).
+of queries, A differs from R on 43.8 %, and G differs from R on 39.1 % (verified, A13).
 
 **Population.** The primary figure is over all 672 queries, because that is the population the shipped
 metric is reported on. 62 queries (9.2 %) have no relevant document anywhere in their 50 and therefore
@@ -128,7 +130,7 @@ The materiality bar is **0.02 α-nDCG@10**, fixed before the measurement runs.
 > ceiling this measurement cannot clear is not made interesting by being measured precisely.
 
 **A − R is reported but does not gate.** If G − R clears the bar while A − R does not, the finding is that
-aspect coverage has headroom *but not through a per-document count* — which is a different and more useful
+aspect coverage has headroom *but not through a per-document aspect count* — which is a different and more useful
 result than either number alone.
 
 #### Why 0.02, and what the precedent actually says
@@ -174,9 +176,16 @@ likelier outcome, and that is a reason to run the measurement cheaply rather tha
 One new script, `Iverson.Server/Iverson.LoadTest/scripts/aspect_oracle.py`, alongside the other harness
 scripts. It reads the run and both qrels files and writes, into one output directory:
 
-- `oracle-R.trec`, `oracle-A.trec`, `oracle-G.trec` — TREC run files, each a permutation of B
+- `oracle-R.trec`, `oracle-A.trec`, `oracle-G.trec` — TREC run files, each a permutation of B. **Each
+  carries a synthetic score strictly decreasing in its new rank order** (e.g. `50 − i`), never B's original
+  per-document score. `ir_measures.read_trec_run` discards the rank column and every scorer re-sorts each
+  query by score descending, so the score column — not the rank column and not file order — is what
+  determines the ranking that actually gets scored.
 - `aspect-summary.tsv` — one row per query: relevant count in 50, distinct nuggets, nuggets reachable in
   the top 10 under each of the four rankings
+
+One self-check before any result is read: R − B must be non-zero on this corpus, so an R − B of exactly
+`+0.0000` is a writer bug — the score column still encoding B — and not a result.
 
 `report.py` then scores all four run files and runs the three declared pairs. The verdict is recorded in
 `docs/plans/2026-09-GATE-aspect-coverage-oracle.md`, following the gate-document convention, and gets its
@@ -200,12 +209,13 @@ row in the ranked-changes doc's §0 table.
 | A10 | `alpha_nDCG` scores an unjudged document as zero gain rather than discarding it | `judged_only` default `False`; `alpha` default `0.5`; `rel` default `1` (`ir_measures` `SUPPORTED_PARAMS`) |
 | A11 | `report.py` scores a TREC run file offline — no live retrieval needed to score a reordering | `score_run` at `report.py:358` takes `run_path` and calls `ir_measures.read_trec_run` |
 | A12 | The reranker precedent is an oracle-reorder ceiling of the same construction, with the figures quoted in §2.6 | `2026-09-GATE-reranker-phase1.md:129-130`, `:203`; `2026-09-03-reranker-phase1-implementation-plan.md:89` |
-| A13 | Both oracle pairs clear `report.py`'s 25 % reorder threshold | R differs from B on 593/672 (88.2 %); A differs from R on 294/672 (43.8 %) |
+| A13 | All three declared pairs clear `report.py`'s 25 % reorder threshold | R differs from B on 593/672 (88.2 %); A differs from R on 294/672 (43.8 %); G differs from R on 263/672 (39.1 %) |
 | A14 | `--pair` Holm-corrects across exactly the declared pairs, so a family of 3 is expressible | `run_pair_statistics` at `report.py:769`; `--pair RUN=BASELINE` at `:852` |
 | A15 | The pool check requires identical per-query document sets — satisfied by construction, and it will catch any bug that breaks that | `check_pool` at `report.py:732`, `POOL_MIN_REORDERED_FRACTION` at `:700` |
 | A16 | 62 queries (9.2 %) have no relevant document in their 50 and contribute 0 to every delta | counted over `qrels.trec` ∩ the run's per-query lists |
 | A17 | Aspect counts are near-binary on this corpus, per §2.7 | 57.1 % / 27.2 % / 3.8 % of relevant documents at 1 / 2 / 4+ aspects; 17.9 % of judged top-10 at 2+ |
 | A18 | Nothing in the ranked-changes doc already answers this question | §15 is the mechanical candidate screen (closed NO-GO); no item asks whether aspect coverage has headroom |
+| A19 | The **score column** — not file order, not the rank column — determines the ranking a scorer sees, while `check_pool` reads file order | `read_trec_run` yields `ScoredDoc(query_id, doc_id, score)` and never reads rank (`python-libs/ir_measures/util.py:298-303`); `as_sorted_namedtuple_iter` re-sorts per query by score descending (`:229-241`); `ranked_doc_ids` appends in file order (`report.py:721-730`). The two guards disagree, which is why §2.8 pins the score column |
 
 ---
 
