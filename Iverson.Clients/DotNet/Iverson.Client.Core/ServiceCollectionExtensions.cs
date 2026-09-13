@@ -27,10 +27,13 @@ public static class ServiceCollectionExtensions
     /// </param>
     /// <param name="allowInsecureChannelCallCredentials">
     /// Explicit opt-in required to attach <see cref="credentials"/> (or
-    /// <paramref name="dataPlaneTokenProvider"/>) call credentials over a plaintext (h2c)
-    /// channel. Without it, grpc-dotnet's own guard applies: call credentials over an
-    /// insecure channel throw rather than silently sending the Authorization header in the
-    /// clear. Pass <see langword="true"/> only for a known-local, non-TLS endpoint.
+    /// <paramref name="dataPlaneTokenProvider"/>) call credentials, or an
+    /// <paramref name="actingUserTokenProvider"/>, over a plaintext (h2c) endpoint. Without
+    /// it: grpc-dotnet's own guard refuses call credentials over an insecure channel rather
+    /// than silently sending the Authorization header in the clear, and this method applies
+    /// the same default-deny explicitly to the acting-user token, which rides as raw
+    /// Metadata rather than CallCredentials and so is otherwise invisible to grpc-dotnet's
+    /// guard. Pass <see langword="true"/> only for a known-local, non-TLS endpoint.
     /// </param>
     public static IServiceCollection AddIversonClient(
         this IServiceCollection services,
@@ -44,6 +47,26 @@ public static class ServiceCollectionExtensions
         var assemblies = entityAssemblies.Length > 0
             ? entityAssemblies
             : [Assembly.GetCallingAssembly()];
+
+        // CSR round-3 finding #4: the acting-user identity rides as raw Metadata
+        // (see ActingUserMetadata.WithActingUser), added per-call by EntityCoordinator and
+        // SchemaCatalogClient — not as CallCredentials — so it never reaches
+        // AttachCredentials/UnsafeUseInsecureChannelCallCredentials below, which only guards
+        // `credentials`/`dataPlaneTokenProvider`. grpc-dotnet's own insecure-channel guard is
+        // therefore structurally blind to it, and this check exists to close that gap
+        // explicitly, mirroring the same default-deny applied to the service credential.
+        if (actingUserTokenProvider is not null &&
+            !allowInsecureChannelCallCredentials &&
+            string.Equals(new Uri(grpcEndpoint).Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Refusing to attach an acting-user token provider to a plaintext (h2c) endpoint " +
+                "without an explicit allowInsecureChannelCallCredentials=true opt-in. The " +
+                "acting-user identity travels as raw Metadata, not CallCredentials, so grpc-dotnet's " +
+                "own UnsafeUseInsecureChannelCallCredentials guard cannot see it — the acting-user " +
+                "Bearer token would otherwise be sent in the clear. Pass " +
+                "allowInsecureChannelCallCredentials: true only for a known-local, non-TLS endpoint.");
+        }
 
         services.AddSingleton(new EntityRegistry(assemblies));
         services.AddSingleton<GraphAssembler>();

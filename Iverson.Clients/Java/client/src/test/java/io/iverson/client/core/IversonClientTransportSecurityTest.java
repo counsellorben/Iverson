@@ -77,4 +77,37 @@ class IversonClientTransportSecurityTest {
     void plaintextFactory_withNullCredentials_neverThrows() {
         assertDoesNotThrow(() -> IversonClient.plaintext("localhost", 5000, null, false).close());
     }
+
+    // ── CSR round-3 finding #4: acting-user token bypassed the plaintext-credential guard ──
+    // The acting-user token travels via a CallOptions key consumed by
+    // OAuth2ClientCredentials#applyRequestMetadata, not via CallCredentials identity itself, so
+    // the original credentials != null check alone missed it: a caller supplying only an
+    // acting-user token (null service credentials) over a plaintext channel passed silently.
+
+    @Test
+    void plaintextFactory_withActingUserTokenOnly_throwsWithoutOptIn() {
+        assertThrows(IllegalArgumentException.class, () ->
+            IversonClient.plaintext("localhost", 5000, null, "acting-user-token", false));
+    }
+
+    @Test
+    void plaintextFactory_withActingUserTokenOnly_succeedsWithOptIn() throws Exception {
+        try (IversonClient client =
+                 IversonClient.plaintext("localhost", 5000, null, "acting-user-token", true)) {
+            assertDoesNotThrow(() -> {});
+        }
+    }
+
+    @Test
+    void managedChannelConstructor_withActingUserTokenOnly_throwsWithoutOptIn() {
+        channel = ManagedChannelBuilder.forAddress("localhost", 5000).usePlaintext().build();
+        assertThrows(IllegalArgumentException.class, () ->
+            new IversonClient(channel, null, "acting-user-token", false));
+    }
+
+    @Test
+    void managedChannelConstructor_withActingUserTokenOnly_succeedsWithOptIn() {
+        channel = ManagedChannelBuilder.forAddress("localhost", 5000).usePlaintext().build();
+        assertDoesNotThrow(() -> new IversonClient(channel, null, "acting-user-token", true).close());
+    }
 }

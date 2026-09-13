@@ -117,7 +117,7 @@ public final class IversonClient implements AutoCloseable {
      */
     public static IversonClient plaintext(
             String host, int port, CallCredentials credentials, boolean allowInsecureCredentials) {
-        requireInsecureCredentialsOptIn(credentials, allowInsecureCredentials);
+        requireInsecureCredentialsOptIn(credentials, null, allowInsecureCredentials);
         return new IversonClient(
             ManagedChannelBuilder.forAddress(host, port).usePlaintext().build(), credentials, allowInsecureCredentials);
     }
@@ -150,7 +150,7 @@ public final class IversonClient implements AutoCloseable {
     public static IversonClient plaintext(
             String host, int port, CallCredentials credentials, String actingUserToken,
             boolean allowInsecureCredentials) {
-        requireInsecureCredentialsOptIn(credentials, allowInsecureCredentials);
+        requireInsecureCredentialsOptIn(credentials, actingUserToken, allowInsecureCredentials);
         return new IversonClient(
             ManagedChannelBuilder.forAddress(host, port).usePlaintext().build(), credentials, actingUserToken,
             allowInsecureCredentials);
@@ -189,7 +189,7 @@ public final class IversonClient implements AutoCloseable {
      *     {@code allowInsecureCredentials} is false.
      */
     public IversonClient(ManagedChannel channel, CallCredentials credentials, boolean allowInsecureCredentials) {
-        requireInsecureCredentialsOptIn(credentials, allowInsecureCredentials);
+        requireInsecureCredentialsOptIn(credentials, null, allowInsecureCredentials);
         this.channel         = channel;
         this.mappingStub     = ObjectMappingServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
@@ -225,7 +225,7 @@ public final class IversonClient implements AutoCloseable {
      */
     public IversonClient(ManagedChannel channel, CallCredentials credentials, String actingUserToken,
                           boolean allowInsecureCredentials) {
-        requireInsecureCredentialsOptIn(credentials, allowInsecureCredentials);
+        requireInsecureCredentialsOptIn(credentials, actingUserToken, allowInsecureCredentials);
         this.channel         = channel;
         this.mappingStub     = ObjectMappingServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
@@ -236,21 +236,30 @@ public final class IversonClient implements AutoCloseable {
 
     /**
      * The construction-time guard closing CSR finding #10 for the Java SDK: refuses to combine
-     * non-null {@link CallCredentials} with a plaintext channel unless the caller has explicitly
-     * set {@code allowInsecureCredentials=true}. Mirrors the .NET reference
+     * non-null {@link CallCredentials} <em>or</em> a non-null {@code actingUserToken} with a
+     * plaintext channel unless the caller has explicitly set
+     * {@code allowInsecureCredentials=true}. Mirrors the .NET reference
      * ({@code ServiceCollectionExtensions.AddIversonClient}'s
      * {@code allowInsecureChannelCallCredentials}), which relies on grpc-dotnet's own
      * {@code UnsafeUseInsecureChannelCallCredentials} channel option; grpc-java has no
      * equivalent built-in guard, so this method is IversonClient's own.
+     *
+     * <p>The {@code actingUserToken} check closes CSR round-3 finding #4: the acting-user token
+     * travels via {@link OAuth2ClientCredentials#ACTING_USER_TOKEN}, a {@code CallOptions} key
+     * consumed by {@link OAuth2ClientCredentials#applyRequestMetadata}, not via {@code
+     * CallCredentials} identity itself — so the original {@code credentials != null} check alone
+     * left a caller who supplied only an acting-user token (no service credentials) unguarded.
      */
-    private static void requireInsecureCredentialsOptIn(CallCredentials credentials, boolean allowInsecureCredentials) {
-        if (credentials != null && !allowInsecureCredentials) {
+    private static void requireInsecureCredentialsOptIn(
+            CallCredentials credentials, String actingUserToken, boolean allowInsecureCredentials) {
+        if ((credentials != null || actingUserToken != null) && !allowInsecureCredentials) {
             throw new IllegalArgumentException(
-                "Refusing to attach CallCredentials to a plaintext (h2c) channel without an explicit "
-                    + "allowInsecureCredentials=true opt-in. grpc-java attaches CallCredentials to any "
-                    + "channel with no guard of its own, so a Bearer token would otherwise be sent in "
-                    + "the clear. Pass allowInsecureCredentials=true only for a known-local, non-TLS "
-                    + "endpoint.");
+                "Refusing to attach CallCredentials or an acting-user token to a plaintext (h2c) "
+                    + "channel without an explicit allowInsecureCredentials=true opt-in. grpc-java "
+                    + "attaches CallCredentials (and the acting-user token carried via its "
+                    + "call options) to any channel with no guard of its own, so a Bearer token or "
+                    + "acting-user token would otherwise be sent in the clear. Pass "
+                    + "allowInsecureCredentials=true only for a known-local, non-TLS endpoint.");
         }
     }
 

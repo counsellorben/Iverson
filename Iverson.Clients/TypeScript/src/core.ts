@@ -819,11 +819,18 @@ export class IversonClient {
         // named opt-in, a Bearer token would otherwise ride a plaintext channel in the
         // clear. Pass allowInsecureCredentials=true only for a known-local, non-TLS
         // endpoint (mirrors the .NET reference's allowInsecureChannelCallCredentials).
-        if (!useTls && callCredentials !== undefined && !allowInsecureCredentials) {
+        //
+        // actingUserToken is included in this check (CSR round-3 finding #4): it travels as
+        // per-call metadata (see resolveActingUserMetadata above), not as grpc.CallCredentials,
+        // so it was invisible to the original callCredentials-only condition — a caller could
+        // combine useTls=false with only an acting-user token (no service CallCredentials) and
+        // it would pass silently, sending the acting-user Bearer token in the clear.
+        if (!useTls && (callCredentials !== undefined || actingUserToken !== undefined) && !allowInsecureCredentials) {
             throw new Error(
-                'Refusing to attach CallCredentials to a plaintext (useTls=false) channel ' +
-                'without an explicit allowInsecureCredentials=true opt-in. Pass ' +
-                'allowInsecureCredentials=true only for a known-local, non-TLS endpoint.',
+                'Refusing to attach CallCredentials or an acting-user token to a plaintext ' +
+                '(useTls=false) channel without an explicit allowInsecureCredentials=true ' +
+                'opt-in. Pass allowInsecureCredentials=true only for a known-local, non-TLS ' +
+                'endpoint.',
             );
         }
 

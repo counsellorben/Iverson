@@ -168,11 +168,28 @@ def test_client_without_use_tls_and_credentials_uses_ssl_channel_credentials(mon
     assert captured["base_creds"] is not local_sentinel
 
 
+def test_client_with_acting_user_token_and_plaintext_raises_without_opt_in():
+    """Closes CSR round-3 finding #4: acting_user_token travels as per-call metadata, not
+    CallCredentials, so it was invisible to the original `if credentials is not None` guard —
+    a caller could combine use_tls=False with only an acting-user token (no service
+    credentials) and it would pass silently, sending the acting-user Bearer token in the
+    clear. Must fail loudly at construction, exactly like the credentials= case above."""
+    with pytest.raises(ValueError):
+        IversonClient(
+            host="localhost",
+            port=5000,
+            use_tls=False,
+            acting_user_token="user-token-123",
+        )
+
+
 def test_client_with_acting_user_token_only_uses_insecure_channel(monkeypatch):
     """As of the acting-user-identity-parity initiative, acting_user_token no longer rides
     channel credentials (it is now per-call metadata via _acting_user_metadata()), so
     constructing IversonClient with only acting_user_token (no base credentials) must fall
-    through to the plain insecure_channel path, exactly like constructing with neither."""
+    through to the plain insecure_channel path, exactly like constructing with neither.
+    Requires the explicit allow_insecure_credentials=True opt-in (CSR round-3 finding #4):
+    without it this same construction now raises, see the sibling test above."""
     captured = {}
 
     def fake_insecure_channel(address):
@@ -189,7 +206,11 @@ def test_client_with_acting_user_token_only_uses_insecure_channel(monkeypatch):
     )
 
     client = IversonClient(
-        host="localhost", port=5000, use_tls=False, acting_user_token="user-token-123"
+        host="localhost",
+        port=5000,
+        use_tls=False,
+        acting_user_token="user-token-123",
+        allow_insecure_credentials=True,
     )
 
     assert captured["address"] == "localhost:5000"
@@ -234,7 +255,11 @@ def test_get_schema_sends_exactly_one_acting_user_metadata_entry(monkeypatch):
     )
 
     client = IversonClient(
-        host="localhost", port=1, use_tls=False, acting_user_token="user-token-123"
+        host="localhost",
+        port=1,
+        use_tls=False,
+        acting_user_token="user-token-123",
+        allow_insecure_credentials=True,
     )
     client._mapping_stub = MagicMock()
     client._mapping_stub.GetSchema.return_value = mapping_pb.GetSchemaResponse(types=[])
@@ -265,7 +290,11 @@ def test_coordinator_call_sends_exactly_one_acting_user_metadata_entry(monkeypat
     )
 
     client = IversonClient(
-        host="localhost", port=1, use_tls=False, acting_user_token="user-token-123"
+        host="localhost",
+        port=1,
+        use_tls=False,
+        acting_user_token="user-token-123",
+        allow_insecure_credentials=True,
     )
     coordinator = client.coordinator(CoordSchemaEntity)
     coordinator._retrieval = MagicMock()
@@ -296,7 +325,13 @@ def test_client_with_empty_string_acting_user_token_still_emits_the_header(monke
         "iverson_client.core.grpc.metadata_call_credentials", fake_metadata_call_credentials
     )
 
-    client = IversonClient(host="localhost", port=1, use_tls=False, acting_user_token="")
+    client = IversonClient(
+        host="localhost",
+        port=1,
+        use_tls=False,
+        acting_user_token="",
+        allow_insecure_credentials=True,
+    )
     client._mapping_stub = MagicMock()
     client._mapping_stub.GetSchema.return_value = mapping_pb.GetSchemaResponse(types=[])
 

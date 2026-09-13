@@ -131,7 +131,9 @@ describe('IversonClient — construction', () => {
     });
 
     it('stores an optional 5th actingUserToken argument', () => {
-        const client = new IversonClient('localhost', 5000, false, undefined, 'tok-static');
+        // Plaintext + actingUserToken now requires the opt-in (CSR round-3 finding #4) — see
+        // the dedicated throws/succeeds tests below for that guard itself.
+        const client = new IversonClient('localhost', 5000, false, undefined, 'tok-static', true);
         expect((client as unknown as { _actingUserToken: unknown })._actingUserToken).toBe('tok-static');
         client.close();
     });
@@ -153,6 +155,21 @@ describe('IversonClient — construction', () => {
             callback(null, new grpc.Metadata());
         });
         const client = new IversonClient('localhost', 5000, false, callCredentials, undefined, true);
+        expect(client).toBeInstanceOf(IversonClient);
+        client.close();
+    });
+
+    // CSR round-3 finding #4: the acting-user token travels as per-call metadata (see
+    // resolveActingUserMetadata), not grpc.CallCredentials, so it was invisible to the
+    // callCredentials-only guard above — a caller could combine useTls=false with only an
+    // acting-user token (no service CallCredentials) and it would pass silently.
+    it('throws when an acting-user token is combined with a plaintext channel and no opt-in', () => {
+        expect(() => new IversonClient('localhost', 5000, false, undefined, 'tok-static'))
+            .toThrow(/allowInsecureCredentials/);
+    });
+
+    it('succeeds when an acting-user token is combined with a plaintext channel and the opt-in is set', () => {
+        const client = new IversonClient('localhost', 5000, false, undefined, 'tok-static', true);
         expect(client).toBeInstanceOf(IversonClient);
         client.close();
     });
