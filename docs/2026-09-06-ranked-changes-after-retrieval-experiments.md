@@ -8,7 +8,7 @@
 Supersedes `docs/2026-08-28-proposed-code-changes-from-retrieval-experiments.md`, which was written while
 ArguAna was still running and lists four items that have since shipped. This document originated against
 local main at `9eb99f7` (2026-09-06) and has been kept current since; §0 is reconciled against whatever gate
-documents exist under `docs/plans/*GATE*.md` at the time it is read — currently nine. Nothing here has been
+documents exist under `docs/plans/*GATE*.md` at the time it is read — currently ten. Nothing here has been
 through `thorough-brainstorming`; each item is the input to that, not a substitute for it.
 
 The experiments this closes out are the ones scored on top-k relevance metrics (nDCG@10, R@50, AP) through
@@ -46,14 +46,15 @@ still counts.
 | Chunk-coverage signal, Phase 1 | **Phase 2 warranted** — 85.0 % of top-50 slots carry a tail; β calibrated | harness only (`beta_invariant.py` and the β ladder) | `2026-09-GATE-chunk-coverage.md` |
 | Chunk-coverage signal, Phase 2 | **NO β QUALIFIES** — all five arms negative and monotone on nDCG@10; the top three are Holm-significant (p_adj 0.0010), not a null | nothing | `2026-09-GATE-chunk-coverage-phase2.md` |
 | Aspect-coverage oracle ceiling (α-nDCG@10, FreshStack-2048) | **GO** — G − R = **+0.0609** α-nDCG@10, 95 % CI [+0.0541, +0.0678], Holm p_adj 0.0006; clears the pre-registered 0.02 bar by ~3×. A − R = +0.0570 (93.5 % of the ceiling, derived: 0.056955 / 0.060947) is reported and does not gate; R − B = +0.3364 is context. A ceiling, not a realised gain — it licenses designing a term, not shipping one | harness only (`aspect_oracle.py`); no server change | `2026-09-GATE-aspect-coverage-oracle.md` |
+| Family 2 vector-aspect screen (chunk-vector spread vs aspect count, FreshStack-2048) | **FAIL** — no candidate beats the `n_chunks` null (ρ = +0.0714) on the pre-registered 2,733-pair / 610-query primary: `residual_spread` +0.0578 (diff **−0.0136**), `greedy_cover`(τ=0.90) +0.0732 (+0.0017), `effective_rank` +0.0727 (+0.0012); all three CIs on the difference contain zero and all three Holm p_adj = 1.0000. The strong candidate failed, not just the two count-bounded ones. Reconstruction clean at 9,184/9,184 rows, 0 unmatched / 0 ambiguous / 0 duplicate | harness only (`aspect_vectors.py`), plus `queryPrefixes` / `defaultQueryPrefix` in the ingest contract and `ingest.query_prefix_for()`; no server behaviour change | `2026-09-GATE-family2-vector-aspect-screen.md` |
 
 The rows above finalized before 2026-09-07 — prefixes, the chunk-window ablation itself, centroid weight,
 request-scaled centroid, MMR λ, reranker Phase 1, embedding migration Phases 1 and 2, and the multivector
 layout — were all measured at the **512/448-character window on SciFact**, with NFCorpus and FreshStack as
-secondary corpora. That was the evidence gap item 1 closed. The five rows added since were measured at the
+secondary corpora. That was the evidence gap item 1 closed. The six rows added since were measured at the
 shipped window instead: Tier 1 retrieval defaults ran `sci-2048`, `fs-2048` and `fs-512`; `SearchSimilar`
-centroid retrieval ran the two FreshStack arms (`fs-2048`, `fs-512`); both chunk-coverage phases and the
-aspect-coverage oracle ran `fs2048` only.
+centroid retrieval ran the two FreshStack arms (`fs-2048`, `fs-512`); both chunk-coverage phases, the
+aspect-coverage oracle and the family 2 vector-aspect screen ran `fs2048` only.
 
 ---
 
@@ -136,19 +137,37 @@ not mis-cited as "coverage was tried and failed" — a misreading `docs/plans/20
 itself warns against. `docs/plans/2026-09-GATE-aspect-coverage-oracle.md` has since measured that headroom
 directly and returned **GO** (G − R = +0.0609, 95 % CI [+0.0541, +0.0678]).
 
-**CLOSED 2026-09-13 — the headroom is real, no offline-testable signal reaches it, and a term that did would be undetectable.** That gate's 2026-09-13
+**CLOSED 2026-09-13 — the headroom is real, no signal reaches it, and a term that did would be undetectable.** That gate's 2026-09-13
 amendment records four offline probes: chunk-score-derived signals proxy the oracle's per-document aspect
 count at ρ ≤ 0.0790 over 2,733 relevant pairs (a scalar score per chunk cannot say *which* part of the
 query a chunk answered); FreshStack ships no nugget text, so a query-decomposition term has no offline
 validation path; MMR moves α-nDCG@10 by 0.0027 across its whole λ range, with λ = 1.00 (MMR off) tying
 λ = 0.70, so retuning the shipped diversity mechanism on the diversity metric is dead; and the
 oracle→realised conversion reproduces at 3.63 %, which puts a realised term at ≈ +0.002 against a measured
-MDE of 0.0097 — which applies whatever signal a term is built on, and is the leg this closure rests on.
-**Family 2 (chunk-vector-derived aspect coverage) was never screened**: the ρ ≤ 0.0790 result covers
-score-derived signals only, and screening vectors needs a Qdrant snapshot restore plus TEI for 672 query
-embeddings, because query vectors exist nowhere on disk. The idea is not refuted and the signal search is
-not exhaustive. Reopen on nugget text, a larger subtopic-labelled corpus, or a decision to fund the
-family-2 screen as an experiment.
+MDE of 0.0097 — which applies whatever signal a term is built on, and remains the leg this closure rests on.
+
+**Family 2 (chunk-vector-derived aspect coverage) has since been screened, and FAILED** —
+`docs/plans/2026-09-GATE-family2-vector-aspect-screen.md`, 2026-09-13. It was screened live, against the
+chunk and centroid vectors served from Qdrant and 610 query embeddings from TEI, over the same 2,733-pair /
+610-query population. **No candidate beats the `n_chunks` null (ρ = +0.0714):** `residual_spread` +0.0578
+(difference **−0.0136**), `greedy_cover`(τ = 0.90) +0.0732 (+0.0017), `effective_rank` +0.0727 (+0.0012);
+every 95 % CI on the difference contains zero and every Holm-adjusted p is 1.0000, over a 10,000-resample
+bootstrap of queries. The failure is the **strong** form: `residual_spread` is not bounded by the chunk
+count (ρ +0.4087 with it, against +0.9493 for `greedy_cover`, which is numerically equal to `n_chunks` on
+88.8 % of pairs), it is the candidate that encodes the "project the query out" argument directly, and it
+scored *below* the null rather than tying it. The best family-2 candidate (+0.0732) also fails to beat the
+best score-derived signal (`spread`, +0.0790) on the identical population: the vectors bought nothing over
+the scalars. The whole ρ(τ) curve is published in that gate, and τ = 0.90 is the argmax of the primary
+curve, so no post-hoc τ rescues it. The reconstruction underpinning all of it was clean — 9,184 of 9,184
+recorded fused scores assigned to exactly one chunk, 0 unmatched / 0 ambiguous / 0 duplicate — which is
+also the live confirmation that the fusion weights were **equal** (not, as that spec over-claimed, that
+they were 0.45/0.45: the fusion divides by their sum, so any equal pair is indistinguishable).
+
+**The signal search over this family is therefore no longer open, but it is not exhaustive over all
+families.** Three definitions of chunk-vector spread were tested on one corpus under one model; a
+different definition of "distinct aspect" is not refuted. Reopen on nugget text, a larger
+subtopic-labelled corpus that lifts the MDE below the predicted effect, or a new definition of aspect
+coverage that is not a spread of matched chunk vectors.
 
 ---
 
