@@ -21,6 +21,14 @@ deploy with no working edge TLS, so both cases fail the render rather than
 silently producing a broken Ingress.
 */}}
 {{- define "iverson.validateNoPlaceholders" -}}
+{{- /*
+CSR round-3 finding #11 (part 1): api.ingress.host used to duplicate
+global.ingressHost out of lockstep with no enforcement. Fixed by removing the
+duplicate value entirely — charts/api/templates/ingress.yaml now templates
+directly off global.ingressHost (see that file's comment), the same
+single-source-of-truth pattern admin-ui's Ingress already used — so there is
+nothing left to drift and no equality check is needed here.
+*/}}
 {{- if eq (dig "externalScheme" "http" .Values.global) "https" }}
 {{- if eq (dig "ingressHost" "" .Values.global) "iverson.example.com" }}
 {{- fail (printf "global.ingressHost is still the shipped placeholder %q — set it to the real external hostname before deploying a cloud/https profile (CSR round-2 finding #3)." (dig "ingressHost" "" .Values.global)) }}
@@ -38,6 +46,38 @@ subchart to an empty dict) before digging into it.
 {{- range $k, $v := (dig "annotations" dict $ing) }}
 {{- if and (kindIs "string" $v) (regexMatch $placeholderRe $v) }}
 {{- fail (printf "%s.annotations[%s] is still the placeholder %q — replace it with a real value before deploying a cloud/https profile (CSR round-2 finding #3)." $label $k $v) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- /*
+CSR round-3 finding #11 (part 2): azure/gcp both set a real tlsSecretName (e.g.
+"iverson-api-tls") that this chart never creates — it must already exist as a Secret
+in the release namespace (provisioned out-of-band, e.g. cert-manager or a manual
+cert import) or the rendered Ingress's `tls:` block references nothing and TLS
+silently doesn't work. Reuses $ingressBlocks from part 2 above rather than
+re-deriving api/authentik/adminUi.ingress a second time.
+
+lookup only queries a live API server: `helm template`/`--dry-run` has no cluster to
+ask and ALWAYS returns an empty result regardless of the real state, which would
+otherwise make this check fail every valid values-azure.yaml/values-gcp.yaml render
+(both legitimately set a real tlsSecretName). `.Release.IsInstall` does NOT
+distinguish this — confirmed empirically it is `true` under plain `helm template`
+too (Helm simulates a fresh install by default), so it cannot gate this check.
+Instead, probe for live cluster access the same way `lookup` itself is documented
+to behave: look up a namespace ("kube-system") that exists on every real
+Kubernetes cluster but which `lookup` — per Helm's own docs — always resolves to
+an empty map under `helm template`/`--dry-run` regardless of target, confirmed
+empirically in this environment. The placeholder checks above need no such gate:
+they only ever inspect rendered .Values content, never a live lookup, so they
+behave identically under `helm template` and a real install/upgrade.
+*/}}
+{{- if lookup "v1" "Namespace" "" "kube-system" }}
+{{- range $label, $ing := $ingressBlocks }}
+{{- $tlsName := dig "tlsSecretName" "" $ing }}
+{{- if $tlsName }}
+{{- if not (lookup "v1" "Secret" $.Release.Namespace $tlsName) }}
+{{- fail (printf "%s.tlsSecretName %q does not resolve to an existing Secret in namespace %q — create it (e.g. via cert-manager or your cloud's certificate-import flow) before this install/upgrade completes, or the Ingress has no working TLS (CSR round-3 finding #11)." $label $tlsName $.Release.Namespace) }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

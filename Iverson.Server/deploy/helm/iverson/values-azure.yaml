@@ -1,8 +1,6 @@
 # Azure AKS overlay — StorageClass names and node-pool labels match modules/operators
 # and modules/cluster-azure's fixed naming exactly (see Tasks 2 and 4 of this plan).
 
-# Keep in lockstep with api.ingress.host below — see values.yaml's global.ingressHost
-# comment for why this is a separate key instead of a single source of truth.
 global:
   ingressHost: "iverson.example.com"
   externalScheme: "https"
@@ -81,7 +79,6 @@ api:
   ingress:
     className: "azure-application-gateway"
     annotations: {}
-    host: "iverson.example.com"
     # AGIC terminates TLS from a standard Kubernetes Secret referenced via
     # the Ingress's tls: block (the api subchart's Ingress template already
     # renders one whenever tlsSecretName is set) — replace with a real

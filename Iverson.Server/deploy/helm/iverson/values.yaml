@@ -15,9 +15,11 @@ networkPolicy:
 
 # global values are visible to every subchart (unlike top-level keys like `api:`,
 # which are scoped only to the matching subchart) — used here so the authentik
-# subchart's blueprint (the human OIDC provider's redirect_uri) can reference the
-# same hostname as api.ingress.host without duplicating it out of sync. Keep this
-# in lockstep with api.ingress.host in every values-*.yaml file.
+# subchart's blueprint (the human OIDC provider's redirect_uri) AND the api
+# subchart's Ingress (charts/api/templates/ingress.yaml) both reference this one
+# hostname directly, with no separate api.ingress.host to fall out of lockstep
+# (CSR round-3 finding #11 — a values.yaml/values-*.yaml duplicate of this key used
+# to exist and had no enforcement against drifting).
 global:
   ingressHost: "iverson.local"
   # Scheme alone (http/https), not a URL and not an origin — templated onto the
@@ -171,7 +173,11 @@ api:
   ingress:
     className: ""
     annotations: {}
-    host: "iverson.local"
+    # No `host` key here (CSR round-3 finding #11): it used to duplicate
+    # global.ingressHost, which could drift out of lockstep with no enforcement.
+    # charts/api/templates/ingress.yaml now templates directly off
+    # global.ingressHost, the single source of truth (see that comment there,
+    # and the values.yaml global.ingressHost comment above).
     tlsSecretName: ""   # set per-environment; empty disables the tls: block (kind only — see values-local.yaml)
     securityHeadersRuleSet: ""   # name of a pre-provisioned azurerm_application_gateway_rewrite_rule_set
                                  # carrying the security-header rewrite rules; only used when

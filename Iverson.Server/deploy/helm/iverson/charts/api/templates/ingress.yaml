@@ -36,13 +36,17 @@ metadata:
     {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className | quote }}
+{{- /* Templates directly off global.ingressHost (not a separate ingress.host value) —
+   CSR round-3 finding #11: a duplicated api.ingress.host used to exist here and could
+   drift from global.ingressHost with no enforcement. admin-ui's Ingress template
+   already followed this single-source-of-truth pattern; api's now matches it. */}}
 {{- if .Values.ingress.tlsSecretName }}
   tls:
-    - hosts: [{{ .Values.ingress.host | quote }}]
+    - hosts: [{{ .Values.global.ingressHost | quote }}]
       secretName: {{ .Values.ingress.tlsSecretName | quote }}
 {{- end }}
   rules:
-    - host: {{ .Values.ingress.host | quote }}
+    - host: {{ .Values.global.ingressHost | quote }}
       http:
         paths:
           - path: /iverson.ObjectMappingService

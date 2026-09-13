@@ -101,7 +101,6 @@ api:
   ingress:
     className: "nginx"
     annotations: {}
-    host: "iverson.local"
     tlsSecretName: ""
 
 worker:
