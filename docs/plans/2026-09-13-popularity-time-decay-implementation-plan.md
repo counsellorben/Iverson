@@ -29,14 +29,19 @@ Project-wide values every task must use verbatim, from the spec:
 ## File Structure
 
 **Create:**
-- `Iverson.Clients/DotNet/Iverson.Client.Attributes/IversonPopularitySignalAttribute.cs` — the new marker attribute.
+- `Iverson.Clients/DotNet/Iverson.Client.Attributes/IversonPopularitySignalAttribute.cs` — the .NET marker attribute.
+- `Iverson.Clients/Java/client/src/main/java/io/iverson/client/annotations/IversonPopularitySignal.java` — the Java annotation, mirroring `IversonMetadata.java`.
 
 **Modify:**
 - `Iverson.Clients/Common/Proto/object_mapping.proto` — `bool is_popularity_signal = 23` on `PropertyDescriptor`.
 - `Iverson.Server/Iverson.Api/Schema/SchemaDescriptor.cs` — `string? PopularitySignalColumn`.
 - `Iverson.Server/Iverson.Api/Schema/SchemaBuilder.cs` — map the flag; reject two marked properties.
 - `Iverson.Clients/DotNet/Iverson.Client.Core/SchemaRegistrar.cs` — set the flag from the attribute.
-- `Iverson.Clients/TypeScript/src/core.ts` — **two** `PropertyDescriptor` literal sites.
+- `Iverson.Clients/TypeScript/src/core.ts` — **two** `PropertyDescriptor` literal sites, plus the accessor import list.
+- `Iverson.Clients/TypeScript/src/annotations.ts` — the decorator, its symbol, and the accessor.
+- `Iverson.Clients/TypeScript/src/index.ts` — export the decorator and accessor.
+- `Iverson.Clients/Python/iverson_client/annotations.py` — the `FieldMeta` field, `iverson_field` keyword, and collection.
+- `Iverson.Clients/Go/iverson/tags.go` — the tag-key const, `FieldMeta` field, and its parse.
 - `Iverson.Clients/Python/iverson_client/core.py` — set the flag.
 - `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/SchemaRegistrar.java` — set the flag.
 - `Iverson.Clients/Go/iverson/registrar.go` — struct-tag metadata plus the descriptor projection.
@@ -59,6 +64,12 @@ Project-wide values every task must use verbatim, from the spec:
 
 Verified by `thorough-brainstorming` at spec-write time and **not** re-verified here. Trusted as ground truth: **A1–A7, A10–A12, A15–A18, A21–A23, A25, A26, A28**, the `max()`-degeneracy and no-feedback-path items, and **SP1–SP8**. Full statements and evidence are in the spec's `Verified assumptions` table.
 
+**One inherited item is mis-scoped and is corrected here.** Spec **A4** reads "one registrar source file
+per client … plus the .NET attribute class". That is true of where the marker is *consumed*, but each
+non-.NET client also has a separate *declaration* site the registrar reads from — TypeScript
+`annotations.ts` + `index.ts`, Python `annotations.py`, Java a standalone annotation file, Go `tags.go`.
+Task 4 covers both. Treat A4 as covering consumption only.
+
 Two inherited items carry forward as live constraints rather than background facts:
 
 - **SP8** — `SetPayload` merges; omitting a key preserves its previous value. This is why Task 6 writes both keys unconditionally.
@@ -68,7 +79,7 @@ Two inherited items carry forward as live constraints rather than background fac
 
 | # | Category | Assumption | Evidence |
 |---|---|---|---|
-| 1 | Consumer impact | Adding `PopularitySignalColumn` breaks no construction site | 19 `new SchemaDescriptor` sites, all in tests; the member is a defaulted nullable with no `required`, so object initialisers are unaffected |
+| 1 | Consumer impact | Adding `PopularitySignalColumn` breaks no construction site | 19 `new SchemaDescriptor` sites: **18 in tests and one in production** — `SchemaBuilder.cs:209`, which is the very construction Task 2 Step 3 edits. The member is a defaulted nullable with no `required`, so no object initialiser is forced to supply it |
 | 2 | Consumer impact | Adding a descriptor member does **not** trip schema-drift detection | `SchemaRegistrationOrchestrator.cs:300-301` compares **only** `DocumentTemplateSource` via `string.Equals(..., Ordinal)`; `:288-292` states comparing parsed models "would look changed", which is why a single raw string is used |
 | 3 | Consumer impact | `PopularityFor` has exactly one call site | `ObjectSearchGrpcService.cs:288` (definition `:1009`); `private static`, so the signature change is file-local |
 | 4 | Consumer impact | `RetrievePopularityOrDegradeAsync` has exactly one call site | `ObjectSearchGrpcService.cs:651` (definition `:954`); `private`, file-local |
@@ -86,6 +97,9 @@ Two inherited items carry forward as live constraints rather than background fac
 | 16 | Ordering | No task imports a symbol a later task creates | Tasks 3–4 consume Task 2's proto field; Task 6 consumes Task 2's descriptor member; Task 7 consumes Task 5's options. All dependencies point backwards |
 | 17 | Code validity | Existing flags are already covered by tests the new flag joins | `is_metadata`/`IsMetadata` appears in `ObjectMappingGrpcServiceTests.cs` and `SchemaBuilderTests.cs` — additive, so no existing assertion breaks |
 | 18 | Code validity | `TakeLast(60)` selects the most recent buckets | SQL emits `ORDER BY bucket_key` ascending (`StarRocksQueryBuilder.cs:289`), and zero-padded `%Y-%m` sorts chronologically (spec A18), so the tail is the most recent |
+| 19 | Signature | `AggregationBucket` collides across both imported namespaces; `SrAggBucket` is the established alias | `Iverson.StarRocks.AggregationBucket` at `Aggregation.cs:34`; `Iverson.Client.Contracts.AggregationBucket` generated from `object_search.proto:207`. Both files import both namespaces (`PopularitySignalConsumer.cs:5`,`:8`; tests `:7`,`:10`) and alias neither. Precedent: `ObjectSearchGrpcServiceTests.cs:19` |
+| 20 | File path | Each non-.NET client has a marker **declaration** site separate from its registrar | TS `annotations.ts:34`/`:252`/`:261` + `index.ts:11`/`:23`; Python `annotations.py:45`/`:67`/`:115`/`:300`/`:335`; Java `.../annotations/IversonMetadata.java` (one of 16 standalone files); Go `tags.go:85`/`:179`/`:273`. .NET is the only client whose declaration Task 3 already covers |
+| 21 | Code validity | Marker naming is derived from two anchors, not chosen per client | Task 2's proto `is_popularity_signal` and Task 3's `IversonPopularitySignal` fix the spelling; each client mirrors its own `is_metadata` convention from those |
 
 ## Tasks
 
@@ -245,10 +259,11 @@ git commit -m "add IversonPopularitySignal attribute to the dotnet client"
 ### Task 4: The four remaining clients
 
 **Files:**
-- Modify: `Iverson.Clients/TypeScript/src/core.ts` (**two** literal sites: `:376` and `:404`)
-- Modify: `Iverson.Clients/Python/iverson_client/core.py`
+- Create: `Iverson.Clients/Java/client/src/main/java/io/iverson/client/annotations/IversonPopularitySignal.java`
+- Modify: `Iverson.Clients/TypeScript/src/annotations.ts`, `src/index.ts`, `src/core.ts` (**two** literal sites: `:376` and `:404`, plus the accessor import at `:63`)
+- Modify: `Iverson.Clients/Python/iverson_client/annotations.py`, `iverson_client/core.py`
 - Modify: `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/SchemaRegistrar.java`
-- Modify: `Iverson.Clients/Go/iverson/registrar.go`
+- Modify: `Iverson.Clients/Go/iverson/tags.go`, `iverson/registrar.go`
 - Test: the four corresponding test files
 
 **Interfaces:**
@@ -264,11 +279,34 @@ Java regenerates through Maven on build.
 
 - [ ] **Step 2: Set the flag in each client, matching each one's existing shape**
 
-Each client expresses markers differently — do not assume a uniform edit:
-- **TypeScript** — `isPopularitySignal` in **both** `PropertyDescriptor` literals: the property path at `:376` (a real per-field value) and the all-defaults path at `:404` (`false`). Missing the second leaves a silently wrong descriptor on that path.
-- **Python** — an `is_popularity_signal=(...)` keyword argument beside `is_metadata=` at `:280`.
-- **Java** — `b.setIsPopularitySignal(true)` beside `:220`.
-- **Go** — a new `fieldMeta` field plus its struct-tag parse, projected as `IsPopularitySignal: fm.PopularitySignal` beside `:142`.
+Each client has **two** sites — where the marker is *declared* and where the registrar *consumes* it.
+Editing only the registrar leaves nothing to read; Java would not even compile. Do not assume a uniform
+edit — every client expresses both differently.
+
+**Naming is derived, not chosen.** Task 2 fixes the proto field as `is_popularity_signal` and Task 3 fixes
+the .NET attribute as `IversonPopularitySignal`. Each client follows its own existing `is_metadata`
+convention from those two anchors; keep the spellings consistent with them.
+
+- **TypeScript** — *declare*: a symbol beside `IVERSON_METADATA_FIELDS` (`annotations.ts:34`), an
+  `IversonPopularitySignal()` decorator beside `:252`, an accessor beside `getMetadataFields` (`:261`);
+  export both in `index.ts` beside `:11` and `:23`. *Consume*: add the accessor to `core.ts`'s import
+  list (`:63`), build the set beside `:245`, and set `isPopularitySignal` in **both** `PropertyDescriptor`
+  literals — the property path at `:376` and the all-defaults path at `:404` (`false`). Missing the second
+  leaves a silently wrong descriptor on that path.
+- **Python** — *declare*: a `FieldMeta` field beside `metadata: bool = False` (`annotations.py:45`), an
+  `iverson_field(...)` keyword beside `:67` with its pass-through at `:115`, and the collection beside
+  `:300`/`:335`. *Consume*: an `is_popularity_signal=(...)` keyword beside `is_metadata=` (`core.py:280`).
+- **Java** — *declare*: create `IversonPopularitySignal.java` in `.../client/annotations/`, mirroring
+  `IversonMetadata.java` (`@Target(ElementType.FIELD) @Retention(RetentionPolicy.RUNTIME)`).
+  *Consume*: `b.setIsPopularitySignal(true)` beside `SchemaRegistrar.java:220`.
+- **Go** — *declare*: a tag-key const beside `MetadataTagKey` (`tags.go:85`), a field beside `Metadata bool`
+  in `type FieldMeta struct` (`:179`), and the parse beside `:273`. *Consume*:
+  `IsPopularitySignal: fm.PopularitySignal` beside `registrar.go:142`. Note the exported type is
+  **`FieldMeta`**, not `fieldMeta`.
+
+Out of scope, having been checked: each client also rejects `[IversonMetadata]` on the key field
+(`core.ts:264`, `tags.go:341-342`), and Python has a convenience `iverson_metadata()` helper
+(`annotations.py:133-135`). The spec asks for neither for this marker; do not add analogues.
 
 - [ ] **Step 3: Tests** — one per client, mirroring Task 3's assertion.
 
@@ -348,8 +386,15 @@ git commit -m "add RecencyBoost and RecencyHalfLifeDays options with validation"
 
 After the existing Count block and its `return`s, before the write. The separate `try` is load-bearing: the Count `catch` returns at `:81`, so sharing it would abort the whole update and leave the count stale.
 
+**First, resolve the type ambiguity.** `AggregationBucket` is declared in *both* namespaces this file
+imports, so the bare name does not compile (CS0104). Add
+`using SrAggBucket = Iverson.StarRocks.AggregationBucket;` to the alias blocks of
+`PopularitySignalConsumer.cs` (`:19-20`) and `PopularitySignalConsumerTests.cs` (`:18-20`), and extend the
+consumer's header comment (`:13-18`) — which currently names only `AggregationResult` and
+`RelationDescriptor` — to record `AggregationBucket` as the third colliding type.
+
 ```csharp
-IReadOnlyList<AggregationBucket>? buckets = null;
+IReadOnlyList<SrAggBucket>? buckets = null;
 if (childSchema.PopularitySignalColumn is { } tsColumn)
 {
     try
