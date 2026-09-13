@@ -81,6 +81,11 @@ public sealed record SchemaDescriptor
         init => _metadataColumns = new HashSet<string>(value ?? [], StringComparer.OrdinalIgnoreCase);
     }
 
+    // Defaulted, not required: legacy _iverson_schema rows predate this marker and carry no such
+    // key. Absent is benign — it means "this type has no interaction timestamp", which the write
+    // path handles by writing an empty series.
+    public string? PopularitySignalColumn { get; init; }
+
     public string?                    Description       { get; init; }
     public Dictionary<string, string> FieldDescriptions { get; init; } = [];
 

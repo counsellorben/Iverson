@@ -44,6 +44,7 @@ internal static class SchemaBuilder
         var searchKeysSorted = new List<(string Name, int Order)>();
         var largeFields      = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var metadataColumns  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var popularitySignalColumns = new List<string>();
         var fieldDescriptions = new Dictionary<string, string>();
         var badMetadata      = new List<string>();
         var reservedMetadata = new List<string>();
@@ -102,6 +103,9 @@ internal static class SchemaBuilder
                     reservedMetadata.Add(prop.Name);
             }
 
+            if (prop.IsPopularitySignal)
+                popularitySignalColumns.Add(prop.Name);
+
             if (!string.IsNullOrEmpty(prop.Description))
                 fieldDescriptions[prop.Name] = prop.Description;
 
@@ -134,6 +138,11 @@ internal static class SchemaBuilder
             throw new InvalidOperationException(reservedMetadata.Count == 1
                 ? $"Property '{reservedMetadata[0]}' cannot have [IversonMetadata]: its payload key collides with a reserved chunk payload key ({string.Join(", ", s_reservedChunkPayloadKeys)})."
                 : $"Properties {string.Join(", ", reservedMetadata.Select(n => $"'{n}'"))} cannot have [IversonMetadata]: their payload keys collide with reserved chunk payload keys ({string.Join(", ", s_reservedChunkPayloadKeys)}).");
+
+        if (popularitySignalColumns.Count > 1)
+            throw new ArgumentException(
+                $"Properties {string.Join(", ", popularitySignalColumns.Select(n => $"'{n}'"))} all carry " +
+                "[IversonPopularitySignal]. Exactly one property may mark the interaction timestamp.");
 
         var relations = typeDesc.Relations.Select(r => new RelationDescriptor(
             r.PropertyName,
@@ -224,6 +233,7 @@ internal static class SchemaBuilder
             // say in which column carries the tenant boundary, and the name never goes on the wire.
             TenantColumn      = SchemaDescriptor.TenantColumnName,
             MetadataColumns   = metadataColumns,
+            PopularitySignalColumn = popularitySignalColumns.SingleOrDefault(),
             Description       = string.IsNullOrEmpty(typeDesc.Description) ? null : typeDesc.Description,
             FieldDescriptions = fieldDescriptions,
             EnrichmentTargets = enrichmentTargets,
