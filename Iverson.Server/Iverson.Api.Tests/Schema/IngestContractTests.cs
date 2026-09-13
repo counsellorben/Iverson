@@ -26,7 +26,7 @@ namespace Iverson.Api.Tests.Schema;
 /// IVERSON_REGENERATE_INGEST_CONTRACT=1 dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter IngestContract
 /// </code></para>
 ///
-/// <para><b>What the contract does not pin.</b> Query prefixes <b>are</b> emitted: <c>aspect_vectors.py</c>
+/// <para><b>What the contract pins, and what it does not.</b> Query prefixes <b>are</b> emitted: <c>aspect_vectors.py</c>
 /// embeds queries Python-side to reproduce recorded retrieval scores, so a Python consumer exists and
 /// the same table must reach it. Collection-creation parity (vector names, payload
 /// indexes) is not emitted — Ben's call, 2026-09-01 — because those derive from <c>Type.GetProperties()</c>, whose

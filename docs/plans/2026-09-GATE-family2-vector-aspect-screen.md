@@ -49,8 +49,9 @@ Spec §5 records that `greedy_cover` and `effective_rank` are **bounded above by
 construction**, and that a failure by those two alone would be weaker evidence against the family than a
 failure by `residual_spread`. **That mitigation does not apply here.** All three failed, and
 `residual_spread` — the one candidate that is not count-bounded, and the one that directly encodes spec
-§1's structural argument (project the query out, measure what is left) — did not merely tie the null. It
-scored **below** it, at +0.0578 against +0.0714.
+§1's structural argument (project the query out, measure what is left) — its point estimate fell
+below the null (+0.0578 vs +0.0714), and the difference is not distinguishable from zero (95 % CI
+[−0.0593, +0.0330]).
 
 The measured degeneracies confirm which candidate carried the real test:
 
@@ -77,6 +78,8 @@ information that the chunk count did not already carry.
 | Chunk vectors | Qdrant `benchmark_documents_chunks_tenant_bypass` | 18,622 points, `body_vector` 768-d Cosine, status green |
 | Centroid vectors | Qdrant `benchmark_documents_tenant_bypass` | 6,000 points, `body_centroid` 768-d Cosine, status green |
 | Query vectors | TEI `BAAI/bge-base-en-v1.5` on `:8091` | `/info` reports `BAAI/bge-base-en-v1.5`, 768-d, TEI 1.8.3 |
+| Chunk-vector snapshot (documented route, **not exercised this run**) | `~/repositories/iverson-benchmark-corpora/freshstack-2048-qdrant-snapshots/benchmark_documents_chunks_tenant_bypass-6802952876034638-2026-09-07-10-49-03.snapshot` | 123,537,920 bytes; md5 `f54bdb81ccbb50c1403b758841b069a5` |
+| Centroid-vector snapshot (documented route, **not exercised this run**) | `~/repositories/iverson-benchmark-corpora/freshstack-2048-qdrant-snapshots/benchmark_documents_tenant_bypass-6802952876034638-2026-09-07-10-48-59.snapshot` | 124,247,040 bytes; md5 `f688b863357921a3899140d2d46896e3` |
 | Instrument | `Iverson.Server/Iverson.LoadTest/scripts/aspect_vectors.py` @ `b3c1201` | 54 pytest tests pass offline |
 
 **Outputs**, all written to `~/repositories/iverson-benchmark-corpora/family2-vector-screen-2026-09-13/`:
@@ -93,6 +96,14 @@ information that the chunk count did not already carry.
 > repository reproduces them without re-running the instrument against the same inputs with Qdrant and TEI
 > up. The md5s above are pinned so a later reader can confirm the file they are reading is the file these
 > figures came from.
+
+**The two rows above (Chunk vectors, Centroid vectors) came from a preserved docker volume, not a
+fresh restore of the two snapshot files now pinned above.** The restore called for by spec §2.6 and plan
+Step 2 was skipped by operator ruling (see "The restore that was not performed" below); Qdrant instead came
+up on a volume already holding both collections. The two snapshots are the project's documented
+reproduction route, and because they were not exercised on this run, a reproducer following them is on an
+untested route — the faithfulness check below validates what the preserved volume actually contained, not
+that it matches these snapshot files bit-for-bit.
 
 Two containers were started, each **single-service with `--no-deps`** (Global Constraint 1): `qdrant` and
 `tei-embed`. **`iverson-api` was never started and never built** (Global Constraint 2). No server code was
@@ -149,8 +160,9 @@ the faithfulness check was about to test.
 
 This is recorded as a deviation, not hidden. Its effect on the result is the opposite of a weakening: V25
 argued from snapshot timestamps that the restored collections *would be* the state the dump was produced
-from, whereas the faithfulness check **measured** it — 9,184 exact reconstructions against a dump produced
-by a different process in a different language is not a property the wrong collection state could have. The
+from, whereas the faithfulness check **measured** it — 9,184 exact reconstructions, over the 2,022
+parents the population touches, against a dump produced by a different process in a different language is
+not a property the wrong collection state could have. The
 plan's own contingency (stop and report BLOCKED, then restore as the diagnostic path) was not needed
 because the check passed.
 
@@ -201,8 +213,9 @@ single-aspect pairs are removed.
 
 **This is the one place any candidate is nominally ahead of its null, and it is nothing.** All three point
 differences are positive here only because the null goes negative; every CI straddles zero by a wide
-margin, every unadjusted p exceeds 0.50, and the largest effect (`residual_spread`, +0.0313) has a CI four
-times its own width. Under §2.4's rule it would fail on this population too, before any Holm adjustment.
+margin, every unadjusted p exceeds 0.50, and the largest effect (`residual_spread`, +0.0313, 95 % CI
+[−0.0709, +0.1296]) has a CI whose full width (0.2005) is 6.4 times the effect itself. Under §2.4's rule it
+would fail on this population too, before any Holm adjustment.
 The primary decides and the primary says FAIL; this is recorded because the spec required it to be, not
 because it qualifies the verdict.
 

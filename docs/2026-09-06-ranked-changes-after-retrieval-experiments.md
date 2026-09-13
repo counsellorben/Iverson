@@ -154,8 +154,9 @@ chunk and centroid vectors served from Qdrant and 610 query embeddings from TEI,
 every 95 % CI on the difference contains zero and every Holm-adjusted p is 1.0000, over a 10,000-resample
 bootstrap of queries. The failure is the **strong** form: `residual_spread` is not bounded by the chunk
 count (ρ +0.4087 with it, against +0.9493 for `greedy_cover`, which is numerically equal to `n_chunks` on
-88.8 % of pairs), it is the candidate that encodes the "project the query out" argument directly, and it
-scored *below* the null rather than tying it. The best family-2 candidate (+0.0732) also fails to beat the
+88.8 % of pairs), it is the candidate that encodes the "project the query out" argument directly, and its point
+estimate fell below the null rather than tying it — though the difference is not distinguishable from
+zero (95 % CI [−0.0593, +0.0330]). The best family-2 candidate (+0.0732) also fails to beat the
 best score-derived signal (`spread`, +0.0790) on the identical population: the vectors bought nothing over
 the scalars. The whole ρ(τ) curve is published in that gate, and τ = 0.90 is the argmax of the primary
 curve, so no post-hoc τ rescues it. The reconstruction underpinning all of it was clean — 9,184 of 9,184
