@@ -137,6 +137,67 @@ def match_pool(recorded_scores, cand_vectors, centroid_vec, qhat, w_base, w_cent
     return matched, unmatched, ambiguous
 
 
+def pair_row(query_id, doc_id, parent_key, aspects, qhat, candidates, centroid, recorded):
+    """One (query, document) pair: the §2.7 reconstruction, then the three signals over the
+    matched set. This is the seam between the verified reconstruction and the verified
+    statistics, which is why it is a function rather than the body of main()'s loop.
+
+    `candidates` is the parent's WHOLE chunk set; `recorded` is the fused score of every hit this
+    query's pool recorded for that parent, in dump order. `matched[k]` is the chunk that
+    reproduces `recorded[k]`, so C's rows and `recorded` name the same chunks in the same order --
+    which is what lets greedy_cover walk the pool in recorded-score order -- and `n_chunks` counts
+    C, the pool's chunks, never `candidates` (Global Constraint 7).
+
+    Returns a result dict: `row` (None unless the pair produced a signal row), the three
+    faithfulness counters, `max_residual` over this pair's matched rows (None when it has none),
+    and at most one of `recon_failure` / `signal_failure` as a message for the caller to collect."""
+    matched, n_unmatched, n_ambiguous = match_pool(
+        recorded, candidates, centroid, qhat, W_BASE, W_CENTROID)
+    # Two recorded rows can each match ONE chunk uniquely -- their scores need only lie within a
+    # tolerance window of each other -- and match_pool's own counters cannot see it. Unchecked, C
+    # would carry that vector twice and n_chunks would overcount, so it falsifies the
+    # reconstruction exactly as an unmatched row does.
+    n_duplicated = len(matched) - len(set(matched))
+    result = {"row": None, "n_unmatched": n_unmatched, "n_ambiguous": n_ambiguous,
+              "n_duplicated": n_duplicated, "max_residual": None,
+              "recon_failure": None, "signal_failure": None}
+
+    if n_unmatched or n_ambiguous or n_duplicated:
+        # match_pool's indices only align 1:1 with `recorded` when nothing failed, so a failing
+        # pair contributes no residual and no signal row. The run aborts once faithfulness.txt is
+        # written, so neither is ever needed.
+        result["recon_failure"] = (
+            f"{query_id} / {doc_id} (parent {parent_key}): {len(recorded)} recorded row(s), "
+            f"{n_unmatched} unmatched, {n_ambiguous} ambiguous, {n_duplicated} duplicate assignment(s)")
+        return result
+
+    if matched:
+        result["max_residual"] = max(
+            abs(fused(qhat, candidates[i], centroid, W_BASE, W_CENTROID) - s)
+            for s, i in zip(recorded, matched))
+
+    C = candidates[matched]
+    row = {
+        "query_id": query_id,
+        "doc_id": doc_id,
+        "aspects": aspects,
+        "n_chunks": len(matched),      # chunks IN THE POOL -- the set C is drawn from
+        "residual_spread": residual_spread(C, qhat),
+        "covers": {tau: greedy_cover(C, recorded, tau) for tau in TAUS},
+        "effective_rank": effective_rank(C),
+    }
+    non_finite = [k for k in ("residual_spread", "effective_rank") if not np.isfinite(row[k])]
+    if non_finite:
+        # Collected rather than exited on, so faithfulness.txt is still written: a non-finite
+        # signal over a cleanly reconstructed pool is a different diagnosis from a broken
+        # reconstruction, and the operator needs to see which of the two happened.
+        result["signal_failure"] = (f"{query_id} / {doc_id}: non-finite {non_finite} over "
+                                    f"{len(matched)} chunk(s)")
+        return result
+    result["row"] = row
+    return result
+
+
 def unit(vec, what):
     """Explicit unit-normalisation. Qdrant's Cosine normalisation is not relied on, here or in C."""
     arr = np.asarray(vec, dtype=np.float64)
@@ -585,48 +646,22 @@ def main():
     max_residual = None
     recon_failures, signal_failures = [], []
     for (query_id, doc_id, aspects), group in zip(pairs, groups):
-        qhat = query_vectors[query_id]
-        candidates = chunk_vectors[group[1]]
-        centroid = centroids[group[1]]
         recorded = hit_groups[group]
         checked += len(recorded)
-        matched, n_unmatched, n_ambiguous = match_pool(
-            recorded, candidates, centroid, qhat, W_BASE, W_CENTROID)
-        unmatched_total += n_unmatched
-        ambiguous_total += n_ambiguous
-        n_duplicated = len(matched) - len(set(matched))
-        duplicated_total += n_duplicated
-        if n_unmatched or n_ambiguous or n_duplicated:
-            # match_pool's returned indices only align 1:1 with `recorded` when nothing failed,
-            # so a failing group contributes no residual and no signal row. The run aborts after
-            # faithfulness.txt is written, so neither is ever needed.
-            recon_failures.append(f"{query_id} / {doc_id} (parent {group[1]}): {len(recorded)} recorded row(s), "
-                                  f"{n_unmatched} unmatched, {n_ambiguous} ambiguous, "
-                                  f"{n_duplicated} duplicate assignment(s)")
-            continue
-        for score, index in zip(recorded, matched):
-            residual = abs(fused(qhat, candidates[index], centroid, W_BASE, W_CENTROID) - score)
-            max_residual = residual if max_residual is None else max(max_residual, residual)
-
-        C = candidates[matched]
-        row = {
-            "query_id": query_id,
-            "doc_id": doc_id,
-            "aspects": aspects,
-            "n_chunks": len(matched),      # chunks IN THE POOL -- the set C is drawn from
-            "residual_spread": residual_spread(C, qhat),
-            "covers": {tau: greedy_cover(C, recorded, tau) for tau in TAUS},
-            "effective_rank": effective_rank(C),
-        }
-        non_finite = [k for k in ("residual_spread", "effective_rank") if not np.isfinite(row[k])]
-        if non_finite:
-            # Collected rather than exited on, so faithfulness.txt is still written: a non-finite
-            # signal over a cleanly reconstructed pool is a different diagnosis from a broken
-            # reconstruction, and the operator needs to see which of the two happened.
-            signal_failures.append(f"{query_id} / {doc_id}: non-finite {non_finite} over "
-                                   f"{len(matched)} chunk(s)")
-            continue
-        rows.append(row)
+        result = pair_row(query_id, doc_id, group[1], aspects, query_vectors[query_id],
+                          chunk_vectors[group[1]], centroids[group[1]], recorded)
+        unmatched_total += result["n_unmatched"]
+        ambiguous_total += result["n_ambiguous"]
+        duplicated_total += result["n_duplicated"]
+        if result["max_residual"] is not None:
+            max_residual = (result["max_residual"] if max_residual is None
+                            else max(max_residual, result["max_residual"]))
+        if result["recon_failure"]:
+            recon_failures.append(result["recon_failure"])
+        elif result["signal_failure"]:
+            signal_failures.append(result["signal_failure"])
+        else:
+            rows.append(result["row"])
 
     faithfulness_path = os.path.join(args.out_dir, "faithfulness.txt")
     write_faithfulness(faithfulness_path, checked, unmatched_total, ambiguous_total, duplicated_total,

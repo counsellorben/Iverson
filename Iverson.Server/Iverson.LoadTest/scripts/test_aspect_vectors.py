@@ -132,8 +132,8 @@ def test_fused_respects_unequal_weights():
     assert got == pytest.approx(expected, abs=1e-15)
 
 
-def recorded_for(chunks):
-    return [aspect_vectors.fused(QHAT, c, CENTROID, 0.45, 0.45) for c in chunks]
+def recorded_for(chunks, qhat=QHAT, centroid=CENTROID):
+    return [aspect_vectors.fused(qhat, c, centroid, 0.45, 0.45) for c in chunks]
 
 
 def test_match_pool_recovers_chunk_identity_from_an_exact_reproduction():
@@ -462,3 +462,103 @@ def test_screen_publishes_the_rho_curve_and_the_holm_column(tmp_path):
     assert "resamples of QUERIES (never pairs)" in text
     for name in aspect_vectors.CANDIDATE_NAMES:
         assert name in text
+
+
+# --- pair_row: the seam between the reconstruction and the statistics ---------------------
+#
+# These cover what used to be main()'s loop body and could only be reached with Qdrant and TEI
+# running: Global Constraint 7's realisation, the recorded[k] <-> C[k] alignment greedy_cover
+# depends on, and the reaction to a duplicate assignment.
+
+CHUNK_C = unit([0.1, 0.2, 1.0])
+
+
+def call_pair_row(candidates, recorded, aspects=3, qhat=QHAT, centroid=CENTROID):
+    return aspect_vectors.pair_row("q1", "d1", "pA", aspects, qhat, candidates, centroid, recorded)
+
+
+def test_pair_row_counts_the_pool_not_the_parents_whole_chunk_set():
+    """Global Constraint 7: n_chunks is the count of the pair's chunks IN THE POOL. The parent
+    here holds three chunks and the pool recorded two, so an implementation that counted
+    `candidates` would answer 3 and fail this test."""
+    candidates = np.vstack([CHUNK_A, CHUNK_B, CHUNK_C])
+    pooled = np.vstack([CHUNK_A, CHUNK_C])
+    result = call_pair_row(candidates, recorded_for(pooled))
+    assert len(candidates) == 3
+    assert result["row"]["n_chunks"] == 2 != len(candidates)
+    # C is the matched subset, not the parent's chunk set: both continuous signals agree with the
+    # two pooled chunks alone and not with all three.
+    assert result["row"]["effective_rank"] == pytest.approx(aspect_vectors.effective_rank(pooled))
+    assert result["row"]["effective_rank"] != pytest.approx(aspect_vectors.effective_rank(candidates))
+    assert result["row"]["residual_spread"] == pytest.approx(
+        aspect_vectors.residual_spread(pooled, QHAT))
+    assert (result["recon_failure"], result["signal_failure"]) == (None, None)
+    assert result["max_residual"] == pytest.approx(0.0, abs=1e-15)
+
+
+def test_pair_row_fails_the_pair_on_a_duplicate_assignment():
+    """Two recorded rows inside one chunk's tolerance window each match it uniquely, so
+    match_pool's own counters both stay at zero. pair_row must still refuse the pair: C would
+    otherwise carry that vector twice and n_chunks would overcount."""
+    candidates = np.vstack([CHUNK_A, CHUNK_B])
+    score = recorded_for(candidates)[0]
+    result = call_pair_row(candidates, [score, score + aspect_vectors.MATCH_TOLERANCE * 0.5])
+    assert (result["n_unmatched"], result["n_ambiguous"]) == (0, 0)
+    assert result["n_duplicated"] == 1
+    assert result["row"] is None
+    assert result["max_residual"] is None
+    assert "duplicate assignment" in result["recon_failure"]
+
+
+def test_pair_row_fails_the_pair_on_an_unmatched_or_ambiguous_row():
+    candidates = np.vstack([CHUNK_A, CHUNK_B])
+    unmatched = call_pair_row(candidates, [0.123456])
+    assert unmatched["n_unmatched"] == 1 and unmatched["row"] is None
+    assert "1 unmatched" in unmatched["recon_failure"]
+    twins = np.vstack([CHUNK_A, CHUNK_A])
+    ambiguous = call_pair_row(twins, [recorded_for(twins)[0]])
+    assert ambiguous["n_ambiguous"] == 1 and ambiguous["row"] is None
+
+
+# The alignment fixture: three coplanar chunks, and a query vector OUT of their plane so no
+# residual vanishes. cos(c0,c1) = 0.92, cos(c0,c2) = 0.95, cos(c1,c2) = 0.75, and the query
+# ranks them c0 > c2 > c1. Walking from c0 covers everything at tau = 0.90 (both others are
+# above it); walking from either of the other two admits a second chunk. The cover is therefore
+# 1 only if the walk starts at the highest-SCORING chunk -- which is true only if C's rows and
+# the recorded scores name the same chunks in the same order.
+ALIGN_C0 = np.array([1.0, 0.0, 0.0])
+ALIGN_C1 = np.array([0.92, math.sqrt(1 - 0.92 ** 2), 0.0])
+ALIGN_C2 = np.array([0.95, -math.sqrt(1 - 0.95 ** 2), 0.0])
+ALIGN_CHUNKS = np.vstack([ALIGN_C0, ALIGN_C1, ALIGN_C2])
+ALIGN_QHAT = unit([1.0, 0.0, 1.0])
+
+
+def test_the_alignment_fixture_has_the_geometry_the_next_test_assumes():
+    assert float(ALIGN_C0 @ ALIGN_C1) == pytest.approx(0.92)
+    assert float(ALIGN_C0 @ ALIGN_C2) == pytest.approx(0.95)
+    assert float(ALIGN_C1 @ ALIGN_C2) == pytest.approx(0.7516, abs=1e-4)
+    scores = [float(ALIGN_QHAT @ c) for c in ALIGN_CHUNKS]
+    assert scores[0] > scores[2] > scores[1]
+
+
+def test_pair_row_keeps_C_aligned_with_the_recorded_scores_under_any_dump_order():
+    """greedy_cover walks the pool in descending RECORDED score, so C[k] must be the chunk that
+    reproduced recorded[k]. Feeding the same three hits in two different dump orders must give
+    the identical row -- and the expected cover is derived from the geometry, not from the code:
+    at tau = 0.90 the highest-scoring chunk c0 covers both others (0.92 and 0.95 are above tau),
+    so the answer is 1; at tau = 0.95 c1 clears it at 0.92 and the answer is 2. A C indexed in
+    the parent's chunk order instead would start the walk at the wrong chunk and answer 2 at
+    tau = 0.90."""
+    scores = recorded_for(ALIGN_CHUNKS, qhat=ALIGN_QHAT)
+    in_order = call_pair_row(ALIGN_CHUNKS, scores, qhat=ALIGN_QHAT)
+    permuted = call_pair_row(ALIGN_CHUNKS, [scores[1], scores[2], scores[0]], qhat=ALIGN_QHAT)
+
+    for result in (in_order, permuted):
+        assert result["recon_failure"] is None
+        assert result["row"]["n_chunks"] == 3
+        assert result["row"]["covers"][0.80] == 1
+        assert result["row"]["covers"][0.90] == 1
+        assert result["row"]["covers"][0.95] == 2
+    assert in_order["row"]["covers"] == permuted["row"]["covers"]
+    assert in_order["row"]["residual_spread"] == pytest.approx(permuted["row"]["residual_spread"])
+    assert in_order["row"]["effective_rank"] == pytest.approx(permuted["row"]["effective_rank"])
