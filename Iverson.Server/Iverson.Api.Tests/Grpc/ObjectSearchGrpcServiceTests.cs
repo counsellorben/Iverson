@@ -77,7 +77,8 @@ public class ObjectSearchGrpcServiceTests
             _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
             new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions()));
     }
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
@@ -2617,7 +2618,8 @@ public class ObjectSearchGrpcServiceTests
             new ResultReranker(Options.Create(new VectorRankingOptions())),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }));
+            Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }),
+            Options.Create(new PopularitySignalOptions()));
 
         var fakeVector = UnitVector();
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
@@ -2690,7 +2692,8 @@ public class ObjectSearchGrpcServiceTests
             new ResultReranker(Options.Create(new VectorRankingOptions())),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 1.00, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions()));
 
         var (writer, written) = MakeStream<SearchResponse>();
         await sut.SearchSimilar(
@@ -2744,7 +2747,8 @@ public class ObjectSearchGrpcServiceTests
             new ResultReranker(Options.Create(new VectorRankingOptions())),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 1.00 }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions()));
 
         var (writer1, written1) = MakeStream<ChunkSearchResponse>();
         await sutLambdaChunksOne.SearchChunks(
@@ -2763,7 +2767,8 @@ public class ObjectSearchGrpcServiceTests
             new ResultReranker(Options.Create(new VectorRankingOptions())),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 1.00, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions()));
 
         var (writer2, written2) = MakeStream<ChunkSearchResponse>();
         await sutLambdaSimilarOne.SearchChunks(
@@ -3438,7 +3443,8 @@ public class ObjectSearchGrpcServiceTests
                 LambdaChunks           = 0.70,
                 SimilarViaChunksTypes  = (routedTypes ?? ["Doc"]).ToList()
             }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions()));
 
     // DualAnnotatedSchema plus a metadata column, so a chunk-expressible EQUALS clause exists —
     // the filter fallbacks can then isolate the operator rule and the logic rule one at a time
@@ -3965,7 +3971,8 @@ public class ObjectSearchGrpcServiceTests
                 LambdaChunks          = 0.70,
                 SimilarViaChunksTypes = ["Doc"]
             }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions()));
 
         var (writer, _) = MakeStream<SearchResponse>();
         await sut.SearchSimilar(
@@ -4156,7 +4163,8 @@ public class ObjectSearchGrpcServiceTests
             new ResultReranker(Options.Create(new VectorRankingOptions())),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }));
+            Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }),
+            Options.Create(new PopularitySignalOptions()));
 
         var fakeVector = UnitVector();
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
