@@ -136,15 +136,19 @@ not mis-cited as "coverage was tried and failed" — a misreading `docs/plans/20
 itself warns against. `docs/plans/2026-09-GATE-aspect-coverage-oracle.md` has since measured that headroom
 directly and returned **GO** (G − R = +0.0609, 95 % CI [+0.0541, +0.0678]).
 
-**CLOSED 2026-09-13 — the headroom is real and no available signal reaches it.** That gate's 2026-09-13
+**CLOSED 2026-09-13 — the headroom is real, no offline-testable signal reaches it, and a term that did would be undetectable.** That gate's 2026-09-13
 amendment records four offline probes: chunk-score-derived signals proxy the oracle's per-document aspect
 count at ρ ≤ 0.0790 over 2,733 relevant pairs (a scalar score per chunk cannot say *which* part of the
 query a chunk answered); FreshStack ships no nugget text, so a query-decomposition term has no offline
 validation path; MMR moves α-nDCG@10 by 0.0027 across its whole λ range, with λ = 1.00 (MMR off) tying
 λ = 0.70, so retuning the shipped diversity mechanism on the diversity metric is dead; and the
 oracle→realised conversion reproduces at 3.63 %, which puts a realised term at ≈ +0.002 against a measured
-MDE of 0.0097. The idea is not refuted — the signals are absent. Reopen on nugget text, a larger
-subtopic-labelled corpus, or a query-side multi-vector representation.
+MDE of 0.0097 — which applies whatever signal a term is built on, and is the leg this closure rests on.
+**Family 2 (chunk-vector-derived aspect coverage) was never screened**: the ρ ≤ 0.0790 result covers
+score-derived signals only, and screening vectors needs a Qdrant snapshot restore plus TEI for 672 query
+embeddings, because query vectors exist nowhere on disk. The idea is not refuted and the signal search is
+not exhaustive. Reopen on nugget text, a larger subtopic-labelled corpus, or a decision to fund the
+family-2 screen as an experiment.
 
 ---
 

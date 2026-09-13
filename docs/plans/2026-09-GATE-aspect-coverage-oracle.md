@@ -247,13 +247,18 @@ this project's measurement floor. The GO is a licence to *design and then measur
 
 ---
 
-## Amendment, 2026-09-13: the licensed term has no reachable signal
+## Amendment, 2026-09-13: no offline-testable signal reaches the ceiling, and a term that did would be undetectable
 
 The GO above licensed *designing* an aspect-coverage term. A design session ran four probes before
-proposing one. All four are offline, over artefacts already on disk. Together they close the question:
-the ceiling is real, and nothing the system can compute reaches it.
+proposing one. All four are offline, over artefacts already on disk. They do **not** establish that no
+signal exists — one candidate family was never screened, and §"What was NOT tested" below says why. What
+they establish is narrower and still decisive: every signal testable offline fails, and the one family
+that is not testable offline would produce an effect below this corpus's measurement floor even if it
+worked.
 
-**1. No cheap signal proxies the oracle's per-document aspect count.** Over all **2,733** relevant
+**1. No *score-derived* signal proxies the oracle's per-document aspect count.** This covers the
+signals reconstructible from the chunk-hit dump — which records a parent key and a score per hit, and
+no chunk identity or chunk vector. Over all **2,733** relevant
 (query, document) pairs with chunk hits — joined from `chunk-coverage-phase1-2026-09-09/runs/fs2048-pool.chunks.hits.tsv`
 through `keymap.json`, 0 unresolved keys — Spearman ρ against the aspect count `rank_A` orders by:
 
@@ -309,17 +314,38 @@ survive. NFCorpus `a1` qualifies at 323/323 but its qrels are graded (rel ∈ {1
 not its nDCG ideal. Net population: four arms, three from one experiment on one corpus, two of them
 known-negative.
 
+### What was NOT tested
+
+**Family 2 — chunk-vector-derived aspect coverage — has never been screened.** The coverage-term screen
+spec deferred it explicitly (`2026-09-10-coverage-term-screen-design.md` §4: the dump has "no chunk
+identity and no chunk vector, so aspect coverage cannot be reconstructed from it"), and probe 1 above
+inherits exactly that limitation — its six signals are all score-derived. Probe 1 is therefore evidence
+about the dump, not about vectors.
+
+Screening it was attempted in this session and is not a probe. Chunk vectors do extract from
+`freshstack-2048-qdrant-snapshots` — `vector_storage-body_vector/vectors/chunk_*.mmap`, raw f32,
+`{"dim":768,"chunk_size_vectors":10922}`, 18,622 points. Two things block going further: grouping those
+vectors by document requires parsing Qdrant's page-based `payload_storage` (LZ4-framed JSON) plus
+`id_tracker.mappings`, and the **query** vectors exist nowhere on disk — the collections hold chunk and
+object vectors only. There is no local route to make them (no `torch`, `transformers`,
+`sentence_transformers` or `onnxruntime`, and no cached weights), though `beir/corpus.jsonl` and
+`beir/queries.jsonl` carry the text. The real quantity — how far a document's matched chunks spread
+*relative to the query* — needs a snapshot restore into Qdrant plus TEI for 672 query embeddings: an
+experiment with its own spec, not a screen.
+
 ### What this changes
 
 **The GO stands as measured.** Nothing above touches the +0.0609 or how it was obtained.
 
-**The licence it granted is now spent.** Designing a term requires a signal, and the only construction
-that can express aspect coverage — decomposing the query into aspects at request time — carries a
-hot-path model dependency, has no offline validation path (probe 2), and would produce an effect the
-gate itself predicts at ≈ +0.002 against a measured MDE of 0.0097. It is not designable on current
-evidence, and that is a conclusion about the available signals, not about the idea.
+**The licence it granted is spent on the measurability ground, not on an exhaustive signal search.**
+Probes 1-3 remove every offline-testable route. Family 2 remains unscreened — but probe 4 applies to it
+as much as to any other construction: the gate's own conversion figure puts a realised term at ≈ +0.002
+against a measured MDE of 0.0097, so a family-2 experiment's *best case* is undetectable on the only
+corpus that can score it. Building it to learn the conversion rate is a defensible reason to run it; the
+term paying for itself is not, on current evidence.
 
 **What would reopen it:** nugget text for FreshStack (making probe 2's validation possible), a corpus
-with subtopic labels large enough to lift the MDE below the predicted effect, or a query-side multi-vector
-representation that survives its own gate — the document-side multivector question is separately closed
-(`2026-09-GATE-multivector.md`).
+with subtopic labels large enough to lift the MDE below the predicted effect, or a decision to run the
+family-2 screen as a funded experiment — snapshot restore, TEI, and a definition of "distinct aspect"
+that nobody has yet pinned down. A query-side multi-vector representation would need its own gate; the
+document-side multivector question is separately closed (`2026-09-GATE-multivector.md`).
