@@ -82,7 +82,7 @@ side.
 `require_known_family` requires the family to be present in **both** goldens. This is symmetry, not added
 detection power: the two goldens carry identical key sets by construction, so a broken `family()` produces a
 string already absent from `documentComposition`, and today's single-sided check already rejects it.
-Requiring both is what keeps the check correct if those key sets ever stop matching.
+Requiring both is what makes the check fail loudly, on every run, rather than pass silently, if those key sets ever stop matching.
 
 The anti-masking argument is what makes the strict form load-bearing at all. With three empty document
 prefixes, a `__default__` fallback produces the *correct* composition for those three families, so the

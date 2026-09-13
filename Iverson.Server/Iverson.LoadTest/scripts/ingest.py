@@ -137,8 +137,9 @@ from datetime import datetime, timezone
 
 # Read once at import time, resolved relative to this script's own directory so the script
 # works regardless of the caller's cwd. This is the single source of truth for chunk-window
-# sizing, collection naming, distance, and embedding document prefixes -- generated out of the
-# C# write path and gated by IngestContractTests, which is proven to fail on drift. A local
+# sizing, collection naming, distance, embedding document and query prefixes, and per-family
+# document/query composition goldens -- generated out of the C# write path and gated by
+# IngestContractTests, which is proven to fail on drift. A local
 # file read is import-safe offline (no network call), unlike everything below the "Qdrant REST"
 # and "Embedding backend" sections.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -454,7 +455,8 @@ def verify_contract(model_id, *, require_known_family=False):
     outright, on either side, before it ever reaches the identity-masking fallback. The two
     goldens carry identical key sets by construction (both loop EmbeddingPrefixes.Table
     C#-side), so requiring the family in both goldens adds no detection power over requiring it
-    in one -- it is symmetry, and keeps this correct if the key sets ever stop matching."""
+    in one -- it is symmetry, and makes this fail loudly, on every run, rather than pass silently,
+    if the key sets ever stop matching."""
     fam = family(model_id)
     for side, prefix_for, golden_key in (
         ("document", document_prefix_for, "documentComposition"),
