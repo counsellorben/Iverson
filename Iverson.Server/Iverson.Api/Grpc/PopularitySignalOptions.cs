@@ -14,6 +14,8 @@ public sealed class PopularitySignalOptions
     public const string Section = "PopularitySignal";
     public List<PopularitySignalEntry> Signals { get; set; } = [];
     public double SaturationPoint { get; set; } = 50;
+    public double RecencyBoost { get; set; } = 0.0;
+    public double RecencyHalfLifeDays { get; set; } = 180.0;
 }
 
 public static class PopularitySignalOptionsExtensions
@@ -31,6 +33,18 @@ public static class PopularitySignalOptionsExtensions
             throw new InvalidOperationException(
                 $"{PopularitySignalOptions.Section}:SaturationPoint must be finite and greater than " +
                 $"zero (was {opts.SaturationPoint}).");
+
+        if (!double.IsFinite(opts.RecencyBoost) || opts.RecencyBoost < 0)
+            throw new InvalidOperationException(
+                $"{PopularitySignalOptions.Section}:RecencyBoost must be finite and non-negative " +
+                $"(was {opts.RecencyBoost}).");
+
+        if (!double.IsFinite(opts.RecencyHalfLifeDays) || opts.RecencyHalfLifeDays <= 0 ||
+            opts.RecencyHalfLifeDays > 300)
+            throw new InvalidOperationException(
+                $"{PopularitySignalOptions.Section}:RecencyHalfLifeDays must be finite and in (0, 300] " +
+                $"(was {opts.RecencyHalfLifeDays}). The consumer stores 60 monthly buckets; a longer " +
+                "half-life would silently lose tail contribution.");
 
         services.AddSingleton(Options.Create(opts));
         return services;

@@ -2,6 +2,8 @@ using FluentAssertions;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Sql;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -244,5 +246,98 @@ public class PopularitySignalOptionsTests
 
         act.Should().Throw<InvalidOperationException>()
            .WithMessage("*Article*configured more than once*");
+    }
+
+    [Fact]
+    public void AddPopularitySignalOptions_DefaultsAreCorrect()
+    {
+        var options = new PopularitySignalOptions();
+
+        options.RecencyBoost.Should().Be(0.0);
+        options.RecencyHalfLifeDays.Should().Be(180.0);
+    }
+
+    [Fact]
+    public void AddPopularitySignalOptions_RecencyBoost_Negative_Throws()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "PopularitySignal:RecencyBoost", "-0.1" }
+            })
+            .Build();
+
+        var act = () => services.AddPopularitySignalOptions(config);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*RecencyBoost*finite and non-negative*");
+    }
+
+    [Fact]
+    public void AddPopularitySignalOptions_RecencyBoost_NaN_Throws()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "PopularitySignal:RecencyBoost", "NaN" }
+            })
+            .Build();
+
+        var act = () => services.AddPopularitySignalOptions(config);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*RecencyBoost*finite and non-negative*");
+    }
+
+    [Fact]
+    public void AddPopularitySignalOptions_RecencyHalfLifeDays_Zero_Throws()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "PopularitySignal:RecencyHalfLifeDays", "0" }
+            })
+            .Build();
+
+        var act = () => services.AddPopularitySignalOptions(config);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*RecencyHalfLifeDays*in (0, 300]*");
+    }
+
+    [Fact]
+    public void AddPopularitySignalOptions_RecencyHalfLifeDays_ExceedsMax_Throws()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "PopularitySignal:RecencyHalfLifeDays", "300.1" }
+            })
+            .Build();
+
+        var act = () => services.AddPopularitySignalOptions(config);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*RecencyHalfLifeDays*in (0, 300]*");
+    }
+
+    [Fact]
+    public void AddPopularitySignalOptions_RecencyHalfLifeDays_AtMax_Succeeds()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "PopularitySignal:RecencyHalfLifeDays", "300.0" }
+            })
+            .Build();
+
+        var act = () => services.AddPopularitySignalOptions(config);
+
+        act.Should().NotThrow();
     }
 }
