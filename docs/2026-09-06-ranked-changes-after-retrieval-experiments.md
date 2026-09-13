@@ -137,7 +137,7 @@ not mis-cited as "coverage was tried and failed" — a misreading `docs/plans/20
 itself warns against. `docs/plans/2026-09-GATE-aspect-coverage-oracle.md` has since measured that headroom
 directly and returned **GO** (G − R = +0.0609, 95 % CI [+0.0541, +0.0678]).
 
-**CLOSED 2026-09-13 — the headroom is real, no signal reaches it, and a term that did would be undetectable.** That gate's 2026-09-13
+**CLOSED 2026-09-13 — the headroom is real, no signal yet screened reaches it, and a term that did would be undetectable.** That gate's 2026-09-13
 amendment records four offline probes: chunk-score-derived signals proxy the oracle's per-document aspect
 count at ρ ≤ 0.0790 over 2,733 relevant pairs (a scalar score per chunk cannot say *which* part of the
 query a chunk answered); FreshStack ships no nugget text, so a query-decomposition term has no offline
