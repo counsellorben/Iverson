@@ -60,6 +60,17 @@ direction; the other three kinds either always count 0/1 or need a different que
 Resolving the relation also yields the child type name (`RelatedTypeName`) and the FK column that
 lives on the child (`ForeignKey`) — both needed by the consumer below.
 
+The same startup validation also rejects a configured relation whose child type (`RelatedTypeName`)
+is not itself `StoreTarget.Engagement`-eligible (`StoreTargeting.IsEngagementEligible`) — a child
+type that itself declares any `OneToMany` relation is never written to StarRocks at all
+(`EngagementStoreConsumer` early-returns on `!TargetStores.HasFlag(StoreTarget.Engagement)`), so
+every count for it would fail permanently with no signal otherwise. It fails fast if any
+`PopularitySignal.Signals` entry is configured while `Engagement__Enabled=false` — this feature has
+no runtime degrade path for a disabled engagement store (`DisabledEngagementStoreSearchService`
+throws unconditionally on every call), so the combination is rejected at startup rather than
+crash-looping the consumer. And `SaturationPoint` itself is validated to be finite and > 0 (see
+§3's Normalization) — the same finiteness-first idiom `VectorRankingOptions`'s weights already use.
+
 Shipping this with an empty `Signals` list changes no existing behavior.
 
 ### 2. Trigger and computation — new background consumer
@@ -91,15 +102,44 @@ On each event:
 Tenant scoping and the collection/point-id lookup reuse `IntelligenceTenantScope` exactly as
 `ObjectSearchGrpcService` already does.
 
-**Failure handling — degrade, don't retry.** If the parent's Qdrant point doesn't exist yet
-(`NotFound`), log and drop the update; the signal is then simply absent for that candidate (treated
-as "no signal," not zero) until the next event on that parent refreshes it. No DLQ, no retry queue
-— mirrors `RetrieveVectorsOrDegradeAsync`'s existing degrade-not-fail convention.
+**Failure handling — degrade, don't retry.** If the parent's Qdrant point doesn't exist yet, the
+consumer expects `SetPayloadAsync` to raise `NotFound`, in which case it logs and drops the update;
+the signal is then simply absent for that candidate (treated as "no signal," not zero) until the
+next event on that parent refreshes it. No DLQ, no retry queue — mirrors
+`RetrieveVectorsOrDegradeAsync`'s existing degrade-not-fail convention. **Unverified as of this
+design:** whether `SetPayloadAsync` actually raises `NotFound` for a missing point id within an
+*already-created* collection (as opposed to a missing collection, which is an established pattern
+elsewhere) could not be confirmed without a live Qdrant instance — treat this failure-handling text
+as best-effort documentation to be confirmed at implementation time, not a verified behavioral
+claim.
 
-**Authorization.** None needed at this layer — this consumer runs as an internal backend service,
-the same trust level as `EnrichmentConsumer`/`IntelligenceStoreConsumer`, not on behalf of a caller.
-`AggregateAsync` is called with `authz: null`, which is an existing, documented, production-used
-path meaning "unrestricted" (`EngagementRepository.cs`), not "deny all."
+**Tenant resolution and authorization.** This consumer runs as an internal backend service, the
+same trust level as `EnrichmentConsumer`/`IntelligenceStoreConsumer`, not on behalf of a caller —
+but `AggregateAsync` still needs a real, tenant-scoped `authz` argument, not `null`. A bare
+`authz: null` is a **test-only** escape hatch for raw-SQL-generation tests
+(`EngagementRepository.cs:336-339`: "...e.g. a unit test exercising raw SQL generation... Production
+always passes a real authz dict and never reaches here") — it resolves against an *unqualified*
+table name (the wrong database, not "every tenant") with no missing-table/database degrade
+handling, so it would throw and crash-restart the consumer on every real deployment. Instead, the
+consumer resolves the affected row's tenant id the same way
+`DocumentRerenderConsumer.ResolveTenantIdAsync` already does (the authoritative Postgres row for
+`Created`/`Updated`, the pre-delete payload snapshot for `Deleted`), then calls `AggregateAsync`
+with `AuthorizationConstraint(AllowedFields: null, OwnerColumn: null, OwnerValue: null,
+TenantColumn: childSchema.TenantColumn, TenantValue: tenantId)` — `AllowedFields: null` gives the
+"no field-level restriction" semantics the consumer needs without losing tenant-database
+qualification. This routes through the already-correct, tenant-scoped branch, including its
+existing graceful degrade for an unprovisioned tenant/table.
+
+**Periodic reconciliation — backstop against the cross-consumer race.**
+`PopularitySignalConsumer` and the existing `EngagementStoreConsumer` are independent Kafka
+consumer groups on the same `EntityTopics.Events` topic, with no ordering guarantee between them —
+if this consumer's count-read for a parent's *last-ever* child-touching event races ahead of
+`EngagementStoreConsumer`'s corresponding StarRocks write, that parent's count is undercounted and,
+since no further child event will ever arrive to trigger a recompute, stays wrong permanently. A new
+periodic sweep, on its own interval independent of the event-driven trigger, recomputes every
+configured signal's count for every known parent as a backstop, self-correcting any count left
+stale by the race. This is the one mechanism in this design with no existing precedent in the
+codebase.
 
 ### 3. Consumption — a fourth fusion signal
 
@@ -112,9 +152,11 @@ saturation:
 popularity = count / (count + SaturationPoint)
 ```
 
-Bounded to [0, 1), monotonic, diminishing-return. `SaturationPoint` is chosen, not measured — same
-starting position `HalfLifeDays` was in before [[project-decay-weight-sensitivity]] — expect it to
-need real-traffic calibration later.
+Bounded to [0, 1) once `SaturationPoint` is finite and > 0 (validated at startup, see §1) —
+monotonic, diminishing-return; an unvalidated non-positive `SaturationPoint` could otherwise produce
+`NaN`/`∞` in the fused score for a legitimately-computed zero count. `SaturationPoint` is chosen,
+not measured — same starting position `HalfLifeDays` was in before
+[[project-decay-weight-sensitivity]] — expect it to need real-traffic calibration later.
 
 **Fusion.** `RerankCandidate` gains an optional `Popularity` field, populated the same way `Decay`
 already is: read the raw count from the payload if present, apply the saturation formula; absent →
@@ -152,9 +194,10 @@ nonzero weight.
 | 1 | The trigger cannot use `SchemaRegistry.GetDependents` — it's scoped to document-template references, not general relation tracking | `SchemaRegistry.cs:74-80` docstring: "whose **document template references** typeName." Corrected: resolve directly from `SchemaDescriptor.Relations`, filtered on `RelationKind.OneToMany`. |
 | 2 | For a `OneToMany` relation, `RelationDescriptor.ForeignKey` names the FK column on the *child* type, not the parent | `ObjectMappingGrpcService.cs:168`: "`SchemaRelationKind.OneToMany => true, // FK belongs to the related type, not this one.`" |
 | 3 | A `Deleted` event's payload still carries the FK value (the pre-delete snapshot), not an empty/nulled payload | `DocumentRerenderConsumer.cs` `ResolveTenantIdAsync`: "The row is already gone from Postgres by the time a delete event is consumed — read the tenant from the pre-delete snapshot **in the payload** instead." |
-| 4 | `IEngagementStoreSearchService.AggregateAsync` supports `authz: null` as a documented "unrestricted" path, not "deny all" | `EngagementRepository.cs:334-343`: "authz == null means the caller isn't going through Part A's authorization evaluation at all," with an explicit unscoped-query branch. |
+| 4 | `IEngagementStoreSearchService.AggregateAsync`'s `authz: null` path is **test-only**, not production-safe — it resolves against an unqualified (wrong) StarRocks database with no missing-table degrade handling. The consumer must instead resolve a real tenant id (the same way `DocumentRerenderConsumer.ResolveTenantIdAsync` does) and call `AggregateAsync` with a tenant-scoped `AuthorizationConstraint(AllowedFields: null, TenantColumn:, TenantValue:)` | `EngagementRepository.cs:336-339` in full: "...e.g. a unit test exercising raw SQL generation... Production (ObjectSearchGrpcService) always passes a real authz dict and never reaches here"; `TenantIdentifier.cs:116-117` (`Qualify` returns the unqualified name for `null`); `AuthorizationConstraint.cs:3-8` (field shape). Corrected 2026-09-13 per critical-design-review round 1, finding 2.1 — the original citation quoted only the comment's first clause. |
 | 5 | `IEngagementStoreSearchService`, `IEntityRepository`, `IVectorWriteService`, `IntelligenceTenantScope` are all DI-Singleton and safe to inject into a new `BackgroundService` | `Iverson.StarRocks/ServiceCollectionExtensions.cs:23`, `Iverson.Sql/ServiceCollectionExtensions.cs:25`, `Iverson.Vector/ServiceCollectionExtensions.cs:44,50` — all `AddSingleton`. |
 | 6 | Qdrant.Client 1.18.1 (already referenced) exposes a native payload-only write | `strings` on `qdrant.client/1.18.1/lib/net6.0/Qdrant.Client.dll` shows `QdrantClient.SetPayloadAsync` (plus `OverwritePayloadAsync`/`ClearPayloadAsync`) already compiled into the referenced package. |
 | 7 | `RerankCandidate` has no production construction sites beyond `ObjectSearchGrpcService.cs:278,652` (recurrence check — adding `Popularity` is additive-only) | Repo-wide grep for `new RerankCandidate` — only those two production sites plus test files. |
 | 8 | `RelationKind` has exactly `{OneToOne, OneToMany, ManyToOne, ManyToMany}`, so a config-time check can reject a misconfigured non-`OneToMany` relation | `SchemaDescriptor.cs:132`. |
 | 9 | The entity-event envelope (`TypeName`, `PayloadJson`, `PriorPayloadJson`, `EventType`) is a shared type, not specific to `DocumentRerenderConsumer` | Same `EntityEvent` shape consumed identically by `DocumentRerenderConsumer`, `IntelligenceStoreConsumer`, `EnrichmentConsumer`. |
+| 10 | The child relation type must itself be `StoreTarget.Engagement`-eligible (`StoreTargeting.IsEngagementEligible`) for its count to ever be producible — a child type with any `OneToMany` relation of its own is disqualified and never written to StarRocks | `Iverson.Api/Schema/StoreTargeting.cs:27-40` (eligibility predicate); `EngagementStoreConsumer.cs:46,100` (both handlers early-return on `!TargetStores.HasFlag(StoreTarget.Engagement)`). Added 2026-09-13 per critical-design-review round 1, finding 2.2. |
