@@ -77,7 +77,8 @@ public class ObjectSearchGrpcServiceTests
             _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
             new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            EngagementQueryLimitOptions.Default);
     }
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
@@ -1098,6 +1099,75 @@ public class ObjectSearchGrpcServiceTests
         written[0].Score.Should().BeApproximately(0.95f, 0.001f);
         _ = _embedding.Received(1).EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
         _ = _embedding.DidNotReceive().EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // ── CSR finding #6: MaxTopK ──────────────────────────────────────────────
+
+    private ObjectSearchGrpcService SutWithTopKLimit(int maxTopK) => new(
+        _registry, _search, _vector, _resolver,
+        NullLogger<ObjectSearchGrpcService>.Instance,
+        _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+        new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(),
+        Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+        Options.Create(new DecayOptions()),
+        new EngagementQueryLimitOptions { MaxTopK = maxTopK });
+
+    [Fact]
+    public async Task SearchSimilar_TopKAtLimit_Passes()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        var fakeVector = new float[768];
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var sut = SutWithTopKLimit(10);
+        var (writer, _) = MakeStream<SearchResponse>();
+
+        var act = () => sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 10 },
+            writer, TestServerCallContext.Create());
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task SearchSimilar_TopKOverLimit_ThrowsInvalidArgument_WithoutEmbeddingOrQueryingQdrant()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        var sut = SutWithTopKLimit(10);
+        var (writer, _) = MakeStream<SearchResponse>();
+
+        var act = async () => await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 11 },
+            writer, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Message.Should().Contain("11").And.Contain("10");
+
+        // Rejected before doing any of the expensive work a large top_k would otherwise drive.
+        _ = _embedding.DidNotReceiveWithAnyArgs().EmbedQueryAsync(default!, default);
+        _ = _vector.DidNotReceiveWithAnyArgs().SearchNamedAsync(default!, default!, default!, default, default);
+    }
+
+    [Fact]
+    public async Task SearchChunks_TopKOverLimit_ThrowsInvalidArgument_WithoutEmbeddingOrQueryingQdrant()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        var sut = SutWithTopKLimit(10);
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+
+        var act = async () => await sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 11 },
+            writer, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Message.Should().Contain("11").And.Contain("10");
+
+        _ = _embedding.DidNotReceiveWithAnyArgs().EmbedQueryAsync(default!, default);
+        _ = _vector.DidNotReceiveWithAnyArgs().SearchNamedAsync(default!, default!, default!, default, default);
     }
 
     // Falsifiability (Task 4 brief): a fake resolver that returns the SAME service for every
@@ -2617,7 +2687,8 @@ public class ObjectSearchGrpcServiceTests
             new ResultReranker(Options.Create(new VectorRankingOptions())),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }));
+            Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }),
+            EngagementQueryLimitOptions.Default);
 
         var fakeVector = UnitVector();
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
@@ -2690,7 +2761,8 @@ public class ObjectSearchGrpcServiceTests
             new ResultReranker(Options.Create(new VectorRankingOptions())),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 1.00, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            EngagementQueryLimitOptions.Default);
 
         var (writer, written) = MakeStream<SearchResponse>();
         await sut.SearchSimilar(
@@ -2744,7 +2816,8 @@ public class ObjectSearchGrpcServiceTests
             new ResultReranker(Options.Create(new VectorRankingOptions())),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 1.00 }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            EngagementQueryLimitOptions.Default);
 
         var (writer1, written1) = MakeStream<ChunkSearchResponse>();
         await sutLambdaChunksOne.SearchChunks(
@@ -2763,7 +2836,8 @@ public class ObjectSearchGrpcServiceTests
             new ResultReranker(Options.Create(new VectorRankingOptions())),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 1.00, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            EngagementQueryLimitOptions.Default);
 
         var (writer2, written2) = MakeStream<ChunkSearchResponse>();
         await sutLambdaSimilarOne.SearchChunks(
@@ -3438,7 +3512,8 @@ public class ObjectSearchGrpcServiceTests
                 LambdaChunks           = 0.70,
                 SimilarViaChunksTypes  = (routedTypes ?? ["Doc"]).ToList()
             }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            EngagementQueryLimitOptions.Default);
 
     // DualAnnotatedSchema plus a metadata column, so a chunk-expressible EQUALS clause exists —
     // the filter fallbacks can then isolate the operator rule and the logic rule one at a time
@@ -3965,7 +4040,8 @@ public class ObjectSearchGrpcServiceTests
                 LambdaChunks          = 0.70,
                 SimilarViaChunksTypes = ["Doc"]
             }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            EngagementQueryLimitOptions.Default);
 
         var (writer, _) = MakeStream<SearchResponse>();
         await sut.SearchSimilar(
@@ -4156,7 +4232,8 @@ public class ObjectSearchGrpcServiceTests
             new ResultReranker(Options.Create(new VectorRankingOptions())),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }));
+            Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }),
+            EngagementQueryLimitOptions.Default);
 
         var fakeVector = UnitVector();
         _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);

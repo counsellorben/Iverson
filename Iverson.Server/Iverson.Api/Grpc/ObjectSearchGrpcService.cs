@@ -40,11 +40,28 @@ public sealed class ObjectSearchGrpcService(
     IResultReranker reranker,
     IResultDiversifier diversifier,
     IOptions<VectorRankingOptions> rankingOptions,
-    IOptions<DecayOptions> decayOptions)
+    IOptions<DecayOptions> decayOptions,
+    EngagementQueryLimitOptions queryLimits)
     : ObjectSearchService.ObjectSearchServiceBase
 {
     private readonly DecayOptions _decayOptions = decayOptions.Value;
     private readonly VectorRankingOptions _ranking = rankingOptions.Value;
+
+    /// <summary>
+    /// CSR finding #6: bounds a vector RPC's requested top_k before it drives any Qdrant fetch
+    /// size (which is itself over-fetched by <see cref="OverFetchFactor"/>) or downstream
+    /// re-ranking/diversification work. Rejects outright rather than clamping — the same
+    /// convention <see cref="EngagementQueryLimitValidator"/> already uses for every other cap
+    /// in this options object. Returns <c>ulong</c> (not the request's own <c>uint</c>) to match
+    /// every existing call site's arithmetic (<c>topK * OverFetchFactor</c>, etc.).
+    /// </summary>
+    private static ulong ResolveTopK(uint requestTopK, int maxTopK, string rpcName)
+    {
+        if (requestTopK > (uint)maxTopK)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"{rpcName}: top_k {requestTopK} exceeds the maximum of {maxTopK}."));
+        return Math.Max(1UL, requestTopK);
+    }
 
     // ── SQL Search ─────────────────────────────────────────────────────────────
 
@@ -155,6 +172,12 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Property '{request.Property}' on '{request.TypeName}' is not authorized for this caller."));
 
+        // CSR finding #6: resolved (and bounds-checked) up front, before the filter is built, the
+        // query is logged, or the query text is embedded — so an over-cap top_k is rejected before
+        // any of that work happens, not after. Reused for both the chunks-routed path below and
+        // the head path's own vector search, rather than re-validating request.TopK twice.
+        var topK = ResolveTopK(request.TopK, queryLimits.MaxTopK, "SearchSimilar");
+
         Filter? filter = null;
         if (request.Filter.Count > 0)
         {
@@ -222,11 +245,10 @@ public sealed class ObjectSearchGrpcService(
             string.Equals(c.PropertyName, vectorDesc.PropertyName, StringComparison.OrdinalIgnoreCase));
 
         if (_ranking.SimilarViaChunksTypes.Contains(schema.TypeName, StringComparer.OrdinalIgnoreCase)
-            && await TrySearchSimilarViaChunksAsync(schema, chunkDesc, decision, request, queryVector, responseStream, context))
+            && await TrySearchSimilarViaChunksAsync(schema, chunkDesc, decision, request, queryVector, topK, responseStream, context))
             return;
 
         var vectorName     = vectorDesc.PropertyName.ToSnakeCase() + "_vector";
-        var topK           = (ulong)Math.Max(1, (int)request.TopK);
         var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: false);
 
         // The centroid signal only exists for a property that is BOTH embedded and chunked —
@@ -313,7 +335,7 @@ public sealed class ObjectSearchGrpcService(
     /// </summary>
     private async Task<bool> TrySearchSimilarViaChunksAsync(
         SchemaDescriptor schema, ChunkDescriptor? chunkDesc, AuthorizationDecision decision,
-        SearchSimilarRequest request, float[] queryVector,
+        SearchSimilarRequest request, float[] queryVector, ulong topK,
         IServerStreamWriter<SearchResponse> responseStream, ServerCallContext context)
     {
         bool NotRouted(string reason)
@@ -355,8 +377,8 @@ public sealed class ObjectSearchGrpcService(
         filter = IntelligenceFilterBuilder.ApplyOwnership(
             filter, decision.OwnershipRequired, schema.Authorization?.OwnerField?.ToCamelCase(), decision.OwnerValue);
 
-        // Spec §3.4: topK × ceil(chunks/doc) × the existing over-fetch.
-        var topK         = (ulong)Math.Max(1, (int)request.TopK);
+        // Spec §3.4: topK × ceil(chunks/doc) × the existing over-fetch. topK is the caller's
+        // already-validated value (SearchSimilar resolved and bounds-checked it once, up front).
         var chunksPerDoc = (ulong)Math.Ceiling((double)chunkCount / objectCount);
         var pipeline     = await SearchChunksFusedAsync(
             schema, chunkDesc, decision, queryVector, filter, topK * chunksPerDoc * OverFetchFactor, "SearchSimilar");
@@ -490,6 +512,11 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Property '{request.Property}' on '{request.TypeName}' is not authorized for this caller."));
 
+        // CSR finding #6: resolved (and bounds-checked) up front, before the filter is built, the
+        // query is logged, or the query text is embedded — so an over-cap top_k is rejected before
+        // any of that work happens, not after.
+        var topK = ResolveTopK(request.TopK, queryLimits.MaxTopK, "SearchChunks");
+
         Filter? filter;
         try
         {
@@ -533,8 +560,6 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.Unavailable,
                 $"Embedding service unavailable: {ex.Message}"));
         }
-
-        var topK = (ulong)Math.Max(1, (int)request.TopK);
 
         // Unlike SearchSimilar, the identity gate can never fire here: SearchChunks only accepts a
         // property carrying [IversonChunk], and SchemaBuilder writes a "<property>_centroid" named

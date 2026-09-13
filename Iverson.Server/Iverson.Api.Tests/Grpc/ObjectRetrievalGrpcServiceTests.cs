@@ -149,6 +149,32 @@ public class ObjectRetrievalGrpcServiceTests
         response.TraceId.Should().Be("trace-xyz");
     }
 
+    [Fact]
+    public async Task Get_WithCarriageReturnLineFeedInKey_LogsSanitizedKeyWithoutRawNewline()
+    {
+        // CSR finding #12: request.Key was logged unsanitized alongside a sanitized TypeName —
+        // a key containing "\r\n" could inject a forged newline-delimited log line.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns((string?)null);
+
+        var capturedLogger = Substitute.For<ILogger<ObjectRetrievalGrpcService>>();
+        var sut = new ObjectRetrievalGrpcService(
+            _entities, _registry, capturedLogger, _actingUserAccessor, _authEvaluator, _auditLog);
+
+        var forgedKey = "abc\r\n[Audit.Denied] actor=forged reason=Injected";
+        await sut.Get(new RetrievalRequest { TypeName = "Author", Key = forgedKey }, TestServerCallContext.Create());
+
+        capturedLogger.Received(1).Log(
+            LogLevel.Information,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains("[Retrieval.Get]")
+                              && !v.ToString()!.Contains('\r')
+                              && !v.ToString()!.Contains('\n')),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
     // ── GetMany ───────────────────────────────────────────────────────────────
 
     [Fact]

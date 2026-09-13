@@ -11,6 +11,7 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
+using Iverson.StarRocks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -113,7 +114,8 @@ public class ObjectMappingGrpcServiceTests
             _authEvaluator,
             _relationResolver,
             _schemaRegistration,
-            _auditLog);
+            _auditLog,
+            EngagementQueryLimitOptions.Default);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -219,7 +221,8 @@ public class ObjectMappingGrpcServiceTests
             _authEvaluator,
             _relationResolver,
             mockOrchestrator,
-            _auditLog);
+            _auditLog,
+            EngagementQueryLimitOptions.Default);
 
         var response = await sut
             .RegisterSchema(
@@ -241,7 +244,8 @@ public class ObjectMappingGrpcServiceTests
             new RelationValidator(), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator, _relationResolver, mockOrchestrator, _auditLog);
+            _actingUserAccessor, _authEvaluator, _relationResolver, mockOrchestrator, _auditLog,
+            EngagementQueryLimitOptions.Default);
 
         await sut.RegisterSchema(
             new SchemaRequest { RootType = SimpleType("Widget", "Name") },
@@ -502,7 +506,8 @@ public class ObjectMappingGrpcServiceTests
             new RelationValidator(), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
-            _actingUserAccessor, evaluator, _relationResolver, _schemaRegistration, _auditLog);
+            _actingUserAccessor, evaluator, _relationResolver, _schemaRegistration, _auditLog,
+            EngagementQueryLimitOptions.Default);
 
         var response = await sut.GetSchema(new GetSchemaRequest(), MakeContext());
 
@@ -1053,7 +1058,8 @@ public class ObjectMappingGrpcServiceTests
             _authEvaluator,
             mockResolver,
             _schemaRegistration,
-            _auditLog);
+            _auditLog,
+            EngagementQueryLimitOptions.Default);
 
         await sut.Get(new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, TestServerCallContext.Create());
 
@@ -1086,10 +1092,128 @@ public class ObjectMappingGrpcServiceTests
             _authEvaluator,
             mockResolver,
             _schemaRegistration,
-            _auditLog);
+            _auditLog,
+            EngagementQueryLimitOptions.Default);
 
         await sut.Get(new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 0 }, TestServerCallContext.Create());
 
+        await mockResolver.DidNotReceiveWithAnyArgs().ResolveRelationsAsync(
+            default!, default!, default, default, default);
+    }
+
+    // ── CSR finding #12: request.Key logged via SanitizeForLog() ─────────────
+
+    [Fact]
+    public async Task Get_WithCarriageReturnLineFeedInKey_LogsSanitizedKeyWithoutRawNewline()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns((string?)null);
+
+        var capturedLogger = Substitute.For<ILogger<ObjectMappingGrpcService>>();
+        var sut = new ObjectMappingGrpcService(
+            _entities, _txRunner, _outboxPublisher, _registry,
+            new RelationValidator(), new EntityKeyAccessor(),
+            new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
+            capturedLogger,
+            _actingUserAccessor, _authEvaluator, _relationResolver, _schemaRegistration, _auditLog,
+            EngagementQueryLimitOptions.Default);
+
+        var forgedKey = "abc\r\n[Audit.Denied] actor=forged reason=Injected";
+        await sut.Get(new MappingGetRequest { TypeName = "Author", Key = forgedKey }, TestServerCallContext.Create());
+
+        capturedLogger.Received(1).Log(
+            LogLevel.Information,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains("[Mapping.Get]")
+                              && !v.ToString()!.Contains('\r')
+                              && !v.ToString()!.Contains('\n')),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task Delete_WithCarriageReturnLineFeedInKey_LogsSanitizedKeyWithoutRawNewline()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns((string?)null);
+
+        var capturedLogger = Substitute.For<ILogger<ObjectMappingGrpcService>>();
+        var sut = new ObjectMappingGrpcService(
+            _entities, _txRunner, _outboxPublisher, _registry,
+            new RelationValidator(), new EntityKeyAccessor(),
+            new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
+            capturedLogger,
+            _actingUserAccessor, _authEvaluator, _relationResolver, _schemaRegistration, _auditLog,
+            EngagementQueryLimitOptions.Default);
+
+        var forgedKey = "abc\r\n[Audit.Denied] actor=forged reason=Injected";
+        await sut.Delete(new MappingDeleteRequest { TypeName = "Author", Key = forgedKey }, TestServerCallContext.Create());
+
+        capturedLogger.Received(1).Log(
+            LogLevel.Information,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains("[Mapping.Delete]")
+                              && !v.ToString()!.Contains('\r')
+                              && !v.ToString()!.Contains('\n')),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    // ── CSR finding #6: MaxRelationDepth ─────────────────────────────────────
+
+    [Fact]
+    public async Task Get_WithDepthAtMaxRelationDepth_CallsRelationResolver()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(ArticleJson);
+
+        var mockResolver = Substitute.For<IEntityRelationResolver>();
+        var limits = new EngagementQueryLimitOptions { MaxRelationDepth = 3 };
+        var sut = new ObjectMappingGrpcService(
+            _entities, _txRunner, _outboxPublisher, _registry,
+            new RelationValidator(), new EntityKeyAccessor(),
+            new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
+            NullLogger<ObjectMappingGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, mockResolver, _schemaRegistration, _auditLog,
+            limits);
+
+        var act = () => sut.Get(
+            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 3 },
+            TestServerCallContext.Create());
+
+        await act.Should().NotThrowAsync();
+        await mockResolver.Received(1).ResolveRelationsAsync(
+            Arg.Any<Struct>(), Arg.Any<SchemaDescriptor>(), 3, Arg.Any<ClaimsPrincipal?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Get_WithDepthOverMaxRelationDepth_ThrowsInvalidArgument()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var mockResolver = Substitute.For<IEntityRelationResolver>();
+        var limits = new EngagementQueryLimitOptions { MaxRelationDepth = 3 };
+        var sut = new ObjectMappingGrpcService(
+            _entities, _txRunner, _outboxPublisher, _registry,
+            new RelationValidator(), new EntityKeyAccessor(),
+            new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
+            NullLogger<ObjectMappingGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, mockResolver, _schemaRegistration, _auditLog,
+            limits);
+
+        var act = () => sut.Get(
+            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 4 },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Message.Should().Contain("4").And.Contain("3");
+
+        // Rejected before ever touching the store or the resolver.
+        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(default!, default!, default, default);
         await mockResolver.DidNotReceiveWithAnyArgs().ResolveRelationsAsync(
             default!, default!, default, default, default);
     }

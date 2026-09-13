@@ -92,7 +92,8 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             new ResultReranker(Options.Create(new VectorRankingOptions())),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            EngagementQueryLimitOptions.Default);
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
     {

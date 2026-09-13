@@ -6,6 +6,7 @@ using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Events;
 using Iverson.Sql;
+using Iverson.StarRocks;
 using Microsoft.AspNetCore.Authorization;
 using ContractsRelationKind = Iverson.Client.Contracts.RelationKind;
 using SchemaRelationKind    = Iverson.Api.Schema.RelationKind;
@@ -30,7 +31,8 @@ public sealed class ObjectMappingGrpcService(
     IRowFieldAuthorizationEvaluator _authEvaluator,
     IEntityRelationResolver _relationResolver,
     ISchemaRegistrationOrchestrator _schemaRegistration,
-    AuditLog _auditLog)
+    AuditLog _auditLog,
+    EngagementQueryLimitOptions _queryLimits)
     : ObjectMappingService.ObjectMappingServiceBase
 {
     // ── Schema registration ────────────────────────────────────────────────────
@@ -240,7 +242,11 @@ public sealed class ObjectMappingGrpcService(
         ServerCallContext context)
     {
         _logger.LogInformation("[Mapping.Get] type={Type} key={Key} depth={Depth}",
-            request.TypeName.SanitizeForLog(), request.Key, request.Depth);
+            request.TypeName.SanitizeForLog(), request.Key.SanitizeForLog(), request.Depth);
+
+        if (request.Depth > _queryLimits.MaxRelationDepth)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Mapping.Get: depth {request.Depth} exceeds the maximum of {_queryLimits.MaxRelationDepth}."));
 
         var schema = RequireSchema(request.TypeName);
 
@@ -410,7 +416,7 @@ public sealed class ObjectMappingGrpcService(
     public override async Task<MappingDeleteResponse> Delete(
         MappingDeleteRequest request, ServerCallContext context)
     {
-        _logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key);
+        _logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key.SanitizeForLog());
 
         var schema = RequireSchema(request.TypeName);
 

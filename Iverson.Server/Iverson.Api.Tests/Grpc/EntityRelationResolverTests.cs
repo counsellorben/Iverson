@@ -106,6 +106,59 @@ public class EntityRelationResolverTests
         entityStruct.Fields["Tags"].ListValue.Values.Should().HaveCount(2);
     }
 
+    // ── CSR finding #6: cyclic relation graph terminates ────────────────────────
+
+    [Fact]
+    public async Task ResolveRelationsAsync_WithCyclicRelationGraph_TerminatesInsteadOfLooping()
+    {
+        // A -> B -> A via a self-referencing ManyToOne (Employee.Manager -> Employee), which the
+        // finding notes is legal in the schema model. A large depth (10) proves this terminates
+        // because of the visited-set cycle guard, not merely because depth happened to run out
+        // first — without the guard this would recurse the full 10 levels (alternating A/B) and
+        // still terminate, just far deeper than the 2-hop graph actually contains.
+        var idA = "55555555-0000-0000-0000-00000000000a";
+        var idB = "55555555-0000-0000-0000-00000000000b";
+        var employeeAJson = $$"""{"Id":"{{idA}}","Name":"Alice","ManagerId":"{{idB}}","TenantId":"test-tenant"}""";
+        var employeeBJson = $$"""{"Id":"{{idB}}","Name":"Bob","ManagerId":"{{idA}}","TenantId":"test-tenant"}""";
+
+        await _registry.RegisterAsync(SchemaFixtures.EmployeeSchema());
+
+        _entities
+            .FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "employees"),
+                Arg.Is<string>(k => k == idB),
+                Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(employeeBJson);
+        _entities
+            .FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "employees"),
+                Arg.Is<string>(k => k == idA),
+                Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(employeeAJson);
+
+        var entityStruct = JsonParser.Default.Parse<Struct>(employeeAJson);
+        var schema = _registry.Get("Employee")!;
+
+        await _sut.ResolveRelationsAsync(entityStruct, schema, depth: 10, ActingUser, CancellationToken.None);
+
+        // One hop: A's manager is B.
+        var manager = entityStruct.Fields["Manager"].StructValue;
+        manager.Fields["Name"].StringValue.Should().Be("Bob");
+
+        // Two hops: B's manager is A again — the cycle is allowed to close once...
+        var managersManager = manager.Fields["Manager"].StructValue;
+        managersManager.Fields["Name"].StringValue.Should().Be("Alice");
+
+        // ...but not a third time: the re-visited A is embedded as a leaf, not expanded again.
+        managersManager.Fields.Should().NotContainKey("Manager");
+
+        // Exactly 2 fetches total (one per distinct entity in the cycle) — not 10, which is what
+        // the depth cap alone would have allowed.
+        await _entities.Received(2).FetchByKeyAsync(
+            Arg.Is<TableSchema>(s => s.TableName == "employees"),
+            Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>());
+    }
+
     [Fact]
     public async Task ResolveRelationsAsync_OmitsTheServerOwnedTenantColumnFromTheResolvedRelation()
     {

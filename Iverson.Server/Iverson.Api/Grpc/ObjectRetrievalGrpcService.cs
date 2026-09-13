@@ -25,7 +25,7 @@ public sealed class ObjectRetrievalGrpcService(
         RetrievalRequest request,
         ServerCallContext context)
     {
-        logger.LogInformation("[Retrieval.Get] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key);
+        logger.LogInformation("[Retrieval.Get] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key.SanitizeForLog());
 
         var schema = registry.Get(request.TypeName);
         if (schema is null)

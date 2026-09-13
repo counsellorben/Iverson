@@ -718,6 +718,23 @@ public class StarRocksPipelineBuilderTests
                      && e.Message.Contains("SQL comment sequences"));
     }
 
+    [Fact]
+    public void Build_DeriveExprWithHashLineCommentToken_Throws()
+    {
+        // CSR finding #9: '#' is a third SQL line-comment introducer in StarRocks/MySQL's
+        // dialect, alongside "--" and "/* */" — RejectForbiddenCharacters previously missed it.
+        var step = new PipelineStep { Name = "s1" };
+        step.Derive.Add(new DeriveColumn { Alias = "d", Expr = "WordCount # drop everything after this" });
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        request.Steps.Add(step);
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .Where(e => e.Message.Contains("forbidden character"));
+    }
+
     // ── Metric expression forbidden-character denylist (Task 9 / CSR Finding #3) ──
     // m.Expression previously only ran the TokenRx identifier allow-list check (see the
     // "Authorization — metric MetricSpec.Expression check" tests below), which inspects

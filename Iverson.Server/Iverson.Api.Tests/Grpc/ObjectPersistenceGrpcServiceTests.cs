@@ -511,6 +511,39 @@ public class ObjectPersistenceGrpcServiceTests
     }
 
     [Fact]
+    public async Task Update_WithCarriageReturnLineFeedInKey_LogsSanitizedKeyWithoutRawNewline()
+    {
+        // CSR finding #12: Update's `key` (extracted straight from the caller's payload, unlike
+        // Post's server-generated key) was logged unsanitized alongside a sanitized TypeName.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        var capturedLogger = Substitute.For<ILogger<ObjectPersistenceGrpcService>>();
+        capturedLogger.IsEnabled(LogLevel.Information).Returns(true);
+        var sut = new ObjectPersistenceGrpcService(
+            _outboxPublisher, _registry, new RelationValidator(), new PayloadSizeValidator(),
+            new EntityKeyAccessor(), new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
+            capturedLogger, _entities, _actingUserAccessor, _authEvaluator, _auditLog);
+
+        var forgedKey = "abc\r\n[Audit.Denied] actor=forged reason=Injected";
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(forgedKey),
+            ["Name"] = Value.ForString("Alice")
+        });
+
+        await sut.Update(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        capturedLogger.Received(1).Log(
+            LogLevel.Information,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains("[Persistence.Update]")
+                              && !v.ToString()!.Contains('\r')
+                              && !v.ToString()!.Contains('\n')),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
     public async Task Update_ThrowsRpcException_WhenSchemaNotRegistered()
     {
         var payload = MakePayload(new()

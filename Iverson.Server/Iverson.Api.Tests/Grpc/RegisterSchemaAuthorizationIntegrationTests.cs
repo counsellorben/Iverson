@@ -243,7 +243,8 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             Substitute.For<IRowFieldAuthorizationEvaluator>(),
             Substitute.For<IEntityRelationResolver>(),
             schemaRegistration,
-            new AuditLog(NullLogger<AuditLog>.Instance));
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            EngagementQueryLimitOptions.Default);
 
         var typeDesc = SimpleType("ArticleWithAuth", "Title", "OwnerId", "TenantId");
         typeDesc.Authorization = new Client.Contracts.AuthorizationRules

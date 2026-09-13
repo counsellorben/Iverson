@@ -51,7 +51,18 @@ internal static class StarRocksQueryBuilder
         var param = new DynamicParameters();
 
         var limit  = pageSize > 0 ? pageSize : 50;
-        var offset = page > 0 ? page * limit : 0;
+        EngagementQueryLimitValidator.CheckPageSize(limit, lim);
+
+        // page * limit computed in `long` and range-checked before narrowing: page is
+        // caller-controlled (SearchRequest.page), and with limit capped but page unbounded,
+        // int * int can silently overflow into a negative OFFSET (invalid SQL StarRocks would
+        // reject, but only after accepting the request) rather than the enormous-but-valid
+        // OFFSET the caller actually asked for.
+        var offsetLong = page > 0 ? (long)page * limit : 0L;
+        if (offsetLong > int.MaxValue)
+            throw new EngagementQueryTranslationException(
+                $"Requested page {page} at page size {limit} would produce an OFFSET of {offsetLong}, which is not supported.");
+        var offset = (int)offsetLong;
 
         string from;
         string where;
@@ -172,6 +183,8 @@ internal static class StarRocksQueryBuilder
         EngagementQueryLimitValidator.CheckClauseCount(having?.Clauses?.Count ?? 0, lim, "HAVING");
         EngagementQueryLimitValidator.CheckJoinCount(joins?.Count ?? 0, lim);
         EngagementQueryLimitValidator.CheckGroupByKeyCount(spec.GroupByFields?.Count ?? 0, lim);
+        if (spec.Kind == AggregationKind.Terms)
+            EngagementQueryLimitValidator.CheckAggregationSize(spec.Size > 0 ? spec.Size : 10, lim);
 
         var param = new DynamicParameters();
 
@@ -358,6 +371,7 @@ internal static class StarRocksQueryBuilder
         EngagementQueryLimitValidator.CheckClauseCount(request.Having?.Clauses?.Count ?? 0, lim, "HAVING");
         EngagementQueryLimitValidator.CheckJoinCount(request.Joins?.Count ?? 0, lim);
         EngagementQueryLimitValidator.CheckGroupByKeyCount(request.Keys?.Count ?? 0, lim);
+        EngagementQueryLimitValidator.CheckGroupByLimit(request.Limit > 0 ? request.Limit : 10_000, lim);
 
         var param = new DynamicParameters();
         // Joined-type ownership predicates are appended to each JOIN's own ON clause inside

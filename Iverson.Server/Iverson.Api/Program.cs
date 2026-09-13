@@ -198,13 +198,21 @@ builder.Services.AddStarRocks(
     // function counts) so an authenticated tenant user cannot compose a request expensive enough
     // to degrade StarRocks for every tenant. Configurable under StarRocks:QueryLimits:*;
     // defaults to EngagementQueryLimitOptions' built-in values when unconfigured.
+    // CSR finding #6 extends this same options object with OUTPUT-size caps (page size,
+    // aggregation size, GROUP BY/pipeline limit, vector top_k, relation depth) alongside
+    // round 2's shape caps above — same section, same configuration mechanism.
     new EngagementQueryLimitOptions
     {
         MaxClauses         = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxClauses", EngagementQueryLimitOptions.Default.MaxClauses),
         MaxJoins           = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxJoins", EngagementQueryLimitOptions.Default.MaxJoins),
         MaxGroupByKeys     = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxGroupByKeys", EngagementQueryLimitOptions.Default.MaxGroupByKeys),
         MaxPipelineSteps   = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxPipelineSteps", EngagementQueryLimitOptions.Default.MaxPipelineSteps),
-        MaxWindowFunctions = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxWindowFunctions", EngagementQueryLimitOptions.Default.MaxWindowFunctions)
+        MaxWindowFunctions = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxWindowFunctions", EngagementQueryLimitOptions.Default.MaxWindowFunctions),
+        MaxPageSize        = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxPageSize", EngagementQueryLimitOptions.Default.MaxPageSize),
+        MaxAggregationSize = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxAggregationSize", EngagementQueryLimitOptions.Default.MaxAggregationSize),
+        MaxGroupByLimit    = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxGroupByLimit", EngagementQueryLimitOptions.Default.MaxGroupByLimit),
+        MaxTopK            = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxTopK", EngagementQueryLimitOptions.Default.MaxTopK),
+        MaxRelationDepth   = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxRelationDepth", EngagementQueryLimitOptions.Default.MaxRelationDepth)
     });
 
 builder.Services.AddQdrant(

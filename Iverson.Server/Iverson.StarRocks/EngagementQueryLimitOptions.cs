@@ -48,5 +48,46 @@ public sealed class EngagementQueryLimitOptions
     /// its own sort/partition pass over its step's input.</summary>
     public int MaxWindowFunctions { get; init; } = 10;
 
+    /// <summary>CSR finding #6: max rows a single page of <c>Search</c> may request — the
+    /// resolved LIMIT after defaulting (<c>pageSize &gt; 0 ? pageSize : 50</c>). Unlike the shape
+    /// caps above (which bound how EXPENSIVE a request's SQL is to plan), this bounds how much the
+    /// StarRocks read + Dapper materialization + gRPC response can produce for one page — what an
+    /// authenticated tenant user could otherwise inflate to OOM an api replica. 1000 is
+    /// comfortably above any legitimate UI page size while still bounding per-request memory.</summary>
+    public int MaxPageSize { get; init; } = 1000;
+
+    /// <summary>CSR finding #6: max bucket count for a Terms aggregation's resolved
+    /// <c>spec.Size</c> (<c>spec.Size &gt; 0 ? spec.Size : 10</c>) — the number of GROUP BY
+    /// buckets StarRocks returns and the API materializes into an <c>AggregationResult</c>. Same
+    /// order of magnitude as <see cref="MaxPageSize"/>, for the same reason: this is an
+    /// output-size cap, not a shape cap.</summary>
+    public int MaxAggregationSize { get; init; } = 1000;
+
+    /// <summary>CSR finding #6: max resolved LIMIT for <c>GroupByRequest.Limit</c> (used by
+    /// <c>StarRocksQueryBuilder.BuildGroupBy</c>) and <c>PipelineRequest.Limit</c> (used by
+    /// <c>StarRocksPipelineBuilder.Build</c>) — both default to 10,000 when unset and are
+    /// otherwise unbounded upward today. Set to that same existing default so a request that
+    /// omits Limit (and so gets the implicit 10,000) is unaffected; only a request that
+    /// explicitly asks for more is capped.</summary>
+    public int MaxGroupByLimit { get; init; } = 10_000;
+
+    /// <summary>CSR finding #6: max <c>top_k</c> across the three vector-search call sites in
+    /// <c>ObjectSearchGrpcService</c> (SearchSimilar, its via-chunks routing, and SearchChunks).
+    /// Each fetches up to <c>OverFetchFactor</c> (4) times top_k candidates from Qdrant before
+    /// re-ranking/diversifying back down to top_k, so an uncapped top_k is a 4x-amplified version
+    /// of the same OOM/availability risk as an uncapped page size. 1000 matches
+    /// <see cref="MaxPageSize"/> and the top_k=1000 example already used in
+    /// ObjectSearchGrpcService's own OverFetchFactor doc comment.</summary>
+    public int MaxTopK { get; init; } = 1000;
+
+    /// <summary>CSR finding #6: max relation-traversal depth for <c>MappingGetRequest.Depth</c>
+    /// (<c>ObjectMappingGrpcService.Get</c> → <c>EntityRelationResolver.ResolveRelationsAsync</c>),
+    /// currently unbounded. Each level can fan out across every relation on the type, so depth is
+    /// the dominant term in the resolver's worst-case cost; 5 is generous for any legitimate
+    /// object-graph read while keeping that fan-out bounded. <see cref="EntityRelationResolver"/>
+    /// (in Iverson.Api) also carries an independent visited-set cycle guard as a correctness
+    /// backstop — this cap is the primary defense, not a substitute for it.</summary>
+    public int MaxRelationDepth { get; init; } = 5;
+
     public static EngagementQueryLimitOptions Default { get; } = new();
 }

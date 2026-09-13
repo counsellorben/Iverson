@@ -845,6 +845,7 @@ public class StarRocksQueryBuilderTests
     [InlineData("Rating -- drop everything")]
     [InlineData("Rating; DROP TABLE authors")]
     [InlineData("Rating /* comment */ + 1")]
+    [InlineData("Rating # drop everything after this")]
     public void BuildAggregate_ExpressionWithForbiddenSequence_ThrowsTranslationException(string expr)
     {
         var spec = new AggregationDescriptor(
@@ -3376,5 +3377,127 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, _ => null);
 
         act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
+    // ── CSR finding #6: query-DSL OUTPUT caps (result-set size) ─────────────────
+
+    [Fact]
+    public void BuildSearch_PageSizeAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxPageSize = 100 };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), null, 0, 100, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildSearch_PageSizeOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxPageSize = 100 };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), null, 0, 101, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*101*100*");
+    }
+
+    [Fact]
+    public void BuildSearch_DefaultPageSize_OverLimit_Throws()
+    {
+        // pageSize <= 0 resolves to the implicit default of 50 (unchanged behavior) — a cap
+        // below 50 must still catch that resolved value, not just an explicit pageSize.
+        var limits = new EngagementQueryLimitOptions { MaxPageSize = 10 };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), null, 0, 0, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*50*10*");
+    }
+
+    [Fact]
+    public void BuildSearch_PageTimesLimitOverflowsInt32_ThrowsInsteadOfWrappingNegative()
+    {
+        // page * limit computed as int * int would silently wrap into a negative OFFSET here —
+        // a real bug the CSR finding flagged alongside the missing page-size cap, closed by
+        // widening to `long` and range-checking before narrowing back to `int`.
+        var limits = new EngagementQueryLimitOptions { MaxPageSize = int.MaxValue };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, page: 3_000_000, pageSize: 1000, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*OFFSET*");
+    }
+
+    [Fact]
+    public void BuildAggregate_TermsSizeAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxAggregationSize = 50 };
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 50);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildAggregate_TermsSizeOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxAggregationSize = 50 };
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 51);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*51*50*");
+    }
+
+    [Fact]
+    public void BuildAggregate_NonTermsKind_IgnoresAggregationSizeLimit()
+    {
+        // spec.Size only means anything for Terms (bucket count) — Avg/Sum/etc. never read it,
+        // so the cap must not fire for them regardless of what Size happens to hold.
+        var limits = new EngagementQueryLimitOptions { MaxAggregationSize = 1 };
+        var spec = new AggregationDescriptor("avg_rating", AggregationKind.Avg, "Rating", Size: 999);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_LimitAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByLimit = 500 };
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" }, Limit = 500 };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, _ => null, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_LimitOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByLimit = 500 };
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" }, Limit = 501 };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, _ => null, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*501*500*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_DefaultResolvedLimit_MatchesMaxGroupByLimitDefault_DoesNotThrow()
+    {
+        // GroupByRequest.Limit <= 0 resolves to the implicit default of 10,000 (unchanged
+        // behavior) — MaxGroupByLimit's own default (10,000) must not reject that default.
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" }, Limit = 0 };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, _ => null);
+
+        act.Should().NotThrow();
     }
 }

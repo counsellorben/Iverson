@@ -124,6 +124,24 @@ public static class SchemaFixtures
         TenantColumn   = "TenantId"
     };
 
+    // Employee: ManyToOne(Manager) -> Employee itself. Self-referencing type used to build a
+    // genuine cyclic relation graph (A -> B -> A) for EntityRelationResolverTests' CSR finding #6
+    // cycle-guard coverage — the finding notes this shape is legal in the schema model.
+    public static SchemaDescriptor EmployeeSchema() => new()
+    {
+        TypeName       = "Employee",
+        TableName      = "employees",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Name", "text", false), new ColumnDescriptor("ManagerId", "uuid", true)],
+        FkColumns      = [new ForeignKeyDescriptor("ManagerId", "Employee")],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      = [new RelationDescriptor("Manager", RelationKind.ManyToOne, "Employee", "ManagerId")],
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
+    };
+
     public static SchemaDescriptor TagSchema() => new()
     {
         TypeName       = "Tag",

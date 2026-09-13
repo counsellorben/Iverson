@@ -82,6 +82,8 @@ services:
   # exists. `GRANT user_admin TO 'iverson_app'@'%'` is likewise required: that same method runs
   # `SET ROLE user_admin` on its connection, and the app's StarRocks connection string below
   # authenticates as iverson_app (matching the chart's api/worker deployments), not root.
+  # The trailing ALTER USER ... SET PROPERTIES line (CSR finding #6, defense-in-depth) is
+  # likewise carried over from the chart job — see its comment there for the rationale.
   starrocks-init:
     image: mysql:8.0
     container_name: iverson-starrocks-init
@@ -100,6 +102,7 @@ services:
           GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
           GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_app'@'%';
           GRANT user_admin TO 'iverson_app'@'%';
+          ALTER USER 'iverson_app' SET PROPERTIES ('session.query_timeout' = '180', 'session.exec_mem_limit' = '4294967296');
         "
     restart: "no"
 

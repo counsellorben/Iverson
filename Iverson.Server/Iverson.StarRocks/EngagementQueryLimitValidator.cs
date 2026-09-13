@@ -42,4 +42,28 @@ internal static class EngagementQueryLimitValidator
             throw new EngagementQueryTranslationException(
                 $"Pipeline has {count} window functions, exceeding the maximum of {limits.MaxWindowFunctions}.");
     }
+
+    // ── CSR finding #6: query-DSL OUTPUT caps (result-set size), alongside the SHAPE caps
+    // above — same file, same exception shape, same configuration mechanism.
+
+    internal static void CheckPageSize(int resolvedLimit, EngagementQueryLimitOptions limits)
+    {
+        if (resolvedLimit > limits.MaxPageSize)
+            throw new EngagementQueryTranslationException(
+                $"Requested page size {resolvedLimit} exceeds the maximum of {limits.MaxPageSize}.");
+    }
+
+    internal static void CheckAggregationSize(int resolvedSize, EngagementQueryLimitOptions limits)
+    {
+        if (resolvedSize > limits.MaxAggregationSize)
+            throw new EngagementQueryTranslationException(
+                $"Requested aggregation size {resolvedSize} exceeds the maximum of {limits.MaxAggregationSize}.");
+    }
+
+    internal static void CheckGroupByLimit(int resolvedLimit, EngagementQueryLimitOptions limits)
+    {
+        if (resolvedLimit > limits.MaxGroupByLimit)
+            throw new EngagementQueryTranslationException(
+                $"Requested limit {resolvedLimit} exceeds the maximum of {limits.MaxGroupByLimit}.");
+    }
 }

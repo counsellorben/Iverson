@@ -70,6 +70,7 @@ internal static class StarRocksPipelineBuilder
     {
         EngagementQueryLimitValidator.CheckPipelineStepCount(request.Steps.Count, limits);
         EngagementQueryLimitValidator.CheckClauseCount(request.BaseWhere.Count, limits, "WHERE");
+        EngagementQueryLimitValidator.CheckGroupByLimit(request.Limit > 0 ? request.Limit : 10_000, limits);
 
         var totalWindows = 0;
         foreach (var step in request.Steps)
@@ -372,10 +373,14 @@ internal static class StarRocksPipelineBuilder
     /// </summary>
     internal static void RejectForbiddenCharacters(string expr, string errorContext)
     {
+        // CSR finding #9: '#' is a third SQL line-comment introducer alongside "--" and "/* */"
+        // in StarRocks' MySQL-derived dialect — omitting it left the same comment-injection class
+        // this denylist otherwise closes reachable via a single character.
         if (expr.Contains(';') || expr.Contains('\'') || expr.Contains('`') ||
+            expr.Contains('#') ||
             expr.Contains("--") || expr.Contains("/*") || expr.Contains("*/"))
             throw Invalid($"{errorContext} contains a forbidden character " +
-                          "(no semicolons, quotes, backticks, or SQL comment sequences).");
+                          "(no semicolons, quotes, backticks, or SQL comment sequences, including '#').");
     }
 
     private static void ValidateDeriveExpr(

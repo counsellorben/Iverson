@@ -53,7 +53,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Persistence.Post] type={Type} key={Key} stores={Stores}",
-                request.TypeName.SanitizeForLog(), key, targetStores);
+                request.TypeName.SanitizeForLog(), key.SanitizeForLog(), targetStores);
 
         var decision = authEvaluator.Evaluate(
             schema,
@@ -121,7 +121,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Persistence.Update] type={Type} key={Key} stores={Stores}",
-                request.TypeName.SanitizeForLog(), key, targetStores);
+                request.TypeName.SanitizeForLog(), key.SanitizeForLog(), targetStores);
 
         var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Write);
         var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(
