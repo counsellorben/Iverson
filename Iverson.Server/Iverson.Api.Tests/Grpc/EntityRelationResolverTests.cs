@@ -40,11 +40,7 @@ public class EntityRelationResolverTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         _entities
-            .FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(AuthorJson);
 
         var entityStruct = JsonParser.Default.Parse<Struct>(ArticleJson);
@@ -84,11 +80,7 @@ public class EntityRelationResolverTests
         var tag1Json = $$"""{"Id":"{{tagId1}}","Label":"dotnet","TenantId":"test-tenant"}""";
         var tag2Json = $$"""{"Id":"{{tagId2}}","Label":"csharp","TenantId":"test-tenant"}""";
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(tagId1, tag1Json), new KeyedRow(tagId2, tag2Json) });
 
         var entityStruct = JsonParser.Default.Parse<Struct>(postJson);
@@ -97,11 +89,7 @@ public class EntityRelationResolverTests
         await _sut.ResolveRelationsAsync(entityStruct, schema, depth: 1, ActingUser, CancellationToken.None);
 
         await _entities.Received(1)
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Is<IReadOnlyList<string>>(keys => keys.Count == 2),
-                Arg.Any<bool>(),
-                Arg.Any<string?>());
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Is<IReadOnlyList<string>>(keys => keys.Count == 2), Arg.Any<EntityAccess>());
 
         entityStruct.Fields["Tags"].ListValue.Values.Should().HaveCount(2);
     }
@@ -124,16 +112,10 @@ public class EntityRelationResolverTests
         await _registry.RegisterAsync(SchemaFixtures.EmployeeSchema());
 
         _entities
-            .FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "employees"),
-                Arg.Is<string>(k => k == idB),
-                Arg.Any<bool>(), Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "employees"), Arg.Is<string>(k => k == idB), Arg.Any<EntityAccess>())
             .Returns(employeeBJson);
         _entities
-            .FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "employees"),
-                Arg.Is<string>(k => k == idA),
-                Arg.Any<bool>(), Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "employees"), Arg.Is<string>(k => k == idA), Arg.Any<EntityAccess>())
             .Returns(employeeAJson);
 
         var entityStruct = JsonParser.Default.Parse<Struct>(employeeAJson);
@@ -154,9 +136,7 @@ public class EntityRelationResolverTests
 
         // Exactly 2 fetches total (one per distinct entity in the cycle) — not 10, which is what
         // the depth cap alone would have allowed.
-        await _entities.Received(2).FetchByKeyAsync(
-            Arg.Is<TableSchema>(s => s.TableName == "employees"),
-            Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>());
+        await _entities.Received(2).FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "employees"), Arg.Any<string>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
@@ -181,16 +161,10 @@ public class EntityRelationResolverTests
         var teamJson = $$"""{"Id":"{{teamId}}","Name":"Platform","TenantId":"test-tenant"}""";
 
         _entities
-            .FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "diamond_users"),
-                Arg.Is<string>(k => k == userId),
-                Arg.Any<bool>(), Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "diamond_users"), Arg.Is<string>(k => k == userId), Arg.Any<EntityAccess>())
             .Returns(userJson);
         _entities
-            .FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "diamond_teams"),
-                Arg.Is<string>(k => k == teamId),
-                Arg.Any<bool>(), Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "diamond_teams"), Arg.Is<string>(k => k == teamId), Arg.Any<EntityAccess>())
             .Returns(teamJson);
 
         var entityStruct = JsonParser.Default.Parse<Struct>(docJson);
@@ -214,12 +188,8 @@ public class EntityRelationResolverTests
 
         // The user is fetched independently for each relation (CreatedBy/UpdatedBy don't share a
         // cache) and its Team is fetched once per fetch of the user — 2 users, 2 teams.
-        await _entities.Received(2).FetchByKeyAsync(
-            Arg.Is<TableSchema>(s => s.TableName == "diamond_users"),
-            Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>());
-        await _entities.Received(2).FetchByKeyAsync(
-            Arg.Is<TableSchema>(s => s.TableName == "diamond_teams"),
-            Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>());
+        await _entities.Received(2).FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "diamond_users"), Arg.Any<string>(), Arg.Any<EntityAccess>());
+        await _entities.Received(2).FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "diamond_teams"), Arg.Any<string>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
@@ -241,9 +211,7 @@ public class EntityRelationResolverTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         _entities
-            .FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"),
-                Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{AuthorId}}","Name":"Alice","{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
 
         var entityStruct = JsonParser.Default.Parse<Struct>(ArticleJson);

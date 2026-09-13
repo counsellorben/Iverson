@@ -93,7 +93,7 @@ public class IntelligenceStoreConsumerTests
         // the pre-existing (non-adversarial) tests in this file. TenantId is included because
         // tenant re-derivation (qdrant-tenant-collection-isolation) now reuses this same stub —
         // "test-tenant" matches every SchemaFixtures descriptor's TenantColumn = "TenantId".
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"AuthorId":"00000000-0000-0000-0000-000000000001","TenantId":"test-tenant"}""");
 
         _registry = new SchemaRegistry(
@@ -330,7 +330,7 @@ public class IntelligenceStoreConsumerTests
 
         const string forgedOwner = "00000000-0000-0000-0000-000000000FED";
         const string realOwner   = "00000000-0000-0000-0000-000000000001";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns($$"""{"AuthorId":"{{realOwner}}","TenantId":"test-tenant"}""");
 
         var longBody = new string('x', 3000);
@@ -389,9 +389,7 @@ public class IntelligenceStoreConsumerTests
         const string forgedOwner = "forged-owner";
         const string realOwner   = "real-owner";
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns($$"""{"OwnerId":"{{realOwner}}","TenantId":"test-tenant"}""");
 
         var entityKey = Guid.NewGuid().ToString();
@@ -437,7 +435,7 @@ public class IntelligenceStoreConsumerTests
         await _registry.RegisterAsync(schema);
 
         _entities
-            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns((string?)null);
 
         var longBody = new string('x', 3000);
@@ -486,7 +484,7 @@ public class IntelligenceStoreConsumerTests
 
         await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
     }
 
     // Phase 2 Task 9′ (EnrichSmoke): a type registered over gRPC with a bypass-only RowPermission
@@ -526,7 +524,7 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<IReadOnlyDictionary<string, object>?>());
         // Only the tenant re-derivation reads the authoritative row: there is no owner value to
         // re-derive, exactly as when OwnerField is null.
-        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
@@ -706,7 +704,7 @@ public class IntelligenceStoreConsumerTests
 
         // The consumer re-derives the tenant value from the authoritative Postgres row, keyed by
         // schema.TenantColumn — which is now the server-owned name, not "TenantId".
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns($$"""{"{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
 
         var entityKey = Guid.NewGuid().ToString();
@@ -1285,7 +1283,7 @@ public class IntelligenceStoreConsumerTests
             ownerField: "OwnerId");
         await _registry.RegisterAsync(schema);
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns($$"""{"OwnerId":"{{realOwner}}","TenantId":"test-tenant"}""");
 
         var longBody = new string('x', 3000);
@@ -1377,7 +1375,7 @@ public class IntelligenceStoreConsumerTests
     public async Task HandleCreated_ContextualChunkField_EmbedsPrefixedTextButStoresRawChunkText()
     {
         await _registry.RegisterAsync(ContextualDocSchema(contextual: true, withSummaryTarget: true));
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"Summary":"The doc is about widgets.","TenantId":"test-tenant"}""");
 
         var prompts = CaptureEnrichmentPrompts();
@@ -1407,7 +1405,7 @@ public class IntelligenceStoreConsumerTests
     public async Task HandleCreated_NonContextualChunkField_EmbedsRawTextAndMakesNoGenerativeCall()
     {
         await _registry.RegisterAsync(ContextualDocSchema(contextual: false, withSummaryTarget: true));
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"Summary":"The doc is about widgets.","TenantId":"test-tenant"}""");
 
         var (embedded, payloads) = CaptureChunkWrites();
@@ -1444,7 +1442,7 @@ public class IntelligenceStoreConsumerTests
     {
         // A Summary target is declared but the column is still null (also first ingest).
         await _registry.RegisterAsync(ContextualDocSchema(contextual: true, withSummaryTarget: true));
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"Summary":null,"TenantId":"test-tenant"}""");
 
         var prompts = CaptureEnrichmentPrompts();
@@ -1526,7 +1524,7 @@ public class IntelligenceStoreConsumerTests
         const int cap = 3;
         _enrichmentOptions.MaxConcurrentChunkPrefixes = cap;
         await _registry.RegisterAsync(MultiChunkDocSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"Summary":"The doc is about widgets.","TenantId":"test-tenant"}""");
 
         var inFlight    = 0;
@@ -1561,7 +1559,7 @@ public class IntelligenceStoreConsumerTests
     public async Task HandleCreated_ContextualChunkFanOut_OneChunkFailingDoesNotCostSiblingsTheirPrefixes()
     {
         await _registry.RegisterAsync(MultiChunkDocSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"Summary":"The doc is about widgets.","TenantId":"test-tenant"}""");
 
         // Only the chunk that names itself "C07" fails generation.
@@ -2309,7 +2307,7 @@ public class IntelligenceStoreConsumerTests
         // completes safely (from payload scalars only) and the degradation is now logged rather
         // than silent.
         await _registry.RegisterAsync(TemplatedDocSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns((string?)null);
 
         var recordingLogger = new RecordingLogger<IntelligenceStoreConsumer>();

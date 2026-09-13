@@ -55,11 +55,7 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(AuthorJson);
 
         var response = await _sut.Get(
@@ -76,11 +72,7 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns((string?)null);
 
         var response = await _sut.Get(
@@ -100,11 +92,7 @@ public class ObjectRetrievalGrpcServiceTests
 
         response.Found.Should().BeFalse();
         await _entities.DidNotReceive()
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>());
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
@@ -112,11 +100,27 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns(AuthorJson);
+
+        await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        await _entities.Received(1).FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "authors" && s.KeyColumn.Name == "Id"), AuthorId, Arg.Any<EntityAccess>());
+    }
+
+    // ── CSR round-3 #5: the access boundary is now part of the call, so assert it ─────────────
+
+    [Fact]
+    public async Task Get_ReadsUnderTheActingUsersTenantScope_NotCrossTenant()
+    {
+        // The externally reachable read path must name EntityAccess.ForTenant with the acting
+        // user's own tenant_id claim. CrossTenantMaintenance here would be a tenant-isolation
+        // bypass, and (before this change) so was simply omitting the flag.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(AuthorJson);
 
         await _sut.Get(
@@ -124,10 +128,24 @@ public class ObjectRetrievalGrpcServiceTests
             TestServerCallContext.Create());
 
         await _entities.Received(1).FetchByKeyAsync(
-            Arg.Is<TableSchema>(s => s.TableName == "authors" && s.KeyColumn.Name == "Id"),
-            AuthorId,
-            Arg.Any<bool>(),
-            Arg.Any<string?>());
+            Arg.Any<TableSchema>(), AuthorId, EntityAccess.ForTenant("test-tenant"));
+    }
+
+    [Fact]
+    public async Task GetMany_ReadsUnderTheActingUsersTenantScope_NotCrossTenant()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
+            .Returns(Array.Empty<KeyedRow>());
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId } },
+            stream, TestServerCallContext.Create());
+
+        await _entities.Received(1).FetchManyByKeysAsync(
+            Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant("test-tenant"));
     }
 
     [Fact]
@@ -135,11 +153,7 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns((string?)null);
 
         var response = await _sut.Get(
@@ -155,7 +169,7 @@ public class ObjectRetrievalGrpcServiceTests
         // CSR finding #12: request.Key was logged unsanitized alongside a sanitized TypeName —
         // a key containing "\r\n" could inject a forged newline-delimited log line.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns((string?)null);
 
         var capturedLogger = Substitute.For<ILogger<ObjectRetrievalGrpcService>>();
@@ -182,11 +196,7 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, AuthorJson), new KeyedRow(AuthorId2, AuthorJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -203,11 +213,7 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, AuthorJson) }); // AuthorId2 absent
 
         var stream = MakeStream<RetrievalResponse>();
@@ -230,11 +236,7 @@ public class ObjectRetrievalGrpcServiceTests
         stream.Written.Should().HaveCount(2);
         stream.Written.Should().AllSatisfy(r => r.Found.Should().BeFalse());
         await _entities.DidNotReceive()
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>());
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
@@ -242,11 +244,7 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, AuthorJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -263,11 +261,7 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(Array.Empty<KeyedRow>());
 
         var stream = MakeStream<RetrievalResponse>();
@@ -275,11 +269,7 @@ public class ObjectRetrievalGrpcServiceTests
             new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId, AuthorId2 } },
             stream, TestServerCallContext.Create());
 
-        await _entities.Received(1).FetchManyByKeysAsync(
-            Arg.Any<TableSchema>(),
-            Arg.Is<IReadOnlyList<string>>(keys => keys.Count == 2),
-            Arg.Any<bool>(),
-            Arg.Any<string?>());
+        await _entities.Received(1).FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Is<IReadOnlyList<string>>(keys => keys.Count == 2), Arg.Any<EntityAccess>());
     }
 
     // ── authorization fixtures ───────────────────────────────────────────────
@@ -317,11 +307,7 @@ public class ObjectRetrievalGrpcServiceTests
         var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
         await _registry.RegisterAsync(schema);
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(AuthorJson);
 
         var response = await _sut.Get(
@@ -337,11 +323,7 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(AuthorJson);
         _actingUserAccessor.ActingUser = null;
 
@@ -359,11 +341,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(ownedJson);
 
         var response = await _sut.Get(
@@ -380,11 +358,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(ownedJson);
 
         var response = await _sut.Get(
@@ -400,11 +374,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(ownedJson);
 
         var response = await _sut.Get(
@@ -421,11 +391,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(crossTenantJson);
 
         var response = await _sut.Get(
@@ -444,11 +410,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"other-tenant"}""";
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(crossTenantJson);
 
         var response = await _sut.Get(
@@ -474,11 +436,7 @@ public class ObjectRetrievalGrpcServiceTests
         };
         await _registry.RegisterAsync(schema);
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(AuthorJson);
 
         var response = await _sut.Get(
@@ -508,11 +466,7 @@ public class ObjectRetrievalGrpcServiceTests
         var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
         await _registry.RegisterAsync(schema);
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(AuthorJson);
 
         await _sut.Get(
@@ -528,11 +482,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(ownedJson);
 
         await _sut.Get(
@@ -548,11 +498,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
         _entities
-            .FetchByKeyAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<string>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(crossTenantJson);
 
         await _sut.Get(
@@ -570,11 +516,7 @@ public class ObjectRetrievalGrpcServiceTests
         var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
         await _registry.RegisterAsync(schema);
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, AuthorJson), new KeyedRow(AuthorId2, AuthorJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -585,11 +527,7 @@ public class ObjectRetrievalGrpcServiceTests
         stream.Written.Should().HaveCount(2);
         stream.Written.Should().AllSatisfy(r => r.Found.Should().BeFalse());
         await _entities.DidNotReceive()
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>());
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
@@ -597,11 +535,7 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, AuthorJson), new KeyedRow(AuthorId2, AuthorJson) });
         _actingUserAccessor.ActingUser = null;
 
@@ -613,11 +547,7 @@ public class ObjectRetrievalGrpcServiceTests
         stream.Written.Should().HaveCount(2);
         stream.Written.Should().AllSatisfy(r => r.Found.Should().BeFalse());
         await _entities.DidNotReceive()
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>());
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
@@ -626,11 +556,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, ownedJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -649,11 +575,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, ownedJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -671,11 +593,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, ownedJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -693,11 +611,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, crossTenantJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -717,11 +631,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"other-tenant"}""";
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, crossTenantJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -748,11 +658,7 @@ public class ObjectRetrievalGrpcServiceTests
         };
         await _registry.RegisterAsync(schema);
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, AuthorJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -774,11 +680,7 @@ public class ObjectRetrievalGrpcServiceTests
         var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
         await _registry.RegisterAsync(schema);
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, AuthorJson), new KeyedRow(AuthorId2, AuthorJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -795,11 +697,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, ownedJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -816,11 +714,7 @@ public class ObjectRetrievalGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(),
-                Arg.Any<IReadOnlyList<string>>(),
-                Arg.Any<bool>(),
-                Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[] { new KeyedRow(AuthorId, crossTenantJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -869,7 +763,7 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(TenantAuthorSchema());
         _entities
-            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns(TenantAuthorJson(AuthorId));
 
         var response = await _sut.Get(
@@ -886,8 +780,7 @@ public class ObjectRetrievalGrpcServiceTests
     {
         await _registry.RegisterAsync(TenantAuthorSchema());
         _entities
-            .FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new List<KeyedRow>
             {
                 new(AuthorId,  TenantAuthorJson(AuthorId)),

@@ -28,7 +28,10 @@ internal sealed class ReconciliationService(
         var schema = registry.Get(typeName);
         if (schema is null) return null;
 
-        var rowJsons = await entities.FetchAllAsync(SchemaBuilder.ToTableSchema(schema));
+        // Cross-tenant by design: an admin reconcile of a type re-projects EVERY tenant's rows
+        // of that type back through the fan-out pipeline.
+        var rowJsons = await entities.FetchAllAsync(
+            SchemaBuilder.ToTableSchema(schema), EntityAccess.CrossTenantMaintenance);
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
         var traceId = Activity.Current?.TraceId.ToString() ?? string.Empty;
@@ -97,7 +100,10 @@ internal sealed class ReconciliationService(
             return;
         }
 
-        var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), row.EntityKey);
+        // Cross-tenant by design: the queue row records a type and key, not a tenant — the
+        // replay has to reach whichever tenant's row failed to publish.
+        var rowJson = await entities.FetchByKeyAsync(
+            SchemaBuilder.ToTableSchema(schema), row.EntityKey, EntityAccess.CrossTenantMaintenance);
 
         if (rowJson is null)
         {

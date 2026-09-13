@@ -48,7 +48,7 @@ public class EngagementStoreConsumerTests
         // used for mandatory tenant re-derivation (HandleUpsertAsync fetches this row before
         // ever reaching the owner-field logic, which is null for AuthorSchema()'s
         // BypassAuthorization()).
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"Name":"Alice","TenantId":"tenant-a"}""");
 
         _registry = new SchemaRegistry(
@@ -287,7 +287,7 @@ public class EngagementStoreConsumerTests
 
         const string forgedOwner = "Forged";
         const string realOwner   = "RealOwner";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns($$"""{"Name":"{{realOwner}}","TenantId":"tenant-a"}""");
 
         var ev = new EntityEvent(
@@ -342,7 +342,7 @@ public class EngagementStoreConsumerTests
         await act.Should().NotThrowAsync();
         await _sr.Received(1).UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
         // One authoritative-row read, for the tenant; no owner value to re-derive.
-        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
@@ -363,7 +363,7 @@ public class EngagementStoreConsumerTests
         };
         await _registry.RegisterAsync(schema);
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"TenantId":"tenant-a"}""");
 
         var ev = new EntityEvent(
@@ -413,7 +413,7 @@ public class EngagementStoreConsumerTests
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         capturedJson.Should().Be(ev.PayloadJson);
-        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
@@ -424,7 +424,7 @@ public class EngagementStoreConsumerTests
         // missing/forged tenant value must never provision or write to any tenant database.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"Name":"Alice"}""");
 
         var ev = new EntityEvent(

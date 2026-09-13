@@ -251,8 +251,7 @@ public sealed class ObjectMappingGrpcService(
         var schema = RequireSchema(request.TypeName);
 
         var rowJson = await FetchByKeyAsync(schema, request.Key,
-            tenantScoped: true,
-            tenantId: _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
+            EntityAccess.ForTenant(_actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
         if (rowJson is null)
             return new MappingResponse
             {
@@ -357,7 +356,10 @@ public sealed class ObjectMappingGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Update requires a non-empty '{schema.KeyColumn.Name}' in the payload."));
 
-        var existingRowJson = await FetchByKeyAsync(schema, key);
+        // Cross-tenant, preserving this path's pre-existing behaviour — see the identical read
+        // in ObjectPersistenceGrpcService.Update for why narrowing it would convert an
+        // authorization denial into a silent "no existing row".
+        var existingRowJson = await FetchByKeyAsync(schema, key, EntityAccess.CrossTenantMaintenance);
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             _authEvaluator,
             _actingUserAccessor.ActingUser,
@@ -421,8 +423,7 @@ public sealed class ObjectMappingGrpcService(
         var schema = RequireSchema(request.TypeName);
 
         var rowJson = await FetchByKeyAsync(schema, request.Key,
-            tenantScoped: true,
-            tenantId: _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
+            EntityAccess.ForTenant(_actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
         if (rowJson is null)
             return new MappingDeleteResponse
             {
@@ -466,8 +467,11 @@ public sealed class ObjectMappingGrpcService(
                 tx,
                 SchemaBuilder.ToTableSchema(schema),
                 request.Key,
-                tenantScoped: decision.TenantColumn is not null,
-                tenantId: decision.TenantValue);
+                // A type with no tenant column carries no RLS policy and no iverson_runtime grant,
+                // so a tenant-scoped delete of it would be 42501 rather than a filtered delete.
+                decision.TenantColumn is not null
+                    ? EntityAccess.ForTenant(decision.TenantValue)
+                    : EntityAccess.CrossTenantMaintenance);
 
             await _outboxWriter.EnqueueDeleteOutboxRowAsync(
                 tx,
@@ -504,10 +508,9 @@ public sealed class ObjectMappingGrpcService(
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
 
     private Task<string?> FetchByKeyAsync(
-        SchemaDescriptor schema, string key, bool tenantScoped = false, string? tenantId = null) =>
+        SchemaDescriptor schema, string key, EntityAccess access) =>
         _entities.FetchByKeyAsync(
             SchemaBuilder.ToTableSchema(schema),
             key,
-            tenantScoped,
-            tenantId);
+            access);
 }

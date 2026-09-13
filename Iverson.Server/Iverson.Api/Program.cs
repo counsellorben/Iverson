@@ -451,10 +451,11 @@ await app.Services.GetRequiredService<IEnrichmentStateRepository>().EnsureTableA
 // cannot express.
 await app.Services.GetRequiredService<IDocumentRerenderQueueRepository>().EnsureTableAsync();
 
-// EnsureRuntimeRoleAsync must run before any ApplySchemaAsync call for a tenant-scoped table,
-// since that DDL GRANTs to iverson_runtime — the role has to exist first.
+// EnsureRolesAsync must run before ANY ApplySchemaAsync call, since that DDL now GRANTs to
+// iverson_maintenance on every table (and to iverson_runtime on the tenant-scoped ones) — both
+// roles have to exist first.
 var schemaManager = app.Services.GetRequiredService<IRecordStoreSchemaManager>();
-await schemaManager.EnsureRuntimeRoleAsync();
+await schemaManager.EnsureRolesAsync();
 await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
 await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
 await schemaManager.ApplySchemaAsync(Iverson.Api.Tenancy.TenantSchema.Table);

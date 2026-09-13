@@ -101,7 +101,13 @@ public sealed class ObjectPersistenceGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Update requires a non-empty '{schema.KeyColumn.Name}' in the payload."));
 
-        var existingRowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
+        // Cross-tenant, preserving this path's pre-existing behaviour: the row is read only to
+        // feed EnforceWriteAuthorization below, which itself compares the row's tenant/owner
+        // values against the acting user's and denies on a mismatch. Narrowing this to the acting
+        // tenant would change an authorization DENIAL into a silent "no existing row" — a
+        // different, less auditable outcome. Flagged as a follow-up candidate in the B4 report.
+        var existingRowJson = await entities.FetchByKeyAsync(
+            SchemaBuilder.ToTableSchema(schema), key, EntityAccess.CrossTenantMaintenance);
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             authEvaluator,
             actingUserAccessor.ActingUser,

@@ -74,7 +74,7 @@ public class EnrichmentConsumerTests
         _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns("generated summary");
         _enrichment.GenerateJsonAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns("""{"a":1}""");
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>()).Returns(RowJson());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>()).Returns(RowJson());
     }
 
     // Article with a chunk source property (Body) and two enrichment targets.
@@ -262,7 +262,7 @@ public class EnrichmentConsumerTests
         // First fetch = pre-generation snapshot; second fetch = post-commit re-fetch, which
         // includes a client edit that landed during the LLM call.
         var freshRow = RowJson("The body a client edited mid-enrichment.");
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Key).Returns(RowJson(), freshRow);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Key, Arg.Any<EntityAccess>()).Returns(RowJson(), freshRow);
 
         var sut = BuildSut();
         await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
@@ -280,7 +280,7 @@ public class EnrichmentConsumerTests
     public async Task HandleUpdated_CutsTheSourceTextTo8000Chars_KeepingTheInstructionAndTheHint()
     {
         await _registry.RegisterAsync(EnrichedArticle());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Key).Returns(RowJson(new string('x', 20_000)));
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Key, Arg.Any<EntityAccess>()).Returns(RowJson(new string('x', 20_000)));
         string? extractionPrompt = null;
         _enrichment.GenerateJsonAsync(Arg.Do<string>(p => extractionPrompt = p), Arg.Any<CancellationToken>())
                    .Returns("""{"a":1}""");
@@ -340,7 +340,7 @@ public class EnrichmentConsumerTests
     public async Task HandleUpdated_WithNullTenantValueInRow_SkipsAndWritesNoStateRow()
     {
         await _registry.RegisterAsync(EnrichedArticle());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns(RowJson(tenant: null));
 
         var sut = BuildSut();
@@ -363,7 +363,7 @@ public class EnrichmentConsumerTests
 
         await _state.Received().DeleteAsync(Tenant, "Article", Key);
         // The row is already gone by delete-consumption time — no re-fetch may be attempted.
-        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(default!, default!);
+        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(default!, default!, default);
     }
 
     [Fact]

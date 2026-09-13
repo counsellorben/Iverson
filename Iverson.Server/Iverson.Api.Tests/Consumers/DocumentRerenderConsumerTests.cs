@@ -155,14 +155,14 @@ public class DocumentRerenderConsumerTests
         await _registry.RegisterAsync(WidgetSchema());
         await _registry.RegisterAsync(AuthorSchema());
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId)
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId, Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{AuthorId}}","Name":"Ada","TenantId":"{{TenantA}}"}""");
 
-        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "AuthorId", AuthorId, true, TenantA)
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "AuthorId", AuthorId, EntityAccess.ForTenant(TenantA))
             .Returns([$$"""{"Id":"{{WidgetId}}","TenantId":"{{TenantA}}"}"""]);
         // Editor relation also targets Author with a different FK column — must return nothing
         // so this test isolates the AuthorId path.
-        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "EditorRef", AuthorId, true, TenantA)
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "EditorRef", AuthorId, EntityAccess.ForTenant(TenantA))
             .Returns([]);
 
         var ev = MakeEvent(EntityEventType.Updated, "Author", AuthorId,
@@ -181,10 +181,10 @@ public class DocumentRerenderConsumerTests
         await _registry.RegisterAsync(BadgeSchema());
         await _registry.RegisterAsync(AuthorSchema());
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId)
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId, Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{AuthorId}}","Name":"Ada","TenantId":"{{TenantA}}"}""");
 
-        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "AuthorId", AuthorId, true, TenantA)
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "AuthorId", AuthorId, EntityAccess.ForTenant(TenantA))
             .Returns([$$"""{"Id":"{{BadgeId}}","TenantId":"{{TenantA}}"}"""]);
 
         var ev = MakeEvent(EntityEventType.Updated, "Author", AuthorId,
@@ -203,15 +203,15 @@ public class DocumentRerenderConsumerTests
         await _registry.RegisterAsync(WidgetSchema());
         await _registry.RegisterAsync(AuthorSchema());
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId)
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId, Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{AuthorId}}","Name":"Ada","TenantId":"{{TenantA}}"}""");
 
-        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "AuthorId", AuthorId, true, TenantA)
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "AuthorId", AuthorId, EntityAccess.ForTenant(TenantA))
             .Returns([]);
         // Only the non-conventional "EditorRef" column returns a match — proves the consumer
         // used relation.ForeignKey ("EditorRef") and not a "{TypeName}Id" convention-derived
         // column name ("AuthorId") for the Editor relation.
-        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "EditorRef", AuthorId, true, TenantA)
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "EditorRef", AuthorId, EntityAccess.ForTenant(TenantA))
             .Returns([$$"""{"Id":"{{WidgetId}}","TenantId":"{{TenantA}}"}"""]);
 
         var ev = MakeEvent(EntityEventType.Updated, "Author", AuthorId,
@@ -230,10 +230,10 @@ public class DocumentRerenderConsumerTests
         await _registry.RegisterAsync(WidgetSchema());
         await _registry.RegisterAsync(CategorySchema());
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CategoryId)
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CategoryId, Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{CategoryId}}","Label":"Sale","TenantId":"{{TenantA}}"}""");
 
-        _entities.FetchByArrayContainsAsync(Arg.Any<TableSchema>(), "CategoryIds", CategoryId, true, TenantA)
+        _entities.FetchByArrayContainsAsync(Arg.Any<TableSchema>(), "CategoryIds", CategoryId, EntityAccess.ForTenant(TenantA))
             .Returns([$$"""{"Id":"{{WidgetId}}","TenantId":"{{TenantA}}"}"""]);
 
         var ev = MakeEvent(EntityEventType.Updated, "Category", CategoryId,
@@ -252,7 +252,7 @@ public class DocumentRerenderConsumerTests
         await _registry.RegisterAsync(WidgetSchema());
         await _registry.RegisterAsync(CommentSchema());
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId)
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""");
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId,
@@ -263,8 +263,7 @@ public class DocumentRerenderConsumerTests
         await _queue.Received(1).EnqueueEntityAsync(TenantA, "Widget", WidgetId);
         // No column/array query needed for OneToMany — the parent key comes straight from the
         // payload.
-        await _entities.DidNotReceive().FetchByColumnAsync(
-            Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>());
+        await _entities.DidNotReceive().FetchByColumnAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
     }
 
     // ── Created / Updated / Deleted all trigger ─────────────────────────────
@@ -279,7 +278,7 @@ public class DocumentRerenderConsumerTests
         await _registry.RegisterAsync(CommentSchema());
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(eventType, "Comment", CommentId, payload);
 
@@ -299,7 +298,7 @@ public class DocumentRerenderConsumerTests
         var newPayload = $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId2}}","TenantId":"{{TenantA}}"}""";
         var priorPayload = $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""";
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(newPayload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(newPayload);
 
         var ev = MakeEvent(EntityEventType.Updated, "Comment", CommentId, newPayload, priorPayload: priorPayload);
 
@@ -318,7 +317,7 @@ public class DocumentRerenderConsumerTests
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi v2","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""";
         var priorPayload = $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""";
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Updated, "Comment", CommentId, payload, priorPayload: priorPayload);
 
@@ -342,7 +341,7 @@ public class DocumentRerenderConsumerTests
         await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _queue.DidNotReceiveWithAnyArgs().EnqueueEntityAsync(default, default!, default!);
-        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(default!, default!);
+        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(default!, default!, default);
     }
 
     // ── Deleted event for a related entity uses the payload snapshot ───────
@@ -353,7 +352,7 @@ public class DocumentRerenderConsumerTests
         await _registry.RegisterAsync(WidgetSchema());
         await _registry.RegisterAsync(CategorySchema());
 
-        _entities.FetchByArrayContainsAsync(Arg.Any<TableSchema>(), "CategoryIds", CategoryId, true, TenantA)
+        _entities.FetchByArrayContainsAsync(Arg.Any<TableSchema>(), "CategoryIds", CategoryId, EntityAccess.ForTenant(TenantA))
             .Returns([$$"""{"Id":"{{WidgetId}}","TenantId":"{{TenantA}}"}"""]);
 
         var ev = MakeEvent(EntityEventType.Deleted, "Category", CategoryId,
@@ -364,7 +363,7 @@ public class DocumentRerenderConsumerTests
         await _queue.Received(1).EnqueueEntityAsync(TenantA, "Widget", WidgetId);
         // The row is gone by the time a Deleted event is consumed — the tenant must have come
         // from the payload snapshot, not a re-fetch of a now-nonexistent authoritative row.
-        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(default!, default!);
+        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(default!, default!, default);
     }
 
     // ── Reverse lookup does not cross a tenant boundary ─────────────────────
@@ -375,20 +374,20 @@ public class DocumentRerenderConsumerTests
         await _registry.RegisterAsync(WidgetSchema());
         await _registry.RegisterAsync(AuthorSchema());
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId)
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId, Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{AuthorId}}","Name":"Ada","TenantId":"{{TenantA}}"}""");
 
         // The scoped lookup for TenantA returns nothing (simulating RLS: the only widget
         // referencing this author actually belongs to TenantB, so a TenantA-scoped query never
         // sees it).
-        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "AuthorId", AuthorId, true, TenantA)
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "AuthorId", AuthorId, EntityAccess.ForTenant(TenantA))
             .Returns([]);
-        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "EditorRef", AuthorId, true, TenantA)
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "EditorRef", AuthorId, EntityAccess.ForTenant(TenantA))
             .Returns([]);
         // A different-tenant call would return a row, proving the stub setup is meaningful —
         // but the consumer must call with TenantA (the changed Author's own tenant), never
         // TenantB, so this is never hit.
-        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "AuthorId", AuthorId, true, TenantB)
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), "AuthorId", AuthorId, EntityAccess.ForTenant(TenantB))
             .Returns([$$"""{"Id":"{{WidgetId}}","TenantId":"{{TenantB}}"}"""]);
 
         var ev = MakeEvent(EntityEventType.Updated, "Author", AuthorId,
@@ -435,7 +434,7 @@ public class DocumentRerenderConsumerTests
             .BeFalse("a rehydrated row with no server-owned tenant column must not be admitted");
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
 
@@ -473,7 +472,7 @@ public class DocumentRerenderConsumerTests
 
         // The Comment row was deleted between the Created event being published and this
         // consumer reading it, so the re-derivation of the tenant finds nothing.
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns((string?)null);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns((string?)null);
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""";
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
@@ -492,7 +491,7 @@ public class DocumentRerenderConsumerTests
         await _registry.RegisterAsync(CommentSchema());
 
         // Row present, tenant column absent from it — ExtractString returns null.
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId)
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}"}""");
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId,
@@ -523,21 +522,18 @@ public class DocumentRerenderConsumerTests
         await _registry.RegisterAsync(BadgeSchema());
         await _registry.RegisterAsync(AuthorSchema());
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId)
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId, Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{AuthorId}}","Name":"Ada","TenantId":"{{TenantA}}"}""");
 
         // Widget's "Author" relation (FK "AuthorId" on widgets) throws — simulates a malformed
         // FK column or dropped schema for that one dependent.
-        _entities.FetchByColumnAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "widgets"), "AuthorId", AuthorId, true, TenantA)
+        _entities.FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "widgets"), "AuthorId", AuthorId, EntityAccess.ForTenant(TenantA))
             .Returns<IEnumerable<string>>(_ => throw new InvalidOperationException("boom"));
         // Widget's "Editor" relation (FK "EditorRef") is unaffected.
-        _entities.FetchByColumnAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "widgets"), "EditorRef", AuthorId, true, TenantA)
+        _entities.FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "widgets"), "EditorRef", AuthorId, EntityAccess.ForTenant(TenantA))
             .Returns([]);
         // Badge's "Owner" relation (FK "AuthorId" on badges) is unaffected.
-        _entities.FetchByColumnAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "badges"), "AuthorId", AuthorId, true, TenantA)
+        _entities.FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "badges"), "AuthorId", AuthorId, EntityAccess.ForTenant(TenantA))
             .Returns([$$"""{"Id":"{{BadgeId}}","TenantId":"{{TenantA}}"}"""]);
 
         var ev = MakeEvent(EntityEventType.Updated, "Author", AuthorId,

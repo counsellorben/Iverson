@@ -106,7 +106,7 @@ public sealed class EngagementStoreConsumerKafkaOrderingTests(KafkaOrderingConta
         // mandatory regardless of OwnerField, so FetchByKeyAsync must still be stubbed to return
         // a row carrying the tenant value.
         var entities = Substitute.For<IEntityRepository>();
-        entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                 .Returns("""{"Name":"Alice","TenantId":"tenant-a"}""");
         var sut = new EngagementStoreConsumer(consumer, sr, registry, entities, NullLogger<EngagementStoreConsumer>.Instance);
 

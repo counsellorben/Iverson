@@ -257,7 +257,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             .Returns(Task.CompletedTask);
 
         var entities = Substitute.For<IEntityRepository>();
-        entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                 .Returns($$"""{"TenantId":"{{TestTenant}}"}""");
 
         var vectorSchema = Substitute.For<IVectorSchemaManager>();

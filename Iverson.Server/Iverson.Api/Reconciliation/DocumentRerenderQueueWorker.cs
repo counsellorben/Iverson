@@ -88,7 +88,10 @@ internal sealed class DocumentRerenderQueueWorker(
             return;
         }
 
-        var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), row.EntityKey!);
+        // Cross-tenant by design: same as ReconciliationService.ProcessOneAsync — the queue row
+        // records a type and key, and the re-render has to reach whichever tenant owns that key.
+        var rowJson = await entities.FetchByKeyAsync(
+            SchemaBuilder.ToTableSchema(schema), row.EntityKey!, EntityAccess.CrossTenantMaintenance);
         if (rowJson is null)
         {
             // Entity no longer exists in Postgres — a vanished row is dropped, not resurrected.
@@ -136,8 +139,11 @@ internal sealed class DocumentRerenderQueueWorker(
                 return;
             }
 
+            // Cross-tenant by design: a type-level re-render row means "every entity of this
+            // type, across every tenant" — scoping it would silently backfill only one tenant.
             var page = (await entities.FetchKeysAndTenantsPagedAsync(
-                SchemaBuilder.ToTableSchema(schema), row.Cursor, opts.PageSize)).ToList();
+                SchemaBuilder.ToTableSchema(schema), row.Cursor, opts.PageSize,
+                EntityAccess.CrossTenantMaintenance)).ToList();
 
             foreach (var keyed in page)
                 await queue.EnqueueEntityAsync(keyed.TenantId, row.TypeName, keyed.Key);

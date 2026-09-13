@@ -576,7 +576,10 @@ public sealed class IntelligenceStoreConsumer(
     private async Task<string?> FetchAuthoritativeOwnerValueAsync(
         SchemaDescriptor schema, string ownerField, string key, CancellationToken ct)
     {
-        var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
+        // Cross-tenant by necessity: the authoritative row is the only trustworthy source for
+        // this value, and the event payload it would otherwise be scoped by is unsigned.
+        var rowJson = await entities.FetchByKeyAsync(
+            SchemaBuilder.ToTableSchema(schema), key, EntityAccess.CrossTenantMaintenance);
         if (rowJson is null)
         {
             logger.LogWarning(
@@ -601,7 +604,8 @@ public sealed class IntelligenceStoreConsumer(
 
         try
         {
-            var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
+            var rowJson = await entities.FetchByKeyAsync(
+                SchemaBuilder.ToTableSchema(schema), key, EntityAccess.CrossTenantMaintenance);
             if (rowJson is null) return null;
 
             using var doc = JsonDocument.Parse(rowJson);

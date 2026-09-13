@@ -28,7 +28,7 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
 
         // Mirrors Program.cs startup ordering: the iverson_runtime role must exist before any
         // ApplySchemaAsync call that GRANTs to it for a tenant-scoped table.
-        await SchemaManager.EnsureRuntimeRoleAsync();
+        await SchemaManager.EnsureRolesAsync();
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -321,18 +321,62 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
             new { Table = table });
 
     private async Task<int> RuntimeGrantCountAsync(string table) =>
+        await GrantCountAsync(table, "iverson_runtime");
+
+    private async Task<int> MaintenanceGrantCountAsync(string table) =>
+        await GrantCountAsync(table, "iverson_maintenance");
+
+    private async Task<int> GrantCountAsync(string table, string grantee) =>
         await _repo.QuerySingleOrDefaultAsync<int>(
             """
             SELECT COUNT(*) FROM information_schema.role_table_grants
-            WHERE table_name = @Table AND grantee = 'iverson_runtime'
+            WHERE table_name = @Table AND grantee = @Grantee
             """,
+            new { Table = table, Grantee = grantee });
+
+    private async Task<bool> RlsForcedAsync(string table) =>
+        await _repo.QuerySingleOrDefaultAsync<bool>(
+            "SELECT relforcerowsecurity FROM pg_class WHERE relname = @Table",
             new { Table = table });
 
     [Fact]
-    public async Task EnsureRuntimeRoleAsync_IsIdempotent_WhenCalledTwice()
+    public async Task EnsureRolesAsync_IsIdempotent_WhenCalledTwice()
     {
-        var act = async () => await _schemaManager.EnsureRuntimeRoleAsync();
+        var act = async () => await _schemaManager.EnsureRolesAsync();
         await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task EnsureRolesAsync_CreatesMaintenanceRoleWithBypassRls()
+    {
+        // Without BYPASSRLS the maintenance role would not error — it would quietly return zero
+        // rows to every cross-tenant read, i.e. reconciliation replaying nothing at all. Assert
+        // the attribute, not just the role's existence.
+        await _schemaManager.EnsureRolesAsync();
+
+        var bypassesRls = await _repo.QuerySingleOrDefaultAsync<bool>(
+            "SELECT rolbypassrls FROM pg_roles WHERE rolname = 'iverson_maintenance'");
+        bypassesRls.Should().BeTrue();
+
+        // iverson_runtime must NOT have it — it is the role the policy is supposed to bite on.
+        var runtimeBypassesRls = await _repo.QuerySingleOrDefaultAsync<bool>(
+            "SELECT rolbypassrls FROM pg_roles WHERE rolname = 'iverson_runtime'");
+        runtimeBypassesRls.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task EnsureRolesAsync_RepairsAPreExistingMaintenanceRoleThatLacksBypassRls()
+    {
+        // The upgrade path for a cluster whose iverson_maintenance was created by hand without the
+        // attribute. Verify-and-repair, not create-if-missing-and-hope.
+        await _schemaManager.EnsureRolesAsync();
+        await _repo.ExecuteAsync("ALTER ROLE iverson_maintenance NOBYPASSRLS");
+
+        await _schemaManager.EnsureRolesAsync();
+
+        var bypassesRls = await _repo.QuerySingleOrDefaultAsync<bool>(
+            "SELECT rolbypassrls FROM pg_roles WHERE rolname = 'iverson_maintenance'");
+        bypassesRls.Should().BeTrue();
     }
 
     [Fact]
@@ -352,11 +396,15 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
         (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeTrue();
         (await RlsEnabledAsync(table)).Should().BeTrue();
+        // CSR round-3 #5: ENABLE alone leaves the table's OWNER — which is what the api connects
+        // as — exempt from its own policy, so the policy was inert on every unscoped statement.
+        (await RlsForcedAsync(table)).Should().BeTrue();
         (await RuntimeGrantCountAsync(table)).Should().Be(4); // SELECT, INSERT, UPDATE, DELETE
+        (await MaintenanceGrantCountAsync(table)).Should().Be(4);
     }
 
     [Fact]
-    public async Task ApplySchemaAsync_NonTenantScopedTable_GetsNoPolicyRlsOrGrant()
+    public async Task ApplySchemaAsync_NonTenantScopedTable_GetsNoPolicyRlsOrRuntimeGrant_ButStillGetsTheMaintenanceGrant()
     {
         var table = UniqueTable();
         var schema = new TableSchema(
@@ -368,7 +416,11 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
         (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeFalse();
         (await RlsEnabledAsync(table)).Should().BeFalse();
+        (await RlsForcedAsync(table)).Should().BeFalse();
         (await RuntimeGrantCountAsync(table)).Should().Be(0);
+        // ...but iverson_maintenance IS granted: a reconciliation replay of a type that declares
+        // no tenant field is still a maintenance read, and it has to be able to run.
+        (await MaintenanceGrantCountAsync(table)).Should().Be(4);
     }
 
     [Fact]
@@ -391,7 +443,9 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
         (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeTrue();
         (await RlsEnabledAsync(table)).Should().BeTrue();
+        (await RlsForcedAsync(table)).Should().BeTrue();
         (await RuntimeGrantCountAsync(table)).Should().Be(4);
+        (await MaintenanceGrantCountAsync(table)).Should().Be(4);
     }
 
     [Fact]
@@ -412,6 +466,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
         (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeFalse();
         (await RlsEnabledAsync(table)).Should().BeFalse();
+        (await RlsForcedAsync(table)).Should().BeFalse();
         (await RuntimeGrantCountAsync(table)).Should().Be(0);
 
         var schema = new TableSchema(
@@ -427,7 +482,9 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
         (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeTrue();
         (await RlsEnabledAsync(table)).Should().BeTrue();
+        (await RlsForcedAsync(table)).Should().BeTrue();
         (await RuntimeGrantCountAsync(table)).Should().Be(4);
+        (await MaintenanceGrantCountAsync(table)).Should().Be(4);
     }
 
 
@@ -470,7 +527,9 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
         (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeTrue();
         (await RlsEnabledAsync(table)).Should().BeTrue();
+        (await RlsForcedAsync(table)).Should().BeTrue();
         (await RuntimeGrantCountAsync(table)).Should().Be(4);
+        (await MaintenanceGrantCountAsync(table)).Should().Be(4);
     }
 
 

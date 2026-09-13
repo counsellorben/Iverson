@@ -80,7 +80,7 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
         // ApplySchemaAsync call that GRANTs to it for a tenant-scoped table (this fixture's tests
         // register tenant-scoped schemas — every schema is tenant-scoped now that the server
         // owns the column).
-        await PostgresSchemaManager.EnsureRuntimeRoleAsync();
+        await PostgresSchemaManager.EnsureRolesAsync();
 
         var qdrantClient = new QdrantClient(
             _qdrant.Hostname,
