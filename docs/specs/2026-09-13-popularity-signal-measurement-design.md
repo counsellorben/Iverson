@@ -106,10 +106,76 @@ that converts an assumption into a fact; it is not optional.
    grid, some cell will look good by chance; the shuffled ceiling measures how much the grid can
    manufacture from noise.
 
+4. **The age control.** Citation count is age-confounded: older papers accrue citations regardless
+   of merit. The shipped signal has no time decay of any kind (see "The signal is a lifetime count"
+   below), and `BenchmarkDocument` has no date property, so `WDecay` is inert — **no shipped
+   mechanism can control for this**. Age must therefore be carried as a measured covariate:
+
+   a. Report the AUC of publication date alone. If age does not separate relevant from
+      non-relevant documents, the confound is not live and b/c/d are reported for completeness only.
+   b. Report the **within-stratum AUC** of citation count, so the comparison is between papers of
+      the same vintage.
+   c. Re-run measurement 3 as an **age-preserving null**: permute counts *within* age strata,
+      destroying the doc↔count pairing while preserving the age structure. A real ceiling that
+      beats this null is not an age effect.
+   d. Report the ceiling for **citations per year** (`count / age`) as an alternative signal
+      alongside the raw count. This is the cheap age-de-confounded variant: it costs no extra
+      fetching, and it is the closest thing to a rate that the data supports for free.
+
+   `publicationDate` is fetched in the same API call as the count — month-granular, occasionally
+   day-granular, and strictly finer than `year`, which is kept as the fallback for rows lacking it.
+   Both are separately nullable: a resolved paper with no date still yields a usable count, so the
+   covariate's n is smaller than the count's, and that gap is reported rather than papered over.
+
 ### Gate
 
-Proceed to Phase 2 only if **real ceiling − shuffled ceiling > 0.0152** nDCG@10 on `SearchSimilar`
-(SciFact's measured MDE at n = 300).
+Proceed to Phase 2 only if **real ceiling − age-preserving null ceiling > 0.0152** nDCG@10 on
+`SearchSimilar` (SciFact's measured MDE at n = 300). The age-preserving null is the binding
+comparison; the plain shuffled null is reported alongside it, and a real ceiling that clears the
+plain null but not the age-preserving one is an **age** finding, not a popularity finding.
+
+### The signal is a lifetime count
+
+Worth stating explicitly, because it is unrecorded in the feature spec and it is what makes the age
+control necessary:
+
+- `PopularityFor` (`ObjectSearchGrpcService.cs:1019`) is `count / (count + SaturationPoint)` — a
+  pure function of the count, reading no clock and no timestamp.
+- `ResultReranker` documents itself as "Pure and I/O-free… reads no clock"; decay arrives
+  pre-computed.
+- `PopularitySignalConsumer.cs:60` aggregates `AggregationDescriptor("count", AggregationKind.Count,
+  Field: "")` — an unfiltered lifetime `COUNT(*)`, no date predicate, no rolling window.
+
+So popularity is **all-time and monotonically non-decreasing**. `WDecay` is orthogonal and decays
+the *parent's own age*, never the age of the child rows: even with both signals active, a
+three-year-old engagement counts exactly as much as today's. In production that means a document
+popular three years ago and dead since ranks identically to one accruing engagement now, at equal
+totals. That is a legitimate choice — all-time popularity rather than trending — but it is a
+product decision the feature spec never states.
+
+### Why a decayed-popularity arm is not in this experiment
+
+Per-citation dates **are** available: `/paper/{id}/citations?fields=year,publicationDate` returns
+each citing paper's date at day granularity. So the data to build a time-windowed or decayed
+popularity exists. It is nevertheless out of scope here, for three reasons in increasing order of
+importance:
+
+1. **Cost.** ~5,183 papers at a mean of ~800 citations is ≈ 4.1M citing records against a
+   per-paper, 1,000-per-page endpoint — 4,100+ requests minimum, on top of the rate limit that
+   already dominates this experiment's wall-clock.
+2. **The obvious shortcut is unsound.** Citations appear to be returned newest-first (a probe
+   returned 2026-08, 2026-05, 2026-04, 2026-03, 2026-02 in order), which would allow early-stopping
+   at a window cutoff. S2 does not document citation ordering as guaranteed, and a measurement must
+   not rest on an ordering inferred from five rows.
+3. **The shipped code cannot express it.** `PopularitySignalConsumer.cs:60` issues
+   `AggregationDescriptor("count", AggregationKind.Count, Field: "")` — an unfiltered `COUNT(*)`
+   with no date predicate. A decayed count is not a configuration of this feature; it is a
+   different feature. An arm testing it would be measuring code that does not exist.
+
+**Recorded as a separate design question:** should relation popularity be time-windowed rather than
+lifetime? This experiment does not answer it, but it establishes that the data to answer it exists
+and that the current implementation forecloses it. Measurement 4d's citations-per-year ceiling is a
+free partial read on whether rate carries more signal than total.
 
 ### A conservative bias, stated
 
@@ -238,6 +304,13 @@ with 73% in one — six distinct values is not a per-document signal. NFCorpus i
 cheap: opaque `MED-xxx` ids with `metadata: null`, needing a PubMed mapping and a different citation
 API.
 
+**Age is a confound with no shipped control.** Citation count rises with paper age, and neither the
+popularity term (a lifetime count, no clock) nor `WDecay` (inert — no date property on
+`BenchmarkDocument`) can correct for it. Age is therefore handled statistically, not
+mechanically: measurement 4's within-stratum AUC, the age-preserving null that binds the gate, and
+the citations-per-year variant. A result that clears the plain shuffled null but not the
+age-preserving one is an age finding and must be reported as one.
+
 **The instrument is coarse.** 339 judgments over 300 queries is about 1.13 relevant documents per
 query, all binary, so nDCG@10 behaves close to MRR. MDE is 0.0152.
 
@@ -275,6 +348,10 @@ disk-cached, so it costs wall-clock rather than risk. A free API key would reduc
 | — | Citation counts have usable variance | n = 375: min 3, p25 75, median 186, p75 460, p90 1,196, max 75,285; zero documents with 0 citations |
 | — | Counts carry relevance information | AUC 0.6201 vs. random non-relevant (95% CI [0.569, 0.672], z ≈ 4.55) |
 | — | The shipped `SaturationPoint = 50` suits this corpus | **No.** At S = 50 the median maps to 0.788 and IQR is 0.303; S ≈ 300 maximises spread (IQR 0.409). S = 50 compresses the corpus into the saturated tail |
+| — | The popularity signal has no time decay | `PopularityFor` is `count/(count+S)` with no clock (`ObjectSearchGrpcService.cs:1019`); `ResultReranker`'s doc comment states it "reads no clock"; `PopularitySignalConsumer.cs:60` aggregates an unfiltered `COUNT(*)` with no date predicate |
+| — | `WDecay` cannot control for document age here | `BenchmarkDocument` declares no date property, so `DecayFieldResolver` returns null and the decay term is inert on this corpus |
+| — | `publicationDate` is available and finer than `year` | Probe of 40 ids: 38 resolved, `year` 38/38, `publicationDate` 38/38, month-granular (e.g. `1998-10-01`), occasionally day-granular (`1993-11-15`) |
+| — | Per-citation dates exist but are out of scope | `/paper/{id}/citations?fields=year,publicationDate` returns citing-paper dates at day granularity; ≈4.1M records over a 1,000-per-page per-paper endpoint, and the shipped consumer cannot express a windowed count |
 | — | Arms retrieve identical pools | `popularityPossible` keys off `Signals`, not `W` (`ObjectSearchGrpcService.cs:241`); `centroidPossible` is already true for this schema, so `rerankIsIdentity` is false in both arms |
 
 Assumptions not independently verified and carried as risk: A2 (full-corpus fetch completes within
