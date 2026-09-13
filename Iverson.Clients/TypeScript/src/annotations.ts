@@ -32,6 +32,7 @@ const IVERSON_EMBEDDING_FIELDS = Symbol('iverson:embedding_fields');
 const IVERSON_CHUNK_FIELDS     = Symbol('iverson:chunk_fields');
 const IVERSON_RELATIONS    = Symbol('iverson:relations');
 const IVERSON_METADATA_FIELDS  = Symbol('iverson:metadata_fields');
+const IVERSON_POPULARITY_SIGNAL_FIELDS = Symbol('iverson:popularity_signal_fields');
 const IVERSON_SUMMARY_FIELDS   = Symbol('iverson:summary_fields');
 const IVERSON_KEYWORDS_FIELDS  = Symbol('iverson:keywords_fields');
 const IVERSON_EXTRACTED_FIELDS = Symbol('iverson:extracted_fields');
@@ -260,6 +261,25 @@ export function IversonMetadata(): PropertyDecorator {
 
 export function getMetadataFields(target: Function): string[] {
     return Reflect.getMetadata(IVERSON_METADATA_FIELDS, target) ?? [];
+}
+
+// ── @IversonPopularitySignal() ────────────────────────────────────────────────
+
+/**
+ * Marks the UTC-datetime property recording when an interaction happened.
+ * Exactly one property per entity may carry this; two fail schema registration.
+ */
+export function IversonPopularitySignal(): PropertyDecorator {
+    return (target, propertyKey) => {
+        const existing: string[] =
+            [...(Reflect.getMetadata(IVERSON_POPULARITY_SIGNAL_FIELDS, target.constructor) ?? [])];
+        existing.push(String(propertyKey));
+        Reflect.defineMetadata(IVERSON_POPULARITY_SIGNAL_FIELDS, existing, target.constructor);
+    };
+}
+
+export function getPopularitySignalFields(target: Function): string[] {
+    return Reflect.getMetadata(IVERSON_POPULARITY_SIGNAL_FIELDS, target) ?? [];
 }
 
 // ── @IversonArray(elementType) ─────────────────────────────────────────────────

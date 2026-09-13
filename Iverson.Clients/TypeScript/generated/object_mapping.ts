@@ -228,6 +228,8 @@ export interface PropertyDescriptor {
   extractHint: string;
   /** [IversonChunk(Contextual = true)] */
   chunkContextual: boolean;
+  /** [IversonPopularitySignal] present — the interaction timestamp */
+  isPopularitySignal: boolean;
 }
 
 export interface RelationDescriptor {
@@ -282,6 +284,11 @@ export interface TypeDescriptor {
   tenantField: string;
   /** type-level [IversonDescription] text; empty = none */
   description: string;
+  /** [IversonDocument] template; empty = none */
+  documentTemplate: string;
+  documentMaxTokens: number;
+  documentOverlap: number;
+  documentContextual: boolean;
 }
 
 export interface SchemaRequest {
@@ -396,6 +403,7 @@ function createBasePropertyDescriptor(): PropertyDescriptor {
     isKeywordsTarget: false,
     extractHint: "",
     chunkContextual: false,
+    isPopularitySignal: false,
   };
 }
 
@@ -466,6 +474,9 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
     }
     if (message.chunkContextual !== false) {
       writer.uint32(176).bool(message.chunkContextual);
+    }
+    if (message.isPopularitySignal !== false) {
+      writer.uint32(184).bool(message.isPopularitySignal);
     }
     return writer;
   },
@@ -653,6 +664,14 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
           message.chunkContextual = reader.bool();
           continue;
         }
+        case 23: {
+          if (tag !== 184) {
+            break;
+          }
+
+          message.isPopularitySignal = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -766,6 +785,11 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
         : isSet(object.chunk_contextual)
         ? globalThis.Boolean(object.chunk_contextual)
         : false,
+      isPopularitySignal: isSet(object.isPopularitySignal)
+        ? globalThis.Boolean(object.isPopularitySignal)
+        : isSet(object.is_popularity_signal)
+        ? globalThis.Boolean(object.is_popularity_signal)
+        : false,
     };
   },
 
@@ -837,6 +861,9 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
     if (message.chunkContextual !== false) {
       obj.chunkContextual = message.chunkContextual;
     }
+    if (message.isPopularitySignal !== false) {
+      obj.isPopularitySignal = message.isPopularitySignal;
+    }
     return obj;
   },
 
@@ -867,6 +894,7 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
     message.isKeywordsTarget = object.isKeywordsTarget ?? false;
     message.extractHint = object.extractHint ?? "";
     message.chunkContextual = object.chunkContextual ?? false;
+    message.isPopularitySignal = object.isPopularitySignal ?? false;
     return message;
   },
 };
@@ -1320,7 +1348,18 @@ export const AuthorizationRules: MessageFns<AuthorizationRules> = {
 };
 
 function createBaseTypeDescriptor(): TypeDescriptor {
-  return { typeName: "", properties: [], relations: [], authorization: undefined, tenantField: "", description: "" };
+  return {
+    typeName: "",
+    properties: [],
+    relations: [],
+    authorization: undefined,
+    tenantField: "",
+    description: "",
+    documentTemplate: "",
+    documentMaxTokens: 0,
+    documentOverlap: 0,
+    documentContextual: false,
+  };
 }
 
 export const TypeDescriptor: MessageFns<TypeDescriptor> = {
@@ -1342,6 +1381,18 @@ export const TypeDescriptor: MessageFns<TypeDescriptor> = {
     }
     if (message.description !== "") {
       writer.uint32(50).string(message.description);
+    }
+    if (message.documentTemplate !== "") {
+      writer.uint32(58).string(message.documentTemplate);
+    }
+    if (message.documentMaxTokens !== 0) {
+      writer.uint32(64).int32(message.documentMaxTokens);
+    }
+    if (message.documentOverlap !== 0) {
+      writer.uint32(72).int32(message.documentOverlap);
+    }
+    if (message.documentContextual !== false) {
+      writer.uint32(80).bool(message.documentContextual);
     }
     return writer;
   },
@@ -1401,6 +1452,38 @@ export const TypeDescriptor: MessageFns<TypeDescriptor> = {
           message.description = reader.string();
           continue;
         }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.documentTemplate = reader.string();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.documentMaxTokens = reader.int32();
+          continue;
+        }
+        case 9: {
+          if (tag !== 72) {
+            break;
+          }
+
+          message.documentOverlap = reader.int32();
+          continue;
+        }
+        case 10: {
+          if (tag !== 80) {
+            break;
+          }
+
+          message.documentContextual = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1430,6 +1513,26 @@ export const TypeDescriptor: MessageFns<TypeDescriptor> = {
         ? globalThis.String(object.tenant_field)
         : "",
       description: isSet(object.description) ? globalThis.String(object.description) : "",
+      documentTemplate: isSet(object.documentTemplate)
+        ? globalThis.String(object.documentTemplate)
+        : isSet(object.document_template)
+        ? globalThis.String(object.document_template)
+        : "",
+      documentMaxTokens: isSet(object.documentMaxTokens)
+        ? globalThis.Number(object.documentMaxTokens)
+        : isSet(object.document_max_tokens)
+        ? globalThis.Number(object.document_max_tokens)
+        : 0,
+      documentOverlap: isSet(object.documentOverlap)
+        ? globalThis.Number(object.documentOverlap)
+        : isSet(object.document_overlap)
+        ? globalThis.Number(object.document_overlap)
+        : 0,
+      documentContextual: isSet(object.documentContextual)
+        ? globalThis.Boolean(object.documentContextual)
+        : isSet(object.document_contextual)
+        ? globalThis.Boolean(object.document_contextual)
+        : false,
     };
   },
 
@@ -1453,6 +1556,18 @@ export const TypeDescriptor: MessageFns<TypeDescriptor> = {
     if (message.description !== "") {
       obj.description = message.description;
     }
+    if (message.documentTemplate !== "") {
+      obj.documentTemplate = message.documentTemplate;
+    }
+    if (message.documentMaxTokens !== 0) {
+      obj.documentMaxTokens = Math.round(message.documentMaxTokens);
+    }
+    if (message.documentOverlap !== 0) {
+      obj.documentOverlap = Math.round(message.documentOverlap);
+    }
+    if (message.documentContextual !== false) {
+      obj.documentContextual = message.documentContextual;
+    }
     return obj;
   },
 
@@ -1469,6 +1584,10 @@ export const TypeDescriptor: MessageFns<TypeDescriptor> = {
       : undefined;
     message.tenantField = object.tenantField ?? "";
     message.description = object.description ?? "";
+    message.documentTemplate = object.documentTemplate ?? "";
+    message.documentMaxTokens = object.documentMaxTokens ?? 0;
+    message.documentOverlap = object.documentOverlap ?? 0;
+    message.documentContextual = object.documentContextual ?? false;
     return message;
   },
 };

@@ -61,6 +61,7 @@ import {
     getKeywordsFields,
     getLargeFields,
     getMetadataFields,
+    getPopularitySignalFields,
     getPropertyDescriptions,
     getRelations,
     getRelationsWithFactory,
@@ -243,6 +244,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const embeddingFields = new Set(getEmbeddingFields(cls));
     const chunkFieldsByName = new Map(getChunkFields(cls).map(c => [c.field, c]));
     const metadataFields = new Set(getMetadataFields(cls));
+    const popularitySignalFields = new Set(getPopularitySignalFields(cls));
     const summaryFields = new Set(getSummaryFields(cls));
     const keywordsFields = new Set(getKeywordsFields(cls));
     const extractedByField = new Map(getExtractedFields(cls).map(e => [e.field, e]));
@@ -374,6 +376,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
             searchKeyOrder: searchKeysByField.get(fieldName) ?? 0,
             isLargeField,
             isMetadata: metadataFields.has(fieldName),
+            isPopularitySignal: popularitySignalFields.has(fieldName),
             description: propertyDescriptions[fieldName] ?? '',
             isSummaryTarget: summaryFields.has(fieldName),
             isKeywordsTarget: keywordsFields.has(fieldName),
@@ -402,6 +405,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
             searchKeyOrder: 0,
             isLargeField: false,
             isMetadata: false,
+            isPopularitySignal: false,
             description: '',
             isSummaryTarget: false,
             isKeywordsTarget: false,
@@ -428,6 +432,14 @@ export function describeEntity(cls: Function): TypeDescriptor {
         // which is exactly what the other four clients send by omitting it.
         tenantField: '',
         description: getTypeDescription(cls),
+        // Document-template chunking (proto fields 7-10) has no TypeScript decorator yet — no
+        // client-facing @IversonDocument() exists in this package. Sent at the proto-documented
+        // "not declared" defaults (empty/0/false), identical to what any other client predating
+        // this proto field already sends.
+        documentTemplate: '',
+        documentMaxTokens: 0,
+        documentOverlap: 0,
+        documentContextual: false,
     };
 }
 

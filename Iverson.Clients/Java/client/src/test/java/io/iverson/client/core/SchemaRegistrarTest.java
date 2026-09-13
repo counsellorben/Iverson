@@ -163,6 +163,17 @@ class SchemaRegistrarTest {
     }
 
     @IversonEntity
+    static class PopularitySignalAnnotationTestEntity {
+        @IversonKey
+        private UUID id;
+
+        @IversonPopularitySignal
+        private OffsetDateTime interactedAt;
+
+        private OffsetDateTime plain;
+    }
+
+    @IversonEntity
     static class SchemaTestAuthor {
         @IversonKey
         private UUID id;
@@ -722,6 +733,18 @@ class SchemaRegistrarTest {
         assertFalse(prop(td, "Outlet").getIsMetadata());
         assertFalse(prop(td, "Plain").getIsMetadata());
         assertFalse(prop(td, "Id").getIsMetadata());
+    }
+
+    @Test
+    void registerAll_setsIsPopularitySignal_onAnnotatedMember_andLeavesOthersFalse() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+        sut.registerAll(PopularitySignalAnnotationTestEntity.class);
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor td = captor.getValue().getRootType();
+
+        assertTrue(prop(td, "InteractedAt").getIsPopularitySignal());
+        assertFalse(prop(td, "Id").getIsPopularitySignal());
+        assertFalse(prop(td, "Plain").getIsPopularitySignal());
     }
 
     @Test
