@@ -26,10 +26,10 @@ namespace Iverson.Api.Tests.Schema;
 /// IVERSON_REGENERATE_INGEST_CONTRACT=1 dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter IngestContract
 /// </code></para>
 ///
-/// <para><b>What the contract does not pin.</b> Query prefixes are not emitted: queries are
-/// embedded inside <c>Iverson.Api</c>, which is itself that constant's source, so no Python
-/// consumer exists for one. Collection-creation parity (vector names, payload indexes) is also not
-/// emitted — Ben's call, 2026-09-01 — because those derive from <c>Type.GetProperties()</c>, whose
+/// <para><b>What the contract pins, and what it does not.</b> Query prefixes <b>are</b> emitted: <c>aspect_vectors.py</c>
+/// embeds queries Python-side to reproduce recorded retrieval scores, so a Python consumer exists and
+/// the same table must reach it. Collection-creation parity (vector names, payload
+/// indexes) is not emitted — Ben's call, 2026-09-01 — because those derive from <c>Type.GetProperties()</c>, whose
 /// order the CLR does not guarantee, and pinning them would require de-duplicating and
 /// ordinal-sorting to stop the gate flaking against its own committed copy.</para>
 ///
@@ -117,6 +117,10 @@ public class IngestContractTests
         foreach (var (family, prefix) in EmbeddingPrefixes.Table)
             documentPrefixes[family] = prefix.Document;
 
+        var queryPrefixes = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (family, prefix) in EmbeddingPrefixes.Table)
+            queryPrefixes[family] = prefix.Query;
+
         var documentComposition = new Dictionary<string, object>(StringComparer.Ordinal);
         foreach (var (family, prefix) in EmbeddingPrefixes.Table)
             documentComposition[family] = new
@@ -156,7 +160,9 @@ public class IngestContractTests
             embedding = new
             {
                 documentPrefixes,
-                defaultDocumentPrefix = EmbeddingPrefixes.DefaultDocument
+                defaultDocumentPrefix = EmbeddingPrefixes.DefaultDocument,
+                queryPrefixes,
+                defaultQueryPrefix    = EmbeddingPrefixes.DefaultQuery
             },
             golden = new
             {

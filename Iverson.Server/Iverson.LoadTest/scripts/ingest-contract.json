@@ -24,7 +24,14 @@
       "BAAI/bge-base-en-v1.5": "",
       "BAAI/bge-small-en-v1.5": ""
     },
-    "defaultDocumentPrefix": ""
+    "defaultDocumentPrefix": "",
+    "queryPrefixes": {
+      "nomic-embed-text": "search_query: ",
+      "snowflake-arctic-embed": "Represent this sentence for searching relevant passages: ",
+      "BAAI/bge-base-en-v1.5": "Represent this sentence for searching relevant passages: ",
+      "BAAI/bge-small-en-v1.5": "Represent this sentence for searching relevant passages: "
+    },
+    "defaultQueryPrefix": ""
   },
   "golden": {
     "chunking": [

@@ -349,3 +349,28 @@ with subtopic labels large enough to lift the MDE below the predicted effect, or
 family-2 screen as a funded experiment — snapshot restore, TEI, and a definition of "distinct aspect"
 that nobody has yet pinned down. A query-side multi-vector representation would need its own gate; the
 document-side multivector question is separately closed (`2026-09-GATE-multivector.md`).
+
+---
+
+## Amendment 2, 2026-09-13: family 2 has now been screened, and failed
+
+The amendment above (immediately preceding this one, same date) described family 2 — chunk-vector-derived
+aspect coverage — as never screened ("has never been screened," "an experiment with its own spec, not a
+screen," "Family 2 remains unscreened") and listed running it among the ways to reopen this item. That
+screen ran later the same day and returned **FAIL**: none of `residual_spread`, `greedy_cover` (τ = 0.90)
+or `effective_rank` beats the `n_chunks` null under the pre-registered rule, including the strong-form
+candidate (`residual_spread`, the one not bounded above by chunk count), whose point estimate fell below
+the null. Full verdict, inputs, and validity checks: `docs/plans/2026-09-GATE-family2-vector-aspect-screen.md`.
+This amendment cross-references that result rather than restating it, and supersedes the "never screened" /
+"remains unscreened" language above — read that language as describing the state before this amendment, not
+the state now.
+
+**What would reopen it, corrected.** "A decision to run the family-2 screen as a funded experiment" is no
+longer a live reopen route — it ran. The other two routes from the amendment above are unchanged: nugget
+text for FreshStack, or a corpus with subtopic labels large enough to lift the MDE below the predicted
+effect. The family-2 screen itself adds one more, narrower than "run the screen": a definition of "distinct
+aspect" other than the three constructions it tested (`residual_spread`, `greedy_cover`, `effective_rank`),
+since what it refuted was those three, not chunk-vector-derived coverage as a concept.
+
+**Untouched.** The GO verdict and its +0.0609 α-nDCG@10, and everything the first amendment established
+about probes 1-3, stand as before.
