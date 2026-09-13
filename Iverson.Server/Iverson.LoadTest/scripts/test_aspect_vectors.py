@@ -9,6 +9,7 @@ fixtures only: no Qdrant, no TEI, no network. Run with:
 numpy and scipy are not importable without that PYTHONPATH."""
 import math
 import os
+import re
 import sys
 
 import numpy as np
@@ -429,7 +430,7 @@ def test_faithfulness_names_the_falsifying_statistics_and_the_artifact(tmp_path)
     aspect_vectors.write_faithfulness(str(path), 9184, 0, 0, 0, 3.1e-8, 2733, 610, [])
     text = path.read_text(encoding="utf-8")
     assert "verdict: PASS" in text
-    assert "rows checked            : 9184" in text
+    assert re.search(r"rows checked\s+: 9184", text)
     assert "falsifying statistics" in text
     assert "selection artifact" in text
     assert "WARNING" not in text

@@ -392,11 +392,11 @@ def write_faithfulness(path, checked, unmatched, ambiguous, duplicated, max_resi
         f.write(population_note(n_pairs, n_queries, checked) + "\n")
         f.write(f"weights: W_base {W_BASE} / W_centroid {W_CENTROID}; "
                 f"model {MODEL_ID}; match tolerance {MATCH_TOLERANCE:.3e}\n\n")
-        f.write(f"rows checked            : {checked}\n")
-        f.write(f"rows with no match      : {unmatched}\n")
-        f.write(f"rows with an ambiguous match: {ambiguous}\n")
-        f.write(f"rows whose match duplicated another row's chunk: {duplicated}\n")
-        f.write(f"maximum residual over matched rows: "
+        f.write(f"{'rows checked':<34}: {checked}\n")
+        f.write(f"{'rows with no match':<34}: {unmatched}\n")
+        f.write(f"{'rows with an ambiguous match':<34}: {ambiguous}\n")
+        f.write(f"{'rows with a duplicate match':<34}: {duplicated}\n")
+        f.write(f"{'maximum residual over matched rows':<34}: "
                 f"{'n/a' if max_residual is None else f'{max_residual:.6e}'}\n\n")
         f.write(f"verdict: {'PASS' if not failures else 'FAIL'}\n")
         for failure in failures[:20]:
@@ -409,7 +409,10 @@ def write_faithfulness(path, checked, unmatched, ambiguous, duplicated, max_resi
                 "the restored collections together, without distinguishing them (§5). The maximum\n"
                 "residual is NOT a falsifying statistic -- it is a selection artifact of the\n"
                 "matching, bounded by the match tolerance by construction, because a row whose\n"
-                "residual exceeded it would have been counted as unmatched instead.\n")
+                "residual exceeded it would have been counted as unmatched instead. A duplicate\n"
+                "match -- two recorded rows assigned to one chunk, which match_pool's own counters\n"
+                "cannot see because each row matched uniquely -- falsifies the reconstruction the\n"
+                "same way an unmatched row does, and is counted beside them.\n")
 
 
 def write_pair_signals(path, rows):
@@ -553,7 +556,13 @@ def main():
     for point in multivector.scroll(OBJECT_COLLECTION, True, ["key", "docId"]):
         key = point["payload"]["key"]
         if key in needed_parents:
-            centroids[key] = unit(point["vector"][CENTROID_VECTOR_NAME], f"centroid of parent {key}")
+            vector = (point.get("vector") or {}).get(CENTROID_VECTOR_NAME)
+            if vector is None:
+                # E6 probes the first point of each collection; this is the same check over the
+                # points that actually carry the screen, reported rather than raised as a KeyError.
+                sys.exit(f"object point {point['id']!r} (parent {key}) carries no "
+                         f"'{CENTROID_VECTOR_NAME}' vector; its fused score cannot be reproduced")
+            centroids[key] = unit(vector, f"centroid of parent {key}")
     missing_centroids = sorted(needed_parents - set(centroids))
     if missing_centroids:
         sys.exit(f"{len(missing_centroids)} population parent(s) have no object point carrying "
@@ -574,7 +583,7 @@ def main():
     rows = []
     checked = unmatched_total = ambiguous_total = duplicated_total = 0
     max_residual = None
-    recon_failures = []
+    recon_failures, signal_failures = [], []
     for (query_id, doc_id, aspects), group in zip(pairs, groups):
         qhat = query_vectors[query_id]
         candidates = chunk_vectors[group[1]]
@@ -611,8 +620,12 @@ def main():
         }
         non_finite = [k for k in ("residual_spread", "effective_rank") if not np.isfinite(row[k])]
         if non_finite:
-            sys.exit(f"{query_id} / {doc_id}: non-finite signal value(s) {non_finite} over "
-                     f"{len(matched)} chunk(s) -- every statistic downstream would be poisoned")
+            # Collected rather than exited on, so faithfulness.txt is still written: a non-finite
+            # signal over a cleanly reconstructed pool is a different diagnosis from a broken
+            # reconstruction, and the operator needs to see which of the two happened.
+            signal_failures.append(f"{query_id} / {doc_id}: non-finite {non_finite} over "
+                                   f"{len(matched)} chunk(s)")
+            continue
         rows.append(row)
 
     faithfulness_path = os.path.join(args.out_dir, "faithfulness.txt")
@@ -623,6 +636,10 @@ def main():
         sys.exit(f"§2.7 reconstruction FAILED: {unmatched_total} unmatched, {ambiguous_total} ambiguous "
                  f"and {duplicated_total} duplicate row(s) over {len(recon_failures)} group(s) -- see "
                  f"{faithfulness_path}. No statistic has been written.")
+    if signal_failures:
+        sys.exit(f"non-finite signal value(s) on {len(signal_failures)} pair(s), e.g. "
+                 f"{signal_failures[:3]} -- every statistic downstream would be poisoned. "
+                 f"The reconstruction itself passed; see {faithfulness_path}.")
 
     # -- statistics ---------------------------------------------------------------------------
     sensitivity_rows = [r for r in rows if r["aspects"] >= 2 and r["n_chunks"] >= 2]
