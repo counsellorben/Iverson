@@ -37,14 +37,15 @@ This is a screen, not a term. It ends in a verdict document.
 | Chunk vectors | `freshstack-2048-qdrant-snapshots/benchmark_documents_chunks_tenant_bypass-…snapshot` (restored) |
 | Centroid vectors | `freshstack-2048-qdrant-snapshots/benchmark_documents_tenant_bypass-…snapshot` (restored) |
 | Query text | `freshstack-2048-2026-09-07/beir/queries.jsonl` (672 queries) |
-| Chunk-hit pool | `chunk-coverage-phase1-2026-09-09/runs/fs2048-pool.chunks.hits.tsv` — which chunks are in each query's pool, and the score to reproduce |
+| Chunk-hit pool | `chunk-coverage-phase1-2026-09-09/runs/fs2048-pool.chunks.hits.tsv` — one row per hit: `queryId, parentKey, rank, score`. It names **parents, not chunks**; chunk identity is reconstructed per §2.7 |
+| Top-50 ranking (run B) | `chunk-coverage-phase1-2026-09-09/runs/fs2048-pool.chunks.trec` — the 50 documents per query the oracle's rankings permute |
 | Aspect labels | `freshstack-2048-2026-09-07/qrels.nugget.trec` |
 | Key map | `freshstack-2048-2026-09-07/keymap.json` (parentKey → docId) |
 
 ### 2.2 The three candidate signals
 
 For a relevant (query, document) pair: let `q̂` be the unit query vector and `C = {c_1 … c_n}` the
-document's chunk vectors present in that query's pool.
+document's chunk vectors present in that query's pool, identified by the §2.7 reconstruction.
 
 | Signal | Definition | n = 1 value |
 |---|---|---|
@@ -64,8 +65,9 @@ publishes ρ over τ ∈ {0.80, 0.85, 0.90, 0.95}** whatever the result.
 
 ### 2.3 Population
 
-**Primary: all 2,733 relevant (query, document) pairs** that have at least one chunk in the pool — the
-same population the oracle's ranking A reorders, and the same one the score-derived probe used.
+**Primary: the 2,733 relevant (query, document) pairs among the 50 documents run B retrieved for each
+query** — the same population the oracle's ranking A reorders, and the same one the score-derived probe
+used. All 2,733 have at least one chunk in the pool.
 
 **Sensitivity: the 1,075 pairs with ≥ 2 aspects and ≥ 2 chunks**, the sub-population where a spread
 signal can discriminate at all. Reported alongside; **the primary decides**, per the convention the
@@ -116,7 +118,7 @@ composite `3ffafcd26416ed30` is perishable and unreproducible, and nothing here 
 Chunk vectors, centroids and query embeddings all go through `ingest.qdrant_request()` and
 `ingest.embed()`, which `multivector.py` already uses for exactly these jobs.
 
-### 2.7 The faithfulness check — run before any signal is computed
+### 2.7 Chunk identity and the faithfulness check — run before any signal is computed
 
 The chunk-hit dump's `score` is **not** raw cosine. Chunk candidates carry their parent document's
 centroid (`ObjectSearchGrpcService.cs:646-654`), and `ResultReranker` fuses it, short-circuiting to the
@@ -129,11 +131,23 @@ score = (W_base · cos(q, chunkVector) + W_centroid · cos(q, parentCentroid)) /
 
 which at the shipped `0.45 / 0.45` is the mean of the two.
 
-**The instrument recomputes that for every row of the dump and compares to the recorded value.** A
-mismatch beyond float tolerance **aborts the run**. This is the check that makes every downstream number
-trustworthy, because it exercises the query prefix, the model identity, the chunk vectors, the `parent_id`
-payload lookup, the centroid vectors and the fusion constants in a single comparison. It is also the
-only way to confirm the weights this dump was produced at: like λ, they are not recorded in its sidecar.
+The dump records a parent key and a fused score per hit, **not a chunk id**. Chunk identity is therefore
+*reconstructed*, and the reconstruction **is** the faithfulness check. For each `(queryId, parentKey)`
+group the instrument enumerates that parent's chunks in the chunks collection (payload filter
+`parent_id == parentKey`), computes the expression above for each, and matches each recorded score to the
+unique chunk whose recomputed value lies within float tolerance. **`C` is the matched set.** A recorded
+row with **no** match, or with **more than one**, aborts the run.
+
+This is the check that makes every downstream number trustworthy, because it exercises the query prefix,
+the model identity, the chunk vectors, the `parent_id` payload lookup, the centroid vectors and the
+fusion constants in a single comparison — and it does so *by assigning* the chunk vectors rather than
+merely reading them. It is also the only way to confirm the weights this dump was produced at: like λ,
+they are not recorded in its sidecar.
+
+`faithfulness.txt` reports rows checked, rows with no match, rows with an ambiguous match, and the
+maximum residual over matched rows. **The unmatched and ambiguous counts are the falsifying
+statistics**; the residual is a selection artifact of the matching and cannot exceed the tolerance by
+construction.
 
 ### 2.8 Instrument and outputs
 
@@ -145,7 +159,8 @@ the verdict document transcribes from it and must say so):
 
 - `pair-signals.tsv` — one row per relevant (query, document) pair: `queryId, docId, aspects, n_chunks,
   residual_spread, greedy_cover, effective_rank`, with `greedy_cover` emitted once per τ
-- `faithfulness.txt` — the §2.7 comparison: rows checked, max absolute deviation, verdict
+- `faithfulness.txt` — the §2.7 reconstruction: rows checked, rows with no match, rows with an ambiguous
+  match, the maximum residual over matched rows, verdict
 - `screen.txt` — ρ per candidate per population, the bootstrap CI on each difference against `n_chunks`,
   Holm-adjusted p, and the ρ(τ) curve
 
@@ -178,6 +193,11 @@ amended to reflect whichever way this lands.
 | V17 | The statistics libraries are available | `numpy`, `scipy`, `requests` import under the python-libs PYTHONPATH; `qdrant_client` is absent, so the REST API is used |
 | V18 | Snapshot scale and geometry | `RESTORE.md`: 6,000 object points, 18,622 chunk points, 768 dims, bge-base, 2048/1792 |
 | V19 | The key map joins the dump to the qrels | `keymap.json` is a flat 6,000-entry `{parentKey: docId}` object; 0 unresolved keys over the whole hits dump |
+| V20 | **The dump names parents, not chunks** | header `queryId parentKey rank score`, 4 fields on all 369,601 lines; `BenchmarkQueryScenario.cs:414` types `RawHits` as `(string ParentKey, double Score)`, and `ChunkSearchResponse` (`ObjectSearchGrpcService.cs:585-590`) carries no chunk id — `ChunkText` is received and discarded |
+| V21 | The pool is a pure fused-score prefix, so pool membership is decided by score alone | 0 score inversions against rank order across all 369,600 rows — unreachable had `ResultDiversifier` reordered the over-fetched 2,200 candidates |
+| V22 | Score-matching is near-unambiguous | over 172,704 `(query, parent)` groups, 18 of 196,896 adjacent within-group score pairs lie within 1e-6; minimum gap 5.96e-08, one float32 ULP at 0.7 |
+| V23 | The base term is recomputable from a scrolled vector | no `quantization` symbol anywhere under `Iverson.Vector/` or `Iverson.Api/`; `ingest.py:379` creates collections with no `quantization_config` |
+| V24 | `fs2048-pool.chunks.trec` is run B, and the top-50 restriction is what fixes the population | its per-query 50-document sets are set-identical to `aspect-oracle-2026-09-13/oracle-A.trec` on 672/672 queries (order differs on 596); the restricted join reproduces 2,733 / 610 / 62 and V2's distribution exactly, the unrestricted join gives 4,360 / 653; `qrels.trec` and `qrels.nugget.trec` induce the identical 5,445-pair relevance set |
 
 ### 3.1 Execution-time preconditions
 
@@ -192,7 +212,7 @@ instrument asserts and aborts on**, not an assumption taken on faith:
 | E4 | Chunk payloads carry `parent_id`, and its value form matches `keymap.json`'s keys |
 | E5 | Both collections' distance metric is Cosine |
 | E6 | The scroll API returns vectors when asked, for both collections |
-| E7 | **§2.7's fused-score reproduction matches the recorded dump within float tolerance** — which is also the only available confirmation that the dump was produced at `WBase`/`WCentroid` = 0.45/0.45 |
+| E7 | **§2.7's reconstruction matches every dump row to exactly one chunk** — no unmatched row, no ambiguous row — which is also the only available confirmation that the dump was produced at `WBase`/`WCentroid` = 0.45/0.45 |
 
 ---
 
@@ -218,5 +238,6 @@ instrument asserts and aborts on**, not an assumption taken on faith:
   by those two is weaker evidence against the family than a failure by `residual_spread`.
 - **One corpus, one window, one model.** The result binds FreshStack-2048 under bge-base at 2048/1792.
 - **The fusion weights are not recorded in the dump's sidecar**, the same gap as λ (ranked-changes item
-  16). E7 is the only check that they were 0.45/0.45; if it fails, the cause is ambiguous between the
-  weights, the prefix and the model.
+  16). E7 is the only check that they were 0.45/0.45, and it fires as a count of unmatched or ambiguous
+  rows rather than as a score deviation; if it fails, the cause is ambiguous between the weights, the
+  prefix and the model.
