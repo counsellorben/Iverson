@@ -71,9 +71,9 @@ responsibility (§2.8).
 | **B** | the shipped run, unmodified | nothing |
 | **R** | judged-relevant documents first, in B's order; the rest after, in B's order | relevance only |
 | **A** | judged-relevant documents ordered by **descending count of distinct nuggets that document covers for this query** (ties in B's order); the rest after, in B's order | relevance + per-document aspect count |
-| **G** | **greedy marginal coverage within the relevant prefix** — among the judged-relevant documents, repeatedly append the one that adds the most not-yet-covered nuggets for this query (ties in B's order); once every nugget is covered, the remaining relevant documents follow in B's order. The non-relevant documents follow after, in B's order | relevance + full aspect structure |
+| **G** | **greedy α-discounted marginal gain within the relevant prefix** — among the judged-relevant documents, repeatedly append the one whose gain, Σ over the nuggets it covers of (1 − α)^(number of already-appended documents covering that nugget), is largest at the same **α = 0.5** §2.4 pre-registers (ties in B's order), until the relevant prefix is exhausted. The non-relevant documents follow after, in B's order | relevance + full aspect structure |
 
-Restricting G's greedy to the relevant prefix is deliberate. A greedy that ranged over the whole list would stop promoting once every nugget was covered and would then strand the still-relevant leftovers below unjudged documents — a loss of gain that has nothing to do with coverage, and exactly the confound §1.1 exists to remove.
+Restricting G's greedy to the relevant prefix is stated for clarity, not as a constraint that changes the result: under the α-discounted objective every relevant document has strictly positive gain and every unjudged document has exactly zero, so a greedy ranging over all 50 produces the identical ranking (672/672 queries, A22). The restriction earns its place by making §2.2's identical-prefix property true by construction rather than by argument.
 
 **R, A and G promote the identical set of documents.** Document relevance on this corpus *is* the nugget
 union — 5,445 relevant (query, document) pairs in `qrels.trec`, 5,445 in the nugget qrels, with zero
@@ -111,7 +111,7 @@ permutation over `PERMUTATION_RESAMPLES = 10_000` at `PERMUTATION_SEED = 2026083
 
 The pool check's second condition — ranked order must differ from the control on ≥ 25 % of queries
 (`POOL_MIN_REORDERED_FRACTION`, `report.py:700`) — is satisfied with margin: R differs from B on 88.2 %
-of queries, A differs from R on 43.8 %, and G differs from R on 39.1 % (verified, A13).
+of queries, A differs from R on 43.8 %, and G differs from R on 48.2 % (verified, A13).
 
 **Population.** The primary figure is over all 672 queries, because that is the population the shipped
 metric is reported on. 62 queries (9.2 %) have no relevant document anywhere in their 50 and therefore
@@ -209,13 +209,16 @@ row in the ranked-changes doc's §0 table.
 | A10 | `alpha_nDCG` scores an unjudged document as zero gain rather than discarding it | `judged_only` default `False`; `alpha` default `0.5`; `rel` default `1` (`ir_measures` `SUPPORTED_PARAMS`) |
 | A11 | `report.py` scores a TREC run file offline — no live retrieval needed to score a reordering | `score_run` at `report.py:358` takes `run_path` and calls `ir_measures.read_trec_run` |
 | A12 | The reranker precedent is an oracle-reorder ceiling of the same construction, with the figures quoted in §2.6 | `2026-09-GATE-reranker-phase1.md:129-130`, `:203`; `2026-09-03-reranker-phase1-implementation-plan.md:89` |
-| A13 | All three declared pairs clear `report.py`'s 25 % reorder threshold | R differs from B on 593/672 (88.2 %); A differs from R on 294/672 (43.8 %); G differs from R on 263/672 (39.1 %) |
+| A13 | All three declared pairs clear `report.py`'s 25 % reorder threshold | R differs from B on 593/672 (88.2 %); A differs from R on 294/672 (43.8 %); G differs from R on 324/672 (48.2 %) |
 | A14 | `--pair` Holm-corrects across exactly the declared pairs, so a family of 3 is expressible | `run_pair_statistics` at `report.py:769`; `--pair RUN=BASELINE` at `:852` |
 | A15 | The pool check requires identical per-query document sets — satisfied by construction, and it will catch any bug that breaks that | `check_pool` at `report.py:732`, `POOL_MIN_REORDERED_FRACTION` at `:700` |
 | A16 | 62 queries (9.2 %) have no relevant document in their 50 and contribute 0 to every delta | counted over `qrels.trec` ∩ the run's per-query lists |
 | A17 | Aspect counts are near-binary on this corpus, per §2.7 | 57.1 % / 27.2 % / 3.8 % of relevant documents at 1 / 2 / 4+ aspects; 17.9 % of judged top-10 at 2+ |
 | A18 | Nothing in the ranked-changes doc already answers this question | §15 is the mechanical candidate screen (closed NO-GO); no item asks whether aspect coverage has headroom |
 | A19 | The **score column** — not file order, not the rank column — determines the ranking a scorer sees, while `check_pool` reads file order | `read_trec_run` yields `ScoredDoc(query_id, doc_id, score)` and never reads rank (`python-libs/ir_measures/util.py:298-303`); `as_sorted_namedtuple_iter` re-sorts per query by score descending (`:229-241`); `ranked_doc_ids` appends in file order (`report.py:721-730`). The two guards disagree, which is why §2.8 pins the score column |
+| A20 | Every run query is present in both qrels files, so none is silently dropped from the denominator | run ∖ `qrels.trec` = 0 and run ∖ `qrels.nugget.trec` = 0 over all 672 queries; `pyndeval/__init__.py:93` scores only `if qid in self.qrels`, with no else-branch — a missing query would shrink the denominator invisibly rather than score 0 |
+| A21 | B's file order is score-descending, and the scorer's tie-break diverges from it only where §2.3 does not gate | score-descending on 672/672; 99 queries carry tied scores; the scorer's `(-score, doc_id)` order (`pyndeval/__init__.py:153`, `:160`) differs from file order on 58/672 queries and on 7/672 within the top 10. The divergence touches R − B only — A − R and G − R are computed between files all written under §2.8's score contract |
+| A22 | Under the α-discounted objective the prefix restriction is a no-op | greedy over all 50 gives the ranking identical to greedy within the prefix plus a B-order tail, on 672/672 queries: every relevant document has strictly positive gain and every unjudged document exactly zero |
 
 ---
 
@@ -239,9 +242,10 @@ row in the ranked-changes doc's §0 table.
   term shipped into this project would be evaluated by exactly this metric, so what it *could be rewarded
   for* is the operative bound.
 - **The greedy oracle is greedy, not optimal.** Maximising α-nDCG@10 exactly is a set-selection problem;
-  greedy marginal coverage is the standard approximation and is what α-nDCG's own literature assumes. A
-  true optimum could be marginally higher, which makes G − R a slight under-estimate of the ceiling —
-  conservative in the NO-GO direction, and stated so the result is not over-read.
+  the α-discounted marginal-gain greedy of §2.2 is the standard approximation and is the construction
+  α-nDCG's own ideal ranking is built with, so it optimises the same quantity the metric scores. A true
+  optimum could still be marginally higher, which makes G − R a slight under-estimate of the ceiling —
+  biased toward NO-GO, and stated so the result is not over-read.
 - **One corpus, one window.** The result binds FreshStack-2048. Whether aspect-coverage headroom exists
   elsewhere is unmeasurable here, because no other corpus in this project carries subtopic labels.
 - **The coverage-screen gate document lives on an unmerged branch** (`coverage-term-screen`), so the
