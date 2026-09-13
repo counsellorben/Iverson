@@ -11,12 +11,13 @@ using Microsoft.Extensions.Options;
 using Qdrant.Client;
 
 // The proto (Iverson.Client.Contracts) and StarRocks namespaces both declare types named
-// AggregationResult and RelationDescriptor — importing both namespaces makes the bare names
-// ambiguous. These aliases resolve them the same way existing call sites already do:
-// ObjectSearchGrpcService.cs / ObjectSearchGrpcServiceTests.cs alias AggregationResult to
-// EngagementAggResult/SrAggResult; EntityRelationResolver.cs and
-// ServerOwnedTenantColumnTests.cs alias RelationDescriptor to SchemaRelationDescriptor.
+// AggregationResult, AggregationBucket, and RelationDescriptor — importing both namespaces makes
+// the bare names ambiguous. These aliases resolve them the same way existing call sites already
+// do: ObjectSearchGrpcService.cs / ObjectSearchGrpcServiceTests.cs alias AggregationResult to
+// EngagementAggResult/SrAggResult and AggregationBucket to SrAggBucket; EntityRelationResolver.cs
+// and ServerOwnedTenantColumnTests.cs alias RelationDescriptor to SchemaRelationDescriptor.
 using EngagementAggResult = Iverson.StarRocks.AggregationResult;
+using SrAggBucket = Iverson.StarRocks.AggregationBucket;
 using SchemaRelationDescriptor = Iverson.Api.Schema.RelationDescriptor;
 
 namespace Iverson.Api.Consumers;
@@ -58,6 +59,12 @@ internal sealed class PopularitySignalUpdater(
             }
         };
         var spec = new AggregationDescriptor("count", AggregationKind.Count, Field: "");
+        var authzConstraints = new Dictionary<string, AuthorizationConstraint>(StringComparer.OrdinalIgnoreCase)
+        {
+            [childSchema.TypeName] = new AuthorizationConstraint(
+                AllowedFields: null, OwnerColumn: null, OwnerValue: null,
+                TenantColumn: childSchema.TenantColumn, TenantValue: tenantId)
+        };
 
         EngagementAggResult? result;
         try
@@ -66,12 +73,7 @@ internal sealed class PopularitySignalUpdater(
                 SchemaBuilder.ToEngagementQuerySchema(childSchema),
                 query,
                 spec,
-                authz: new Dictionary<string, AuthorizationConstraint>(StringComparer.OrdinalIgnoreCase)
-                {
-                    [childSchema.TypeName] = new AuthorizationConstraint(
-                        AllowedFields: null, OwnerColumn: null, OwnerValue: null,
-                        TenantColumn: childSchema.TenantColumn, TenantValue: tenantId)
-                });
+                authz: authzConstraints);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -97,11 +99,37 @@ internal sealed class PopularitySignalUpdater(
         var pointId    = IntelligenceStoreConsumer.KeyToUlong(parentKey);
         var fieldName  = signal.Relation.ToCamelCase() + "Count";
 
+        IReadOnlyList<SrAggBucket>? buckets = null;
+        if (childSchema.PopularitySignalColumn is { } tsColumn)
+        {
+            try
+            {
+                var histSpec = new AggregationDescriptor(
+                    "buckets", AggregationKind.DateHistogram, tsColumn, CalendarInterval: "month");
+                var hist = await search.AggregateAsync(
+                    SchemaBuilder.ToEngagementQuerySchema(childSchema), query, histSpec, authz: authzConstraints);
+                buckets = hist?.Buckets;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex,
+                    "[PopularitySignal] histogram failed for parent={Parent} type={Type}; writing an empty series.",
+                    parentKey.SanitizeForLog(), parentSchema.TypeName.SanitizeForLog());
+            }
+        }
+
+        var series = buckets is null
+            ? ""
+            : string.Join(";", buckets.TakeLast(60).Select(b => $"{b.Key}:{b.DocCount}"));
+
         try
         {
             using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(collection, readOnly: false)))
-                await vector.SetPayloadAsync(collection, pointId,
-                    new Dictionary<string, object> { [fieldName] = count });
+                await vector.SetPayloadAsync(collection, pointId, new Dictionary<string, object>
+                {
+                    [fieldName]             = count,
+                    [fieldName + "Buckets"] = series
+                });
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
         {

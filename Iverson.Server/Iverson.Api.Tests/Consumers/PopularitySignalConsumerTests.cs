@@ -16,6 +16,7 @@ using Xunit;
 
 // Same ambiguity as PopularitySignalConsumer.cs itself — see the aliases there for why.
 using EngagementAggResult = Iverson.StarRocks.AggregationResult;
+using SrAggBucket = Iverson.StarRocks.AggregationBucket;
 using SchemaRelationDescriptor = Iverson.Api.Schema.RelationDescriptor;
 using SchemaRelationKind = Iverson.Api.Schema.RelationKind;
 
@@ -83,17 +84,25 @@ public class PopularitySignalConsumerTests
         TenantColumn   = "TenantId",
     };
 
-    private static SchemaDescriptor CommentSchema() => new()
+    // popularitySignalColumn: null reproduces a child with no marked timestamp column (the write
+    // path's series-less branch); a column name reproduces one Task 2's client/server marking
+    // flagged, driving the DateHistogram aggregation this file's tests exercise.
+    private static SchemaDescriptor CommentSchema(string? popularitySignalColumn = null) => new()
     {
         TypeName      = "Comment",
         TableName     = "comments",
         KeyColumn     = new ColumnDescriptor("Id", "UUID", false),
-        ScalarColumns = [new ColumnDescriptor("Body", "TEXT", false), new ColumnDescriptor("ArticleId", "UUID", true)],
-        FkColumns     = [],
-        VectorFields  = [],
-        ChunkFields   = [],
-        Relations     = [],
-        TenantColumn  = "TenantId",
+        ScalarColumns =
+        [
+            new ColumnDescriptor("Body", "TEXT", false), new ColumnDescriptor("ArticleId", "UUID", true),
+            new ColumnDescriptor("PostedAt", "TIMESTAMPTZ", false)
+        ],
+        FkColumns              = [],
+        VectorFields           = [],
+        ChunkFields            = [],
+        Relations              = [],
+        TenantColumn           = "TenantId",
+        PopularitySignalColumn = popularitySignalColumn,
     };
 
     private static EntityEvent MakeEvent(
@@ -109,13 +118,35 @@ public class PopularitySignalConsumerTests
             TargetStores:     StoreTarget.All,
             PriorPayloadJson: priorPayload);
 
-    private void StubAggregate(long count) =>
+    // The Count and DateHistogram aggregations go through the same AggregateAsync method, so these
+    // stubs discriminate on the spec's Kind rather than Arg.Any<AggregationDescriptor>() — otherwise
+    // a test that configures both would have the later setup win for every call regardless of kind.
+    private void StubCount(long count) =>
         _search.AggregateAsync(
-                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(),
+                Arg.Is<AggregationDescriptor>(a => a.Kind == AggregationKind.Count),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
                 Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns((EngagementAggResult?)new EngagementAggResult("count", AggregationKind.Count, MetricValue: count));
+
+    private void StubHistogram(IReadOnlyList<SrAggBucket> buckets) =>
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(),
+                Arg.Is<AggregationDescriptor>(a => a.Kind == AggregationKind.DateHistogram),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns((EngagementAggResult?)new EngagementAggResult("buckets", AggregationKind.DateHistogram, Buckets: buckets));
+
+    private void StubHistogramThrows(Exception ex) =>
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(),
+                Arg.Is<AggregationDescriptor>(a => a.Kind == AggregationKind.DateHistogram),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(Task.FromException<EngagementAggResult?>(ex));
 
     // ── Created/Updated/Deleted all trigger AggregateAsync with a tenant-scoped filter ──
 
@@ -127,7 +158,7 @@ public class PopularitySignalConsumerTests
     {
         await _registry.RegisterAsync(ArticleSchema());
         await _registry.RegisterAsync(CommentSchema());
-        StubAggregate(3);
+        StubCount(3);
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
@@ -160,7 +191,9 @@ public class PopularitySignalConsumerTests
             "articles_" + TenantA,
             expectedPointId,
             Arg.Is<IReadOnlyDictionary<string, object>>(p =>
-                p.Count == 1 && p.ContainsKey("commentsCount") && (long)p["commentsCount"] == 3L));
+                p.Count == 2 &&
+                p.ContainsKey("commentsCount") && (long)p["commentsCount"] == 3L &&
+                p.ContainsKey("commentsCountBuckets") && (string)p["commentsCountBuckets"] == ""));
     }
 
     // ── FK reassignment updates BOTH the old and new parent ─────────────────
@@ -170,7 +203,7 @@ public class PopularitySignalConsumerTests
     {
         await _registry.RegisterAsync(ArticleSchema());
         await _registry.RegisterAsync(CommentSchema());
-        StubAggregate(1);
+        StubCount(1);
 
         var newPayload   = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{Article2Id}}","TenantId":"{{TenantA}}"}""";
         var priorPayload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
@@ -187,6 +220,124 @@ public class PopularitySignalConsumerTests
         await _vector.Received(1).SetPayloadAsync(
             "articles_" + TenantA, IntelligenceStoreConsumer.KeyToUlong(ArticleId),
             Arg.Any<IReadOnlyDictionary<string, object>>());
+    }
+
+    // ── The bucket series ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Dispatch_ChildHasMarkedColumn_WritesEncodedSeries()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema("PostedAt"));
+        StubCount(2);
+        StubHistogram([new SrAggBucket("2026-07", 1), new SrAggBucket("2026-08", 1)]);
+
+        var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+
+        var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
+        var sut = BuildSut(OptionsWith("Article", "Comments"));
+
+        await sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _vector.Received(1).SetPayloadAsync(
+            "articles_" + TenantA,
+            IntelligenceStoreConsumer.KeyToUlong(ArticleId),
+            Arg.Is<IReadOnlyDictionary<string, object>>(p =>
+                p.Count == 2 &&
+                (long)p["commentsCount"] == 2L &&
+                (string)p["commentsCountBuckets"] == "2026-07:1;2026-08:1"));
+    }
+
+    [Fact]
+    public async Task Dispatch_ChildHasNoMarkedColumn_WritesEmptySeries()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema()); // no PopularitySignalColumn
+        StubCount(2);
+
+        var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+
+        var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
+        var sut = BuildSut(OptionsWith("Article", "Comments"));
+
+        await sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // No PopularitySignalColumn means the histogram must never even be issued.
+        await _search.DidNotReceive().AggregateAsync(
+            Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(),
+            Arg.Is<AggregationDescriptor>(a => a.Kind == AggregationKind.DateHistogram),
+            Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+            Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+            Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>());
+
+        await _vector.Received(1).SetPayloadAsync(
+            "articles_" + TenantA,
+            IntelligenceStoreConsumer.KeyToUlong(ArticleId),
+            Arg.Is<IReadOnlyDictionary<string, object>>(p =>
+                p.Count == 2 &&
+                (long)p["commentsCount"] == 2L &&
+                (string)p["commentsCountBuckets"] == ""));
+    }
+
+    [Fact]
+    public async Task Dispatch_HistogramFails_StillWritesCountWithEmptySeries()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema("PostedAt"));
+        StubCount(5);
+        StubHistogramThrows(new InvalidOperationException("boom"));
+
+        var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+
+        var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
+        var sut = BuildSut(OptionsWith("Article", "Comments"));
+
+        var act = () => sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        await act.Should().NotThrowAsync();
+
+        await _vector.Received(1).SetPayloadAsync(
+            "articles_" + TenantA,
+            IntelligenceStoreConsumer.KeyToUlong(ArticleId),
+            Arg.Is<IReadOnlyDictionary<string, object>>(p =>
+                p.Count == 2 &&
+                (long)p["commentsCount"] == 5L &&
+                (string)p["commentsCountBuckets"] == ""));
+    }
+
+    [Fact]
+    public async Task Dispatch_SeventyBuckets_TruncatesToMostRecent60()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema("PostedAt"));
+        StubCount(70);
+
+        // Ascending by key, as SQL's ORDER BY bucket_key guarantees — bucket 0 is the oldest,
+        // bucket 69 the newest. TakeLast(60) must keep buckets 10..69 and drop 0..9.
+        var buckets = Enumerable.Range(0, 70)
+            .Select(i => new SrAggBucket($"2020-{i:D2}", 1))
+            .ToList();
+        StubHistogram(buckets);
+
+        var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+
+        var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
+        var sut = BuildSut(OptionsWith("Article", "Comments"));
+
+        await sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        var expectedSeries = string.Join(";", buckets.TakeLast(60).Select(b => $"{b.Key}:{b.DocCount}"));
+
+        await _vector.Received(1).SetPayloadAsync(
+            "articles_" + TenantA,
+            IntelligenceStoreConsumer.KeyToUlong(ArticleId),
+            Arg.Is<IReadOnlyDictionary<string, object>>(p =>
+                (string)p["commentsCountBuckets"] == expectedSeries &&
+                !((string)p["commentsCountBuckets"]).Contains("2020-00:1") &&
+                ((string)p["commentsCountBuckets"]).Contains("2020-69:1")));
     }
 
     // ── Two documented degrade cases ────────────────────────────────────────
@@ -221,7 +372,7 @@ public class PopularitySignalConsumerTests
     {
         await _registry.RegisterAsync(ArticleSchema());
         await _registry.RegisterAsync(CommentSchema());
-        StubAggregate(1);
+        StubCount(1);
         _vector.SetPayloadAsync(
                 Arg.Any<string>(), Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, object>>())
             .Returns(Task.FromException(new RpcException(new Status(StatusCode.NotFound, "no such point"))));
@@ -244,7 +395,7 @@ public class PopularitySignalConsumerTests
     {
         await _registry.RegisterAsync(ArticleSchema());
         await _registry.RegisterAsync(CommentSchema());
-        StubAggregate(1);
+        StubCount(1);
         _vector.SetPayloadAsync(
                 Arg.Any<string>(), Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, object>>())
             .Returns(Task.FromException(new RpcException(new Status(StatusCode.Unavailable, "down"))));
