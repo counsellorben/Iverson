@@ -45,6 +45,7 @@ internal static class SchemaBuilder
         var largeFields      = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var metadataColumns  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var popularitySignalColumns = new List<string>();
+        var badPopularitySignal = new List<string>();
         var fieldDescriptions = new Dictionary<string, string>();
         var badMetadata      = new List<string>();
         var reservedMetadata = new List<string>();
@@ -104,7 +105,11 @@ internal static class SchemaBuilder
             }
 
             if (prop.IsPopularitySignal)
+            {
                 popularitySignalColumns.Add(prop.Name);
+                if (prop.IsArray || prop.ClrType != ClrType.ClrDatetime)
+                    badPopularitySignal.Add(prop.Name);
+            }
 
             if (!string.IsNullOrEmpty(prop.Description))
                 fieldDescriptions[prop.Name] = prop.Description;
@@ -143,6 +148,14 @@ internal static class SchemaBuilder
             throw new InvalidOperationException(
                 $"Properties {string.Join(", ", popularitySignalColumns.Select(n => $"'{n}'"))} all carry " +
                 "[IversonPopularitySignal]. Exactly one property may mark the interaction timestamp.");
+
+        if (badPopularitySignal.Count > 0)
+            throw new InvalidOperationException(badPopularitySignal.Count == 1
+                ? $"Property '{badPopularitySignal[0]}' carries [IversonPopularitySignal] but is not a " +
+                  "non-array DateTime property. The marked column must record an interaction timestamp."
+                : $"Properties {string.Join(", ", badPopularitySignal.Select(n => $"'{n}'"))} carry " +
+                  "[IversonPopularitySignal] but are not non-array DateTime properties. The marked " +
+                  "column must record an interaction timestamp.");
 
         var relations = typeDesc.Relations.Select(r => new RelationDescriptor(
             r.PropertyName,

@@ -240,6 +240,25 @@ public class PopularitySignalConsumerTests
 
         await sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
+        // The only thing that scopes this histogram to one tenant is the authz argument threaded
+        // through to AggregateAsync — EngagementRepository.AggregateAsync branches on
+        // `authz is null` into an UNSCOPED query with no SET ROLE and no tenant predicate. Assert
+        // the same tenant predicate the Count call already carries (see
+        // Dispatch_AllEventTypes_TriggersTenantScopedAggregateAndSetsPayload above), so losing the
+        // authz argument on the DateHistogram call specifically would fail this test.
+        await _search.Received(1).AggregateAsync(
+            Arg.Any<EngagementQuerySchema>(),
+            Arg.Any<SearchQuery?>(),
+            Arg.Is<AggregationDescriptor>(a => a.Kind == AggregationKind.DateHistogram),
+            Arg.Any<SearchQuery?>(),
+            Arg.Any<IReadOnlyList<JoinSpec>?>(),
+            Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+            Arg.Is<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a =>
+                a != null &&
+                a.ContainsKey("Comment") &&
+                a["Comment"].TenantColumn == "TenantId" &&
+                a["Comment"].TenantValue == TenantA));
+
         await _vector.Received(1).SetPayloadAsync(
             "articles_" + TenantA,
             IntelligenceStoreConsumer.KeyToUlong(ArticleId),

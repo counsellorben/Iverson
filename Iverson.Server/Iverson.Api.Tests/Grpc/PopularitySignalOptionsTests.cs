@@ -21,7 +21,8 @@ public class PopularitySignalOptionsTests
         string typeName,
         IReadOnlyList<VectorDescriptor>? vectorFields = null,
         IReadOnlyList<ChunkDescriptor>? chunkFields = null,
-        IReadOnlyList<RelationDescriptor>? relations = null) => new()
+        IReadOnlyList<RelationDescriptor>? relations = null,
+        string? popularitySignalColumn = null) => new()
     {
         TypeName      = typeName,
         TableName     = typeName.ToLowerInvariant() + "s",
@@ -31,7 +32,8 @@ public class PopularitySignalOptionsTests
         VectorFields  = vectorFields ?? [],
         ChunkFields   = chunkFields ?? [],
         Relations     = relations ?? [],
-        TenantColumn  = "TenantId"
+        TenantColumn  = "TenantId",
+        PopularitySignalColumn = popularitySignalColumn
     };
 
     private static async Task<SchemaRegistry> RegistryWith(params SchemaDescriptor[] schemas)
@@ -207,6 +209,73 @@ public class PopularitySignalOptionsTests
             options, registry, engagementEnabled: true, NullLogger.Instance);
 
         act.Should().NotThrow();
+    }
+
+    // FIX 3: RecencyBoost > 0 with no marked column on the child is a silently inert recency
+    // term — DATE_FORMAT over a null-valued histogram query never fires, so nothing ever throws
+    // or logs today. ValidateAtStartup already fails loud on every other way this feature can be
+    // silently inert; this is the equivalent warning for the recency term specifically. A warning,
+    // not a throw, because the child schema can be re-registered with the marker later — matching
+    // the soft path already used for an unregistered ParentType above.
+    [Fact]
+    public async Task ValidateAtStartup_RecencyBoostPositive_ChildHasNoMarker_Warns()
+    {
+        var article = MinimalSchema(
+            "Article",
+            vectorFields: [new VectorDescriptor("Title", 768, "nomic-embed-text")],
+            relations: [new RelationDescriptor("Comments", RelationKind.OneToMany, "Comment", "ArticleId")]);
+        var comment = MinimalSchema(
+            "Comment",
+            relations: [new RelationDescriptor("Article", RelationKind.ManyToOne, "Article", "ArticleId")]);
+        var registry = await RegistryWith(article, comment);
+        var options = new PopularitySignalOptions
+        {
+            Signals = [new PopularitySignalEntry("Article", "Comments")],
+            RecencyBoost = 0.5
+        };
+        var logger = Substitute.For<ILogger>();
+
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, logger);
+
+        act.Should().NotThrow();
+        logger.Received().Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Comment") && o.ToString()!.Contains("RecencyBoost")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task ValidateAtStartup_RecencyBoostPositive_ChildHasMarker_DoesNotWarn()
+    {
+        var article = MinimalSchema(
+            "Article",
+            vectorFields: [new VectorDescriptor("Title", 768, "nomic-embed-text")],
+            relations: [new RelationDescriptor("Comments", RelationKind.OneToMany, "Comment", "ArticleId")]);
+        var comment = MinimalSchema(
+            "Comment",
+            relations: [new RelationDescriptor("Article", RelationKind.ManyToOne, "Article", "ArticleId")],
+            popularitySignalColumn: "PostedAt");
+        var registry = await RegistryWith(article, comment);
+        var options = new PopularitySignalOptions
+        {
+            Signals = [new PopularitySignalEntry("Article", "Comments")],
+            RecencyBoost = 0.5
+        };
+        var logger = Substitute.For<ILogger>();
+
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, logger);
+
+        act.Should().NotThrow();
+        logger.DidNotReceive().Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Any<object>(),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     // FIX 1: a second entry naming the same ParentType writes every matching relation's count

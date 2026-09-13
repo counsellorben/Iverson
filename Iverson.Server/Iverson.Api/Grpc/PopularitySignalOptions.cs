@@ -20,7 +20,8 @@ public sealed class PopularitySignalOptions
 
 public static class PopularitySignalOptionsExtensions
 {
-    // Binds and validates only the self-contained field (SaturationPoint). The relation entries
+    // Binds and validates the self-contained fields (SaturationPoint, RecencyBoost,
+    // RecencyHalfLifeDays). The relation entries
     // need SchemaRegistry, which is not populated until after builder.Build() + LoadAsync() —
     // see ValidateAtStartup below, called separately from Program.cs.
     public static IServiceCollection AddPopularitySignalOptions(
@@ -122,6 +123,14 @@ internal static class PopularitySignalValidator
                     $"{PopularitySignalOptions.Section}: child type '{relation.RelatedTypeName}' is " +
                     "not StarRocks-eligible (it declares a OneToMany relation of its own), so its " +
                     "count can never be computed.");
+
+            if (options.RecencyBoost > 0 && childSchema.PopularitySignalColumn is null)
+                logger.LogWarning(
+                    "{Section}: RecencyBoost is {RecencyBoost} but child type '{ChildType}' (from " +
+                    "relation '{Relation}' on '{ParentType}') has no [IversonPopularitySignal] " +
+                    "property. The recency term will have no effect until it declares the marker.",
+                    PopularitySignalOptions.Section, options.RecencyBoost, relation.RelatedTypeName,
+                    signal.Relation, signal.ParentType);
         }
     }
 }

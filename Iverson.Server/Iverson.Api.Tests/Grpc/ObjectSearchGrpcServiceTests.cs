@@ -2863,6 +2863,76 @@ public class ObjectSearchGrpcServiceTests
         written[0].Score.Should().BeApproximately((float)expectedFused, 1e-6f);
     }
 
+    // FIX 4: mirrors SearchSimilar_PopularityRecencyBoostZero_IgnoresBucketSeriesEntirely above,
+    // but on the CHUNK path. The chunk path holds its own copy of the fusion block
+    // (RetrievePopularityOrDegradeAsync) — deliberately left duplicated rather than extracted —
+    // and until now every object-path assertion of the fused arithmetic (β=0-with-a-series,
+    // β>0-reorders) had no chunk-path counterpart. The only chunk-path popularity test planted no
+    // "authorCountBuckets" key at all, so it exercised the degrade branch only: nothing would
+    // have caught the two fusion copies diverging. A huge, decades-old bucket series is
+    // deliberately planted here: if RecencyBoost=0 failed to zero it out on this path, the fused
+    // score below would come out very different — and very wrong.
+    [Fact]
+    public async Task SearchChunks_PopularityRecencyBoostZero_IgnoresBucketSeriesEntirely()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WBase = wBase, WPopularity = wPopularity })),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions
+            {
+                Signals         = [new PopularitySignalEntry("Article", "Author")],
+                SaturationPoint = saturationPoint
+                // RecencyBoost left at its 0.0 default.
+            }));
+
+        var queryVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
+
+        const string parent = "parent-1";
+        var parentId = InvokeKeyToUlong(parent);
+        const double baseScore = 0.70;
+        const long count = 9;
+
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   new(1, baseScore, new Dictionary<string, string> { ["text"] = "c1", ["parent_id"] = parent })
+               }.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
+        _vector.RetrievePayloadAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
+                   new Dictionary<ulong, IReadOnlyDictionary<string, string>>
+                   {
+                       [parentId] = new Dictionary<string, string>
+                       {
+                           ["authorCount"]        = count.ToString(),
+                           // Huge count, decades in the past: if RecencyBoost=0 failed to zero
+                           // this out, the fused score below would come out very different.
+                           ["authorCountBuckets"] = "2000-01:999999",
+                       }
+                   });
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        var expectedPopularity = count / (count + saturationPoint);
+        var expectedFused = (wBase * baseScore + wPopularity * expectedPopularity) / (wBase + wPopularity);
+
+        written.Should().HaveCount(1);
+        written[0].Score.Should().BeApproximately((float)expectedFused, 1e-6f);
+    }
+
     // Task 7, chunk path: RetrievePopularityOrDegradeAsync batches the SAME fusion by parent id.
     // A missing "...Buckets" key on the parent's payload must degrade identically to the object
     // path above — the plain count formula, unaffected by a configured RecencyBoost.

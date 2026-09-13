@@ -716,4 +716,23 @@ public class SchemaBuilderTests
         act.Should().Throw<InvalidOperationException>()
            .WithMessage("*PostedAt*EditedAt*");
     }
+
+    [Fact]
+    public void BuildDescriptor_Throws_WhenPopularitySignalPropertyIsNotDatetime()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Comment" };
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",         ClrType = ClrType.ClrGuid,   IsKey = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "InteractedAt", ClrType = ClrType.ClrString, IsPopularitySignal = true });
+
+        var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*InteractedAt*");
+    }
 }
