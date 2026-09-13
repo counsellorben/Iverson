@@ -147,8 +147,15 @@ jobs:
       - name: terraform fmt -check
         run: terraform fmt -check -recursive Iverson.Server/deploy/terraform
 
-      - name: terraform init (no backend)
-        run: terraform -chdir=Iverson.Server/deploy/terraform/${{ matrix.cloud }} init -backend=false
+      # -lockfile=readonly (CSR round-3 finding #13): enforce the committed
+      # .terraform.lock.hcl rather than silently re-resolving providers to
+      # whatever is newest at CI-run time — a floating resolution is exactly
+      # the supply-chain risk pinning is meant to close. Fails loudly if a
+      # root module's lockfile is missing or out of date with its version
+      # constraints: update it locally (`terraform providers lock`) and
+      # commit it, don't let CI paper over the drift.
+      - name: terraform init (no backend, enforce committed lockfile)
+        run: terraform -chdir=Iverson.Server/deploy/terraform/${{ matrix.cloud }} init -backend=false -lockfile=readonly
 
       - name: terraform validate
         run: terraform -chdir=Iverson.Server/deploy/terraform/${{ matrix.cloud }} validate
