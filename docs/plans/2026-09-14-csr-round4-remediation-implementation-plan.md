@@ -117,6 +117,7 @@ Newly introduced by this plan and verified at plan-write time:
 | 45 | Signature | `AuthTestWebApplicationFactory` (used by `AuthenticationPipelineTests.cs`) already `PostConfigure`s BOTH the default `JwtBearerDefaults.AuthenticationScheme` (audience `test-service-audience`) and `"ActingUser"` (audience `test-actinguser-audience`), both validated against `TestJwtFactory.SigningKey` (HS256) — a real service token AND a real acting-user token can both be minted in-process via `TestJwtFactory.CreateToken(...)`, with no live Authentik dependency, enabling Task 9's new regression test without new test infrastructure | `AuthTestWebApplicationFactory.cs` and `TestJwtFactory.cs` both read in full |
 | 46 | Signature | `SchemaDescriptor.ScalarColumns`/`FkColumns` are `IReadOnlyList<ColumnDescriptor>`/`IReadOnlyList<ForeignKeyDescriptor>`; `ColumnDescriptor(string Name, string SqlType, bool IsNullable)` but `ForeignKeyDescriptor(string ColumnName, string ReferencedTypeName)` — the FK record's identifier field is `ColumnName`, not `Name` | `SchemaDescriptor.cs:34-36,111,113` read directly |
 | 47 | Command output | `dotnet list <target> package --vulnerable` prints "has no vulnerable packages given the current sources." (negative case — confirmed on all 25 real projects in `Iverson.slnx`) or "has the following vulnerable packages" (positive case — confirmed by constructing a throwaway project referencing `System.Text.Encodings.Web 4.7.0`, a real known-critical CVE, and observing the exact CLI phrasing live); the command's own exit code is 0 in both cases — `dotnet list --vulnerable` never fails a build on its own, which is why Task 12's CI script greps for the positive phrase and exits 1 itself | live `dotnet list <project> package --vulnerable` run twice: once against the real solution (negative case, all 25 projects), once against a scratch project with a deliberately vulnerable package reference (positive case) |
+| 48 | Signature | `EntityEvent`'s `TypeName`/`PayloadJson` are plain (non-`required`) positional-record `string` members; `System.Text.Json` does not enforce their non-nullability at deserialize time, so `JsonSerializer.Deserialize<EntityEvent>("{\"foo\":\"bar\"}", opts)` returns a non-null `EntityEvent` with `TypeName == null` rather than throwing. `SchemaRegistry.Get`'s backing `ConcurrentDictionary<string,SchemaDescriptor>.TryGetValue` and `JsonDocument.Parse` both throw `ArgumentNullException` (not `JsonException`) on a null argument — uncaught by a `catch (JsonException)` block, which is why Task 9's derivation explicitly null/empty-checks `TypeName`/`PayloadJson` before each call | executed a standalone probe reproducing the real `EntityEvent` record and `s_jsonOptions`, confirming all three behaviors by direct execution, not inspection |
 
 ---
 
@@ -264,10 +265,14 @@ Newly introduced by this plan and verified at plan-write time:
 
   Assert `AddIversonClient(..., credentials: new IversonClientCredentials(..., TokenEndpoint: "http://..."))` throws `InvalidOperationException` without `allowInsecureChannelCallCredentials: true`.
 
-- [ ] **Step 3: Run and commit**
+- [ ] **Step 3: Add the new opt-in to `Iverson.Client.Sample`'s own construction site**
+
+  `Iverson.Clients/DotNet/Iverson.Client.Sample/Program.cs`'s `AddIversonClient(...)` call constructs `credentials: new IversonClientCredentials(clientId!, clientSecret!, tokenEndpoint!, Scope: "admin schema_admin")` with no insecure opt-in; the repo's own documented `IVERSON_TOKEN_ENDPOINT` value (`docs/runbooks/client-conformance-matrix.md:27`) is `http://localhost:9000/application/o/token/` — plaintext. Add `allowInsecureChannelCallCredentials: true` to that call, mirroring Task 6 Step 2's identical fix for Java's `Main.java` — without this, running the sample per the repo's own documented convention throws `InvalidOperationException` once Step 1 ships.
+
+- [ ] **Step 4: Run and commit**
   ```bash
   dotnet test Iverson.Clients/DotNet/Iverson.Client.Core.Tests/Iverson.Client.Core.Tests.csproj --filter "FullyQualifiedName~ServiceCollectionExtensions"
-  git add Iverson.Clients/DotNet/Iverson.Client.Core/ServiceCollectionExtensions.cs Iverson.Clients/DotNet/Iverson.Client.Core.Tests/ServiceCollectionExtensionsTests.cs
+  git add Iverson.Clients/DotNet/Iverson.Client.Core/ServiceCollectionExtensions.cs Iverson.Clients/DotNet/Iverson.Client.Core.Tests/ServiceCollectionExtensionsTests.cs Iverson.Clients/DotNet/Iverson.Client.Sample/Program.cs
   git commit -m "reject a plaintext OAuth2 token endpoint without an explicit opt-in (.NET SDK)"
   ```
 
@@ -335,7 +340,11 @@ Newly introduced by this plan and verified at plan-write time:
 
   Assert `getToken`/a call through `GetRequestMetadata` returns an error for a non-`https` `TokenEndpoint` when `AllowInsecureCredentials` is `false`, and does not error on that check when `true` (a fake local HTTPS-or-http test server, matching however this file's existing tests stub the token endpoint).
 
-- [ ] **Step 3: Run and commit**
+- [ ] **Step 3: Add the new opt-in to the 7 pre-existing tests that construct a plaintext-endpoint `OAuth2ClientCredentials`**
+
+  Add `AllowInsecureCredentials: true` to each `OAuth2ClientCredentials{...}` literal in `auth_test.go` that sets `TokenEndpoint: server.URL` (an `httptest` plaintext server): `TestOAuth2ClientCredentials_GetRequestMetadata_FetchesAndCachesToken`, `TestGetRequestMetadata_CtxTokenWinsOverDefault`, `TestGetRequestMetadata_DefaultAppliesWhenCtxHasNone`, `TestGetRequestMetadata_ExplicitEmptyPerCallTokenEmitsLoudBearer`, `TestGetRequestMetadata_ExplicitEmptyPerCallTokenDoesNotFallThroughToDefault`, `TestGetRequestMetadata_AmbientEmptyPointerEmitsLoudBearer`, `TestGetRequestMetadata_NoTokenAnywhereOmitsHeader` — without this, applying Step 1's diff breaks all 7 (confirmed by executing the patched file against the real test suite).
+
+- [ ] **Step 4: Run and commit**
   ```bash
   cd Iverson.Clients/Go && go test ./iverson/...
   git add Iverson.Clients/Go/iverson/auth.go Iverson.Clients/Go/iverson/auth_test.go
@@ -388,7 +397,11 @@ Newly introduced by this plan and verified at plan-write time:
 
   Assert `createOAuth2ClientCredentials('id', 'secret', 'http://...')` throws synchronously without `allowInsecureCredentials=true`, and does not throw on this check when passed `true`.
 
-- [ ] **Step 3: Run and commit**
+- [ ] **Step 3: Add the new opt-in to the pre-existing test that constructs a plaintext-endpoint credential**
+
+  In `tests/auth.test.ts`'s `attaches a Bearer token from the token endpoint` test, add a 5th argument `true` to the existing `createOAuth2ClientCredentials('id', 'secret', 'http://localhost:9000/application/o/token/')` call — without this, applying Step 1's diff throws synchronously before the test's own assertions run (confirmed by executing the patched file against the real test suite via `vitest run`).
+
+- [ ] **Step 4: Run and commit**
   ```bash
   cd Iverson.Clients/TypeScript && npm test
   git add Iverson.Clients/TypeScript/src/auth.ts Iverson.Clients/TypeScript/tests/auth.test.ts
@@ -620,10 +633,16 @@ Newly introduced by this plan and verified at plan-write time:
               // forever on the one message this consumer exists to capture.
           }
 
-          if (ev is not null)
+          // EntityEvent.TypeName/PayloadJson are non-nullable `string` at compile time, but
+          // System.Text.Json does not enforce that on a plain positional record: a syntactically
+          // valid JSON object missing (or null-ing) either field deserializes successfully with
+          // that field C#-null. registry.Get(null) and JsonDocument.Parse(null) both throw
+          // ArgumentNullException, which the catch above does not cover — guard explicitly rather
+          // than let a semantically-incomplete-but-valid message escape HandleAsync unhandled.
+          if (ev is not null && !string.IsNullOrEmpty(ev.TypeName))
           {
               var tenantColumn = registry.Get(ev.TypeName)?.TenantColumn;
-              if (tenantColumn is not null)
+              if (tenantColumn is not null && !string.IsNullOrEmpty(ev.PayloadJson))
               {
                   try
                   {
@@ -1361,6 +1380,12 @@ Newly introduced by this plan and verified at plan-write time:
         IVERSON_ADMIN_ORCHESTRATOR_TOKEN: ${IVERSON_ADMIN_ORCHESTRATOR_TOKEN}
   ```
   Compose auto-loads `Iverson.Server/.env` (the project directory's default env file) for `${VAR}` substitution — no `env_file:` directive needed.
+
+  Additionally, `IVERSON_ADMIN_ORCHESTRATOR_TOKEN` has a SECOND, independent consumer this file already hardcodes to the same old literal: `iverson-api`'s and `iverson-worker`'s own `environment:` blocks each set `Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token` (`docker-compose.yml:480,562`), read via `cfg["Authentik:AdminToken"]` (`Program.cs:274`) into `IdpAdminClient`'s Bearer header — the tenant-lifecycle/admin gRPC surface. Update both lines to:
+  ```yaml
+      - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN}
+  ```
+  Without this, Authentik provisions the admin-orchestrator token to the freshly-generated random value while `iverson-api`/`iverson-worker` still present the old hardcoded literal — the two diverge and `IdpAdminClient` starts failing with 401 on every fresh `docker-compose up`. (The other 6 secrets have no such second consumer — grepping `docker-compose.yml` for each of their hardcoded literal values outside the blueprint file finds no hit.)
 
 - [ ] **Step 4: Switch the 7 blueprint values to `!Env` with sentinel defaults**
 
