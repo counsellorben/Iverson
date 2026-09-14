@@ -6,7 +6,7 @@
 
 **Goal:** Produce the cheap evidence Phase 0 exists to buy — a complete citation count + date fetch, the pool-matched AUC, and the age control's descriptive half — plus the two Phase 1 parts whose shape does not depend on the arm structure Phase 0 selects.
 
-**Architecture:** Four independent-ish scripts-and-data tasks. Task 1 completes the fetch; Task 2 measures on it and writes the gate doc; Task 3 checks the Phase 1 identity's divisor precondition against restored Qdrant snapshots; Task 4 implements the piecewise identity as a reusable re-ranker. No server code changes, no api, no arms.
+**Architecture:** Four sequential scripts-and-data tasks — **run them 1 → 2 → 3 → 4**. Task 1 completes the fetch; Task 2 measures on it and writes the gate doc; Task 3 checks the Phase 1 identity's divisor precondition against restored Qdrant snapshots and appends to that gate doc; Task 4 implements the piecewise identity as a reusable re-ranker, whose divisor Task 3's result determines. No server code changes, no api, no arms. The ordering is recorded in assumption 22 — under one-subagent-per-task dispatch it is the only thing that establishes it.
 
 **Tech stack:** Python 3 (the `Iverson.LoadTest/scripts/` convention), Semantic Scholar graph API, Qdrant (Task 3 only), TREC run files scored by the existing `report.py`.
 
@@ -33,6 +33,8 @@ It deliberately excludes Phase 1's measurements 2, 3, 4c and 4d (the ceiling and
 
 Verified by `thorough-brainstorming` at spec-write time and across two CDR rounds. **Not re-verified here.** In particular: A32 (the run file and qrels exist and match their stated shapes across two different roots), A30/A31 (the shipped transform and the decay mechanism), A39 (a candidate with no popularity value keeps `fused_new = fused_old`), A40 (the truncated pool overstates the ceiling), A34 (fetch cost arithmetic), and the §3.1 stratum rule fixed in measurement 4c.
 
+One inherited item does **not** reach as far as this plan needs. Spec A8 argues the archived run's score column is the fused score from `LambdaSimilar = 1.00`, but that λ was set after the run was recorded, so the argument does not cover this build. Plan-level assumption 30 carries the replacement mechanism, which holds at every λ.
+
 ## Verified plan-level assumptions
 
 | # | Category | Assumption | Evidence |
@@ -53,16 +55,21 @@ Verified by `thorough-brainstorming` at spec-write time and across two CDR round
 | 14 | Signature | Script convention: shebang, docstring naming the spec, a `Run with:` usage block, and the outputs listed | `aspect_oracle.py:1-18` — `#!/usr/bin/env python3`, purpose, "See docs/specs/…", `Run with:` block, "Writes, into --out-dir:" |
 | 15 | Signature | Failure convention: `sys.exit`, not printed warnings, with mandatory non-zero assertions | `beta_invariant.py:1-20` — "fails loudly -- sys.exit, not a printed warning"; "Zero pairs asserted is a failure of the precondition, not a pass" |
 | 16 | Signature | There is no existing AUC helper to reuse; the triage script introduces one | `grep -rlniE "auc" scripts/*.py` → no files. `report.py` exposes `holm_adjust` (`:471`) and `per_query_values` (`:489`) only |
-| 17 | Signature | `report.py` parses TREC generically, so Task 4's output is scoreable without changes to it | `report.py:267` `fields = line.split()` |
+| 17 | Signature | `report.py` parses TREC generically, so Task 4's output is scoreable without changes to it | `report.py:267` `fields = line.split()` is the **structural check**, not the scorer; the scorer is `ir_measures.read_trec_run`. Verified at run tier instead: a 15,000-row run in Task 4's output shape scored clean through `report.py`, exit 0. See assumption 29 for the invocation it requires |
 | 18 | Code validity | The fetcher already requests the fields Phase 0 needs | `fetch_citations.py:21` `'?fields=citationCount,year,publicationDate'` |
 | 19 | Command | A clean fetch is 52 batches | 5,183 corpus ids (`wc -l corpus.jsonl`) at 100 per batch (`:48` `range(0, len(todo), 100)`) → 52; `BATCH_GAP` is 3.0 s anonymous / 1.2 s keyed (`:28`) |
 | 20 | Command | `S2_API_KEY` is not set in this environment, so the anonymous pace applies unless supplied | `S2_API_KEY` unset in the shell; no reference in shell profiles |
 | 21 | Command | Commit messages are lowercase imperative with no Conventional-Commits prefix | `git log --oneline -20`: "add three missing CSP directives…", "close csr round-3 finding #15…", "fuse the decayed recency count…" |
-| 22 | Ordering | Task 2 consumes Task 1's `citations.json`; Tasks 3 and 4 depend on neither | Task 2's measurements all read counts/dates; Task 3 reads Qdrant only; Task 4 reads a run file and a counts file, and can be smoke-tested on the partial cache |
+| 22 | Ordering | **Order is 1 → 2 → 3 → 4.** Task 2 consumes Task 1's `citations.json`; Task 3 appends to the gate doc Task 2 Step 3 creates; Task 4's 0.90 divisor is conditional on Task 3's count being zero | Task 2's measurements all read counts/dates. Task 3's *measurement* reads Qdrant only, but its **Files** block is `Modify:` the gate doc, which assumption 4 verifies is absent until Task 2 creates it. Task 4 reads a run file and a counts file — and `ResultReranker.cs:37-38` seeds `weightTotal = WBase = 0.45`, with `:40-45` adding `WCentroid` only under `hasCentroid`, so a candidate missing `body_centroid` fuses at 0.45 and Task 3 is what establishes whether any exists |
 | 23 | Ordering | No task introduces a symbol another task imports | all four produce standalone scripts or documents; none imports another |
 | 24 | Code validity | The piecewise identity matches both the spec and the shipped reranker | spec's identity section (both branches); `ResultReranker.cs:53-57` adds `WPopularity` to `weightedSum` **and** `weightTotal` under one `hasPopularity` guard |
 | 25 | Code validity | The 5-year stratum rule is total over what the fetch emits | four classes are possible per id — resolved with `publicationDate`, resolved with `year` only, resolved with neither, unresolved. The rule assigns the first two to calendar strata, the third to the no-date stratum, and the fourth has no count so never enters the AUC population |
 | 26 | Consumer impact | Adding files to `scripts/` collides with nothing and changes no build | the directory holds loose Python scripts with no `__init__.py` packaging and no csproj reference; `__pycache__` is the only non-`.py`/`.json` entry |
+| 27 | Code validity | Measurement 1's population: **275 of 300** queries are eligible, and 253 of those carry exactly one in-pool relevant document | in-pool positives per query over the real run × qrels = `{0: 25, 1: 253, 2: 13, 3: 4, 4: 5}`. Restricted to the 275 eligible queries the pooled population is `n_pos = 311, n_neg = 13,439` = 4,179,529 pairs, drawn from only **4,325 distinct** non-relevant documents — which is why the pooled Hanley–McNeil CI is anti-conservative. (Over all 300 queries the figures are 14,689 / 4,402; the eligible-restricted ones are the estimator's actual population) |
+| 28 | Code validity | Only **283 distinct relevant documents** exist across the 5,183-document corpus, so degenerate 4b strata are likely rather than exotic | `scifact-full/qrels/test.tsv`: 339 judgments over 300 queries, all `score = 1`, 283 distinct relevant docs, 0 absent from `corpus.jsonl` |
+| 29 | Command | `report.py` needs `PYTHONPATH=/home/ben/repositories/iverson-benchmark-corpora/python-libs` **and** a 4-column TREC qrels | run tier, both directions observed. With the PYTHONPATH and `scifact-2048-2026-09-06/qrels.trec` → exit 0 (`nDCG@10 0.7450`, `R@50 0.9137`). Without the PYTHONPATH → exit 1, `could not import ir_measures`. With the PYTHONPATH but against `scifact-full/qrels/test.tsv` → exit 1, `ValueError: not enough values to unpack (expected 4, got 3)` in `ir_measures/util.py:284`. `report.py` is the one non-stdlib script in the directory (`report.py:71-78`) |
+| 30 | Code validity | The archived run's score column is the **fused** score whatever λ was live for the build that produced it | `sci-2048.meta.json` records `recordedAtUtc 2026-09-07T04:46:40Z`, which predates `c27eb98` (2026-09-07 22:26 UTC) — so spec A8's `LambdaSimilar = 1.00` argument does **not** cover this build. The claim holds by a different mechanism: `ResultDiversifier.cs:72-75` computes the MMR objective but `:80` emits `new RerankedResult(ranked[index].Id, ranked[index].Score)` — the fused score — at every λ. Confirmed empirically: 0 non-monotone queries across all 15,000 rows of `sci-2048.similar.trec` and of `sci-2048.chunks.trec` |
+| 31 | File path | `scifact-full/qrels/test.tsv` is a 3-column **header-bearing** BEIR TSV (`query-id\tcorpus-id\tscore`), which constrains Task 2's parser | parsed directly: header row present, 339 judgments, 300 queries, all `score = 1`, 283 distinct relevant docs. It is *not* the 4-column TREC shape `ir_measures` requires — which is why Task 4 scores against `scifact-2048-2026-09-06/qrels.trec`, whose relevant-doc set is set-equal to this file's 283 |
 
 **Baseline:** none of the four artifacts exists yet, so there is no test count to hold. Each task's own assertions are its gate.
 
@@ -133,11 +140,21 @@ Flags, matching the directory's convention: `--run`, `--qrels`, `--counts`, `--o
 
 Three measurements, all named by the spec:
 
-1. **Pool-matched AUC** — within each query's own retrieved pool, the AUC of relevant vs non-relevant documents by citation count, aggregated across queries, with the Hanley–McNeil standard error and a 95% CI. This is the honest version; the 0.6201 already on record is against *random corpus documents* and is a different, weaker claim.
-2. **4a — AUC of publication date alone**, over the resolved-date population.
-3. **4b — within-stratum AUC of citation count**, using measurement 4c's fixed strata: 5-year calendar bins on `publicationDate`, falling back to `year`; resolved ids with neither form their own stratum.
+1. **Pool-matched AUC** — within each query's own retrieved pool, the AUC of relevant vs non-relevant documents by citation count. **Two estimators are emitted**, because the aggregation and the standard error are not independent choices and the data makes them structurally different:
+   - **(i) one pooled AUC** over all in-pool (relevant, non-relevant) pairs from the eligible queries, with the Hanley–McNeil SE and a 95% CI. This is the form directly comparable to the 0.6201 already on record. Its CI is **anti-conservative** and must be reported as such: the pooled population is `n_pos = 311, n_neg = 13,439` = 4,179,529 pairs drawn from only **4,325 distinct** non-relevant documents, reused across overlapping pools.
+   - **(ii) the mean of the per-query AUCs**, with a CI from the between-query spread — queries, not pairs, as the independent units. Honest about that dependence, but 253 of the 275 eligible queries have exactly one in-pool relevant document, so most of its terms are single-positive rank statistics.
 
-Per `beta_invariant.py`'s discipline, the script fails loudly rather than scoring nothing. At minimum these are `sys.exit` conditions, not warnings: zero queries with at least one relevant *and* one non-relevant document in-pool (AUC is undefined); any stratum that ends up empty; and a resolved-count population of zero. A check that silently asserts nothing over its data is indistinguishable from one that passed.
+   The gate doc states which of the two the arm-structure read is taken on. The 0.6201 on record is against *random corpus documents* — a different, weaker claim than either.
+2. **4a — AUC of publication date alone**, over the resolved-date population.
+3. **4b — within-stratum AUC of citation count**, using measurement 4c's fixed strata: 5-year calendar bins on `publicationDate`, falling back to `year`; resolved ids with neither form their own stratum. Bins are **enumerated across the observed calendar range**, so an empty bin is visible in the output rather than absent from it.
+
+   The reported 4b number is one **stratum-pooled Mann–Whitney statistic** — concordant pairs summed over within-stratum (relevant, non-relevant) pairs only, across all strata. This is defined whatever any single stratum contains: a stratum with no relevant or no non-relevant member contributes zero pairs rather than an undefined ratio. Alongside it the script emits a **per-stratum table** — size, relevant count, non-relevant count, and the stratum's own AUC where it has one — with every degenerate stratum marked as such.
+
+   The pooled statistic is 4b; the table is what makes its composition auditable, and it is what measurement 4c's within-stratum permutation will need. Degeneracy is expected rather than exotic: only **283 distinct relevant documents** exist across the whole 5,183-document corpus, spread over however many bins the publication dates span.
+
+Per `beta_invariant.py`'s discipline, the script fails loudly rather than scoring nothing. At minimum these are `sys.exit` conditions, not warnings: zero queries with at least one relevant *and* one non-relevant document in-pool (AUC is undefined); **zero within-stratum (relevant, non-relevant) pairs summed across all strata** (4b would be computed over nothing); and a resolved-count population of zero. A check that silently asserts nothing over its data is indistinguishable from one that passed.
+
+Note which assertion this is *not*. "Any stratum that ends up empty" is the wrong condition under both halves of the construction above: with bins enumerated across the calendar range an empty bin is ordinary and would abort Phase 0 outright, and under the pooled statistic an empty stratum simply contributes no pairs. The load-bearing assertion is that the pooled pair count is non-zero.
 
 It also emits the **corpus median citation count**, which is what fixes `SaturationPoint` — the spec pre-registers `S` as a rule, and this is the run that executes it.
 
@@ -153,7 +170,7 @@ python3 Iverson.Server/Iverson.LoadTest/scripts/popularity_triage.py \
 
 - [ ] **Step 3: Write the gate doc's Phase 0 section.**
 
-Create `docs/plans/2026-09-GATE-relation-popularity.md` with a Phase 0 section recording: the three measurements with their CIs; the corpus median that fixes `S`; the resolved / unresolved split; the `publicationDate` / `year`-only / neither split; and the no-date stratum's size.
+Create `docs/plans/2026-09-GATE-relation-popularity.md` with a Phase 0 section recording: the three measurements with their CIs; for measurement 1, **both** estimators with an explicit statement of which one the arm-structure read is taken on; for 4b, the pooled statistic **and** the per-stratum table with degenerate strata marked; the corpus median that fixes `S`; the resolved / unresolved split; the `publicationDate` / `year`-only / neither split; and the no-date stratum's size.
 
 It reports numbers and draws no conclusion. The arm-structure choice is the reader's, and it has not been made.
 
@@ -174,6 +191,10 @@ git commit -m "add the phase 0 popularity triage measurements and gate doc"
 **Files:**
 - Modify: `docs/plans/2026-09-GATE-relation-popularity.md` (append a prerequisite subsection)
 
+**Interfaces:**
+- Consumes: the gate doc created by Task 2 Step 3.
+- Produces: the divisor-exception list — consumed by Task 4.
+
 - [ ] **Step 1: Restore the snapshots.**
 
 Follow `iverson-benchmark-corpora/scifact-2048-qdrant-snapshots/RESTORE.md`, which delegates its restore loop to `../scifact-512-qdrant-snapshots/RESTORE.md`. Both collections are needed: `benchmark_documents_tenant_bypass` and `benchmark_documents_chunks_tenant_bypass`. Qdrant only — the api is not involved.
@@ -186,7 +207,11 @@ The spec's identity assumes every candidate divides by 0.90, which holds only if
 
 - [ ] **Step 3: Record the result.**
 
-Append a prerequisite subsection to the gate doc. Zero means the identity is uniform and exact, and Task 4's re-ranker may assume the 0.90 divisor throughout. Non-zero means those specific point ids take the 0.45 divisor and must be listed, so Phase 1 can handle them separately rather than mis-scoring them.
+Append a prerequisite subsection to the gate doc. If the gate doc does not yet exist, Task 2 has not run — **stop rather than creating it here**, so the Phase 0 section is not lost.
+
+Zero means the identity is uniform and exact, and Task 4's re-ranker may assume the 0.90 divisor throughout. Non-zero means those specific documents take the 0.45 divisor and must be listed, so Phase 1 can handle them separately rather than mis-scoring them.
+
+Record the exception set **as docIds, read from each point's `docId` payload key** (`ingest.py:660` writes `"docId": doc_id` into `object_payload`) — not as Qdrant point ids. Task 4 keys on TREC docids, and recovering a docid from a point id needs `key_to_ulong(uuid5(...))` plus `keymap.json`, which this plan's scope excludes. A docId-keyed list joins to Task 4's inputs directly.
 
 - [ ] **Step 4: Commit.**
 
@@ -204,11 +229,12 @@ git commit -m "record the phase 1 centroid-uniformity prerequisite result"
 
 **Interfaces:**
 - Consumes: a counts file of Task 1's shape (can be smoke-tested against the superseded partial cache).
-- Produces: a TREC run file scoreable by the existing `report.py` (`:267` parses with a plain `line.split()`).
+- Consumes: Task 3's divisor-exception list, docId-keyed (empty when Task 3 reports zero).
+- Produces: a TREC run file scoreable by the existing `report.py` — verified at run tier, see assumption 29 for the invocation.
 
 - [ ] **Step 1: Write `popularity_rerank.py`.**
 
-Flags: `--run`, `--counts`, `--w`, `--saturation`, `--out`.
+Flags: `--run`, `--counts`, `--w`, `--saturation`, `--out`, and `--divisor-exceptions <file>` (optional, default empty) — the docIds Task 3 found to lack `body_centroid`.
 
 It applies the spec's identity to one recorded run at one `(W, SaturationPoint)` cell, **both branches**:
 
@@ -221,6 +247,15 @@ pop absent:   fused_new = fused_old
 
 The absent branch is not a rounding detail. `ResultReranker.cs:53-57` adds `WPopularity` to the weighted sum *and* to the weight total under a single `hasPopularity` guard, so a candidate with no resolved count keeps the unchanged divisor. Substituting `pop = 0` would score it 0.0 and punish it hard; substituting a median would pull it toward the pool. Both model a server that does not exist.
 
+The 0.90 divisor is likewise not universal. `ResultReranker.cs:37-38` seeds `weightTotal = WBase = 0.45` and `:40-45` adds `WCentroid` only under `hasCentroid`, so a document lacking `body_centroid` fuses at 0.45. Documents named in `--divisor-exceptions` therefore take:
+
+```
+pop present:  fused_new = (0.45·fused_old + W·pop) / (0.45 + W)
+pop absent:   fused_new = fused_old
+```
+
+Task 3 is what establishes whether that set is empty. With the default empty list this is inert, but it must be an input rather than an assertion: an exception document sits in the *present* branch, where neither of Step 2's assertions can see it.
+
 The grid that sweeps `(W, S)` is **not** here — it belongs to whichever arm structure Phase 0 selects.
 
 - [ ] **Step 2: Add the two mandatory non-zero assertions.**
@@ -232,7 +267,16 @@ Same discipline as Task 2, and for the same reason — a re-ranker that silently
 
 - [ ] **Step 3: Smoke-test it.**
 
-Run against the control run and Task 1's counts at any single cell — the spec's pre-registered `W` rule (`0.90 × σ_fused / σ_popularity`) is a reasonable choice but any finite positive `W` exercises both branches. Confirm both assertions pass and that `report.py` scores the output without complaint.
+Run against the control run and Task 1's counts at any single cell — the spec's pre-registered `W` rule (`0.90 × σ_fused / σ_popularity`) is a reasonable choice but any finite positive `W` exercises both branches. Confirm both assertions pass, then score the output:
+
+```bash
+PYTHONPATH=/home/ben/repositories/iverson-benchmark-corpora/python-libs python3 \
+    Iverson.Server/Iverson.LoadTest/scripts/report.py \
+    --run  <the --out file> \
+    --qrels /home/ben/repositories/iverson-benchmark-corpora/scifact-2048-2026-09-06/qrels.trec
+```
+
+`report.py` is the only non-stdlib script in this directory; its third-party imports live under the corpora repo's `python-libs`, not site-packages, and a plain invocation exits 1 before scoring anything. Score against `scifact-2048-2026-09-06/qrels.trec` (4-column TREC) — `ir_measures.read_trec_qrels` cannot read `scifact-full/qrels/test.tsv`, which is the 3-column header-bearing BEIR TSV Task 2 uses.
 
 - [ ] **Step 4: Commit.**
 
