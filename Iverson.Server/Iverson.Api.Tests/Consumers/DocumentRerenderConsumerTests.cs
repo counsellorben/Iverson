@@ -254,6 +254,11 @@ public class DocumentRerenderConsumerTests
 
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""");
+        // CSR #10: the OneToMany arm now confirms the parent exists, tenant-scoped, before
+        // enqueueing it — without this stub the parent-existence check would see null and the
+        // enqueue below would never fire.
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), WidgetId, EntityAccess.ForTenant(TenantA))
+            .Returns($$"""{"Id":"{{WidgetId}}","TenantId":"{{TenantA}}"}""");
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId,
             $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""");
@@ -264,6 +269,31 @@ public class DocumentRerenderConsumerTests
         // No column/array query needed for OneToMany — the parent key comes straight from the
         // payload.
         await _entities.DidNotReceive().FetchByColumnAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
+    }
+
+    // CSR #10: the OneToMany arm must not enqueue a parent it cannot confirm exists in the
+    // acting tenant's own scope — a cross-tenant reassignment (or an outright fabricated parent
+    // key) must not smuggle a re-render row past the tenant boundary the way the ManyToOne/
+    // ManyToMany arms already do via their own tenant-scoped queries.
+    [Fact]
+    public async Task Dispatch_CommentCreated_ParentNotFoundInTenantScope_EnqueuesNothing()
+    {
+        await _registry.RegisterAsync(WidgetSchema());
+        await _registry.RegisterAsync(CommentSchema());
+
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>())
+            .Returns($$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""");
+        // The widget lookup, scoped to TenantA, returns nothing — simulating a payload-supplied
+        // parent key that belongs to a different tenant (or no longer exists at all).
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), WidgetId, EntityAccess.ForTenant(TenantA))
+            .Returns((string?)null);
+
+        var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId,
+            $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""");
+
+        await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _queue.DidNotReceiveWithAnyArgs().EnqueueEntityAsync(default, default!, default!);
     }
 
     // ── Created / Updated / Deleted all trigger ─────────────────────────────
@@ -279,6 +309,8 @@ public class DocumentRerenderConsumerTests
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), WidgetId, EntityAccess.ForTenant(TenantA))
+            .Returns($$"""{"Id":"{{WidgetId}}","TenantId":"{{TenantA}}"}""");
 
         var ev = MakeEvent(eventType, "Comment", CommentId, payload);
 
@@ -299,6 +331,10 @@ public class DocumentRerenderConsumerTests
         var priorPayload = $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""";
 
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(newPayload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), WidgetId2, EntityAccess.ForTenant(TenantA))
+            .Returns($$"""{"Id":"{{WidgetId2}}","TenantId":"{{TenantA}}"}""");
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), WidgetId, EntityAccess.ForTenant(TenantA))
+            .Returns($$"""{"Id":"{{WidgetId}}","TenantId":"{{TenantA}}"}""");
 
         var ev = MakeEvent(EntityEventType.Updated, "Comment", CommentId, newPayload, priorPayload: priorPayload);
 
@@ -318,6 +354,8 @@ public class DocumentRerenderConsumerTests
         var priorPayload = $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""";
 
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), WidgetId, EntityAccess.ForTenant(TenantA))
+            .Returns($$"""{"Id":"{{WidgetId}}","TenantId":"{{TenantA}}"}""");
 
         var ev = MakeEvent(EntityEventType.Updated, "Comment", CommentId, payload, priorPayload: priorPayload);
 

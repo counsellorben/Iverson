@@ -272,6 +272,26 @@ public class ObjectRetrievalGrpcServiceTests
         await _entities.Received(1).FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Is<IReadOnlyList<string>>(keys => keys.Count == 2), Arg.Any<EntityAccess>());
     }
 
+    // CSR #15: a non-GUID key must be rejected with a typed InvalidArgument BEFORE reaching the
+    // store — not silently no-matched (which would look identical to "not found") and not left to
+    // whatever a malformed value does once interpolated into a downstream query.
+    [Fact]
+    public async Task GetMany_WithNonGuidKey_ThrowsInvalidArgument()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        var stream = MakeStream<RetrievalResponse>();
+        var act = async () => await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId, "not-a-guid" } },
+            stream, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("not-a-guid");
+        await _entities.DidNotReceive()
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>());
+    }
+
     // ── authorization fixtures ───────────────────────────────────────────────
 
     private static SchemaDescriptor OwnedAuthorSchema(bool withBypassRole = false) => new()

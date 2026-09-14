@@ -103,7 +103,7 @@ public sealed class DocumentRerenderConsumer(
                         // reassignment (the parent value moved) must enqueue BOTH the old and the
                         // new parent: the new parent comes from the current payload, the old parent
                         // only from PriorPayloadJson (null on Created).
-                        await EnqueueOneToManyParentsAsync(declaringTypeName, relation, payload, priorPayload, tenantId);
+                        await EnqueueOneToManyParentsAsync(declaringSchema, relation, payload, priorPayload, tenantId);
                         break;
 
                     case RelationKind.ManyToMany:
@@ -178,18 +178,26 @@ public sealed class DocumentRerenderConsumer(
     }
 
     private async Task EnqueueOneToManyParentsAsync(
-        string declaringTypeName, RelationDescriptor relation,
+        SchemaDescriptor declaringSchema, RelationDescriptor relation,
         JsonElement payload, JsonElement? priorPayload, string tenantId)
     {
         var newParentKey = ExtractString(payload, relation.ForeignKey);
-        if (newParentKey is not null)
-            await queue.EnqueueEntityAsync(tenantId, declaringTypeName, newParentKey);
+        if (newParentKey is not null &&
+            await entities.FetchByKeyAsync(
+                SchemaBuilder.ToTableSchema(declaringSchema), newParentKey, EntityAccess.ForTenant(tenantId)) is not null)
+        {
+            await queue.EnqueueEntityAsync(tenantId, declaringSchema.TypeName, newParentKey);
+        }
 
         if (priorPayload is not null)
         {
             var oldParentKey = ExtractString(priorPayload.Value, relation.ForeignKey);
-            if (oldParentKey is not null && oldParentKey != newParentKey)
-                await queue.EnqueueEntityAsync(tenantId, declaringTypeName, oldParentKey);
+            if (oldParentKey is not null && oldParentKey != newParentKey &&
+                await entities.FetchByKeyAsync(
+                    SchemaBuilder.ToTableSchema(declaringSchema), oldParentKey, EntityAccess.ForTenant(tenantId)) is not null)
+            {
+                await queue.EnqueueEntityAsync(tenantId, declaringSchema.TypeName, oldParentKey);
+            }
         }
     }
 

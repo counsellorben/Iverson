@@ -49,4 +49,43 @@ public class AuditLogTests
 
         AssertLogged(LogLevel.Information, "RegisterSchema");
     }
+
+    // CSR #11: actor claims are attacker-controlled (an IdP or a forged token can put arbitrary
+    // text in "sub"/"tenant_id"), so they must be sanitized the same way every other untrusted
+    // string reaching a log line already is — otherwise a newline-bearing claim forges an
+    // additional, fully fabricated log entry (CRLF log injection).
+    [Fact]
+    public void Denied_ActorClaimsContainNewlines_SanitizesBothActorAndTenant()
+    {
+        var actor = new ClaimsPrincipal(new ClaimsIdentity(
+        [
+            new Claim("sub", "user-1\nFORGED tenant=evil action=AdminOperation"),
+            new Claim("tenant_id", "tenant-a\r\nFORGED second line"),
+        ]));
+
+        _sut.Denied(actor, "Read", "Article", "key-1", "AccessDenied");
+
+        _logger.Received(1).Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => !v.ToString()!.Contains('\n') && !v.ToString()!.Contains('\r')),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public void AdminOperation_ActorClaimContainsNewline_SanitizesActor()
+    {
+        var actor = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim("sub", "svc-1\nFORGED operation=DeleteEverything")]));
+
+        _sut.AdminOperation(actor, "RegisterSchema", "Article");
+
+        _logger.Received(1).Log(
+            LogLevel.Information,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => !v.ToString()!.Contains('\n')),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
 }

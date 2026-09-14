@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:2fa828c68761b1b8c23d7662dc134421b9d3b59fe1425fdbc80804e390cdb24d AS build
 WORKDIR /src
 
 COPY ["Iverson.Launcher/Iverson.Launcher.csproj", "Iverson.Launcher/"]
@@ -7,7 +7,7 @@ RUN dotnet restore "Iverson.Launcher/Iverson.Launcher.csproj"
 COPY . .
 RUN dotnet publish "Iverson.Launcher/Iverson.Launcher.csproj" -c Release -o /app/publish --no-restore
 
-FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/runtime:10.0@sha256:8a153b5889d796b6450295b383596b13308c24c230515f8a7770ce1b94e0c460 AS runtime
 WORKDIR /app
 
 # Docker CLI needed to run compose commands from inside container

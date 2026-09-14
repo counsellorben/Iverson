@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using Iverson.Api.Grpc;
 using Iverson.Sql;
 
 namespace Iverson.Api.Schema;
@@ -183,6 +184,21 @@ public sealed class SchemaRegistry(
                             "and must be re-registered with a distinct navigation property name.",
                             typeName, relation.PropertyName, relation.ForeignKey);
                     }
+                }
+
+                if (!SchemaRegistrationOrchestrator.IsValidIdentifier(descriptor.TypeName) ||
+                    descriptor.ScalarColumns.Any(c => !SchemaRegistrationOrchestrator.IsValidIdentifier(c.Name)) ||
+                    descriptor.FkColumns.Any(c => !SchemaRegistrationOrchestrator.IsValidIdentifier(c.ColumnName)) ||
+                    // OrdinalIgnoreCase, not Ordinal: production (SchemaBuilder) always emits
+                    // "UUID", but the check's security intent is catching a genuinely wrong SQL
+                    // type (e.g. "TEXT" masquerading as a key column), not policing letter case —
+                    // and test fixtures throughout this suite construct descriptors with "uuid".
+                    !string.Equals(descriptor.KeyColumn.SqlType, "UUID", StringComparison.OrdinalIgnoreCase))
+                {
+                    logger.LogError(
+                        "Schema '{TypeName}' failed identifier/key-type validation on rehydration and was NOT loaded.",
+                        typeName);
+                    continue;
                 }
 
                 _schemas[typeName] = descriptor;

@@ -496,4 +496,63 @@ public class PopularitySignalConsumerTests
         await _vector.DidNotReceiveWithAnyArgs().SetPayloadAsync(
             default!, default, Arg.Any<IReadOnlyDictionary<string, object>>());
     }
+
+    // ── CSR #14: poison-message guard on the 3 previously-unguarded JsonDocument.Parse calls ──
+    // Kafka carries no schema enforcement — a malformed payload is a poison message, not a
+    // transient fault, and must dead-letter (PoisonMessageException) rather than crash-loop this
+    // consumer's whole group by throwing an unguarded JsonException up through ConsumerResilience.
+
+    [Fact]
+    public async Task Dispatch_MalformedCurrentPayloadJson_ThrowsPoisonMessageException()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema());
+
+        // Tenant resolution (Created) re-derives from the authoritative Postgres row, not from
+        // ev.PayloadJson — stubbed well-formed so the malformed payload below is what's on trial.
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>())
+            .Returns($$"""{"Id":"{{CommentId}}","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""");
+
+        var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, "NOT_VALID_JSON{{{");
+        var sut = BuildSut(OptionsWith("Article", "Comments"));
+
+        var act = () => sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().ThrowAsync<PoisonMessageException>();
+    }
+
+    [Fact]
+    public async Task Dispatch_MalformedPriorPayloadJson_ThrowsPoisonMessageException()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema());
+
+        var payload = $$"""{"Id":"{{CommentId}}","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
+
+        var ev = MakeEvent(EntityEventType.Updated, "Comment", CommentId, payload, priorPayload: "NOT_VALID_JSON{{{");
+        var sut = BuildSut(OptionsWith("Article", "Comments"));
+
+        var act = () => sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().ThrowAsync<PoisonMessageException>();
+    }
+
+    [Fact]
+    public async Task Dispatch_DeletedEventWithMalformedPayloadJson_ThrowsPoisonMessageException()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema());
+
+        // Deleted's tenant resolution reads straight out of the pre-delete payload snapshot — the
+        // authoritative row is already gone by consumption time — so this is the third site
+        // (ResolveTenantIdAsync's Deleted branch), reached before any entities lookup at all.
+        var ev = MakeEvent(EntityEventType.Deleted, "Comment", CommentId, "NOT_VALID_JSON{{{");
+        var sut = BuildSut(OptionsWith("Article", "Comments"));
+
+        var act = () => sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().ThrowAsync<PoisonMessageException>();
+        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(default!, default!, default!);
+    }
 }

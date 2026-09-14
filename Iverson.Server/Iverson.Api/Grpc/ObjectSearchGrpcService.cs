@@ -239,8 +239,8 @@ public sealed class ObjectSearchGrpcService(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            throw new RpcException(new Status(StatusCode.Unavailable,
-                $"Embedding service unavailable: {ex.Message}"));
+            logger.LogError(ex, "Embedding service unavailable");
+            throw new RpcException(new Status(StatusCode.Unavailable, "Embedding service unavailable."));
         }
 
         var chunkDesc = schema.ChunkFields.FirstOrDefault(c =>
@@ -563,8 +563,8 @@ public sealed class ObjectSearchGrpcService(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            throw new RpcException(new Status(StatusCode.Unavailable,
-                $"Embedding service unavailable: {ex.Message}"));
+            logger.LogError(ex, "Embedding service unavailable");
+            throw new RpcException(new Status(StatusCode.Unavailable, "Embedding service unavailable."));
         }
 
         // Unlike SearchSimilar, the identity gate can never fire here: SearchChunks only accepts a
