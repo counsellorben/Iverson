@@ -63,7 +63,8 @@ operation. The enum names the distinction at the point the logic depends on it.
 simply ends). A single `return Updated;` at the end would therefore mislabel it. The implementation
 must set an explicit outcome variable, or `return Skipped;` from inside that catch.
 
-**The fifth path must keep propagating.** This is a deliberate, tested contract, not an oversight:
+**The fifth path must keep propagating.** This is a deliberate contract — documented, but (until
+test 6 below) not asserted:
 
 > `PopularitySignalConsumerTests.cs:411` — "must propagate to DispatchAsync's own per-signal catch …
 > but it must not be silently swallowed by UpdateAsync itself."
@@ -72,22 +73,25 @@ must set an explicit outcome variable, or `return Skipped;` from inside that cat
 > swallow itself … so it propagates out to the worker's own per-row try/catch."
 
 A Qdrant `Unavailable` is the worked example. **Do not add a catch-all that converts these into
-`Failed`** — it would break both tests and the contract they encode. The worker's existing `catch`
-is where they are handled, and it counts them as failures (below).
+`Failed`** — the contract is documented only in those two test comments; neither test asserts it, so
+a catch-all would pass the suite unchanged. Test 6 below closes that gap. The worker's existing
+`catch` is where they are handled, and it counts them as failures (below).
 
 ### 3. The sweep abandons on consecutive failures
 
 `SweepSignalAsync` tracks consecutive failures across the paging loop. A `Failed` outcome increments;
 **the worker's existing `catch` at `:74` increments the same counter**, since a propagating exception
-is the same class of event. Any other outcome resets it to zero. On reaching the threshold the sweep
-abandons with one summary line:
+is the same class of event. The counter therefore spans two fault domains — a `Failed` outcome
+(engagement store) and a propagating exception (Qdrant, collection resolution, api-key minting). It
+cannot distinguish them, so the summary line must not name a store. Any other outcome resets it to
+zero. On reaching the threshold the sweep abandons with one summary line:
 
 ```csharp
 if (++consecutiveFailures >= MaxConsecutiveFailures)
 {
     logger.LogError(
         "[PopularitySignalReconciliation] Abandoning sweep for signal={Signal} after {Count} " +
-        "consecutive failures — the engagement store appears unavailable. " +
+        "consecutive parent-update failures — see the preceding per-parent errors for the cause. " +
         "Retrying at the next sweep in {Minutes} minutes.",
         signal.Relation.SanitizeForLog(), consecutiveFailures, SweepInterval.TotalMinutes);
     return;
@@ -121,6 +125,11 @@ ten minutes later and proceeds normally once the store recovers.
 3. The sweep abandons after five consecutive failures, emitting **exactly one** summary line.
 4. The sweep does **not** abandon on scattered non-consecutive failures.
 5. The consumer's behaviour is unchanged when it ignores the new return value.
+6. A non-`NotFound` failure **propagates** out of `UpdateAsync`. Call
+   `PopularitySignalUpdater.UpdateAsync` directly with `IVectorWriteService.SetPayloadAsync` stubbed
+   to `Task.FromException(new RpcException(new Status(StatusCode.Unavailable, "down")))` and assert
+   the call throws — this is the only assertion in the suite that a catch-all converting the fifth
+   path into an outcome would fail.
 
 ## Out of scope
 
@@ -149,5 +158,11 @@ ten minutes later and proceeds normally once the store recovers.
 | A8 | The worker's tests drive `SweepSignalAsync` directly | 10 references in `PopularitySignalReconciliationWorkerTests.cs` |
 | A10 | The suite can already simulate the failures the tests need | `StubAggregate` at `:79`; `Task.FromException` used for throw simulation |
 | A11 | `private const` matches the file's convention | `PageSize` at `:27`, beside `SweepInterval` at `:26` |
+| A14 | The targeted fault produces `Failed`, not `Skipped` | `EngagementRepository.AggregateAsync` returns `null` on exactly two conditions — invalid/absent tenant (`EngagementRepository.cs:392-394`) and `IsExpectedMissingResourceError` (`:404-407`), which `:142-148` narrows to `MySqlException` with `ParseError` + "cannot find role"/"is not granted to", or code `5502` + "Unknown table". Every other failure propagates to the aggregate `catch` at `:78` → `Failed` |
+| A15 | Test 3's "exactly one summary line" is assertable | the worker tests inject `NullLogger<PopularitySignalReconciliationWorker>.Instance` (`PopularitySignalReconciliationWorkerTests.cs:76`), so a recording logger is required; the repo already carries `RecordingLogger<T>` as a private nested class three times, including in the sibling reconciliation-worker suite — `DocumentRerenderQueueWorkerTests.cs:304`, `SchemaRegistryTests.cs:525`, `IntelligenceStoreConsumerTests.cs:2411` |
+| A16 | The enum name `PopularityUpdateOutcome` is unused | zero hits for the identifier across all `*.cs` in `Iverson.Server/` |
+| A17 | The abort site's operands are all in scope | `signal` is `SweepSignalAsync`'s own parameter (`PopularitySignalReconciliationWorker.cs:46`), `SweepInterval` is a file-scope `static readonly` (`:26`), `MaxConsecutiveFailures` is the new sibling const, and `SanitizeForLog()` is already applied to `signal.Relation` at `:78` |
+| A18 | The propagating class includes non-engagement-store members | `PopularitySignalConsumer.cs:134` catches only `RpcException` filtered to `StatusCode.NotFound`, so every other Qdrant status propagates; `IntelligenceVectorService.SetPayloadAsync` (`:88-99`) has no catch and no retry; `ResolveCollectionName` (`:98`) and `KeyToUlong` (`:99`) sit outside the `try` entirely, and `MintScopedApiKey` (`:127`) sits inside it but the only catch is NotFound-filtered |
+| A19 | Neither cited test asserts the propagate-don't-swallow contract | `PopularitySignalConsumerTests.cs:413-430` has exactly one assertion (`NotThrowAsync`, `:428-429`); `PopularitySignalReconciliationWorkerTests.cs:162-187` has exactly two (`NotThrowAsync` `:181-182`; `Received(1)` on article-2 `:184-186`). A swallowing catch-all passes all three; the contract text lives only in comments (`:409-411`, `:172-174`) |
 | — | `ConsumerResilience` does not mitigate this today | `ConsumerResilience.cs` catches only exceptions escaping the run loop; the updater swallows, so none escape |
 | — | The codebase has an established anti-spam pattern | `ReconciliationService.cs:65-71` counts failures and emits one line with the count, rather than one per row |
