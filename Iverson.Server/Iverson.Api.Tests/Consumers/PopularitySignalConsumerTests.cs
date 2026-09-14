@@ -65,6 +65,11 @@ public class PopularitySignalConsumerTests
             NullLogger<PopularitySignalConsumer>.Instance);
     }
 
+    // UpdateAsync's outcome is not observable through DispatchAsync (which discards it), so the
+    // outcome tests drive the updater directly. Same construction as BuildSut's.
+    private PopularitySignalUpdater BuildUpdater() =>
+        new(_search, _vector, _tenantScope, NullLogger<PopularitySignalUpdater>.Instance);
+
     // ── Schema fixtures ──────────────────────────────────────────────────────
     // Article: the parent side of a configured "Comments" OneToMany signal (FK lives on
     // Comment.ArticleId). Needs a vector field and a CollectionName — both are load-bearing:
@@ -495,5 +500,82 @@ public class PopularitySignalConsumerTests
             default!, default, default!, default, default, default, default);
         await _vector.DidNotReceiveWithAnyArgs().SetPayloadAsync(
             default!, default, Arg.Any<IReadOnlyDictionary<string, object>>());
+    }
+
+    // ── UpdateAsync's outcome, driven directly (Task 2 consumes it to abort the sweep) ────
+
+    // ── Outcome mapping: the aggregate's failure is swallowed internally (the log line stays),
+    //    but it must now be REPORTED so the reconciliation sweep can count it. ──────────────
+    [Fact]
+    public async Task UpdateAsync_AggregateThrows_ReturnsFailed()
+    {
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(Task.FromException<EngagementAggResult?>(new InvalidOperationException("starrocks down")));
+
+        var outcome = await BuildUpdater().UpdateAsync(
+            ArticleSchema(), new PopularitySignalEntry("Article", "Comments"), CommentSchema(),
+            ArticleSchema().Relations[0], ArticleId, TenantA);
+
+        outcome.Should().Be(PopularityUpdateOutcome.Failed);
+    }
+
+    // A null aggregate result is the DESIGNED outcome of the unprovisioned-tenant race — Skipped,
+    // never Failed, or a sweep over an unprovisioned tenant would abandon itself.
+    [Fact]
+    public async Task UpdateAsync_AggregateReturnsNull_ReturnsSkipped()
+    {
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns((EngagementAggResult?)null);
+
+        var outcome = await BuildUpdater().UpdateAsync(
+            ArticleSchema(), new PopularitySignalEntry("Article", "Comments"), CommentSchema(),
+            ArticleSchema().Relations[0], ArticleId, TenantA);
+
+        outcome.Should().Be(PopularityUpdateOutcome.Skipped);
+    }
+
+    // The Qdrant point not existing yet is the other documented degrade case — also Skipped, and it
+    // shares a terminal point with success, so a single trailing `return Updated` would mislabel it.
+    [Fact]
+    public async Task UpdateAsync_SetPayloadNotFound_ReturnsSkipped()
+    {
+        StubCount(3);
+        _vector.SetPayloadAsync(
+                Arg.Any<string>(), Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, object>>())
+            .Returns(Task.FromException(new RpcException(new Status(StatusCode.NotFound, "no point"))));
+
+        var outcome = await BuildUpdater().UpdateAsync(
+            ArticleSchema(), new PopularitySignalEntry("Article", "Comments"), CommentSchema(),
+            ArticleSchema().Relations[0], ArticleId, TenantA);
+
+        outcome.Should().Be(PopularityUpdateOutcome.Skipped);
+    }
+
+    // ── Spec test 6: the fifth exit path. This is the ONLY assertion in the suite that a catch-all
+    //    converting the propagating class into an outcome would fail — the two pre-existing tests
+    //    that document the contract in comments assert only NotThrowAsync, which a swallowing
+    //    catch-all also satisfies. StubCount is REQUIRED: without it the aggregate returns null and
+    //    UpdateAsync returns Skipped before ever reaching the Qdrant write.
+    [Fact]
+    public async Task UpdateAsync_SetPayloadThrowsNonNotFound_Propagates()
+    {
+        StubCount(3);
+        _vector.SetPayloadAsync(
+                Arg.Any<string>(), Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, object>>())
+            .Returns(Task.FromException(new RpcException(new Status(StatusCode.Unavailable, "down"))));
+
+        var act = () => BuildUpdater().UpdateAsync(
+            ArticleSchema(), new PopularitySignalEntry("Article", "Comments"), CommentSchema(),
+            ArticleSchema().Relations[0], ArticleId, TenantA);
+
+        await act.Should().ThrowAsync<RpcException>().Where(e => e.StatusCode == StatusCode.Unavailable);
     }
 }

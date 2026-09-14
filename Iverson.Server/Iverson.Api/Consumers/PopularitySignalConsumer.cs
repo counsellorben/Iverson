@@ -23,6 +23,14 @@ using SchemaRelationDescriptor = Iverson.Api.Schema.RelationDescriptor;
 namespace Iverson.Api.Consumers;
 
 /// <summary>
+/// What <see cref="PopularitySignalUpdater.UpdateAsync"/> did, so the reconciliation sweep can
+/// distinguish a real engagement-store failure from a designed no-op. <c>Skipped</c> covers the
+/// documented degrade cases (unprovisioned tenant, Qdrant point not yet created) — folding them
+/// into <c>Failed</c> would make the sweep abandon itself during normal operation.
+/// </summary>
+internal enum PopularityUpdateOutcome { Updated, Skipped, Failed }
+
+/// <summary>
 /// One method both <see cref="PopularitySignalConsumer"/> and Task 5's reconciliation sweep call:
 /// recompute a single configured relation's child count for one parent and write it onto that
 /// parent's Qdrant point payload.
@@ -41,7 +49,7 @@ internal sealed class PopularitySignalUpdater(
     IntelligenceTenantScope tenantScope,
     ILogger<PopularitySignalUpdater> logger)
 {
-    internal async Task UpdateAsync(
+    internal async Task<PopularityUpdateOutcome> UpdateAsync(
         SchemaDescriptor parentSchema, PopularitySignalEntry signal, SchemaDescriptor childSchema,
         SchemaRelationDescriptor relation, string parentKey, string? tenantId)
     {
@@ -80,7 +88,7 @@ internal sealed class PopularitySignalUpdater(
             logger.LogError(ex,
                 "[PopularitySignal] AggregateAsync failed for parent={Parent} type={Type} relation={Relation}; skipping.",
                 parentKey.SanitizeForLog(), parentSchema.TypeName.SanitizeForLog(), signal.Relation.SanitizeForLog());
-            return;
+            return PopularityUpdateOutcome.Failed;
         }
 
         if (result is null)
@@ -91,7 +99,7 @@ internal sealed class PopularitySignalUpdater(
             logger.LogInformation(
                 "[PopularitySignal] AggregateAsync returned null for parent={Parent} type={Type}; skipping this update.",
                 parentKey.SanitizeForLog(), parentSchema.TypeName.SanitizeForLog());
-            return;
+            return PopularityUpdateOutcome.Skipped;
         }
 
         var count      = (long)(result.MetricValue ?? 0.0);
@@ -137,7 +145,10 @@ internal sealed class PopularitySignalUpdater(
             logger.LogInformation(
                 "[PopularitySignal] SetPayloadAsync NotFound for parent={Parent} collection={Collection}; skipping.",
                 parentKey.SanitizeForLog(), collection.SanitizeForLog());
+            return PopularityUpdateOutcome.Skipped;
         }
+
+        return PopularityUpdateOutcome.Updated;
     }
 }
 
