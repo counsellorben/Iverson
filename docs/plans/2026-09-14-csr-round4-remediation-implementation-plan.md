@@ -576,7 +576,7 @@ Newly introduced by this plan and verified at plan-write time:
 
 - [ ] **Step 3: Update `DlqRepository`'s SQL to match**
 
-  `InsertAsync`: add `"TenantId"` to the column list and `@TenantId` to the `VALUES` clause. `ListUnreplayedAsync`: add `"TenantId"` to the `SELECT` list. `GetUnreplayedByIdAsync`: add `"TenantId"` to the `SELECT` list.
+  `InsertAsync`: add `"TenantId"` to the column list and `@TenantId` to the `VALUES` clause. `ListUnreplayedAsync`: append `"TenantId"` as the LAST column in the `SELECT` list, matching `DlqRow`'s newly-added final constructor parameter. `GetUnreplayedByIdAsync`: append `"TenantId"` as the LAST column in the `SELECT` list, matching `DlqReplayRow`'s newly-added final constructor parameter. Dapper's record materialization requires the SELECT list's column sequence to match the target constructor's parameter names in order — a column inserted elsewhere throws `InvalidOperationException` at every call.
 
 - [ ] **Step 4: Update the mirrored test schema**
 
@@ -599,6 +599,7 @@ Newly introduced by this plan and verified at plan-write time:
 - Modify: `Iverson.Server/Iverson.Api/Reconciliation/DlqMonitorConsumer.cs`
 - Modify: `Iverson.Server/Iverson.Api/Program.cs:413-430`
 - Modify (test-only, new constructor arg): `Iverson.Server/Iverson.Api.Tests/Reconciliation/DlqMonitorConsumerTests.cs` (3 sites)
+- Modify (test-only, new fake + registration): `Iverson.Server/Iverson.Api.Tests/Helpers/StartupNoOpFakes.cs`, `Iverson.Server/Iverson.Api.Tests/Helpers/AuthTestWebApplicationFactory.cs`
 - Test: `Iverson.Server/Iverson.Api.Tests/Reconciliation/DlqMonitorConsumerTests.cs` (extend) + `Iverson.Server/Iverson.Api.Tests/AuthenticationPipelineTests.cs` (extend — this class already boots a real `WebApplicationFactory<Program>` with both the default service scheme and `"ActingUser"` scheme wired to `TestJwtFactory`'s HS256 signing key against `test-service-audience`/`test-actinguser-audience`, per `AuthTestWebApplicationFactory.cs`; its existing `AnonymousGet_AdminDlq_Returns401` test covers the fully-anonymous case, but not yet "valid service token, no acting-user header")
 
 **Interfaces:**
@@ -746,6 +747,8 @@ Newly introduced by this plan and verified at plan-write time:
   }).WithName("ReplayDlq").RequireAuthorization("Operator");
   ```
 
+  Add `using Microsoft.AspNetCore.Authentication;` to `Program.cs`'s imports — not currently present, and not part of the SDK's global-usings list — needed for `httpContext.AuthenticateAsync(...)` to resolve.
+
 - [ ] **Step 3: Add the new constructor argument to the 3 test-construction sites**
 
   In `DlqMonitorConsumerTests.cs`, add a `SchemaRegistry` argument (a real or substituted instance, matching how the file already constructs its other dependencies) to each of the 3 `new Iverson.Api.Reconciliation.DlqMonitorConsumer(...)` calls.
@@ -754,12 +757,16 @@ Newly introduced by this plan and verified at plan-write time:
 
   In `AuthenticationPipelineTests.cs`, add a test that mints a valid SERVICE-scheme token via `TestJwtFactory.CreateToken("test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")])`, attaches it as `Authorization: Bearer <token>` with NO `x-acting-user-authorization` header, calls `GET /admin/dlq`, and asserts `Unauthorized` (previously this combination would have returned 200, since the endpoint only checked the Operator policy against the service token). Add a second test that additionally mints a valid `"ActingUser"`-scheme token via `TestJwtFactory.CreateToken("test-actinguser-audience", "test-user", extraClaims: [new Claim("tenant_id", "tenant-a"), new Claim("groups", "operators")])`, attaches it as the `x-acting-user-authorization` header, and asserts the call now succeeds.
 
+  This second test reaches `dlq.ListUnreplayedAsync(200)` inside the handler. `AuthTestWebApplicationFactory` stubs only the repositories `Program.cs`'s startup-hydration path touches eagerly (`IEmbeddingService`, `ISchemaRegistryRepository`, `IEnrichmentStateRepository`, `IDocumentRerenderQueueRepository`, `IRecordStoreSchemaManager`, `ITenantRepository`, per `StartupNoOpFakes.cs`); `IDlqRepository` is a request-time dependency it never anticipated, so it resolves to the real `DlqRepository` and fails against an unreachable Postgres. Add a `NoOpDlqRepository : IDlqRepository` to `StartupNoOpFakes.cs`, matching the file's established pattern (`ListUnreplayedAsync` returns `Task.FromResult(Enumerable.Empty<DlqRow>())`, the other four members return empty/no-op results), and register it in `AuthTestWebApplicationFactory.ConfigureWebHost` alongside the other six `RemoveAll`/`AddSingleton` pairs.
+
 - [ ] **Step 5: Run and commit**
   ```bash
   dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~DlqMonitorConsumer|FullyQualifiedName~AuthenticationPipeline"
   git add Iverson.Server/Iverson.Api/Reconciliation/DlqMonitorConsumer.cs Iverson.Server/Iverson.Api/Program.cs \
           Iverson.Server/Iverson.Api.Tests/Reconciliation/DlqMonitorConsumerTests.cs \
-          Iverson.Server/Iverson.Api.Tests/AuthenticationPipelineTests.cs
+          Iverson.Server/Iverson.Api.Tests/AuthenticationPipelineTests.cs \
+          Iverson.Server/Iverson.Api.Tests/Helpers/StartupNoOpFakes.cs \
+          Iverson.Server/Iverson.Api.Tests/Helpers/AuthTestWebApplicationFactory.cs
   git commit -m "derive DLQ rows' tenant at insert time, require an acting-user token on the admin DLQ endpoints"
   ```
 
