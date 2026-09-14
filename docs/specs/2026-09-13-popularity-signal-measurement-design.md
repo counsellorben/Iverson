@@ -337,6 +337,25 @@ Two consequences to verify rather than assume:
   no relations (its keys are `_generated`, `chunkWindow`, `distance`, `collectionNaming`,
   `embedding`, `golden`), so the change should be inert — but the test must be re-run, not assumed.
 
+### Step 1b: register the changed schema
+
+Step 1 changes source only. The schema the api validates against is a **Postgres table** —
+`SchemaRegistry.LoadAsync` reads `repository.LoadAllAsync()` (`SchemaRegistry.cs:86`) — and its only
+writer is LoadTest's `SchemaRegistrar.RegisterAllAsync` (`Iverson.LoadTest/Program.cs:166`). Nothing
+else between Step 1 and Step 3 invokes it, so without this step the persisted descriptor still lacks
+`Citations` at Step 3's first boot and `ValidateAtStartup` throws exactly as it would have in Step 0.
+
+After Step 1's own checks (`IngestContractTests`, the `benchmark-ingest` confirmation) and with
+`PopularitySignal__Signals__*` still **unset**, run one command from the `needsTenantAndSchema` set.
+`benchmark-query` is the right choice: it registers and only *reads*, so it cannot rewrite the
+restored Qdrant snapshots (`Program.cs:89-90` lists it; `:154-166` is the `RegisterAllAsync` call
+site). `RegisterAllAsync` walks `EntityRegistry.All`, which is assembly-scanned for
+`[IversonEntity]` (`EntityRegistry.cs:12-22`), so a marked `BenchmarkCitation` registers in the same
+call and the child-type check is satisfied too.
+
+Confirm **both** `BenchmarkDocument` (now carrying `Citations`) and `BenchmarkCitation` are
+registered before continuing. Only then does Step 3 configure `Signals`.
+
 ### Step 2: inject
 
 A script joins `keymap.json` to `citations.json` and patches `citationsCount` onto each object
@@ -364,6 +383,9 @@ back to `WPopularity = 0.0`.
 Confirm per arm with `docker inspect` on the running container **before** the `benchmark-query` run,
 as prior gates did. An arm whose variables did not land is indistinguishable from a null result.
 
+Its first arm therefore involves **two restarts** — the `Signals`-free registering boot of Step 1b,
+then the `Signals`-configured run.
+
 ### Step 4: score
 
 `report.py --baseline <control run>`, run **once per RPC**, with Holm applied by hand across the
@@ -383,7 +405,20 @@ the arm rather than scoring it. `check_pool` has exactly one call site (`:784`, 
 and chunk-budget multiplier but not `λ` — ranked-changes item 16. The same gap now recurs for
 `WPopularity` and `SaturationPoint`: without them, which arm produced a run file is unattributable
 afterwards. Both fields are added as part of this work rather than repeating item 16's mistake with
-new constants.
+new constants — **and that is a server change, not a sidecar-dictionary change.** `benchmark-query`
+runs out of process and holds no copy of either value: its only server round trip at sidecar-write
+time is `GET /build`, which returns `{composite, assemblies}` and nothing else
+(`Program.cs:354-358`), and neither option name appears anywhere in `Iverson.LoadTest`.
+
+The route is server-side, so the sidecar records what the server **applied** rather than what the
+operator **intended** — the same distinction Step 3's `docker inspect` requirement enforces. Extend
+`/build`'s response with the effective `WPopularity` and `SaturationPoint`, read from the already
+DI-registered `IOptions<VectorRankingOptions>` and `IOptions<PopularitySignalOptions>`
+(`Program.cs:224,226`), and have `BenchmarkQueryScenario` copy them into `*.meta.json` alongside
+`composite`.
+
+`λ` stays unrecorded. Item 16 is a real gap but a pre-existing one, and closing it is not this
+experiment's scope.
 
 ## Pre-registration
 
@@ -512,6 +547,9 @@ disk-cached, so it costs wall-clock rather than risk. A free API key would reduc
 | A39 | A candidate with no popularity value keeps `fused_new = fused_old` | `ResultReranker.cs:53-57` adds `WPopularity` to `weightedSum` **and** `weightTotal` under one `hasPopularity` guard. Unresolved rate measured over the full cache: 112 of 1,400 = 8.0%, ~4.0 per 50-document pool |
 | A40 | The truncated pool overstates the ceiling | 311 of 339 positive judgments lie inside their own query's recorded 50 (computed over the complete judgment set against `sci-2048.similar.trec`); ranks 51-200 × 300 queries = 45,000 slots holding ≤28 relevant = 99.938% non-relevant. `OverFetchFactor` = 4 per `EngagementQueryLimitOptions.cs:76` |
 | A41 | No chunk hit dump exists for `sci-2048` | `find /home/ben/repositories/iverson-benchmark-corpora -name "*hits*"` → exactly three files, all `fs2048-*` FreshStack chunk-coverage dumps; `scifact-2048-2026-09-06/runs/` has none. Writer is `BenchmarkQueryScenario.cs:306`, consumed at `BenchmarkAggregateScenario.cs:38` — it postdates the archived run |
+| A42 | `Engagement:Enabled` is true on the Phase 2 stack, so a non-empty `Signals` does not throw | the key is absent from `Iverson.Server/docker-compose.yml` and from every `appsettings*.json` (present only in the Helm chart), so `cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true)` at `Program.cs:452` yields `true`; the throw at `PopularitySignalOptions.cs:81-85` is unreachable here |
+| A43 | The schema registry is Postgres-persisted and LoadTest is its only writer | `SchemaRegistry.LoadAsync` reads `repository.LoadAllAsync()` (`SchemaRegistry.cs:86`); sole writer is `SchemaRegistrar.RegisterAllAsync` (`Iverson.LoadTest/Program.cs:166`) under `if (needsTenantAndSchema)`, whose set is `seed`/`write-path`/`read-path`/`all`/`benchmark-ingest`/`benchmark-query` (`:89-90`). `RegisterAllAsync` walks `EntityRegistry.All`, assembly-scanned for `[IversonEntity]` (`EntityRegistry.cs:12-22`, `:103`); `:28` throws if a marked type has no `[IversonKey]`. `BenchmarkQueryScenario` performs no Qdrant writes (zero `Upsert`/`SetPayload`/`Delete`), so it registers without disturbing restored snapshots |
+| A44 | The sidecar's new fields need a server-side source | `GET /build` returns exactly `{composite, assemblies}` (`Program.cs:354-358`, `.AllowAnonymous()`); `WPopularity`, `SaturationPoint`, `LambdaSimilar`, `LambdaChunks`, `RecencyBoost` each return **zero** hits across `Iverson.LoadTest`. Both options types are DI-registered (`Program.cs:224,226`; `Options.Create(opts)` at `PopularitySignalOptions.cs:50`), so an endpoint can read the effective values |
 | — | ~~The popularity signal has no time decay~~ **Superseded 2026-09-14:** a decay term ships (`b32f870`) but is inert at the default `RecencyBoost = 0.0`, so the measured transform is unchanged | `PopularityFor` is `count/(count+S)` with no clock (`ObjectSearchGrpcService.cs:1019`); `ResultReranker`'s doc comment states it "reads no clock"; `PopularitySignalConsumer.cs:60` aggregates an unfiltered `COUNT(*)` with no date predicate |
 | — | `WDecay` cannot control for document age here | `BenchmarkDocument` declares no date property, so `DecayFieldResolver` returns null and the decay term is inert on this corpus |
 | — | `publicationDate` is available and finer than `year` | Probe of 40 ids: 38 resolved, `year` 38/38, `publicationDate` 38/38, month-granular (e.g. `1998-10-01`), occasionally day-granular (`1993-11-15`) |
