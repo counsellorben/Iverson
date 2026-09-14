@@ -157,6 +157,19 @@ def test_check_order_changed_exits_when_zero_queries_reorder():
         pr.check_order_changed(pool, reranked_pool)
 
 
+def test_check_order_changed_ignores_scores_that_moved_without_reordering_the_doc_ids():
+    """THE ORDER TEST, distinct from the two above: 'a' and 'b' both get pulled down hard (0.6->0.1,
+    0.5->0.05) but 'a' still ranks ahead of 'b' -- the SEQUENCE of doc ids is identical even though
+    every score changed. Assertion 1 checks order, not scores; on real data at any W > 0 every score
+    moves, so a version that compared full rows instead of doc-id sequences would be tautologically
+    true on every real run and could never catch a silent no-op. This must count as UNCHANGED and,
+    as the only query in the pool, must raise SystemExit exactly like the all-zero case above."""
+    pool = {"q1": [("a", 0.6, "t"), ("b", 0.5, "t")]}
+    reranked_pool = {"q1": [("a", 0.1, "t"), ("b", 0.05, "t")]}
+    with pytest.raises(SystemExit):
+        pr.check_order_changed(pool, reranked_pool)
+
+
 # --------------------------------------------------------------------------------------------
 # Step 2 assertion 2 -- the absent set must be non-empty AND every score unchanged
 # --------------------------------------------------------------------------------------------
