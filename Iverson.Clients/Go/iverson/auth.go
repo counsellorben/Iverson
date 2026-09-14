@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+// tokenHTTPClient is a redirect-refusing HTTP client used for OAuth2 token requests.
+// It rejects any redirect responses to prevent credential leakage through open redirects.
+var tokenHTTPClient = &http.Client{
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
 type actingUserTokenKey struct{}
 
 // ActingUserMetadataKey is the gRPC metadata key carrying the acting-user's
@@ -97,6 +105,15 @@ func (c *OAuth2ClientCredentials) getToken(ctx context.Context) (string, error) 
 		return c.token, nil
 	}
 
+	if !c.AllowInsecureCredentials {
+		u, err := url.Parse(c.TokenEndpoint)
+		if err != nil || u.Scheme != "https" {
+			return "", fmt.Errorf(
+				"refusing to send OAuth2 client credentials to a non-https token endpoint %q "+
+					"without AllowInsecureCredentials=true", c.TokenEndpoint)
+		}
+	}
+
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
 	form.Set("client_id", c.ClientID)
@@ -111,7 +128,7 @@ func (c *OAuth2ClientCredentials) getToken(ctx context.Context) (string, error) 
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := tokenHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("requesting token: %w", err)
 	}
