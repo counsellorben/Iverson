@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Http.Headers;
+using System.Security.Claims;
 using FluentAssertions;
 using Iverson.Api.Tests.Helpers;
 using Xunit;
@@ -53,5 +55,42 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         var response = await _client.GetAsync("/admin/dlq");
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ServiceTokenOnly_GetAdminDlq_Returns401()
+    {
+        // Regression test: /admin/dlq used to only check the Operator policy against whichever
+        // principal authenticated under the default scheme, so a valid service-to-service token
+        // with an "operators" group claim would have satisfied RequireAuthorization("Operator")
+        // and returned 200 with no acting-user context at all. The endpoint must also require a
+        // separately-authenticated "ActingUser" token before it does anything else.
+        var token = TestJwtFactory.CreateToken(
+            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/admin/dlq");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await _client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ServiceTokenAndActingUserToken_GetAdminDlq_Succeeds()
+    {
+        var serviceToken = TestJwtFactory.CreateToken(
+            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
+        var actingUserToken = TestJwtFactory.CreateToken(
+            "test-actinguser-audience", "test-user",
+            extraClaims: [new Claim("tenant_id", "tenant-a"), new Claim("groups", "operators")]);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/admin/dlq");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", serviceToken);
+        request.Headers.Add("x-acting-user-authorization", $"Bearer {actingUserToken}");
+
+        var response = await _client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 }

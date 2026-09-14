@@ -77,3 +77,15 @@ internal sealed class NoOpTenantRepository : ITenantRepository
     public Task UpdateStatusAsync(string id, string status) => Task.CompletedTask;
     public Task DeleteAsync(string id) => Task.CompletedTask;
 }
+
+// /admin/dlq now authenticates the acting user before calling IDlqRepository.ListUnreplayedAsync,
+// a request-time dependency the startup-hydration stubs above never anticipated. Without this
+// fake, that call resolves to the real DlqRepository and fails against an unreachable Postgres.
+internal sealed class NoOpDlqRepository : IDlqRepository
+{
+    public Task InsertAsync(DlqMessage message) => Task.CompletedTask;
+    public Task<IEnumerable<DlqRow>> ListUnreplayedAsync(int limit) => Task.FromResult(Enumerable.Empty<DlqRow>());
+    public Task<DlqReplayRow?> GetUnreplayedByIdAsync(Guid id) => Task.FromResult<DlqReplayRow?>(null);
+    public Task MarkReplayedAsync(Guid id) => Task.CompletedTask;
+    public Task<int> CountUnreplayedAsync() => Task.FromResult(0);
+}

@@ -17,6 +17,7 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Options;
@@ -412,15 +413,36 @@ app.MapPost("/admin/reconcile/{typeName}", async (
 
 app.MapGet("/admin/dlq", async (IDlqRepository dlq, AuditLog audit, HttpContext httpContext) =>
 {
+    var actingUserResult = await httpContext.AuthenticateAsync("ActingUser");
+    if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
+        return Results.Unauthorized();
+
+    var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
+    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(
+        actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
+        actingUserResult.Principal.FindFirst("scope")?.Value);
+
     var rows = await dlq.ListUnreplayedAsync(200);
+    var visible = rows.Where(r => r.TenantId == actingTenantId || (r.TenantId is null && isOperator));
     audit.AdminOperation(httpContext.User, "ListDlq", null);
-    return Results.Ok(rows);
+    return Results.Ok(visible);
 }).WithName("ListDlq").RequireAuthorization("Operator");
 
 app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEventProducer events, AuditLog audit, HttpContext httpContext) =>
 {
+    var actingUserResult = await httpContext.AuthenticateAsync("ActingUser");
+    if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
+        return Results.Unauthorized();
+
     var row = await dlq.GetUnreplayedByIdAsync(id);
     if (row is null) return Results.NotFound(new { error = $"No unreplayed DLQ row with id '{id}'" });
+
+    var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
+    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(
+        actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
+        actingUserResult.Principal.FindFirst("scope")?.Value);
+    if (row.TenantId != actingTenantId && !(row.TenantId is null && isOperator))
+        return Results.Forbid();
 
     await events.ProduceAsync(row.SourceTopic, row.MessageKey, row.MessageValue);
     await dlq.MarkReplayedAsync(id);

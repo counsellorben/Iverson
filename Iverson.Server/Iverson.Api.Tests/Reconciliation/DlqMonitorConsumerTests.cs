@@ -1,5 +1,6 @@
 using Confluent.Kafka;
 using FluentAssertions;
+using Iverson.Api.Schema;
 using Iverson.Sql;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -16,6 +17,7 @@ public class DlqMonitorConsumerTests
         var sut = new Iverson.Api.Reconciliation.DlqMonitorConsumer(
             Substitute.For<Iverson.Events.IEventConsumer>(),
             dlq,
+            new SchemaRegistry(Substitute.For<ISchemaRegistryRepository>(), NullLogger<SchemaRegistry>.Instance),
             NullLogger<Iverson.Api.Reconciliation.DlqMonitorConsumer>.Instance);
 
         var headers = new Headers
@@ -43,6 +45,7 @@ public class DlqMonitorConsumerTests
         var dlq = Substitute.For<IDlqRepository>();
         var sut = new Iverson.Api.Reconciliation.DlqMonitorConsumer(
             Substitute.For<Iverson.Events.IEventConsumer>(), dlq,
+            new SchemaRegistry(Substitute.For<ISchemaRegistryRepository>(), NullLogger<SchemaRegistry>.Instance),
             NullLogger<Iverson.Api.Reconciliation.DlqMonitorConsumer>.Instance);
 
         var headers = new Headers
@@ -73,6 +76,7 @@ public class DlqMonitorConsumerTests
         dlq.InsertAsync(Arg.Do<DlqMessage>(m => captured = m)).Returns(Task.CompletedTask);
         var sut = new Iverson.Api.Reconciliation.DlqMonitorConsumer(
             Substitute.For<Iverson.Events.IEventConsumer>(), dlq,
+            new SchemaRegistry(Substitute.For<ISchemaRegistryRepository>(), NullLogger<SchemaRegistry>.Instance),
             NullLogger<Iverson.Api.Reconciliation.DlqMonitorConsumer>.Instance);
 
         var failedAt = new DateTimeOffset(2026, 7, 12, 16, 23, 52, TimeSpan.Zero);
