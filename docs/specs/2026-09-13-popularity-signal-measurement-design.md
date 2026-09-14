@@ -105,6 +105,21 @@ fused_new = (0.45·base + 0.45·centroid + W·pop) / (0.90 + W)
           = (0.90·fused_old + W·pop) / (0.90 + W)
 ```
 
+**The identity applies only to candidates that have a popularity value.** `ResultReranker.cs:53-57`
+adds `WPopularity` to the weighted sum *and* to the weight total under the same `hasPopularity`
+guard, so a candidate whose payload carries no count keeps the unchanged divisor:
+
+```
+pop present:  fused_new = (0.90·fused_old + W·pop) / (0.90 + W)
+pop absent:   fused_new = fused_old
+```
+
+Phase 1's re-ranking must implement both branches. Substituting `pop = 0` for the absent set would
+score those documents at 0.0 and punish them hard; substituting a median would pull them toward the
+pool. Both model a server that does not exist. The unresolved set is ~6% by this spec's own estimate
+and **8.0%** across the 1,288 ids cached so far — about four documents in a 50-document pool, large
+enough to move nDCG@10.
+
 The recorded score is a sufficient statistic: Phase 1 reproduces the server's re-ranking exactly
 from the run file alone, with no components and no re-ingest. Scoring needs no running server; the
 one prerequisite below needs Qdrant restored, but not the API.
@@ -113,7 +128,16 @@ one prerequisite below needs Qdrant restored, but not the API.
 `Take(topK)` exactly" (`IResultDiversifier.cs:13`, and `ResultDiversifier.cs:74-75` collapses the
 MMR objective to the fused score at that λ). So `.similar.trec`'s score column *is* the fused score,
 and `SearchSimilar` is Phase 1's primary arm. `LambdaChunks = 0.70` leaves MMR active on the chunk
-path, so chunks is secondary and must work from the raw hit dump rather than the run file.
+path, so `.chunks.trec`'s score column is *not* the fused score and the identity cannot be applied
+to it. Re-deriving it needs the raw hit dump (`<label>.chunks.hits.tsv`, written by
+`BenchmarkQueryScenario.cs:306`), and **no such dump exists for `sci-2048`** — the archived run
+predates the writer, and the only three dumps in the corpora repository are FreshStack
+chunk-coverage runs. Producing one means a live `benchmark-query` run, which contradicts this
+phase's "scoring needs no running server".
+
+**Phase 1 is therefore `SearchSimilar`-only.** This costs the screen nothing: the Gate is already
+stated on `SearchSimilar`, and the chunks RPC re-enters at Phase 2 as the second member of the Holm
+family.
 
 ### Prerequisite: confirm the divisor is uniform
 
@@ -169,8 +193,20 @@ because searching the wrong one makes the control run look missing.
    c. Re-run measurement 3 as an **age-preserving null**: permute counts *within* age strata,
       destroying the doc↔count pairing while preserving the age structure. A real ceiling that
       beats this null is not an age effect.
+
+      **Stratum definition — fixed before the ceilings are computed (chosen 2026-09-14).** Fixed
+      **5-year calendar strata** on `publicationDate`, falling back to `year` where
+      `publicationDate` is absent. Documents with a resolved count and no date of either kind form
+      **their own stratum, permuted among themselves**. Both the real and the null ceiling are
+      computed over the identical full population, so the two are never compared across different
+      document sets. The no-date stratum preserves no age structure by construction — it behaves as
+      a plain shuffle for that subset — so **its size is reported alongside the ceilings**, not
+      folded in silently. This is the choice the Phase 1 gate binds on; it is recorded here rather
+      than decided after the ceilings are seen.
    d. Report the ceiling for **citations per year** (`count / age`) as an alternative signal
-      alongside the raw count. This is the cheap age-de-confounded variant: it costs no extra
+      alongside the raw count. `age` is derived from the same date field with the same
+      `publicationDate` → `year` fallback as 4c; documents with no date of either kind have no
+      denominator and are **excluded** from this ceiling, with the excluded count reported. This is the cheap age-de-confounded variant: it costs no extra
       fetching, and it is the closest thing to a rate that the data supports for free.
 
    `publicationDate` is fetched in the same API call as the count — month-granular, occasionally
@@ -244,14 +280,36 @@ free partial read on whether rate carries more signal than total.
 
 `benchmark-query` requests `DocumentBudget = 50` and the server over-fetches 4×, so the server ranks
 over 200 candidates while the run file records 50. Offline re-ranking cannot see a document promoted
-from rank 51. This **understates** the ceiling, so a screen that clears the bar on the truncated
-pool would also clear it on the full one. The bias runs in the safe direction and is not corrected.
+from rank 51.
+
+**This overstates the ceiling, not understates it.** (Corrected 2026-09-14; the paragraph previously
+claimed the opposite.) 311 of the 339 judgments already sit inside the recorded 50, leaving at most
+28 relevant documents for ranks 51-200 across all 300 queries — 45,000 candidate slots that are
+therefore ~99.94% non-relevant. Live, those candidates compete for top-10 places against documents
+offline re-ranking has already scored; almost every promotion displaces a better-judged document.
+The live effect is smaller than the offline ceiling.
+
+**The consequence for the gate.** The GO direction does not transfer: clearing 0.0152 offline is
+necessary, not sufficient. The NO-GO direction does — a signal that cannot clear the bar on the pool
+where 92% of the relevance lives will not be rescued by 150 slots that are 99.94% non-relevant.
+Phase 1 is trustworthy as a screen that *stops* work, not as one that licenses it — which is what
+"decide whether Phase 2's server time is worth spending" already asks of it.
 
 ## Phase 2 — live gate
 
 ### Step 0: reproduction check
 
-Restore both snapshots, configure `Signals` with `WPopularity = 0`, and run `benchmark-query`.
+Restore both snapshots, leave `PopularitySignal__Signals__*` **unset**, set
+`VectorRanking__WPopularity = 0`, and run `benchmark-query`.
+
+**`Signals` must not be configured until Step 1's relation exists.** `ValidateAtStartup` warns and
+skips only when the ParentType is unregistered (`PopularitySignalOptions.cs:89-97`); a *registered*
+`BenchmarkDocument` whose `Citations` relation is missing **throws** instead (`:104-108`), and that
+runs at `Program.cs:449`, before `app.Run()` (`:550`). With `restart: unless-stopped` on
+`iverson-api` the container then crash-loops, and `RegisterSchema` — the only way to add the
+relation — is served by the process that cannot start. Configure `Signals` from Step 2 onward.
+Leaving it unset costs this check nothing: `ValidateAtStartup` iterates `options.Signals` and does
+nothing when it is empty, and `PopularityFor` returns `null` when no signal matches the type.
 Because `W = 0` contributes zero to both the weighted sum and the weight total
 (`ResultReranker.cs:53-57`), this must reproduce `sci-2048.similar.trec` **byte-identically**.
 
@@ -291,14 +349,33 @@ The payload key is `Relation.ToCamelCase() + "Count"` and is read back through `
 ### Step 3: arms
 
 Control (`W = 0`) and the single pre-registered cell. Each arm is a server restart setting
-`VectorRanking__WPopularity` and `PopularitySignal__SaturationPoint`, then one `benchmark-query`
-run, one TREC file per RPC.
+`VectorRanking__WPopularity`, `PopularitySignal__SaturationPoint`, and — from Step 2 onward —
+`PopularitySignal__Signals__0__ParentType` and `PopularitySignal__Signals__0__Relation`, then one
+`benchmark-query` run, one TREC file per RPC.
+
+**These keys must first be added to `Iverson.Server/docker-compose.yml`'s `iverson-api`
+`environment:` list.** That list is an explicit allowlist with no `env_file`, so a host variable not
+named there never enters the process and the arm silently runs as a byte-identical control, with no
+error. Add them in the bare pass-through form already used for
+`VectorRanking__SimilarViaChunksTypes__0` (`:451`) — a key with no `=`, which Compose resolves from
+the host environment and omits when unset, so the control arm needs no special handling and falls
+back to `WPopularity = 0.0`.
+
+Confirm per arm with `docker inspect` on the running container **before** the `benchmark-query` run,
+as prior gates did. An arm whose variables did not land is indistinguishable from a null result.
 
 ### Step 4: score
 
-`report.py` with `--pair RUN=BASELINE`, which checks pool invariance before comparing, then reports
-paired t, seeded sign-flip permutation, 95% CI, Cohen's d_z, MDE, and Holm-adjusted p across the
-declared family. Written up as `docs/plans/2026-09-GATE-relation-popularity.md`.
+`report.py --baseline <control run>`, run **once per RPC**, with Holm applied by hand across the
+two-RPC family (`holm_adjust`, `report.py:471`). It reports paired t, seeded sign-flip permutation,
+95% CI, Cohen's d_z and MDE. Written up as `docs/plans/2026-09-GATE-relation-popularity.md`.
+
+**Not `--pair`.** `--pair` routes through `check_pool` (`report.py:732`), which `sys.exit`s unless
+each query's doc-id *set* is unchanged — a precondition written for rerankers that reorder a fixed
+pool. A fused `WPopularity` weight is applied server-side across the over-fetched candidate set
+*before* the top-50 is cut, so the recorded set changes on nearly every query and `--pair` refuses
+the arm rather than scoring it. `check_pool` has exactly one call site (`:784`, inside
+`run_pair_statistics`); the `--baseline` route (`run_paired_statistics`, `:630`) does not call it.
 
 ### Sidecar attribution
 
@@ -420,7 +497,7 @@ disk-cached, so it costs wall-clock rather than risk. A free API key would reduc
 | A26 | `ingest-contract.json` encodes no relations | Keys are `_generated`, `chunkWindow`, `distance`, `collectionNaming`, `embedding`, `golden` |
 | A27 | Base-score spread | **Failed as originally stated.** Not ~0.07: measured on `sci-2048.similar.trec`, rank1→rank50 spread is median 0.1621 (p10 0.1006, p90 0.2499), magnitude 0.42–0.88. This is why `W` is pre-registered as a rule rather than a number |
 | A29 | `SearchSimilar` top_k is 50 | `BenchmarkQueryScenario.cs:42`, `DocumentBudget = 50`; over-fetch 4× → 200-candidate pool |
-| — | Citation counts have usable variance | n = 375: min 3, p25 75, median 186, p75 460, p90 1,196, max 75,285; zero documents with 0 citations |
+| — | Citation counts have usable variance | n = 375: min 3, p25 75, median 186, p75 460, p90 1,196, max 75,285. **Corrected 2026-09-14 on n = 1,288:** min 0, p25 95, median 235, max 67,471 — and the "zero documents with 0 citations" claim is **false**: CorpusId 4810810 has 0. The count=0 population is small but non-empty; the Pre-registration's "Missing counts" paragraph already distinguishes it from absent (`pop = 0.0`, punished hard) |
 | — | Counts carry relevance information | AUC 0.6201 vs. random non-relevant (95% CI [0.569, 0.672], z ≈ 4.55) |
 | — | The shipped `SaturationPoint = 50` suits this corpus | **No.** At S = 50 the median maps to 0.788 and IQR is 0.303; S ≈ 300 maximises spread (IQR 0.409). S = 50 compresses the corpus into the saturated tail |
 | A30 | `RecencyBoost` defaults to `0.0`, so the shipped default transform is exactly `count/(count+S)` | `PopularitySignalOptions.cs:17`; `PopularityFor` (`ObjectSearchGrpcService.cs:1040`) computes `effective = count + RecencyBoost × D` |
@@ -429,6 +506,12 @@ disk-cached, so it costs wall-clock rather than risk. A free API key would reduc
 | A33 | The existing cache cannot supply dates, and resuming would not fix it | `citations-countonly.json.bak` has top-level keys `counts`, `unresolved` only — no `years`/`dates`; `fetch_citations.py:43` computes `known` from those two, so cached ids are skipped |
 | A34 | The count + date fetch is cheap; the per-citation decay fetch is ~2.9 h | 5,183 corpus ids, 1,400 already known → 38 batches to resume / 52 clean, at 1.2 s keyed or 3.0 s anonymous. Decay arm: measured mean 985 citations over 1,288 papers → 8,797 paged requests ≈ 2.9 h keyed |
 | A35 | `WDecay` still cannot control for document age | `BenchmarkDocument.cs` declares `Id`, `DocId`, `Title`, `Body`, `OwnerId` — no date property. Unchanged by `b32f870` |
+| A36 | `check_pool` has one call site and the `--baseline` route bypasses it | `grep -n 'check_pool' report.py` → definition `:732`, single call `:784` inside `run_pair_statistics`; `run_paired_statistics` (`:630`) contains none. Set-equality test at `:746`; `POOL_MIN_REORDERED_FRACTION = 0.25` at `:700`. The historical `--baseline` generator bug is fixed: `:350`/`:359` require one materialised run, `:663` `baseline_values` is a dict comprehension |
+| A37 | In-process env binding does not imply the container receives the variable | `grep -nE "WPopularity\|PopularitySignal\|env_file" Iverson.Server/docker-compose.yml` → **zero hits**. The `iverson-api` `environment:` list (`:445-451`) is an explicit allowlist; `:451` `VectorRanking__SimilarViaChunksTypes__0` is the bare pass-through form. A19/A20 verified the binder, not the boundary |
+| A38 | `ValidateAtStartup` throws for a registered parent whose relation is missing | warn-and-skip is the unregistered branch only (`PopularitySignalOptions.cs:89-97`); missing relation is `?? throw` (`:104-108`). Runs at `Program.cs:449`, before `app.Run()` (`:550`); `iverson-api` carries `restart: unless-stopped`. Empty `Signals` is a no-op — the method body opens with `foreach (var signal in options.Signals)`, no pre-loop check |
+| A39 | A candidate with no popularity value keeps `fused_new = fused_old` | `ResultReranker.cs:53-57` adds `WPopularity` to `weightedSum` **and** `weightTotal` under one `hasPopularity` guard. Unresolved rate measured over the full cache: 112 of 1,400 = 8.0%, ~4.0 per 50-document pool |
+| A40 | The truncated pool overstates the ceiling | 311 of 339 positive judgments lie inside their own query's recorded 50 (computed over the complete judgment set against `sci-2048.similar.trec`); ranks 51-200 × 300 queries = 45,000 slots holding ≤28 relevant = 99.938% non-relevant. `OverFetchFactor` = 4 per `EngagementQueryLimitOptions.cs:76` |
+| A41 | No chunk hit dump exists for `sci-2048` | `find /home/ben/repositories/iverson-benchmark-corpora -name "*hits*"` → exactly three files, all `fs2048-*` FreshStack chunk-coverage dumps; `scifact-2048-2026-09-06/runs/` has none. Writer is `BenchmarkQueryScenario.cs:306`, consumed at `BenchmarkAggregateScenario.cs:38` — it postdates the archived run |
 | — | ~~The popularity signal has no time decay~~ **Superseded 2026-09-14:** a decay term ships (`b32f870`) but is inert at the default `RecencyBoost = 0.0`, so the measured transform is unchanged | `PopularityFor` is `count/(count+S)` with no clock (`ObjectSearchGrpcService.cs:1019`); `ResultReranker`'s doc comment states it "reads no clock"; `PopularitySignalConsumer.cs:60` aggregates an unfiltered `COUNT(*)` with no date predicate |
 | — | `WDecay` cannot control for document age here | `BenchmarkDocument` declares no date property, so `DecayFieldResolver` returns null and the decay term is inert on this corpus |
 | — | `publicationDate` is available and finer than `year` | Probe of 40 ids: 38 resolved, `year` 38/38, `publicationDate` 38/38, month-granular (e.g. `1998-10-01`), occasionally day-granular (`1993-11-15`) |
