@@ -13,7 +13,7 @@ public class DlqRepositoryTests
     {
         var sql = Substitute.For<IRecordStoreQueryExecutor>();
         var repo = new DlqRepository(TableName, sql);
-        var msg = new DlqMessage("topic", "group", "key", "value", "Ex", "msg", 1, DateTime.UtcNow);
+        var msg = new DlqMessage("topic", "group", "key", "value", "Ex", "msg", 1, DateTime.UtcNow, "tenant-a");
 
         await repo.InsertAsync(msg);
 
@@ -27,7 +27,7 @@ public class DlqRepositoryTests
     {
         var sql = Substitute.For<IRecordStoreQueryExecutor>();
         sql.QueryAsync<DlqRow>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns(new List<DlqRow> { new(Guid.NewGuid(), "t", "g", "k", null, null, 0, DateTime.UtcNow, false) });
+           .Returns(new List<DlqRow> { new(Guid.NewGuid(), "t", "g", "k", null, null, 0, DateTime.UtcNow, false, null) });
         var repo = new DlqRepository(TableName, sql);
 
         var result = (await repo.ListUnreplayedAsync(200)).ToList();
@@ -43,7 +43,7 @@ public class DlqRepositoryTests
     {
         var sql = Substitute.For<IRecordStoreQueryExecutor>();
         sql.QuerySingleOrDefaultAsync<DlqReplayRow>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns(new DlqReplayRow("t", "k", "v"));
+           .Returns(new DlqReplayRow("t", "k", "v", null));
         var repo = new DlqRepository(TableName, sql);
 
         var result = await repo.GetUnreplayedByIdAsync(Guid.NewGuid());

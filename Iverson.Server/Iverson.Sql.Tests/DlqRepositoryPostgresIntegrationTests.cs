@@ -74,6 +74,7 @@ public sealed class DlqRepositoryPostgresIntegrationTests(DlqRepositoryPostgresC
             new("Attempts",         "integer", false),
             new("FailedAt",         "timestamptz", false),
             new("Replayed",         "boolean", false),
+            new("TenantId",         "text", true),
         });
 
     private readonly PostgresRepository _repo = fixture.Repository;
@@ -90,7 +91,7 @@ public sealed class DlqRepositoryPostgresIntegrationTests(DlqRepositoryPostgresC
         var repo = new DlqRepository(TableName, _repo);
         var message = new DlqMessage(
             "iverson.events.article", "iverson.consumer.intelligence-store", "article-123",
-            """{"id":"article-123"}""", "System.Exception", "boom", 3, DateTime.UtcNow);
+            """{"id":"article-123"}""", "System.Exception", "boom", 3, DateTime.UtcNow, "tenant-a");
 
         await repo.InsertAsync(message);
 
@@ -103,6 +104,7 @@ public sealed class DlqRepositoryPostgresIntegrationTests(DlqRepositoryPostgresC
         rows[0].MessageKey.Should().Be("article-123");
         rows[0].Attempts.Should().Be(3);
         rows[0].Replayed.Should().BeFalse();
+        rows[0].TenantId.Should().Be("tenant-a");
     }
 
     [Fact]
@@ -113,7 +115,7 @@ public sealed class DlqRepositoryPostgresIntegrationTests(DlqRepositoryPostgresC
 
         var repo = new DlqRepository(TableName, _repo);
         var message = new DlqMessage(
-            "topic", "group", "key-to-replay", "value", null, null, 1, DateTime.UtcNow);
+            "topic", "group", "key-to-replay", "value", null, null, 1, DateTime.UtcNow, null);
         await repo.InsertAsync(message);
 
         var inserted = (await repo.ListUnreplayedAsync(10)).ToList();

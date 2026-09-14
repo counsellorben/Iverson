@@ -25,5 +25,6 @@ internal static class DlqSchema
             new("Attempts",         "integer", false),
             new("FailedAt",         "timestamptz", false),
             new("Replayed",         "boolean", false),
+            new("TenantId",         "text", true),
         });
 }
