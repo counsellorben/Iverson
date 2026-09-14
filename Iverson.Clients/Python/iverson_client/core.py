@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import re
+import urllib.parse
 import uuid
 from dataclasses import dataclass
 from typing import Generic, List, Mapping, Optional, TypeVar, get_args, get_origin, get_type_hints
@@ -858,6 +859,18 @@ class IversonClient:
                 "satisfy that check is NOT real TLS/encryption, so a Bearer token or "
                 "acting-user token would otherwise be sent in the clear. Pass "
                 "allow_insecure_credentials=True only for a known-local, non-TLS endpoint."
+            )
+
+        if (
+            credentials is not None
+            and urllib.parse.urlparse(credentials.token_endpoint).scheme != "https"
+            and not allow_insecure_credentials
+        ):
+            raise ValueError(
+                "Refusing to send OAuth2 client credentials to a non-https token endpoint "
+                f"({credentials.token_endpoint!r}) without an explicit "
+                "allow_insecure_credentials=True opt-in. Set True only for a known-local, "
+                "non-TLS token endpoint."
             )
 
         if credentials is not None:

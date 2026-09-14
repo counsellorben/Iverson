@@ -75,6 +75,60 @@ def test_client_with_credentials_and_plaintext_succeeds_with_opt_in(monkeypatch)
     assert client is not None
 
 
+def test_client_with_plaintext_token_endpoint_raises_without_opt_in():
+    """Closes CSR finding #2: credentials with a plaintext (http://) token endpoint must
+    be rejected without an explicit allow_insecure_credentials=True opt-in, even if the
+    channel itself is TLS-encrypted."""
+    with pytest.raises(ValueError, match="non-https token endpoint"):
+        IversonClient(
+            host="localhost",
+            port=5000,
+            use_tls=True,
+            credentials=IversonClientCredentials(
+                "id", "secret", "http://localhost:9000/application/o/token/"
+            ),
+        )
+
+
+def test_client_with_plaintext_token_endpoint_succeeds_with_opt_in(monkeypatch):
+    """The matching positive leg: a plaintext token endpoint succeeds once the caller
+    has explicitly set allow_insecure_credentials=True."""
+    monkeypatch.setattr(
+        "iverson_client.core.mapping_grpc.ObjectMappingServiceStub", lambda channel: object()
+    )
+
+    client = IversonClient(
+        host="localhost",
+        port=5000,
+        use_tls=True,
+        credentials=IversonClientCredentials(
+            "id", "secret", "http://localhost:9000/application/o/token/"
+        ),
+        allow_insecure_credentials=True,
+    )
+
+    assert client is not None
+
+
+def test_client_with_https_token_endpoint_succeeds_without_opt_in(monkeypatch):
+    """An https token endpoint should always be allowed, without requiring
+    allow_insecure_credentials=True."""
+    monkeypatch.setattr(
+        "iverson_client.core.mapping_grpc.ObjectMappingServiceStub", lambda channel: object()
+    )
+
+    client = IversonClient(
+        host="localhost",
+        port=5000,
+        use_tls=True,
+        credentials=IversonClientCredentials(
+            "id", "secret", "https://localhost:9000/application/o/token/"
+        ),
+    )
+
+    assert client is not None
+
+
 def test_client_with_use_tls_and_credentials_uses_ssl_channel_credentials(monkeypatch):
     """Regression test for the whole-branch review finding: use_tls=True was silently
     ignored whenever the composite-channel-credentials branch was entered, because that
@@ -115,7 +169,7 @@ def test_client_with_use_tls_and_credentials_uses_ssl_channel_credentials(monkey
         host="prod.example.com",
         port=5000,
         use_tls=True,
-        credentials=IversonClientCredentials("id", "secret", "http://localhost:9000/application/o/token/"),
+        credentials=IversonClientCredentials("id", "secret", "https://localhost:9000/application/o/token/"),
     )
 
     # use_tls=True must select ssl_channel_credentials as the base, not the
@@ -161,7 +215,7 @@ def test_client_without_use_tls_and_credentials_uses_ssl_channel_credentials(mon
     IversonClient(
         host="localhost",
         port=5000,
-        credentials=IversonClientCredentials("id", "secret", "http://localhost:9000/application/o/token/"),
+        credentials=IversonClientCredentials("id", "secret", "https://localhost:9000/application/o/token/"),
     )
 
     assert captured["base_creds"] is ssl_sentinel
