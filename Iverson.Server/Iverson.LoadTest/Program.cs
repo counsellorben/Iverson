@@ -41,9 +41,9 @@ var actingUserHostHeader = Environment.GetEnvironmentVariable("IVERSON_ACTING_US
 var actingUserClientId    = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_CLIENT_ID")    ?? "dev-iverson-loadtest-human-client-id";
 var actingUserRedirectUri = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_REDIRECT_URI") ?? "http://localhost/placeholder-callback";
 var actingUserUsername = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_USERNAME") ?? "iverson-acting-user-smoke-test";
-var actingUserPassword = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_PASSWORD") ?? "dev-only-not-for-production-smoke-test-password-0123456789";
+var actingUserPassword = RequireEnv("IVERSON_ACTING_USER_PASSWORD");
 var actingUserBypassUsername = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_USERNAME") ?? "iverson-loadtest-bypass-user";
-var actingUserBypassPassword = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_PASSWORD") ?? "dev-only-not-for-production-bypass-password-0123456789";
+var actingUserBypassPassword = RequireEnv("IVERSON_ACTING_USER_BYPASS_PASSWORD");
 var tenantProvisionId   = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ID") ?? "iverson-loadtest-dynamic";
 var tenantAdminUsername = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_USERNAME") ?? "iverson-loadtest-tenant-admin";
 var tenantAdminEmail    = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_EMAIL") ?? "iverson-loadtest-tenant-admin@iverson.local";
@@ -300,6 +300,17 @@ return 0;
 
 static string Env(string key, string def) =>
     Environment.GetEnvironmentVariable(key) ?? def;
+
+// CSR round-4 finding #8 follow-up: these two acting-user passwords used to default to the same
+// literal the docker-compose Authentik blueprint hardcoded, so the default "just worked" against a
+// fresh stack. That blueprint value is now randomly generated per stack by
+// scripts/generate-compose-secrets.sh, so a stale literal default here would silently authenticate
+// with the wrong password and fail with a confusing 401 instead of a clear error.
+static string RequireEnv(string key) =>
+    Environment.GetEnvironmentVariable(key) ?? throw new InvalidOperationException(
+        $"Missing required environment variable '{key}' -- the docker-compose stack's Authentik " +
+        "dev-only passwords are now randomly generated per stack by scripts/generate-compose-secrets.sh; " +
+        "read the value out of Iverson.Server/.env.");
 
 static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentials creds)
 {

@@ -66,7 +66,6 @@ from http.cookiejar import CookieJar
 
 DEFAULT_USERNAME = "iverson-acting-user-smoke-test"
 DEFAULT_COMPOSE_CLIENT_ID = "dev-iverson-loadtest-human-client-id"
-DEFAULT_COMPOSE_PASSWORD = "dev-only-not-for-production-smoke-test-password-0123456789"
 DEFAULT_COMPOSE_BASE_URL = "http://localhost:9000"
 DEFAULT_COMPOSE_REDIRECT_URI = "http://localhost/placeholder-callback"
 DEFAULT_KIND_REDIRECT_URI = "https://iverson.local/placeholder-callback"
@@ -435,7 +434,7 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--target", required=True, choices=["compose", "kind"])
     p.add_argument("--username", default=DEFAULT_USERNAME)
-    p.add_argument("--password", default=None, help="Defaults per-target (fixed dev value for compose, read from the kind Secret otherwise)")
+    p.add_argument("--password", default=None, help="Required for --target compose (Authentik's dev-only smoke-test password is randomly generated per docker-compose stack by scripts/generate-compose-secrets.sh -- read IVERSON_SMOKE_TEST_PASSWORD from Iverson.Server/.env); read from the kind Secret otherwise")
     p.add_argument("--client-id", default=None, help="Defaults per-target (fixed dev value for compose, read from the kind Secret otherwise)")
     p.add_argument("--redirect-uri", default=None, help="Defaults per-target to match the provisioned OAuth2 client's redirect_uris")
     p.add_argument("--base-url", default=None, help="Override the computed base URL entirely")
@@ -461,7 +460,15 @@ def main() -> int:
         # override the mismatch causes a bare 401 with no useful server-side log line.
         host_header = args.host_header if args.host_header is not None else "authentik-server:9000"
         client_id = args.client_id or DEFAULT_COMPOSE_CLIENT_ID
-        password = args.password or DEFAULT_COMPOSE_PASSWORD
+        if args.password is None:
+            log(
+                "ERROR: --password is required for --target compose. Authentik's dev-only "
+                "smoke-test password is randomly generated per docker-compose stack by "
+                "scripts/generate-compose-secrets.sh -- read IVERSON_SMOKE_TEST_PASSWORD out of "
+                "Iverson.Server/.env and pass it explicitly."
+            )
+            return 1
+        password = args.password
         redirect_uri = args.redirect_uri or DEFAULT_COMPOSE_REDIRECT_URI
         return run(args, base_url, host_header, client_id, password, redirect_uri)
 
