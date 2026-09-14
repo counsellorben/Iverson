@@ -1,11 +1,26 @@
 stages:
   - validate
+  - dependency-scan
 
 .rules-deploy-changes:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
         - Iverson.Server/deploy/**/*
+
+# Unlike .rules-deploy-changes above, dependency-scan jobs are unfiltered by
+# path — a dependency-manifest change (e.g. package.json, go.mod, pom.xml)
+# would never match Iverson.Server/deploy/**/* and would silently skip
+# scanning. GitLab has no periodic-schedule construct expressible purely in
+# .gitlab-ci.yml (unlike GitHub Actions' `on.schedule`), so the second rule
+# below is a dormant alternative trigger: it activates the moment a GitLab
+# Pipeline Schedule is provisioned out-of-band (UI, API, or the
+# gitlab_pipeline_schedule Terraform resource) with $CI_PIPELINE_SOURCE ==
+# "schedule" — that provisioning is intentionally not part of this file.
+.rules-dependency-scan:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
 
 helm-lint:
   stage: validate
@@ -98,3 +113,65 @@ terraform-validate:
     # providers lock`) and commit it, don't let CI paper over the drift.
     - terraform -chdir="Iverson.Server/deploy/terraform/$CLOUD" init -backend=false -lockfile=readonly
     - terraform -chdir="Iverson.Server/deploy/terraform/$CLOUD" validate
+
+nuget-audit:
+  stage: dependency-scan
+  image: mcr.microsoft.com/dotnet/sdk:10.0
+  extends: .rules-dependency-scan
+  script:
+    - dotnet restore Iverson.slnx
+    - dotnet list Iverson.slnx package --vulnerable --include-transitive 2>&1 | tee scan.log
+    - grep -q "has the following vulnerable packages" scan.log && exit 1 || exit 0
+
+npm-audit-adminui:
+  stage: dependency-scan
+  image: node:22
+  extends: .rules-dependency-scan
+  script:
+    - cd Iverson.AdminUI
+    - npm ci
+    - npm audit --audit-level=high
+
+npm-audit-ts-sdk:
+  stage: dependency-scan
+  image: node:22
+  extends: .rules-dependency-scan
+  script:
+    - cd Iverson.Clients/TypeScript
+    - npm ci
+    - npm audit --audit-level=high
+
+govulncheck:
+  stage: dependency-scan
+  image: golang:1.25
+  extends: .rules-dependency-scan
+  script:
+    - cd Iverson.Clients/Go
+    - go install golang.org/x/vuln/cmd/govulncheck@latest
+    - govulncheck ./...
+
+owasp-dependency-check-java:
+  stage: dependency-scan
+  image: maven:3.9-eclipse-temurin-21
+  extends: .rules-dependency-scan
+  script:
+    - cd Iverson.Clients/Java
+    - mvn org.owasp:dependency-check-maven:check
+
+pip-audit-python-sdk:
+  stage: dependency-scan
+  image: python:3.11
+  extends: .rules-dependency-scan
+  script:
+    - cd Iverson.Clients/Python
+    - pip install .[dev] pip-audit
+    - pip-audit
+
+pip-audit-agents:
+  stage: dependency-scan
+  image: python:3.11
+  extends: .rules-dependency-scan
+  script:
+    - cd Iverson.Agents/Python
+    - pip install .[dev] pip-audit
+    - pip-audit
