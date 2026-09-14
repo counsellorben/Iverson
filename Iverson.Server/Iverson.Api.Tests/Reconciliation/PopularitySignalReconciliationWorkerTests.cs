@@ -324,6 +324,45 @@ public class PopularitySignalReconciliationWorkerTests
         summary.Level.Should().Be(LogLevel.Error);
     }
 
+    // ── A null-tenant row sits between the 2nd and 3rd failures of a five-in-a-row streak. Its
+    //    `continue` fires before the outcome local is even assigned, so it neither resets nor
+    //    increments consecutiveFailures — the streak survives across it and the sweep still
+    //    abandons at 5. Pins that inertness against a refactor that made the guard reset the
+    //    counter (which would need a sixth failure to ever abandon). ──────────────────────────
+    [Fact]
+    public async Task SweepSignalAsync_NullTenantRowInsideFailureStreak_DoesNotResetTheStreak()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema());
+        StubAggregateFailingFor("article-1", "article-2", "article-3", "article-4", "article-5");
+
+        var page = new[]
+        {
+            new KeyedTenantRow("article-1", TenantA),
+            new KeyedTenantRow("article-2", TenantA),
+            new KeyedTenantRow("article-null", null),
+            new KeyedTenantRow("article-3", TenantA),
+            new KeyedTenantRow("article-4", TenantA),
+            new KeyedTenantRow("article-5", TenantA),
+            new KeyedTenantRow("article-6", TenantA),
+            new KeyedTenantRow("article-7", TenantA),
+        };
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>())
+            .Returns(page);
+
+        var logs = new RecordingLogger<PopularitySignalReconciliationWorker>();
+        await BuildSut(logger: logs).SweepSignalAsync(Signal(), CancellationToken.None);
+
+        var summary = logs.Entries.Should().ContainSingle(e => e.Message.Contains("Abandoning sweep")).Which;
+        summary.Message.Should().Contain("after 5 consecutive parent-update failures");
+        summary.Level.Should().Be(LogLevel.Error);
+
+        // Abandoned mid-page: article-6 (past the streak) was never attempted.
+        await _vector.DidNotReceive().SetPayloadAsync(
+            Arg.Any<string>(), IntelligenceStoreConsumer.KeyToUlong("article-6"),
+            Arg.Any<IReadOnlyDictionary<string, object>>());
+    }
+
     // ── A test logger that records level + formatted message, so the sweep-abandonment
     //    error's content (not merely its presence) can be asserted. ──────────
     private sealed class RecordingLogger<T> : ILogger<T>

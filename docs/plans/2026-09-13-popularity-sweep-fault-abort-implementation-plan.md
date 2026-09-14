@@ -65,7 +65,7 @@ Verified by `thorough-brainstorming` at spec-write time and re-confirmed across 
 
 **One test beyond the spec's list of six.** Task 1 Step 4 adds `UpdateAsync_SetPayloadNotFound_ReturnsSkipped`, which the spec's §4 does not enumerate. It is included because spec §2 and assumption A1c warn explicitly that the `NotFound` catch shares a terminal point with success and that "a single `return Updated;` at the end would therefore mislabel it" — the exit-path table mandates `NotFound → Skipped`, and no other test in the plan or the existing suite pins that mapping. Without it the specific bug the design warns about ships untested.
 
-**Baseline:** **19** tests pass across the two edited classes under the narrow filter both Step 5s use (measured: 19 passed, 821 ms, no containers). Expect **24** after Task 1 and **28** after Task 2. Any failure of *those* counts after Task 1 or Task 2 is introduced by this plan.
+**Baseline:** **19** tests pass across the two edited classes under the narrow filter both Step 5s use (measured: 19 passed, 821 ms, no containers). Expect **24** after Task 1 and **29** after Task 2. Any failure of *those* counts after Task 1 or Task 2 is introduced by this plan.
 
 The broader `~PopularitySignal` filter matches **41** tests across five classes, one of them a Testcontainers integration test — see assumption #22. Use it only as an optional final whole-feature check, and only on a host with a working container runtime; a red result there is not by itself attributable to this plan.
 
@@ -391,7 +391,7 @@ public async Task SweepSignalAsync_ScatteredNonConsecutiveFailures_DoesNotAbando
 dotnet build Iverson.Server/Iverson.Api/Iverson.Api.csproj
 dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~PopularitySignalConsumerTests|FullyQualifiedName~PopularitySignalReconciliationWorkerTests"
 ```
-  Expect 28 passed (24 after Task 1 + 4 new), 0 failed.
+  Expect 29 passed (24 after Task 1 + 5 new), 0 failed.
 
   Optionally, as a final whole-feature check on a host with a working container runtime, run the broad filter — `--filter "FullyQualifiedName~PopularitySignal"`, expect 48 — which additionally exercises `ObjectSearchVectorIntegrationTests` against a live Qdrant. Per assumption #22 this is not part of the gate: a failure there is not by itself attributable to this plan.
 
