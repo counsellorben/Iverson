@@ -25,6 +25,7 @@ internal sealed class PopularitySignalReconciliationWorker(
 {
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(10);
     private const int PageSize = 500;
+    private const int MaxConsecutiveFailures = 5;
 
     protected override Task ExecuteAsync(CancellationToken ct) =>
         ConsumerResilience.RunWithRestartAsync(() => SweepLoopAsync(ct), logger, "PopularitySignalReconciliation", ct);
@@ -52,6 +53,7 @@ internal sealed class PopularitySignalReconciliationWorker(
         if (parentSchema is null || relation is null || childSchema is null) return; // schema unregistered mid-run; skip this sweep
 
         string? afterKey = null;
+        var consecutiveFailures = 0;
         while (!ct.IsCancellationRequested)
         {
             // Cross-tenant by design: this sweep enumerates every parent of this type across every
@@ -67,15 +69,30 @@ internal sealed class PopularitySignalReconciliationWorker(
                 if (row.TenantId is null) continue; // same principle as PopularitySignalConsumer's
                                                       // tenant guard — never reach a StarRocks-bound
                                                       // call with an unresolvable tenant
+                var outcome = PopularityUpdateOutcome.Failed;
                 try
                 {
-                    await updater.UpdateAsync(parentSchema, signal, childSchema, relation, row.Key, row.TenantId);
+                    outcome = await updater.UpdateAsync(parentSchema, signal, childSchema, relation, row.Key, row.TenantId);
                 }
                 catch (Exception ex)
                 {
                     logger.LogError(ex,
                         "[PopularitySignalReconciliation] Failed to update parent={Parent} for signal={Signal} — skipping.",
                         row.Key.SanitizeForLog(), signal.Relation.SanitizeForLog());
+                }
+
+                if (outcome is not PopularityUpdateOutcome.Failed)
+                {
+                    consecutiveFailures = 0;
+                }
+                else if (++consecutiveFailures >= MaxConsecutiveFailures)
+                {
+                    logger.LogError(
+                        "[PopularitySignalReconciliation] Abandoning sweep for signal={Signal} after {Count} " +
+                        "consecutive parent-update failures — see the preceding per-parent errors for the cause. " +
+                        "Retrying at the next sweep in {Minutes} minutes.",
+                        signal.Relation.SanitizeForLog(), consecutiveFailures, SweepInterval.TotalMinutes);
+                    return;
                 }
             }
 
