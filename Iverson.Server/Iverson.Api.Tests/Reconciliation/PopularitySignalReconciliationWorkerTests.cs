@@ -289,6 +289,39 @@ public class PopularitySignalReconciliationWorkerTests
             Arg.Any<TableSchema>(), "article-9", 500, Arg.Any<EntityAccess>());
     }
 
+    // ── Fix round 1: five CONSECUTIVE PROPAGATING exceptions — as opposed to the three tests
+    //    above, which all drive Failed via StubAggregateFailingFor throwing INSIDE
+    //    AggregateAsync, caught by UpdateAsync's own try/catch and returned as a normal Failed
+    //    value. That path never touches the seeded `outcome = Failed` local. This test instead
+    //    makes SetPayloadAsync throw a non-NotFound exception, which UpdateAsync does NOT catch
+    //    (contrast the documented NotFound degrade case) — the exception propagates out to the
+    //    worker's own per-row try/catch, which never assigns `outcome`, so only the seed reaching
+    //    the counter-increment branch makes this abandon. Mirrors the pre-existing
+    //    SweepSignalAsync_OneParentUpdateThrows_DoesNotStopSweepForRemainingParents idiom. ──
+    [Fact]
+    public async Task SweepSignalAsync_FiveConsecutivePropagatingExceptions_AbandonsSweep()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema());
+        StubAggregate(1); // must reach the Qdrant write — an unstubbed/null aggregate returns
+                           // Skipped at the null-result branch and never gets there.
+
+        foreach (var key in new[] { "article-1", "article-2", "article-3", "article-4", "article-5" })
+            _vector.SetPayloadAsync(
+                    _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false), IntelligenceStoreConsumer.KeyToUlong(key),
+                    Arg.Any<IReadOnlyDictionary<string, object>>())
+                .Returns(Task.FromException(new InvalidOperationException("qdrant unavailable")));
+
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>())
+            .Returns(Page(8));
+
+        var logs = new RecordingLogger<PopularitySignalReconciliationWorker>();
+        await BuildSut(logger: logs).SweepSignalAsync(Signal(), CancellationToken.None);
+
+        logs.Entries.Should().ContainSingle(e => e.Message.Contains("Abandoning sweep"))
+            .Which.Message.Should().Contain("after 5 consecutive parent-update failures");
+    }
+
     // ── A test logger that records level + formatted message, so the exhaustion
     //    warning's content (not merely its presence) can be asserted. ──────────
     private sealed class RecordingLogger<T> : ILogger<T>
