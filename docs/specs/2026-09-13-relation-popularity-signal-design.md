@@ -151,6 +151,26 @@ configured signal's count for every known parent as a backstop, self-correcting 
 stale by the race. This is the one mechanism in this design with no existing precedent in the
 codebase.
 
+**Known issue — the parent's own write path wipes the field, and the absent-≠-zero rule then
+inverts ranking in favor of recently-edited documents.** `IntelligenceStoreConsumer` writes the
+object point via `UpsertNamedAsync(collection, pointId, namedVectors, pointPayload)`, where
+`pointPayload` is rebuilt from scratch from the entity's own columns on every `Created`/`Updated`
+event. Qdrant's upsert replaces the payload wholesale, not merges it, so this wipes the
+`<relation>Count` field this design patches onto the same point — independently of the
+cross-consumer race above, and on every edit, not just a rare ordering. The field stays absent
+until the next reconciliation sweep restores it (up to the sweep's configured interval later).
+Combined with this design's deliberate absent-≠-zero rule (§3), the two staleness sources compose
+into a ranking inversion rather than a plain accuracy loss: a document edited moments ago has
+`Popularity = null` (absent → identity short-circuit → keeps its raw base score untouched), while
+an equally-similar, equally-popular-but-genuinely-zero-count document has `Popularity = 0.0` (→
+penalized by the saturation curve). A frequently-edited document therefore receives a ranking
+bonus proportional to its edit rate, invisibly, for as long as it takes the next sweep to catch up.
+This matters most for any future calibration of `WPopularity` against real traffic (§3): measuring
+against live edit patterns without accounting for this would calibrate against a moving target
+with an unmodelled second term (edit rate) baked into the observed effect, not against popularity
+alone. Fixing the underlying wipe (e.g. a payload merge, or having `IntelligenceStoreConsumer`
+preserve unknown fields) is a separate design cycle, not part of this one.
+
 ### 3. Consumption — a fourth fusion signal
 
 **Normalization.** The stored value is a raw count (unbounded); the existing fusion blends signals

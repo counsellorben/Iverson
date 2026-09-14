@@ -336,7 +336,8 @@ public class DocumentTemplateValidationTests
             new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
             new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions()));
 
         var writer = Substitute.For<IServerStreamWriter<ChunkSearchResponse>>();
         writer.WriteAsync(Arg.Any<ChunkSearchResponse>(), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);

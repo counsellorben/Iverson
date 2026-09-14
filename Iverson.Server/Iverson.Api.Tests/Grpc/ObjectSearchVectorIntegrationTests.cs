@@ -79,7 +79,8 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
 
     private static string UniqueName() => "art_" + Guid.NewGuid().ToString("N")[..8];
 
-    private ObjectSearchGrpcService BuildSut() =>
+    private ObjectSearchGrpcService BuildSut(
+        PopularitySignalOptions? popularity = null, double wPopularity = 0.0) =>
         new(
             _registry,
             Substitute.For<IEngagementStoreSearchService>(),
@@ -89,10 +90,11 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             new ActingUserAccessor { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") },
             new RowFieldAuthorizationEvaluator(),
             _tenantScope,
-            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WPopularity = wPopularity })),
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
-            Options.Create(new DecayOptions()));
+            Options.Create(new DecayOptions()),
+            Options.Create(popularity ?? new PopularitySignalOptions()));
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
     {
@@ -363,5 +365,162 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
 
         written.Should().ContainSingle();
         written[0].ParentKey.Should().Be("parent-a");
+    }
+
+    // ── Popularity signal (Task 6) ──────────────────────────────────────────
+
+    [Fact]
+    public async Task SearchSimilar_PromotesLowerCosineButMorePopularCandidate_WhenWPopularityRaised()
+    {
+        var collection = UniqueName();
+        var schema = SchemaFixtures.ArticleSchema() with { CollectionName = collection };
+        await _registry.RegisterAsync(schema);
+        var physicalCollection = _tenantScope.ResolveCollectionName(collection, TestTenant, isChunks: false);
+        await _mgr.ApplyCollectionAsync(new CollectionSchema(
+            physicalCollection, [new NamedVector("title_vector", 4)], []));
+
+        var query = new float[] { 1f, 0f, 0f, 0f };
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(query);
+
+        // Point 1: perfectly cosine-aligned with the query (highest possible base score) but has
+        // zero comments — commentsCount=0 is a REAL signal (Popularity=0.0, not absent), so this
+        // candidate is diluted through the same weighted-average branch as point 2 rather than
+        // keeping its raw 1.0 base score via the no-signals-present short circuit.
+        await _vector.UpsertNamedAsync(physicalCollection, 1,
+            new Dictionary<string, float[]> { ["title_vector"] = query },
+            new Dictionary<string, object>
+            {
+                ["title"] = "HighSimUnpopular", ["commentsCount"] = 0L, ["tenantId"] = TestTenant
+            });
+        // Point 2: orthogonal to the query (base score ~0) but very popular.
+        await _vector.UpsertNamedAsync(physicalCollection, 2,
+            new Dictionary<string, float[]> { ["title_vector"] = new float[] { 0f, 1f, 0f, 0f } },
+            new Dictionary<string, object>
+            {
+                ["title"] = "LowSimPopular", ["commentsCount"] = 1000L, ["tenantId"] = TestTenant
+            });
+
+        var popularity = new PopularitySignalOptions
+        {
+            Signals         = [new PopularitySignalEntry("Article", "Comments")],
+            SaturationPoint = 1.0
+        };
+        var sut = BuildSut(popularity, wPopularity: 5.0);
+        var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 2 };
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        // Without the popularity signal, cosine order alone would put HighSimUnpopular first —
+        // WPopularity=5.0 against WBase=0.45 flips the fused order.
+        written[0].Data.Fields["Title"].StringValue.Should().Be("LowSimPopular");
+        written[1].Data.Fields["Title"].StringValue.Should().Be("HighSimUnpopular");
+    }
+
+    [Fact]
+    public async Task SearchChunks_ReflectsPopularitySignal_ForConfiguredType()
+    {
+        // Closes finding 2.2: SearchChunks must apply the same batched-by-parent popularity
+        // lookup SearchSimilar's object-vector path applies directly.
+        var collection = UniqueName();
+        var schema = SchemaFixtures.ArticleSchema() with { CollectionName = collection };
+        await _registry.RegisterAsync(schema);
+
+        var objectCollection = _tenantScope.ResolveCollectionName(collection, TestTenant, isChunks: false);
+        var chunksCollection = _tenantScope.ResolveCollectionName(collection, TestTenant, isChunks: true);
+        await _mgr.ApplyCollectionAsync(new CollectionSchema(
+            objectCollection, [new NamedVector("title_vector", 4)], []));
+        await _mgr.ApplyCollectionAsync(new CollectionSchema(
+            chunksCollection, [new NamedVector("body_vector", 4)],
+            [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]));
+
+        var query = new float[] { 1f, 0f, 0f, 0f };
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(query);
+
+        const string similarParent = "parent-similar";
+        const string popularParent = "parent-popular";
+        var similarParentId = IntelligenceStoreConsumer.KeyToUlong(similarParent);
+        var popularParentId = IntelligenceStoreConsumer.KeyToUlong(popularParent);
+
+        // Object-level points carry the popularity payload the chunk path batches by parent id —
+        // the chunk path never reads title_vector, only the "commentsCount" payload field.
+        await _vector.UpsertNamedAsync(objectCollection, similarParentId,
+            new Dictionary<string, float[]> { ["title_vector"] = query },
+            new Dictionary<string, object> { ["commentsCount"] = 0L, ["tenantId"] = TestTenant });
+        await _vector.UpsertNamedAsync(objectCollection, popularParentId,
+            new Dictionary<string, float[]> { ["title_vector"] = query },
+            new Dictionary<string, object> { ["commentsCount"] = 1000L, ["tenantId"] = TestTenant });
+
+        // Chunk 1 (parent-similar) matches the query exactly; chunk 2 (parent-popular) is
+        // orthogonal — cosine order alone would rank parent-similar first.
+        await _vector.UpsertNamedAsync(chunksCollection, 1,
+            new Dictionary<string, float[]> { ["body_vector"] = query },
+            new Dictionary<string, object>
+            {
+                ["text"] = "similar chunk", ["parent_id"] = similarParent, ["tenantId"] = TestTenant
+            });
+        await _vector.UpsertNamedAsync(chunksCollection, 2,
+            new Dictionary<string, float[]> { ["body_vector"] = new float[] { 0f, 1f, 0f, 0f } },
+            new Dictionary<string, object>
+            {
+                ["text"] = "popular chunk", ["parent_id"] = popularParent, ["tenantId"] = TestTenant
+            });
+
+        var popularity = new PopularitySignalOptions
+        {
+            Signals         = [new PopularitySignalEntry("Article", "Comments")],
+            SaturationPoint = 1.0
+        };
+        var sut = BuildSut(popularity, wPopularity: 5.0);
+        var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 2 };
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written[0].ParentKey.Should().Be(popularParent);
+        written[1].ParentKey.Should().Be(similarParent);
+    }
+
+    [Fact]
+    public async Task SearchSimilar_UnconfiguredType_OrdersIdenticallyToBaseline()
+    {
+        // No PopularitySignalEntry names "Article" — even with WPopularity raised, Popularity
+        // stays null for every candidate of this type, so ResultReranker takes its
+        // no-other-signal-present short circuit and the fused score equals the base score
+        // EXACTLY (see ResultReranker.cs), preserving today's cosine-only ordering bit for bit.
+        var collection = UniqueName();
+        var schema = SchemaFixtures.ArticleSchema() with { CollectionName = collection };
+        await _registry.RegisterAsync(schema);
+        var physicalCollection = _tenantScope.ResolveCollectionName(collection, TestTenant, isChunks: false);
+        await _mgr.ApplyCollectionAsync(new CollectionSchema(
+            physicalCollection, [new NamedVector("title_vector", 4)], []));
+
+        var query = new float[] { 1f, 0f, 0f, 0f };
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(query);
+
+        await _vector.UpsertNamedAsync(physicalCollection, 1,
+            new Dictionary<string, float[]> { ["title_vector"] = query },
+            new Dictionary<string, object> { ["title"] = "HighSim", ["tenantId"] = TestTenant });
+        // A high "commentsCount" on the orthogonal candidate would flip the order if the type
+        // were configured (see the promotion test above) — it must NOT here.
+        await _vector.UpsertNamedAsync(physicalCollection, 2,
+            new Dictionary<string, float[]> { ["title_vector"] = new float[] { 0f, 1f, 0f, 0f } },
+            new Dictionary<string, object>
+            {
+                ["title"] = "LowSim", ["commentsCount"] = 1000L, ["tenantId"] = TestTenant
+            });
+
+        // Default PopularitySignalOptions() has an empty Signals list — "Article" unconfigured.
+        var sut = BuildSut(wPopularity: 5.0);
+        var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 2 };
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written[0].Data.Fields["Title"].StringValue.Should().Be("HighSim");
+        written[1].Data.Fields["Title"].StringValue.Should().Be("LowSim");
     }
 }

@@ -6,7 +6,8 @@ using Xunit;
 
 namespace Iverson.Vector.Tests;
 
-public sealed class QdrantVectorServiceTests
+[Collection(ContainerCollection.Name)]
+public sealed class QdrantVectorServiceTests(QdrantContainerFixture fixture) : IClassFixture<QdrantContainerFixture>
 {
     // ─── Interface contract tests (mocked) ───────────────────────────────────
 
@@ -249,4 +250,55 @@ public sealed class QdrantVectorServiceTests
         typeof(IntelligenceVectorService).Should().Implement<IVectorWriteService>();
     }
 
+    // ─── Real-container tests ─────────────────────────────────────────────
+    //
+    // Per project-derived-vector-signals's precedent, a mocked write-service test is not
+    // evidence of Qdrant's real behavior — this is the whole reason SetPayloadAsync exists
+    // instead of reusing UpsertAsync, so it needs a live Qdrant to prove.
+
+    [Fact]
+    public async Task SetPayloadAsync_AddsFieldWithoutTouchingVectorOrExistingPayload()
+    {
+        var svc    = fixture.Service;
+        var mgr    = fixture.CollectionManager;
+        var name   = "col_" + Guid.NewGuid().ToString("N")[..8];
+        var vector = new float[] { 1f, 0f, 0f, 0f };
+
+        await mgr.EnsureCollectionAsync(name, vectorSize: 4);
+        await svc.UpsertAsync(name, 1UL, vector, new Dictionary<string, object> { ["title"] = "original" });
+
+        await svc.SetPayloadAsync(name, 1UL, new Dictionary<string, object> { ["popularity"] = 7L });
+
+        var payload = await svc.RetrievePayloadAsync(name, [1UL]);
+        payload.Should().ContainKey(1UL);
+        payload[1UL]["popularity"].Should().Be("7");
+        payload[1UL]["title"].Should().Be("original"); // existing payload field survives untouched
+
+        // The point's vector was never sent to SetPayloadAsync — searching with the exact original
+        // vector should still return this point with a perfect cosine match, proving the vector
+        // itself was never nulled/replaced (the property UpsertAsync does NOT have).
+        var results = await svc.SearchAsync(name, vector, limit: 1);
+        results.Should().ContainSingle().Which.Id.Should().Be(1UL);
+        results[0].Score.Should().BeApproximately(1.0, 0.0001);
+    }
+
+    [Fact]
+    public async Task SetPayloadAsync_EmptyStringReplacesPriorValue()
+    {
+        var svc    = fixture.Service;
+        var mgr    = fixture.CollectionManager;
+        var name   = "col_" + Guid.NewGuid().ToString("N")[..8];
+        var vector = new float[] { 1f, 0f, 0f, 0f };
+
+        await mgr.EnsureCollectionAsync(name, vectorSize: 4);
+        await svc.UpsertAsync(name, 1UL, vector, new Dictionary<string, object> { ["series"] = "2026-01:5" });
+
+        await svc.SetPayloadAsync(name, 1UL, new Dictionary<string, object> { ["series"] = "" });
+
+        var payload = await svc.RetrievePayloadAsync(name, [1UL]);
+        // The whole point: a stale series must not survive an empty write. Either the key reads
+        // back as "" or it is gone — both yield D = 0. What must NOT happen is "2026-01:5".
+        var survived = payload[1UL].TryGetValue("series", out var s) ? s : "";
+        survived.Should().BeEmpty();
+    }
 }

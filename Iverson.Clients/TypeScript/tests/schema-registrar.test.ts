@@ -12,6 +12,7 @@ import {
     IversonEmbedding,
     IversonChunk,
     IversonMetadata,
+    IversonPopularitySignal,
     IversonDescription,
     IversonSummary,
     IversonKeywords,
@@ -526,6 +527,24 @@ describe('_buildRequest — metadata and descriptions', () => {
         expect(props['Region'].isMetadata).toBe(true);
         expect(props['Title'].isMetadata).toBe(false);
         expect(props['Id'].isMetadata).toBe(false);
+    });
+
+    it('sets isPopularitySignal only on the marked property', () => {
+        @IversonEntity()
+        class RegInteraction {
+            @IversonKey()
+            id: string = '';
+
+            @IversonPopularitySignal()
+            interactedAt: Date = new Date();
+
+            plain: Date = new Date();
+        }
+
+        const { props } = propsOf(RegInteraction);
+        expect(props['InteractedAt'].isPopularitySignal).toBe(true);
+        expect(props['Id'].isPopularitySignal).toBe(false);
+        expect(props['Plain'].isPopularitySignal).toBe(false);
     });
 
     it('sets property descriptions, including on the key property', () => {

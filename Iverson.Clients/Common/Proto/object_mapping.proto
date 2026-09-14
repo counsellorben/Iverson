@@ -64,6 +64,7 @@ message PropertyDescriptor {
     bool   is_keywords_target = 20;  // [IversonKeywords]
     string extract_hint       = 21;  // [IversonExtracted]; empty = absent
     bool   chunk_contextual   = 22;  // [IversonChunk(Contextual = true)]
+    bool   is_popularity_signal = 23;  // [IversonPopularitySignal] present — the interaction timestamp
 }
 
 message RelationDescriptor {

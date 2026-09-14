@@ -187,6 +187,7 @@ builder.Services.AddQdrant(
 
 builder.Services.AddVectorRanking(cfg);
 builder.Services.AddDecayOptions(cfg);
+builder.Services.AddPopularitySignalOptions(cfg);
 
 builder.Services.AddKafka(cfg);
 
@@ -258,6 +259,9 @@ if (workloadRole == "worker")
 {
     builder.Services.AddHostedService<IntelligenceStoreConsumer>();
     builder.Services.AddHostedService<Iverson.Api.Consumers.DocumentRerenderConsumer>();
+    builder.Services.AddSingleton<Iverson.Api.Consumers.PopularitySignalUpdater>();
+    builder.Services.AddHostedService<Iverson.Api.Consumers.PopularitySignalConsumer>();
+    builder.Services.AddHostedService<Iverson.Api.Reconciliation.PopularitySignalReconciliationWorker>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqMonitorConsumer>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.ReconciliationQueueWorker>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqBacklogGaugeWorker>();
@@ -416,6 +420,12 @@ catch (Exception ex)
 }
 var schemaRegistry = app.Services.GetRequiredService<SchemaRegistry>();
 await schemaRegistry.LoadAsync();
+
+PopularitySignalValidator.ValidateAtStartup(
+    app.Services.GetRequiredService<IOptions<PopularitySignalOptions>>().Value,
+    schemaRegistry,
+    cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true),
+    app.Logger);
 
 // Plumbing table for the enrichment loop breaker — created the same way SchemaRegistry creates
 // its own backing table (SchemaRegistry.LoadAsync → repository.EnsureTableAsync).

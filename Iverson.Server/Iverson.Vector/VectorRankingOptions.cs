@@ -15,6 +15,8 @@ public sealed class VectorRankingOptions
     public double WCentroid { get; set; } = 0.45;
     public double WDecay    { get; set; } = 0.10;
 
+    public double WPopularity { get; set; } = 0.0;
+
     // MMR λ per endpoint, set by the Tier 1 gate (docs/plans/2026-09-GATE-tier1-defaults.md, rule 7.2).
     // SearchSimilar: 1.00. No λ beat 0.70 on α-nDCG@10 on either FreshStack arm and λ=1.00 was not
     // worse, so the rule's none-qualify clause applies; λ=1.00 also buys R@50 (+0.0506 fs-2048,

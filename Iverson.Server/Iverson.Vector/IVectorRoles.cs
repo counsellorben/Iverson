@@ -52,6 +52,7 @@ public interface IVectorWriteService
         string collectionName,
         ulong id,
         IReadOnlyDictionary<string, float[]> namedVectors);
+    Task SetPayloadAsync(string collectionName, ulong id, IReadOnlyDictionary<string, object> payload);
     Task DeleteAsync(string collectionName, ulong id);
     Task DeleteByFilterAsync(string collectionName, Filter filter);
 }

@@ -231,6 +231,7 @@ class SchemaRegistrar:
         chunk_fields_by_name = {f: (mt, ov, ctx) for f, mt, ov, ctx in meta["chunk_fields"]}
         relation_fields = {r["field"] for r in meta["relations"]}
         metadata_fields_set = set(meta.get("metadata_fields", []))
+        popularity_signal_fields_set = set(meta.get("popularity_signal_fields", []))
         descriptions_by_field = meta.get("descriptions", {})
         summary_fields_set = set(meta.get("summary_fields", []))
         keywords_fields_set = set(meta.get("keywords_fields", []))
@@ -278,6 +279,7 @@ class SchemaRegistrar:
                 is_search_key=(field_name in search_keys_by_field),
                 search_key_order=search_keys_by_field.get(field_name, 0),
                 is_metadata=(field_name in metadata_fields_set),
+                is_popularity_signal=(field_name in popularity_signal_fields_set),
                 description=descriptions_by_field.get(field_name, ""),
                 is_large_field=(field_name in large_fields_set),
                 is_embedding=(field_name in embedding_fields_set),

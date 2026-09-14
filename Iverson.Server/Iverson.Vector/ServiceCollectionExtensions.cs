@@ -65,18 +65,21 @@ public static class ServiceCollectionExtensions
         section.Bind(opts);
 
         if (!double.IsFinite(opts.WBase) || !double.IsFinite(opts.WCentroid) ||
-            !double.IsFinite(opts.WDecay) || !double.IsFinite(opts.LambdaSimilar) || !double.IsFinite(opts.LambdaChunks))
+            !double.IsFinite(opts.WDecay) || !double.IsFinite(opts.WPopularity) ||
+            !double.IsFinite(opts.LambdaSimilar) || !double.IsFinite(opts.LambdaChunks))
             throw new InvalidOperationException(
                 $"{VectorRankingOptions.Section}: every value must be finite " +
                 $"(WBase={opts.WBase}, WCentroid={opts.WCentroid}, WDecay={opts.WDecay}, " +
-                $"LambdaSimilar={opts.LambdaSimilar}, LambdaChunks={opts.LambdaChunks}).");
+                $"WPopularity={opts.WPopularity}, LambdaSimilar={opts.LambdaSimilar}, " +
+                $"LambdaChunks={opts.LambdaChunks}).");
 
-        if (opts.WBase < 0 || opts.WCentroid < 0 || opts.WDecay < 0)
+        if (opts.WBase < 0 || opts.WCentroid < 0 || opts.WDecay < 0 || opts.WPopularity < 0)
             throw new InvalidOperationException(
                 $"{VectorRankingOptions.Section}: weights must be non-negative " +
-                $"(WBase={opts.WBase}, WCentroid={opts.WCentroid}, WDecay={opts.WDecay}).");
+                $"(WBase={opts.WBase}, WCentroid={opts.WCentroid}, WDecay={opts.WDecay}, " +
+                $"WPopularity={opts.WPopularity}).");
 
-        if (opts.WBase + opts.WCentroid + opts.WDecay <= 0)
+        if (opts.WBase + opts.WCentroid + opts.WDecay + opts.WPopularity <= 0)
             throw new InvalidOperationException(
                 $"{VectorRankingOptions.Section}: at least one weight must be greater than zero; " +
                 "all-zero weights make every fused score NaN.");

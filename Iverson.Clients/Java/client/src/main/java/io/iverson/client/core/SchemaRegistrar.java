@@ -220,6 +220,10 @@ public final class SchemaRegistrar {
             b.setIsMetadata(true);
         }
 
+        if (field.getAnnotation(IversonPopularitySignal.class) != null) {
+            b.setIsPopularitySignal(true);
+        }
+
         IversonDescription desc = field.getAnnotation(IversonDescription.class);
         if (desc != null) {
             b.setDescription(desc.value());
