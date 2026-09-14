@@ -70,4 +70,56 @@ public class ServiceCollectionExtensionsTests
 
         act.Should().NotThrow();
     }
+
+    [Fact]
+    public void AddIversonClient_WithPlaintextTokenEndpoint_ThrowsWithoutOptIn()
+    {
+        // CSR round-4 finding #2: reject plaintext OAuth2 token endpoints without explicit opt-in
+        var services = new ServiceCollection();
+        var credentials = new IversonClientCredentials(
+            ClientId: "test-client",
+            ClientSecret: "test-secret",
+            TokenEndpoint: "http://localhost:9000/application/o/token/");
+
+        var act = () => services.AddIversonClient(
+            grpcEndpoint: "https://localhost:5000",
+            credentials: credentials);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*allowInsecureChannelCallCredentials*");
+    }
+
+    [Fact]
+    public void AddIversonClient_WithPlaintextTokenEndpoint_SucceedsWithOptIn()
+    {
+        var services = new ServiceCollection();
+        var credentials = new IversonClientCredentials(
+            ClientId: "test-client",
+            ClientSecret: "test-secret",
+            TokenEndpoint: "http://localhost:9000/application/o/token/");
+
+        var act = () => services.AddIversonClient(
+            grpcEndpoint: "https://localhost:5000",
+            credentials: credentials,
+            allowInsecureChannelCallCredentials: true);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void AddIversonClient_WithHttpsTokenEndpoint_DoesNotRequireOptIn()
+    {
+        // Happy-path regression guard: HTTPS token endpoints must never require the opt-in
+        var services = new ServiceCollection();
+        var credentials = new IversonClientCredentials(
+            ClientId: "test-client",
+            ClientSecret: "test-secret",
+            TokenEndpoint: "https://auth.example.com/oauth/token");
+
+        var act = () => services.AddIversonClient(
+            grpcEndpoint: "https://localhost:5000",
+            credentials: credentials);
+
+        act.Should().NotThrow();
+    }
 }

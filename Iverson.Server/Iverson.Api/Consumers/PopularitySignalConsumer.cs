@@ -198,14 +198,29 @@ internal sealed class PopularitySignalConsumer(
         if (tenantId is null) return; // mirrors DocumentRerenderConsumer.cs:68 — an unresolvable
                                        // tenant must never reach a StarRocks-bound call downstream
 
-        using var payloadDoc = JsonDocument.Parse(ev.PayloadJson);
-        var payload = payloadDoc.RootElement;
+        JsonElement payload;
+        try
+        {
+            using var payloadDoc = JsonDocument.Parse(ev.PayloadJson);
+            payload = payloadDoc.RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            throw new PoisonMessageException($"[PopularitySignal] Malformed payload JSON key={ev.Key}", ex);
+        }
 
         JsonElement? priorPayload = null;
         if (ev.PriorPayloadJson is not null)
         {
-            using var priorDoc = JsonDocument.Parse(ev.PriorPayloadJson);
-            priorPayload = priorDoc.RootElement.Clone();
+            try
+            {
+                using var priorDoc = JsonDocument.Parse(ev.PriorPayloadJson);
+                priorPayload = priorDoc.RootElement.Clone();
+            }
+            catch (JsonException ex)
+            {
+                throw new PoisonMessageException($"[PopularitySignal] Malformed payload JSON key={ev.Key}", ex);
+            }
         }
 
         foreach (var (signal, parentSchema, relation) in matches)
@@ -244,8 +259,18 @@ internal sealed class PopularitySignalConsumer(
     {
         if (ev.EventType == EntityEventType.Deleted)
         {
-            using var doc = JsonDocument.Parse(ev.PayloadJson);
-            return ExtractString(doc.RootElement, changedSchema.TenantColumn);
+            JsonElement payloadDoc;
+            try
+            {
+                using var doc = JsonDocument.Parse(ev.PayloadJson);
+                payloadDoc = doc.RootElement.Clone();
+            }
+            catch (JsonException ex)
+            {
+                throw new PoisonMessageException($"[PopularitySignal] Malformed payload JSON key={ev.Key}", ex);
+            }
+
+            return ExtractString(payloadDoc, changedSchema.TenantColumn);
         }
 
         var rowJson = await entities.FetchByKeyAsync(

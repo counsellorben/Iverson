@@ -1261,6 +1261,25 @@ public class ObjectSearchGrpcServiceTests
             .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
     }
 
+    // CSR #7: a downstream embedding-service fault must surface as a FIXED message — the
+    // exception's own text (which can carry backend-internal detail) must never reach the client.
+    [Fact]
+    public async Task SearchSimilar_EmbeddingServiceThrows_ThrowsUnavailableWithFixedMessage()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>())
+                  .Returns<float[]>(_ => throw new InvalidOperationException("internal backend detail: connection refused at 10.0.0.5:11434"));
+
+        var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 };
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        var assertion = await act.Should().ThrowAsync<RpcException>();
+        assertion.Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+        assertion.Which.Status.Detail.Should().Be("Embedding service unavailable.");
+        assertion.Which.Status.Detail.Should().NotContain("10.0.0.5");
+    }
+
     [Fact]
     public async Task SearchSimilar_WithFilter_PassesTranslatedFilterToVectorService()
     {
@@ -1625,6 +1644,24 @@ public class ObjectSearchGrpcServiceTests
 
         (await act.Should().ThrowAsync<RpcException>())
             .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    // CSR #7, second call site (SearchChunks): same fixed-message contract as SearchSimilar above.
+    [Fact]
+    public async Task SearchChunks_EmbeddingServiceThrows_ThrowsUnavailableWithFixedMessage()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>())
+                  .Returns<float[]>(_ => throw new InvalidOperationException("internal backend detail: connection refused at 10.0.0.5:11434"));
+
+        var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        var act = async () => await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        var assertion = await act.Should().ThrowAsync<RpcException>();
+        assertion.Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+        assertion.Which.Status.Detail.Should().Be("Embedding service unavailable.");
+        assertion.Which.Status.Detail.Should().NotContain("10.0.0.5");
     }
 
     [Fact]

@@ -12,8 +12,8 @@ public sealed class AuditLog(ILogger<AuditLog> logger)
         string reason) =>
             logger.LogWarning(
                 "[Audit.Denied] actor={Actor} tenant={Tenant} action={Action} resourceType={ResourceType} resourceKey={ResourceKey} reason={Reason}",
-                actor?.FindFirst("sub")?.Value ?? "unknown",
-                actor?.FindFirst("tenant_id")?.Value ?? "unknown",
+                (actor?.FindFirst("sub")?.Value ?? "unknown").SanitizeForLog(),
+                (actor?.FindFirst("tenant_id")?.Value ?? "unknown").SanitizeForLog(),
                 action, resourceType.SanitizeForLog(), resourceKey?.SanitizeForLog(), reason);
 
     public void AdminOperation(
@@ -22,5 +22,5 @@ public sealed class AuditLog(ILogger<AuditLog> logger)
         string? detail) =>
             logger.LogInformation(
                 "[Audit.AdminOperation] actor={Actor} operation={Operation} detail={Detail}",
-                actor.FindFirst("sub")?.Value ?? "unknown", operation, detail?.SanitizeForLog());
+                (actor.FindFirst("sub")?.Value ?? "unknown").SanitizeForLog(), operation, detail?.SanitizeForLog());
 }

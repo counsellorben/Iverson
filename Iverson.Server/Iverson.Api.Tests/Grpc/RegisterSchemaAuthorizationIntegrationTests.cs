@@ -236,6 +236,7 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             Substitute.For<IOutboxPublisher>(),
             registry,
             Substitute.For<IRelationValidator>(),
+            Substitute.For<IPayloadSizeValidator>(),
             Substitute.For<IEntityKeyAccessor>(),
             Substitute.For<IOutboxWriter>(),
             NullLogger<ObjectMappingGrpcService>.Instance,

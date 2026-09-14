@@ -56,7 +56,8 @@ public class Main {
                     clientId,
                     clientSecret,
                     tokenEndpoint,
-                    "admin schema_admin"),
+                    "admin schema_admin",
+                    true),
                 actingUserToken,
                 true)) {
 

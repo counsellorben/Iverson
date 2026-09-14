@@ -68,6 +68,16 @@ public static class ServiceCollectionExtensions
                 "allowInsecureChannelCallCredentials: true only for a known-local, non-TLS endpoint.");
         }
 
+        if (credentials is not null &&
+            !allowInsecureChannelCallCredentials &&
+            !string.Equals(new Uri(credentials.TokenEndpoint).Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Refusing to send OAuth2 client credentials to a non-https token endpoint " +
+                $"('{credentials.TokenEndpoint}') without an explicit allowInsecureChannelCallCredentials: true " +
+                "opt-in. Pass true only for a known-local, non-TLS token endpoint.");
+        }
+
         services.AddSingleton(new EntityRegistry(assemblies));
         services.AddSingleton<GraphAssembler>();
 

@@ -57,6 +57,7 @@ appsettings.*.json
 secrets.json
 *.pfx
 *.p12
+.env
 
 # Terraform
 **/.terraform/

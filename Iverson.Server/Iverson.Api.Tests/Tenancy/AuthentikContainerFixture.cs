@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using DotNet.Testcontainers.Builders;
@@ -58,6 +59,18 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
     private const string BootstrapPassword = "test-only-bootstrap-password-0123456789";
     private const int AuthentikPort = 9000;
 
+    // Independently-generated values for the 7 secrets CSR round-4 finding #8 moved out of the
+    // committed compose-only/service-clients.yaml blueprint and into !Env-sourced env vars. This
+    // fixture provisions its own random values (rather than reusing docker-compose.yml's) so the
+    // test proves the !Env sentinel-default mechanism actually threads a runtime-supplied value
+    // through the blueprint, not that it happens to match some other hardcoded literal.
+    private static readonly string LoadtestClientSecret = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+    private static readonly string WebtestClientSecret = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+    private static readonly string AdminAutomationClientSecret = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+    private static readonly string SmokeTestPassword = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+    private static readonly string BypassPassword = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+    private static readonly string AdminOrchestratorPassword = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+
     private readonly INetwork _network = new NetworkBuilder().Build();
 
     private readonly PostgreSqlContainer _postgres;
@@ -99,13 +112,16 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
 
     /// <summary>
     /// The API token of the LEAST-PRIVILEGED <c>iverson-admin-orchestrator</c> service identity —
-    /// the credential Iverson.Api actually runs with (<c>Authentik__AdminToken</c>). Its literal
-    /// value is fixed by the shipped <c>compose-only/service-clients.yaml</c> blueprint, so a test
-    /// using it is exercising the real, shipped RBAC role rather than a reconstruction of it. Use
-    /// this — not <see cref="AdminToken"/> — for anything asserting what the orchestrator may and
-    /// may not do; the bootstrap token is a superuser and would pass every check vacuously.
+    /// the credential Iverson.Api actually runs with (<c>Authentik__AdminToken</c>). This fixture
+    /// generates the value itself and threads it into the container as
+    /// <c>IVERSON_ADMIN_ORCHESTRATOR_TOKEN</c>, which the shipped
+    /// <c>compose-only/service-clients.yaml</c> blueprint's <c>!Env</c> tag reads (CSR round-4
+    /// finding #8 — the blueprint no longer hardcodes this value), so a test using it is exercising
+    /// the real, shipped RBAC role rather than a reconstruction of it. Use this — not
+    /// <see cref="AdminToken"/> — for anything asserting what the orchestrator may and may not do;
+    /// the bootstrap token is a superuser and would pass every check vacuously.
     /// </summary>
-    public const string OrchestratorToken = "dev-only-not-for-production-admin-orchestrator-token";
+    public static readonly string OrchestratorToken = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
 
     public async Task InitializeAsync()
     {
@@ -227,6 +243,13 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
             .WithEnvironment("AUTHENTIK_BOOTSTRAP_PASSWORD", BootstrapPassword)
             .WithEnvironment("AUTHENTIK_BOOTSTRAP_TOKEN", BootstrapToken)
             .WithEnvironment("AUTHENTIK_SKIP_MIGRATIONS", "true") // authentik-migrate already owns migrations
+            .WithEnvironment("IVERSON_LOADTEST_CLIENT_SECRET", LoadtestClientSecret)
+            .WithEnvironment("IVERSON_WEBTEST_CLIENT_SECRET", WebtestClientSecret)
+            .WithEnvironment("IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET", AdminAutomationClientSecret)
+            .WithEnvironment("IVERSON_SMOKE_TEST_PASSWORD", SmokeTestPassword)
+            .WithEnvironment("IVERSON_BYPASS_PASSWORD", BypassPassword)
+            .WithEnvironment("IVERSON_ADMIN_ORCHESTRATOR_PASSWORD", AdminOrchestratorPassword)
+            .WithEnvironment("IVERSON_ADMIN_ORCHESTRATOR_TOKEN", OrchestratorToken)
             .WithBindMount(blueprintsDir, "/blueprints/custom", AccessMode.ReadOnly)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilCommandIsCompleted("ak", "healthcheck"));
 

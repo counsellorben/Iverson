@@ -25,6 +25,15 @@ if (flags.Target is not ("containers" or "kind"))
     return 1;
 }
 
+// Commands that provision a tenant, register schemas, AND (the same set, by inspection) are the
+// only ones whose DI graph ever resolves ActingUserIdentities (DirectSeeder, WritePathScenario /
+// KindWritePathScenario, ReadPathScenario, BenchmarkIngestScenario, BenchmarkQueryScenario all take
+// it as a constructor dependency; clear-data, benchmark-aggregate, acting-user-smoke-test, and
+// --help do not). Computed early so it can also gate the acting-user password requirement below --
+// commands outside this set (notably --help) must keep working with neither password env var set.
+var needsTenantAndSchema = command is "seed" or "write-path" or "read-path" or "all"
+    or "benchmark-ingest" or "benchmark-query";
+
 var grpcUrl       = Env("IVERSON_GRPC_URL",        "http://localhost:8080");
 var clientId      = Environment.GetEnvironmentVariable("IVERSON_CLIENT_ID");
 var clientSecret  = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SECRET");
@@ -41,9 +50,16 @@ var actingUserHostHeader = Environment.GetEnvironmentVariable("IVERSON_ACTING_US
 var actingUserClientId    = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_CLIENT_ID")    ?? "dev-iverson-loadtest-human-client-id";
 var actingUserRedirectUri = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_REDIRECT_URI") ?? "http://localhost/placeholder-callback";
 var actingUserUsername = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_USERNAME") ?? "iverson-acting-user-smoke-test";
-var actingUserPassword = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_PASSWORD") ?? "dev-only-not-for-production-smoke-test-password-0123456789";
+// RequireEnv only when the command actually needs it (needsTenantAndSchema, above) -- --help and
+// passwordless commands (clear-data, benchmark-aggregate, acting-user-smoke-test) must keep working
+// with neither IVERSON_ACTING_USER_PASSWORD nor IVERSON_ACTING_USER_BYPASS_PASSWORD set.
+var actingUserPassword = needsTenantAndSchema
+    ? RequireEnv("IVERSON_ACTING_USER_PASSWORD")
+    : Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_PASSWORD") ?? "";
 var actingUserBypassUsername = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_USERNAME") ?? "iverson-loadtest-bypass-user";
-var actingUserBypassPassword = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_PASSWORD") ?? "dev-only-not-for-production-bypass-password-0123456789";
+var actingUserBypassPassword = needsTenantAndSchema
+    ? RequireEnv("IVERSON_ACTING_USER_BYPASS_PASSWORD")
+    : Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_PASSWORD") ?? "";
 var tenantProvisionId   = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ID") ?? "iverson-loadtest-dynamic";
 var tenantAdminUsername = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_USERNAME") ?? "iverson-loadtest-tenant-admin";
 var tenantAdminEmail    = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_EMAIL") ?? "iverson-loadtest-tenant-admin@iverson.local";
@@ -85,9 +101,6 @@ if (flags.Target == "kind" && string.IsNullOrWhiteSpace(kafkaOptions.SecurityPro
 var clientCredentials = clientId is not null && clientSecret is not null && tokenEndpoint is not null
     ? new IversonClientCredentials(clientId, clientSecret, tokenEndpoint, clientScope, HostHeader: actingUserHostHeader)
     : null;
-
-var needsTenantAndSchema = command is "seed" or "write-path" or "read-path" or "all"
-    or "benchmark-ingest" or "benchmark-query";
 
 ActingUserTokenProvider? tenantAdminTokenProvider = null;
 if (needsTenantAndSchema && clientCredentials is not null)
@@ -300,6 +313,17 @@ return 0;
 
 static string Env(string key, string def) =>
     Environment.GetEnvironmentVariable(key) ?? def;
+
+// CSR round-4 finding #8 follow-up: these two acting-user passwords used to default to the same
+// literal the docker-compose Authentik blueprint hardcoded, so the default "just worked" against a
+// fresh stack. That blueprint value is now randomly generated per stack by
+// scripts/generate-compose-secrets.sh, so a stale literal default here would silently authenticate
+// with the wrong password and fail with a confusing 401 instead of a clear error.
+static string RequireEnv(string key) =>
+    Environment.GetEnvironmentVariable(key) ?? throw new InvalidOperationException(
+        $"Missing required environment variable '{key}' -- the docker-compose stack's Authentik " +
+        "dev-only passwords are now randomly generated per stack by scripts/generate-compose-secrets.sh; " +
+        "read the value out of Iverson.Server/.env.");
 
 static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentials creds)
 {

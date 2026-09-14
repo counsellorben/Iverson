@@ -897,6 +897,10 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.StatusCode.Should().Be(StatusCode.Unavailable);
         ex.Which.Status.Detail.Should().Contain("'Doc': 'snowflake-arctic-embed:s'");
         ex.Which.Status.Detail.Should().Contain("confirm it has been pulled");
+
+        // CSR #7 (third call site): the underlying exception's own message must never leak into
+        // the client-facing status — only the fixed, pre-authored text above.
+        ex.Which.Status.Detail.Should().NotContain("connection refused");
     }
 
     [Fact]

@@ -26,7 +26,7 @@ public sealed class SchemaRegistrationOrchestrator(
     // the source — every descriptor that reaches SchemaBuilder.BuildDescriptor must already be
     // a safe DDL identifier. No underscores are permitted in the input because ToSnakeCase
     // inserts its own; this pattern also naturally rejects an empty string.
-    private static readonly Regex IdentifierPattern = new("^[A-Za-z][A-Za-z0-9]*$", RegexOptions.Compiled);
+    internal static readonly Regex IdentifierPattern = new("^[A-Za-z][A-Za-z0-9]*$", RegexOptions.Compiled);
 
     // The declaration is class-level in every client, so every embedding/chunk property of a type
     // is expected to carry the same value — reading both flag-halves (ModelId AND ChunkModelId) so
@@ -137,10 +137,12 @@ public sealed class SchemaRegistrationOrchestrator(
             }
             catch (Exception ex)
             {
+                logger.LogError(ex, "Embedding service unavailable for type {Type} model {Model}",
+                    typeDesc.TypeName.SanitizeForLog(), service.ModelId);
                 throw new RpcException(new Status(StatusCode.Unavailable,
                     $"Embedding service is unavailable, so schema registration cannot determine the vector "
                     + $"dimension. Check that the embedding backend is reachable and retry. Resolved embedding model for "
-                    + $"'{typeDesc.TypeName}': '{service.ModelId}' — confirm it has been pulled. ({ex.Message})"));
+                    + $"'{typeDesc.TypeName}': '{service.ModelId}' — confirm it has been pulled."));
             }
 
             SchemaDescriptor descriptor;
@@ -424,6 +426,7 @@ public sealed class SchemaRegistrationOrchestrator(
                 }
 
                 var target = RequireTargetDescriptor(declaring, relation, allDescriptors, statusCode);
+                RequireNotRowOwned(declaring, segment, target, statusCode);
                 RequireScalarProperty(target, segment.PropertyName!, statusCode);
                 break;
             }
@@ -440,6 +443,7 @@ public sealed class SchemaRegistrationOrchestrator(
                 }
 
                 var target = RequireTargetDescriptor(declaring, relation, allDescriptors, statusCode);
+                RequireNotRowOwned(declaring, segment, target, statusCode);
                 foreach (var inner in segment.Inner ?? [])
                     if (inner.Kind == DocumentSegmentKind.Scalar)
                         RequireScalarProperty(target, inner.PropertyName!, statusCode);
@@ -474,6 +478,18 @@ public sealed class SchemaRegistrationOrchestrator(
             throw new RpcException(new Status(statusCode,
                 $"Document template references property '{propertyName}' on '{context.TypeName}', which " +
                 "carries a FieldPermission; a document template cannot selectively exclude fields per caller."));
+        }
+    }
+
+    private static void RequireNotRowOwned(
+        SchemaDescriptor declaring, DocumentSegment segment, SchemaDescriptor target, StatusCode statusCode)
+    {
+        if (target.Authorization?.OwnerField is not null || target.Authorization?.RowPermissions.Count > 0)
+        {
+            throw new RpcException(new Status(statusCode,
+                $"Document template on '{declaring.TypeName}' traverses relation '{segment.RelationName}' to " +
+                $"'{target.TypeName}', which declares row-level authorization (OwnerField/RowPermissions); a " +
+                "document template cannot traverse a relation to a row-owned type."));
         }
     }
 
@@ -771,9 +787,11 @@ public sealed class SchemaRegistrationOrchestrator(
         }
     }
 
-    private static void ValidateIdentifier(string name, string context)
+    internal static bool IsValidIdentifier(string name) => IdentifierPattern.IsMatch(name);
+
+    internal static void ValidateIdentifier(string name, string context)
     {
-        if (!IdentifierPattern.IsMatch(name))
+        if (!IsValidIdentifier(name))
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"{context} '{name}' is not a valid identifier — it must start with a letter and contain only letters and digits."));

@@ -100,6 +100,12 @@ public sealed class ObjectRetrievalGrpcService(
             return;
         }
 
+        foreach (var key in keys)
+        {
+            if (!Guid.TryParse(key, out _))
+                throw new RpcException(new Status(StatusCode.InvalidArgument, $"Key '{key}' is not a valid GUID."));
+        }
+
         var rows = await _entities.FetchManyByKeysAsync(
             SchemaBuilder.ToTableSchema(schema),
             keys,

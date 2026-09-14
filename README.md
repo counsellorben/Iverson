@@ -91,19 +91,30 @@ tokens against the API, see [`docs/user-management-and-security.md`](docs/user-m
 Run everything with the launcher:
 
 ```bash
+./scripts/generate-compose-secrets.sh
 cd Iverson.Server/Iverson.Launcher
 dotnet run
 ```
 
-It starts Docker, waits for every service (including the Ollama embedding model), and spawns the API. Ctrl+C tears it all down cleanly.
+`generate-compose-secrets.sh` writes `Iverson.Server/.env` with 7 randomized dev-only credentials for
+Authentik's OAuth2 clients, users, and admin-orchestrator API token; the launcher shells out to `docker
+compose up`, which reads `.env` automatically and now fails fast (`docker-compose.yml`'s `${VAR:?...}`
+required-variable syntax) without it. It starts Docker, waits for every service (including the Ollama
+embedding model), and spawns the API. Ctrl+C tears it all down cleanly.
 
 Or bring up the stack manually:
 
 ```bash
+./scripts/generate-compose-secrets.sh
 cd Iverson.Server
 docker compose build iverson-api
 docker compose up -d
 ```
+
+`generate-compose-secrets.sh` writes `Iverson.Server/.env` with 7 randomized dev-only credentials for
+Authentik's OAuth2 clients, users, and admin-orchestrator API token. Compose reads `.env` automatically;
+skip this step and `docker compose up` now fails fast (`docker-compose.yml`'s `${VAR:?...}` required-variable
+syntax) rather than silently provisioning Authentik with blank secrets.
 
 Then watch a write travel through the whole system: open Jaeger at `http://localhost:16686`, select `Iverson.Api`, and follow one trace ID from the gRPC call through Kafka into all three stores. Every response also carries an `X-Trace-Id` header for client-side correlation. Prometheus is at `http://localhost:9090`, scraping `/metrics` from the API. (Consumer retry/DLQ counters and reconciliation/DLQ backlog gauges only populate once a `worker`-role instance is running; docker-compose runs both roles — `iverson-api` and `iverson-worker` — from the same image tag, so rebuild and recreate BOTH after a server-side change or the worker keeps projecting with the old binary. See `deploy/kind/` or `deploy/helm/` for the split deployment.)
 

@@ -18,7 +18,15 @@ export function createOAuth2ClientCredentials(
     clientSecret: string,
     tokenEndpoint: string,
     scope?: string,
+    allowInsecureCredentials = false,
 ): grpc.CallCredentials {
+    if (!allowInsecureCredentials && new URL(tokenEndpoint).protocol !== 'https:') {
+        throw new Error(
+            `Refusing to send OAuth2 client credentials to a non-https token endpoint ` +
+            `(${tokenEndpoint}) without an explicit allowInsecureCredentials=true opt-in.`,
+        );
+    }
+
     let cachedToken: string | null = null;
     let expiresAt = 0;
     let pending: Promise<string> | null = null;
@@ -41,6 +49,7 @@ export function createOAuth2ClientCredentials(
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body,
+                redirect: 'error',
             });
             if (!response.ok) {
                 throw new Error(`Failed to acquire Iverson client token: HTTP ${response.status}`);

@@ -6,6 +6,7 @@ using Iverson.Api.Schema;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
+using Iverson.StarRocks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -27,6 +28,7 @@ public class EnrichmentConsumerTests
     private readonly IRecordStoreTransactionRunner _txRunner = Substitute.For<IRecordStoreTransactionRunner>();
     private readonly IDbTransactionContext _tx = Substitute.For<IDbTransactionContext>();
     private readonly IEnrichmentService _enrichment = Substitute.For<IEnrichmentService>();
+    private readonly IPayloadSizeValidator _payloadSizeValidator = Substitute.For<IPayloadSizeValidator>();
     private readonly SchemaRegistry _registry;
 
     // Ordered log of every call made inside the writeback transaction, so tests can assert the
@@ -140,7 +142,7 @@ public class EnrichmentConsumerTests
 
     private EnrichmentConsumer BuildSut() =>
         new(_consumer, _registry, _entities, _state, _outboxWriter, _outboxPublisher,
-            _txRunner, _enrichment, NullLogger<EnrichmentConsumer>.Instance);
+            _txRunner, _enrichment, _payloadSizeValidator, NullLogger<EnrichmentConsumer>.Instance);
 
     // Reproduces the hash the consumer stores for a given schema + row, by running one
     // enrichment pass and capturing what it wrote to the state table.
@@ -157,7 +159,7 @@ public class EnrichmentConsumerTests
              .Returns(ci => { captured = (string)ci[4]!; return Task.CompletedTask; });
 
         var sut = new EnrichmentConsumer(_consumer, registry, _entities, state, _outboxWriter,
-            _outboxPublisher, _txRunner, _enrichment, NullLogger<EnrichmentConsumer>.Instance);
+            _outboxPublisher, _txRunner, _enrichment, _payloadSizeValidator, NullLogger<EnrichmentConsumer>.Instance);
         await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
 
         captured.Should().NotBeNull("the capture pass must have enriched");
@@ -287,9 +289,9 @@ public class EnrichmentConsumerTests
             Arg.Any<CancellationToken>());
     }
 
-    // The cap sits on the SOURCE TEXT, not the assembled prompt: three prompts lead with their
-    // instruction and the extraction prompt trails with its hint, so a cut on the prompt would drop
-    // one of them (spec §3.5). A cap on the assembled prompt fails the EndWith assertion.
+    // The cap sits on the SOURCE TEXT, not the assembled prompt: all prompts lead with their
+    // instruction (the extraction prompt's hint is positioned in {0} ahead of {1} source text), so a cut
+    // on the prompt would drop one of them (spec §3.5). A cap on the assembled prompt fails the EndWith assertion.
     [Fact]
     public async Task HandleUpdated_CutsTheSourceTextTo8000Chars_KeepingTheInstructionAndTheHint()
     {
@@ -302,8 +304,8 @@ public class EnrichmentConsumerTests
         await BuildSut().HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
 
         extractionPrompt.Should().NotBeNull();
-        extractionPrompt.Should().StartWith("Extract structured information");
-        extractionPrompt.Should().EndWith("Extract specifically: the author's stated conclusion");
+        extractionPrompt.Should().StartWith("Extract specifically: the author's stated conclusion");
+        extractionPrompt.Should().EndWith("<<<END_SOURCE_TEXT>>>");
         extractionPrompt.Should().Contain(new string('x', EnrichmentConsumer.MaxSourceChars));
         extractionPrompt.Should().NotContain(new string('x', EnrichmentConsumer.MaxSourceChars + 1));
     }
@@ -333,7 +335,7 @@ public class EnrichmentConsumerTests
             .BeFalse("a rehydrated row with no server-owned tenant column must not be admitted");
 
         var sut = new EnrichmentConsumer(_consumer, registry, _entities, _state, _outboxWriter,
-            _outboxPublisher, _txRunner, _enrichment, NullLogger<EnrichmentConsumer>.Instance);
+            _outboxPublisher, _txRunner, _enrichment, _payloadSizeValidator, NullLogger<EnrichmentConsumer>.Instance);
 
         // RE-POINTED AGAIN by the Ruling 56 fix, and the change of outcome is deliberate. The
         // consumer's unknown-type guard used to RETURN, which commits the Kafka offset and loses
@@ -409,6 +411,43 @@ public class EnrichmentConsumerTests
         await sut.HandleAsync(Key, Event(EntityEventType.Created), CancellationToken.None);
 
         await _entities.ReceivedWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!, default);
+    }
+
+    // ── Write-back size guard (Finding #9) ────────────────────────────────────
+
+    // ObjectPersistenceGrpcService/ObjectMappingGrpcService already refuse a client-supplied
+    // payload that will not fit its StarRocks column; the LLM-generated write-back lands in the
+    // same columns and is exactly as capable of overflowing them, so it gets the same guard. Uses
+    // the REAL PayloadSizeValidator (not the shared substitute) so this proves the byte-size
+    // check actually trips — not merely that a pre-wired exception propagates. It also
+    // discriminates local- from outer-catch handling: if the RpcException escaped to the
+    // enclosing best-effort `catch (Exception)` instead of being caught right where it is thrown,
+    // no state row would ever be written and this object would retry — identically, at
+    // temperature 0 — forever.
+    [Fact]
+    public async Task HandleUpdated_WhenGeneratedValueExceedsColumnLimit_SuppressesWritebackAndRecordsStateRow()
+    {
+        await _registry.RegisterAsync(EnrichedArticle());
+        // Summary is not marked as a large field, so it is capped at StringAliasBytes
+        // (65,533 bytes) — one byte over trips the guard.
+        var oversized = new string('x', StarRocksLimits.StringAliasBytes + 1);
+        _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(oversized);
+
+        var sut = new EnrichmentConsumer(_consumer, _registry, _entities, _state, _outboxWriter,
+            _outboxPublisher, _txRunner, _enrichment, new PayloadSizeValidator(),
+            NullLogger<EnrichmentConsumer>.Instance);
+        var act = async () => await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+
+        await act.Should().NotThrowAsync(
+            "a size violation must be handled locally, not escape as an unhandled RpcException");
+        await _entities.DidNotReceiveWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!, default);
+        await _state.Received(1).UpsertAsync(
+            Arg.Any<IDbTransactionContext>(), Tenant, "Article", Key, Arg.Any<string>(), Arg.Any<DateTimeOffset>());
+        await _outboxWriter.DidNotReceiveWithAnyArgs().EnqueueUpdateOutboxRowAsync(
+            default!, default, default!, default!, default!);
+        await _outboxPublisher.DidNotReceiveWithAnyArgs().PublishAsync(
+            default, default!, default!, default!, default, default, default, default!, default);
+        _txCalls.Should().Equal(["STATE_UPSERT"], "no column update, so no tenant scope is entered either");
     }
 
     // ── Failure handling ──────────────────────────────────────────────────────

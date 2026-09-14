@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Google.Protobuf.WellKnownTypes;
+using Grpc.Core;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Embeddings;
@@ -38,6 +40,7 @@ public sealed class EnrichmentConsumer(
     IOutboxPublisher outboxPublisher,
     IRecordStoreTransactionRunner txRunner,
     IEnrichmentService enrichment,
+    IPayloadSizeValidator payloadSizeValidator,
     ILogger<EnrichmentConsumer> logger) : BackgroundService
 {
     private const string GroupId = "iverson.consumer.enrichment";
@@ -177,6 +180,31 @@ public sealed class EnrichmentConsumer(
                 return;
             }
 
+            // Same size guard ObjectPersistenceGrpcService/ObjectMappingGrpcService apply to a
+            // client-supplied payload before it reaches StarRocks — this write-back is LLM-generated,
+            // not client-supplied, but it lands in the same StarRocks columns and is exactly as
+            // capable of overflowing them. Caught locally rather than left to the enclosing
+            // best-effort catch: that catch leaves no state row, so the object would retry forever,
+            // and at temperature 0 the model produces the identical oversized value every time —
+            // an infinite loop, not a transient failure that might succeed on retry.
+            try
+            {
+                var sizeCheckPayload = new Struct();
+                foreach (var (columnName, columnValue) in columns)
+                    sizeCheckPayload.Fields[columnName] = Value.ForString((string)columnValue!);
+                payloadSizeValidator.ValidateTextColumnSizes(sizeCheckPayload, schema);
+            }
+            catch (RpcException)
+            {
+                logger.LogWarning(
+                    "[Enrichment] Generated value(s) for {Type}:{Key} exceed the StarRocks column limit — " +
+                    "no writeback; state row recorded so this source text and specification are not retried.",
+                    schema.TypeName.SanitizeForLog(), ev.Key);
+                await txRunner.ExecuteInTransactionAsync(tx =>
+                    state.UpsertAsync(tx, tenantValue, schema.TypeName, ev.Key, hash, DateTimeOffset.UtcNow));
+                return;
+            }
+
             var outboxRowId = Guid.CreateVersion7();
 
             await txRunner.ExecuteInTransactionAsync(async tx =>
@@ -300,14 +328,14 @@ public sealed class EnrichmentConsumer(
                         string.Format(EnrichmentPrompts.Keywords, sourceText), ct);
                     break;
                 case EnrichmentKind.Extracted:
-                    // EnrichmentPrompts.Extraction carries a single {0} slot for the source text;
-                    // the per-target hint (mandatory for [IversonExtracted], enforced at
-                    // registration) is appended so the model knows what to pull out.
+                    // EnrichmentPrompts.Extraction carries two slots: {0} is the per-target hint
+                    // (mandatory for [IversonExtracted], enforced at registration), and {1} is the
+                    // source text. The hint is positioned ahead of the text so the model knows what
+                    // to pull out before reading the untrusted content.
                     try
                     {
                         generated = await enrichment.GenerateJsonAsync(
-                            string.Format(EnrichmentPrompts.Extraction, sourceText) +
-                            $"\n\nExtract specifically: {target.Hint}", ct);
+                            string.Format(EnrichmentPrompts.Extraction, target.Hint, sourceText), ct);
                     }
                     catch (InvalidOperationException ex)
                     {
