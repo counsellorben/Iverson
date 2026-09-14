@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Google.Protobuf.WellKnownTypes;
+using Grpc.Core;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Embeddings;
@@ -38,6 +40,7 @@ public sealed class EnrichmentConsumer(
     IOutboxPublisher outboxPublisher,
     IRecordStoreTransactionRunner txRunner,
     IEnrichmentService enrichment,
+    IPayloadSizeValidator payloadSizeValidator,
     ILogger<EnrichmentConsumer> logger) : BackgroundService
 {
     private const string GroupId = "iverson.consumer.enrichment";
@@ -171,6 +174,31 @@ public sealed class EnrichmentConsumer(
                 // a transient failure still throws past this point and records nothing.
                 logger.LogWarning(
                     "[Enrichment] Generated no values for {Type}:{Key} — no writeback; state row recorded so this source text and specification are not retried.",
+                    schema.TypeName.SanitizeForLog(), ev.Key);
+                await txRunner.ExecuteInTransactionAsync(tx =>
+                    state.UpsertAsync(tx, tenantValue, schema.TypeName, ev.Key, hash, DateTimeOffset.UtcNow));
+                return;
+            }
+
+            // Same size guard ObjectPersistenceGrpcService/ObjectMappingGrpcService apply to a
+            // client-supplied payload before it reaches StarRocks — this write-back is LLM-generated,
+            // not client-supplied, but it lands in the same StarRocks columns and is exactly as
+            // capable of overflowing them. Caught locally rather than left to the enclosing
+            // best-effort catch: that catch leaves no state row, so the object would retry forever,
+            // and at temperature 0 the model produces the identical oversized value every time —
+            // an infinite loop, not a transient failure that might succeed on retry.
+            try
+            {
+                var sizeCheckPayload = new Struct();
+                foreach (var (columnName, columnValue) in columns)
+                    sizeCheckPayload.Fields[columnName] = Value.ForString((string)columnValue!);
+                payloadSizeValidator.ValidateTextColumnSizes(sizeCheckPayload, schema);
+            }
+            catch (RpcException)
+            {
+                logger.LogWarning(
+                    "[Enrichment] Generated value(s) for {Type}:{Key} exceed the StarRocks column limit — " +
+                    "no writeback; state row recorded so this source text and specification are not retried.",
                     schema.TypeName.SanitizeForLog(), ev.Key);
                 await txRunner.ExecuteInTransactionAsync(tx =>
                     state.UpsertAsync(tx, tenantValue, schema.TypeName, ev.Key, hash, DateTimeOffset.UtcNow));
