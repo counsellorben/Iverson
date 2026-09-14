@@ -553,4 +553,41 @@ public sealed class AuthorizationFieldMaskingTests
         ex.StatusCode.Should().Be(StatusCode.PermissionDenied);
         ex.StatusCode.Should().NotBe(StatusCode.InvalidArgument);
     }
+
+    [Fact]
+    public void EnforceWriteAuthorization_TenantMismatchWithOversizedPayload_StillGetsPermissionDenied()
+    {
+        // Finding 2 (round-4 whole-branch review): the size guard must run AFTER every
+        // PermissionDenied-throwing check in the Update branch, not just the initial
+        // `decision.Denied` throw. A caller updating another tenant's row must get
+        // PermissionDenied (audit-logged "TenantMismatch"), never InvalidArgument from the size
+        // guard — the latter would leak that the row exists, name the offending column, and
+        // reveal its size limit to a caller who has no business seeing any of it. A real
+        // validator is used so this test would fail (wrong status) if the ordering regressed.
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["Id"]   = Value.ForString("tag-1"),
+                ["Name"] = Value.ForString(new string('a', 65_534)),
+            }
+        };
+
+        var act = () => AuthorizationFieldMasking.EnforceWriteAuthorization(
+            EvaluatorReturning(new AuthorizationDecision(
+                Denied: false, OwnershipRequired: false, OwnerFieldName: null, OwnerValue: null,
+                AllowedFields: null, TenantColumn: "TenantId", TenantValue: "acting-users-tenant")),
+            new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "user-1")], "test")),
+            Schema(),
+            payload,
+            AuthorizationAction.Write,
+            "Not authorized to update this entity.",
+            existingRowJson: """{"Id":"tag-1","Name":"old","TenantId":"someone-elses-tenant"}""",
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            new PayloadSizeValidator());
+
+        var ex = act.Should().Throw<RpcException>().Which;
+        ex.StatusCode.Should().Be(StatusCode.PermissionDenied);
+        ex.StatusCode.Should().NotBe(StatusCode.InvalidArgument);
+    }
 }

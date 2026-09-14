@@ -98,10 +98,10 @@ func TestGetRequestMetadata_CtxTokenWinsOverDefault(t *testing.T) {
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:               "id",
-		ClientSecret:           "secret",
-		TokenEndpoint:          server.URL,
-		DefaultActingUserToken: stringPtr("ambient"),
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
+		DefaultActingUserToken:   stringPtr("ambient"),
 		AllowInsecureCredentials: true,
 	}
 
@@ -122,10 +122,10 @@ func TestGetRequestMetadata_DefaultAppliesWhenCtxHasNone(t *testing.T) {
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:               "id",
-		ClientSecret:           "secret",
-		TokenEndpoint:          server.URL,
-		DefaultActingUserToken: stringPtr("ambient"),
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
+		DefaultActingUserToken:   stringPtr("ambient"),
 		AllowInsecureCredentials: true,
 	}
 
@@ -145,9 +145,9 @@ func TestGetRequestMetadata_ExplicitEmptyPerCallTokenEmitsLoudBearer(t *testing.
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:      "id",
-		ClientSecret:  "secret",
-		TokenEndpoint: server.URL,
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
 		AllowInsecureCredentials: true,
 	}
 
@@ -168,10 +168,10 @@ func TestGetRequestMetadata_ExplicitEmptyPerCallTokenDoesNotFallThroughToDefault
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:               "id",
-		ClientSecret:           "secret",
-		TokenEndpoint:          server.URL,
-		DefaultActingUserToken: stringPtr("ambient"),
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
+		DefaultActingUserToken:   stringPtr("ambient"),
 		AllowInsecureCredentials: true,
 	}
 
@@ -192,10 +192,10 @@ func TestGetRequestMetadata_AmbientEmptyPointerEmitsLoudBearer(t *testing.T) {
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:               "id",
-		ClientSecret:           "secret",
-		TokenEndpoint:          server.URL,
-		DefaultActingUserToken: stringPtr(""),
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
+		DefaultActingUserToken:   stringPtr(""),
 		AllowInsecureCredentials: true,
 	}
 
@@ -215,9 +215,9 @@ func TestGetRequestMetadata_NoTokenAnywhereOmitsHeader(t *testing.T) {
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:      "id",
-		ClientSecret:  "secret",
-		TokenEndpoint: server.URL,
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
 		AllowInsecureCredentials: true,
 	}
 
@@ -238,9 +238,9 @@ func TestOAuth2ClientCredentials_RejectsPlaintextEndpointWithoutOptIn(t *testing
 
 	// Test with plaintext endpoint and AllowInsecureCredentials=false (default)
 	creds := &OAuth2ClientCredentials{
-		ClientID:      "id",
-		ClientSecret:  "secret",
-		TokenEndpoint: server.URL, // plaintext server.URL
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL, // plaintext server.URL
 		AllowInsecureCredentials: false,
 	}
 
@@ -261,9 +261,9 @@ func TestOAuth2ClientCredentials_AcceptsPlaintextEndpointWithOptIn(t *testing.T)
 
 	// Test with plaintext endpoint and AllowInsecureCredentials=true
 	creds := &OAuth2ClientCredentials{
-		ClientID:      "id",
-		ClientSecret:  "secret",
-		TokenEndpoint: server.URL, // plaintext server.URL
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL, // plaintext server.URL
 		AllowInsecureCredentials: true,
 	}
 

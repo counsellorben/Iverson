@@ -93,4 +93,28 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
+
+    [Fact]
+    public async Task ActingUserWithNoTenantClaimAndNotOperator_GetAdminDlq_ReturnsForbidden()
+    {
+        // Round-4 whole-branch review finding: `r.TenantId == actingTenantId` is `null == null`
+        // (true) for every untenanted row when the acting user's tenant_id claim is absent,
+        // bypassing the isOperator gate entirely. An acting user with neither a tenant_id claim
+        // nor operator group membership must be rejected outright, not silently handed every
+        // untenanted row. This is observable even against the no-op DLQ repository (always empty):
+        // before the fix this request returned 200 OK; after the fix, it must never reach the
+        // repository at all.
+        var serviceToken = TestJwtFactory.CreateToken(
+            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
+        var actingUserToken = TestJwtFactory.CreateToken(
+            "test-actinguser-audience", "test-user"); // no tenant_id claim, no operator group
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/admin/dlq");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", serviceToken);
+        request.Headers.Add("x-acting-user-authorization", $"Bearer {actingUserToken}");
+
+        var response = await _client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
 }

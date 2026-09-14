@@ -417,10 +417,16 @@ app.MapGet("/admin/dlq", async (IDlqRepository dlq, AuditLog audit, HttpContext 
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
         return Results.Unauthorized();
 
-    var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
     var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(
         actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
         actingUserResult.Principal.FindFirst("scope")?.Value);
+    var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
+
+    // An acting user with NO tenant_id claim must not fall through as though they matched every
+    // untenanted row: `r.TenantId == actingTenantId` is `null == null` (true) for every row whose
+    // TenantId is also null, which would bypass the isOperator gate entirely for such a caller.
+    if (string.IsNullOrEmpty(actingTenantId) && !isOperator)
+        return Results.Forbid();
 
     var rows = await dlq.ListUnreplayedAsync(200);
     var visible = rows.Where(r => r.TenantId == actingTenantId || (r.TenantId is null && isOperator));
@@ -434,13 +440,20 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
         return Results.Unauthorized();
 
-    var row = await dlq.GetUnreplayedByIdAsync(id);
-    if (row is null) return Results.NotFound(new { error = $"No unreplayed DLQ row with id '{id}'" });
-
-    var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
     var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(
         actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
         actingUserResult.Principal.FindFirst("scope")?.Value);
+    var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
+
+    // Same null-tenant_id-claim bypass as /admin/dlq (see comment there), checked BEFORE the row
+    // fetch below: a caller who fails this first-level check must never learn — via 404 vs.
+    // Forbid — whether the row id even exists.
+    if (string.IsNullOrEmpty(actingTenantId) && !isOperator)
+        return Results.Forbid();
+
+    var row = await dlq.GetUnreplayedByIdAsync(id);
+    if (row is null) return Results.NotFound(new { error = $"No unreplayed DLQ row with id '{id}'" });
+
     if (row.TenantId != actingTenantId && !(row.TenantId is null && isOperator))
         return Results.Forbid();
 

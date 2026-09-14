@@ -559,6 +559,60 @@ public class SchemaRegistryTests
             e.Message.Contains("Article"));
     }
 
+    [Fact]
+    public async Task LoadAsync_DescriptorWithInvalidScalarColumnIdentifier_IsSkippedAndLogsError()
+    {
+        // The other two clauses (TypeName, KeyColumn.SqlType) are covered above; this and the FK
+        // test below cover the two ScalarColumns/FkColumns identifier clauses that were previously
+        // untested — Finding #6 of the round-4 whole-branch review.
+        var badSchema = SchemaFixtures.ArticleSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title; DROP TABLE x;--", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("AuthorId", "uuid", false)
+            ]
+        };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(badSchema))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse(
+            "a scalar column name that fails SchemaRegistrationOrchestrator's own identifier pattern must never be admitted on rehydration");
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("failed identifier/key-type validation on rehydration") &&
+            e.Message.Contains("Article"));
+    }
+
+    [Fact]
+    public async Task LoadAsync_DescriptorWithInvalidFkColumnIdentifier_IsSkippedAndLogsError()
+    {
+        var badSchema = SchemaFixtures.ArticleSchema() with
+        {
+            FkColumns = [new ForeignKeyDescriptor("AuthorId; DROP TABLE x;--", "Author")]
+        };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(badSchema))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse(
+            "an FK column name that fails SchemaRegistrationOrchestrator's own identifier pattern must never be admitted on rehydration");
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("failed identifier/key-type validation on rehydration") &&
+            e.Message.Contains("Article"));
+    }
+
     // Positive control mirroring LoadAsync_RowCarryingATenantColumn_IsAdmitted above: a
     // capitalization-only difference from the canonical "UUID" (what every real fixture in this
     // suite — and legacy rows predating a naming cleanup — would carry) must still be admitted;

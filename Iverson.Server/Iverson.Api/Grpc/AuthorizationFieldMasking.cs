@@ -15,12 +15,16 @@ internal static class AuthorizationFieldMasking
     /// denies/throws as appropriate, force-sets or validates the owner field, and rejects
     /// any field the caller isn't allowed to write.
     /// <para>
-    /// Also runs <paramref name="payloadSizeValidator"/>'s text-column-size guard, immediately
-    /// after the denial check and before any of the ownership/tenant logic below. Denial-first:
-    /// an unauthorized caller with an oversized payload still gets <c>PermissionDenied</c>, not
-    /// <c>InvalidArgument</c> — the size check never runs for a denied caller. Centralizing the
-    /// call here (rather than at each service's call site) is what makes both write paths get the
-    /// guard automatically instead of relying on each RPC to remember to call it.
+    /// Also runs <paramref name="payloadSizeValidator"/>'s text-column-size guard, but only as the
+    /// LAST step, after every authorization-adjacent check in this method (the initial denial
+    /// check, and — on the existing-row/Update branch — TenantMismatch, TenantImmutable,
+    /// OwnerMismatch, OwnerImmutable, and <see cref="RejectDisallowedFields"/>). Denial-first: a
+    /// caller who fails ANY of those checks still gets <c>PermissionDenied</c> (with its audit
+    /// trail entry), never <c>InvalidArgument</c> from the size guard — an oversized payload must
+    /// never let an unauthorized or cross-tenant caller learn that a row exists, which column
+    /// overflowed, or its size limit. Centralizing the call here (rather than at each service's
+    /// call site) is what makes both write paths get the guard automatically instead of relying on
+    /// each RPC to remember to call it.
     /// </para>
     /// </summary>
     /// <param name="existingRowJson">
@@ -79,8 +83,6 @@ internal static class AuthorizationFieldMasking
             auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "AccessDenied");
             throw new RpcException(new Status(StatusCode.PermissionDenied, deniedMessage));
         }
-
-        payloadSizeValidator.ValidateTextColumnSizes(payload, schema);
 
         if (existingRowJson is null)
         {
@@ -150,6 +152,15 @@ internal static class AuthorizationFieldMasking
         }
 
         RejectDisallowedFields(payload, decision.AllowedFields, exemptField: decision.OwnerFieldName);
+
+        // LAST — after every PermissionDenied-throwing check above (the initial denial check and,
+        // on the existing-row/Update branch, TenantMismatch/TenantImmutable/OwnerMismatch/
+        // OwnerImmutable/RejectDisallowedFields). A cross-tenant or otherwise unauthorized caller
+        // must get PermissionDenied — with its audit-logged denial reason — even when their
+        // payload is also oversized; running the size check any earlier would let such a caller
+        // learn (via InvalidArgument naming a column and its size limit) that the row exists,
+        // before authorization has even decided they may see it.
+        payloadSizeValidator.ValidateTextColumnSizes(payload, schema);
     }
 
     /// <summary>

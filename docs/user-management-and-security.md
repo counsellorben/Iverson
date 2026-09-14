@@ -193,10 +193,13 @@ Two grant types are used, matching the two kinds of caller:
 ### Service accounts — `client_credentials`
 
 ```bash
+# The loadtest client secret is randomly generated per docker-compose stack by
+# scripts/generate-compose-secrets.sh (CSR round-4 finding #8) — read it out of
+# Iverson.Server/.env's IVERSON_LOADTEST_CLIENT_SECRET.
 curl -s -X POST http://localhost:9000/application/o/token/ \
   -d grant_type=client_credentials \
   -d client_id=dev-iverson-loadtest-client-id \
-  -d client_secret=dev-only-not-for-production-loadtest-secret-0123456789
+  -d client_secret="$(grep IVERSON_LOADTEST_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)"
 ```
 
 Returns a JSON body with `access_token` (a JWT), `expires_in`, `token_type`.
@@ -209,10 +212,12 @@ sufficient**; Authentik only includes a scope's claims in the issued token if
 the token request itself also sends `scope=`:
 
 ```bash
+# The admin-automation client secret is likewise randomly generated per stack — read it out of
+# Iverson.Server/.env's IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET.
 curl -s -X POST http://localhost:9000/application/o/token/ \
   -d grant_type=client_credentials \
   -d client_id=dev-iverson-admin-automation-client-id \
-  -d client_secret=dev-only-not-for-production-admin-secret-0123456789 \
+  -d client_secret="$(grep IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)" \
   -d scope=admin
 ```
 
@@ -297,11 +302,14 @@ that language's native gRPC call-credentials mechanism.
 
 **.NET** (`Iverson.Clients/DotNet/Iverson.Client.Core/`):
 ```csharp
+// IVERSON_LOADTEST_CLIENT_SECRET is randomly generated per docker-compose stack by
+// scripts/generate-compose-secrets.sh (CSR round-4 finding #8) — read from Iverson.Server/.env,
+// e.g. export IVERSON_LOADTEST_CLIENT_SECRET=$(grep IVERSON_LOADTEST_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)
 services.AddIversonClient(
     grpcEndpoint: "http://iverson-api:8080",
     credentials: new IversonClientCredentials(
         "dev-iverson-loadtest-client-id",
-        "dev-only-not-for-production-loadtest-secret-0123456789",
+        Environment.GetEnvironmentVariable("IVERSON_LOADTEST_CLIENT_SECRET")!,
         "http://authentik-server:9000/application/o/token/"));
 ```
 Note: requires `UnsafeUseInsecureChannelCallCredentials = true` internally
@@ -310,9 +318,11 @@ drops the header over plaintext h2c.
 
 **Go** (`Iverson.Clients/Go/iverson/`):
 ```go
+// IVERSON_LOADTEST_CLIENT_SECRET is randomly generated per stack — read from Iverson.Server/.env
+// (export IVERSON_LOADTEST_CLIENT_SECRET=$(grep IVERSON_LOADTEST_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)).
 creds := &iverson.OAuth2ClientCredentials{
     ClientID: "dev-iverson-loadtest-client-id",
-    ClientSecret: "dev-only-not-for-production-loadtest-secret-0123456789",
+    ClientSecret: os.Getenv("IVERSON_LOADTEST_CLIENT_SECRET"),
     TokenEndpoint: "http://authentik-server:9000/application/o/token/",
 }
 client, _ := iverson.NewIversonClient("iverson-api:8080",
@@ -322,9 +332,11 @@ client, _ := iverson.NewIversonClient("iverson-api:8080",
 
 **Java** (`Iverson.Clients/Java/client/`):
 ```java
+// IVERSON_LOADTEST_CLIENT_SECRET is randomly generated per stack — read from Iverson.Server/.env
+// (export IVERSON_LOADTEST_CLIENT_SECRET=$(grep IVERSON_LOADTEST_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)).
 CallCredentials creds = new OAuth2ClientCredentials(
     "dev-iverson-loadtest-client-id",
-    "dev-only-not-for-production-loadtest-secret-0123456789",
+    System.getenv("IVERSON_LOADTEST_CLIENT_SECRET"),
     "http://authentik-server:9000/application/o/token/");
 try (IversonClient client = new IversonClient("iverson-api", 8080, creds)) { ... }
 ```
@@ -332,13 +344,16 @@ No special insecure-channel opt-in needed (unlike .NET).
 
 **Python** (`Iverson.Clients/Python/`):
 ```python
+import os
 from iverson_client import IversonClient, IversonClientCredentials
 
+# IVERSON_LOADTEST_CLIENT_SECRET is randomly generated per stack — read from Iverson.Server/.env
+# (export IVERSON_LOADTEST_CLIENT_SECRET=$(grep IVERSON_LOADTEST_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)).
 client = IversonClient(
     host="iverson-api", port=8080,
     credentials=IversonClientCredentials(
         "dev-iverson-loadtest-client-id",
-        "dev-only-not-for-production-loadtest-secret-0123456789",
+        os.environ["IVERSON_LOADTEST_CLIENT_SECRET"],
         "http://authentik-server:9000/application/o/token/"))
 ```
 Plain `insecure_channel` + call credentials is rejected outright by grpcio;
@@ -349,9 +364,11 @@ credentials to work around this.
 ```ts
 import { createOAuth2ClientCredentials, IversonClient } from '@iverson/client';
 
+// IVERSON_LOADTEST_CLIENT_SECRET is randomly generated per stack — read from Iverson.Server/.env
+// (export IVERSON_LOADTEST_CLIENT_SECRET=$(grep IVERSON_LOADTEST_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)).
 const creds = createOAuth2ClientCredentials(
   'dev-iverson-loadtest-client-id',
-  'dev-only-not-for-production-loadtest-secret-0123456789',
+  process.env.IVERSON_LOADTEST_CLIENT_SECRET!,
   'http://authentik-server:9000/application/o/token/');
 const client = new IversonClient('iverson-api', 8080, false, creds);
 ```
