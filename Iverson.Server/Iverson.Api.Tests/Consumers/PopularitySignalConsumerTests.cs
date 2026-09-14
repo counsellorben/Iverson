@@ -161,7 +161,7 @@ public class PopularitySignalConsumerTests
         StubCount(3);
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(eventType, "Comment", CommentId, payload);
         var sut = BuildSut(OptionsWith("Article", "Comments"));
@@ -188,7 +188,7 @@ public class PopularitySignalConsumerTests
 
         var expectedPointId = IntelligenceStoreConsumer.KeyToUlong(ArticleId);
         await _vector.Received(1).SetPayloadAsync(
-            "articles_" + TenantA,
+            _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false),
             expectedPointId,
             Arg.Is<IReadOnlyDictionary<string, object>>(p =>
                 p.Count == 2 &&
@@ -207,7 +207,7 @@ public class PopularitySignalConsumerTests
 
         var newPayload   = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{Article2Id}}","TenantId":"{{TenantA}}"}""";
         var priorPayload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(newPayload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(newPayload);
 
         var ev = MakeEvent(EntityEventType.Updated, "Comment", CommentId, newPayload, priorPayload: priorPayload);
         var sut = BuildSut(OptionsWith("Article", "Comments"));
@@ -215,10 +215,10 @@ public class PopularitySignalConsumerTests
         await sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _vector.Received(1).SetPayloadAsync(
-            "articles_" + TenantA, IntelligenceStoreConsumer.KeyToUlong(Article2Id),
+            _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false), IntelligenceStoreConsumer.KeyToUlong(Article2Id),
             Arg.Any<IReadOnlyDictionary<string, object>>());
         await _vector.Received(1).SetPayloadAsync(
-            "articles_" + TenantA, IntelligenceStoreConsumer.KeyToUlong(ArticleId),
+            _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false), IntelligenceStoreConsumer.KeyToUlong(ArticleId),
             Arg.Any<IReadOnlyDictionary<string, object>>());
     }
 
@@ -233,7 +233,7 @@ public class PopularitySignalConsumerTests
         StubHistogram([new SrAggBucket("2026-07", 1), new SrAggBucket("2026-08", 1)]);
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
         var sut = BuildSut(OptionsWith("Article", "Comments"));
@@ -260,7 +260,7 @@ public class PopularitySignalConsumerTests
                 a["Comment"].TenantValue == TenantA));
 
         await _vector.Received(1).SetPayloadAsync(
-            "articles_" + TenantA,
+            _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false),
             IntelligenceStoreConsumer.KeyToUlong(ArticleId),
             Arg.Is<IReadOnlyDictionary<string, object>>(p =>
                 p.Count == 2 &&
@@ -276,7 +276,7 @@ public class PopularitySignalConsumerTests
         StubCount(2);
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
         var sut = BuildSut(OptionsWith("Article", "Comments"));
@@ -292,7 +292,7 @@ public class PopularitySignalConsumerTests
             Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>());
 
         await _vector.Received(1).SetPayloadAsync(
-            "articles_" + TenantA,
+            _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false),
             IntelligenceStoreConsumer.KeyToUlong(ArticleId),
             Arg.Is<IReadOnlyDictionary<string, object>>(p =>
                 p.Count == 2 &&
@@ -309,7 +309,7 @@ public class PopularitySignalConsumerTests
         StubHistogramThrows(new InvalidOperationException("boom"));
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
         var sut = BuildSut(OptionsWith("Article", "Comments"));
@@ -318,7 +318,7 @@ public class PopularitySignalConsumerTests
         await act.Should().NotThrowAsync();
 
         await _vector.Received(1).SetPayloadAsync(
-            "articles_" + TenantA,
+            _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false),
             IntelligenceStoreConsumer.KeyToUlong(ArticleId),
             Arg.Is<IReadOnlyDictionary<string, object>>(p =>
                 p.Count == 2 &&
@@ -341,7 +341,7 @@ public class PopularitySignalConsumerTests
         StubHistogram(buckets);
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
         var sut = BuildSut(OptionsWith("Article", "Comments"));
@@ -351,7 +351,7 @@ public class PopularitySignalConsumerTests
         var expectedSeries = string.Join(";", buckets.TakeLast(60).Select(b => $"{b.Key}:{b.DocCount}"));
 
         await _vector.Received(1).SetPayloadAsync(
-            "articles_" + TenantA,
+            _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false),
             IntelligenceStoreConsumer.KeyToUlong(ArticleId),
             Arg.Is<IReadOnlyDictionary<string, object>>(p =>
                 (string)p["commentsCountBuckets"] == expectedSeries &&
@@ -374,7 +374,7 @@ public class PopularitySignalConsumerTests
             .Returns((EngagementAggResult?)null);
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
         var sut = BuildSut(OptionsWith("Article", "Comments"));
@@ -397,7 +397,7 @@ public class PopularitySignalConsumerTests
             .Returns(Task.FromException(new RpcException(new Status(StatusCode.NotFound, "no such point"))));
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
         var sut = BuildSut(OptionsWith("Article", "Comments"));
@@ -420,7 +420,7 @@ public class PopularitySignalConsumerTests
             .Returns(Task.FromException(new RpcException(new Status(StatusCode.Unavailable, "down"))));
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
         var sut = BuildSut(OptionsWith("Article", "Comments"));
@@ -440,7 +440,7 @@ public class PopularitySignalConsumerTests
         // The Comment row was deleted between the Created event being published and this
         // consumer reading it, so tenant re-derivation finds nothing — mirrors
         // DocumentRerenderConsumerTests.Dispatch_AuthoritativeRowGone_EnqueuesNothing.
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns((string?)null);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns((string?)null);
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
@@ -462,7 +462,7 @@ public class PopularitySignalConsumerTests
 
         // Row present, tenant column absent from it — ExtractString returns null.
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
         var sut = BuildSut(OptionsWith("Article", "Comments"));
@@ -490,7 +490,7 @@ public class PopularitySignalConsumerTests
 
         await sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(default!, default!);
+        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(default!, default!, default!);
         await _search.DidNotReceiveWithAnyArgs().AggregateAsync(
             default!, default, default!, default, default, default, default);
         await _vector.DidNotReceiveWithAnyArgs().SetPayloadAsync(

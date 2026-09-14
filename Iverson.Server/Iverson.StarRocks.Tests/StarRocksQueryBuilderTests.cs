@@ -40,7 +40,7 @@ public class StarRocksQueryBuilderTests
     // ── BuildAggregate — Range ─────────────────────────────────────────────────
 
     [Fact]
-    public void BuildAggregate_Range_ProducesCaseExprWithEscapedKey()
+    public void BuildAggregate_Range_ProducesCaseExprWithParameterizedKeys()
     {
         var spec = new AggregationDescriptor(
             "rating_ranges", AggregationKind.Range, "Rating",
@@ -51,26 +51,68 @@ public class StarRocksQueryBuilderTests
                 new RangeBucketDescriptor("high", 7,    null),
             ]);
 
-        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
         sql.Should().Contain("CASE");
-        sql.Should().Contain("WHEN `Rating` < 3 THEN 'low'");
-        sql.Should().Contain("WHEN `Rating` >= 3 AND `Rating` < 7 THEN 'mid'");
-        sql.Should().Contain("WHEN `Rating` >= 7 THEN 'high'");
+        // The bucket key is a VALUE, bound as @__rbN — never inlined as a string literal.
+        sql.Should().Contain("WHEN `Rating` < 3 THEN @__rb0");
+        sql.Should().Contain("WHEN `Rating` >= 3 AND `Rating` < 7 THEN @__rb1");
+        sql.Should().Contain("WHEN `Rating` >= 7 THEN @__rb2");
+        sql.Should().NotContain("'low'");
+        sql.Should().NotContain("'mid'");
+        sql.Should().NotContain("'high'");
         sql.Should().Contain("bucket_key");
         sql.Should().Contain("doc_count");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__rb0"].Should().Be("low");
+        lookup["__rb1"].Should().Be("mid");
+        lookup["__rb2"].Should().Be("high");
     }
 
     [Fact]
-    public void BuildAggregate_Range_EscapesSingleQuotesInKey()
+    public void BuildAggregate_Range_SingleQuoteInKey_RidesAsParameterValueVerbatim()
     {
         var spec = new AggregationDescriptor(
             "r", AggregationKind.Range, "Rating",
             RangeBuckets: [new RangeBucketDescriptor("it's high", 7, null)]);
 
-        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
-        sql.Should().Contain("it''s high");
+        // No SQL-string escaping happens or is needed — the value is bound, not spliced.
+        sql.Should().NotContain("it's high");
+        sql.Should().NotContain("it''s high");
+        sql.Should().Contain("THEN @__rb0");
+        ((SqlMapper.IParameterLookup)param)["__rb0"].Should().Be("it's high");
+    }
+
+    [Fact]
+    public void BuildAggregate_Range_MaliciousKey_IsNeverSplicedIntoSql()
+    {
+        // Regression for the 2026-09-10 CSR round-2 finding #2 (SQL injection via range-bucket key).
+        // EscapeSqlString doubled ' but ignored \; a key ending in \ escaped the template's closing
+        // quote in `THEN '{key}'`, dropping following tokens into SQL context downstream of every
+        // field-authorization check. The fix binds the key as a parameter, so no key content — not a
+        // backslash, not a quote, not a would-be subquery — ever reaches the SQL text.
+        const string payload = "a\\' WHEN 1=1 THEN (SELECT secret FROM other) --";
+        var spec = new AggregationDescriptor(
+            "r", AggregationKind.Range, "Rating",
+            RangeBuckets:
+            [
+                new RangeBucketDescriptor(payload, null, 3),
+                new RangeBucketDescriptor("b",     3,    null),
+            ]);
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        // The attacker-controlled bytes appear nowhere in the emitted SQL — only the placeholder does.
+        sql.Should().NotContain("SELECT secret");
+        sql.Should().NotContain("WHEN 1=1");
+        sql.Should().NotContain("\\");
+        sql.Should().Contain("THEN @__rb0");
+        sql.Should().Contain("THEN @__rb1");
+        // The raw payload survives verbatim as the bound value — the driver escapes it at bind time.
+        ((SqlMapper.IParameterLookup)param)["__rb0"].Should().Be(payload);
     }
 
     [Fact]
@@ -187,6 +229,90 @@ public class StarRocksQueryBuilderTests
         var lookup = (SqlMapper.IParameterLookup)param;
         lookup["p0"].Should().Be("Alice");
         lookup["h0"].Should().Be(10.0);
+    }
+
+    [Fact]
+    public void BuildAggregate_HavingOnRestrictedColumn_ThrowsTranslationException()
+    {
+        // Mirrors BuildAggregate's own spec.Field/GroupByFields/Expression reject-on-reference
+        // tests: a HAVING clause referencing a real (non-alias) column must go through the same
+        // IsFieldAllowed gate — "Bio" is not one of the fixed HAVING aliases (bucket_key/doc_count/
+        // metric_val) and is excluded from AllowedFields here.
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property = "Bio", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, having, authz: authz);
+
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildAggregate_HavingOnAllowedColumn_DoesNotThrow()
+    {
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property = "Rating", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { NumberVal = 3 }, ClauseType = SearchClauseType.Filter
+        });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, having, authz: authz);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildAggregate_HavingOnUnknownProperty_ThrowsTranslationException()
+    {
+        // Neither a HAVING alias nor a resolvable Author column — the negative case with no
+        // authz restriction in play at all (proves rejection isn't solely an AllowedFields path).
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property = "NoSuchColumn", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { NumberVal = 1 }, ClauseType = SearchClauseType.Filter
+        });
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, having);
+
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*NoSuchColumn*");
+    }
+
+    [Fact]
+    public void BuildAggregate_HavingNamingTheTenantColumn_IsRejected()
+    {
+        // Mirrors BuildAggregate_TermsOnTheTenantColumn_IsRejected et al.: the server-owned
+        // tenant column must never be nameable via HAVING either.
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property = TenantCol, Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", TenantAuthorSchema(), null, spec, having, authz: TenantAuthz("Author"));
+
+        act.Should().Throw<EngagementQueryTranslationException>();
     }
 
     // ── BuildAggregate — DateHistogram "quarter" ───────────────────────────────
@@ -719,6 +845,7 @@ public class StarRocksQueryBuilderTests
     [InlineData("Rating -- drop everything")]
     [InlineData("Rating; DROP TABLE authors")]
     [InlineData("Rating /* comment */ + 1")]
+    [InlineData("Rating # drop everything after this")]
     public void BuildAggregate_ExpressionWithForbiddenSequence_ThrowsTranslationException(string expr)
     {
         var spec = new AggregationDescriptor(
@@ -2025,6 +2152,74 @@ public class StarRocksQueryBuilderTests
     }
 
     [Fact]
+    public void BuildGroupBy_HavingOnRestrictedColumn_ThrowsTranslationException()
+    {
+        // Mirrors BuildGroupBy_RestrictedKey_ThrowsTranslationException / RestrictedMetricField:
+        // a HAVING clause referencing a real (non-alias) column must go through the same
+        // IsFieldAllowed gate as Keys/Metrics/OrderBy on this same request.
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.Having = new SearchQuery();
+        request.Having.Clauses.Add(new SearchClause
+        {
+            Property = "Bio", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_HavingOnAllowedColumn_DoesNotThrow()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.Having = new SearchQuery();
+        request.Having.Clauses.Add(new SearchClause
+        {
+            Property = "Rating", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { NumberVal = 3 }, ClauseType = SearchClauseType.Filter
+        });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_HavingNamingTheTenantColumn_IsRejected()
+    {
+        // Mirrors BuildGroupBy_KeyNamingTheTenantColumn_IsRejected / OrderByNamingTheTenantColumn:
+        // the server-owned tenant column must never be nameable via HAVING either.
+        var request = new GroupByRequest { TypeName = "Author" };
+        request.Keys.Add("Name");
+        request.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+        request.Having = new SearchQuery();
+        request.Having.Clauses.Add(new SearchClause
+        {
+            Property = TenantCol, Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "authors", TenantAuthorSchema(), request, _ => null, TenantAuthz("Author"));
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
+    [Fact]
     public void BuildGroupBy_CountAll_EmitsCountStar()
     {
         var registry = BuildRegistry(AuthorSchema());
@@ -2061,8 +2256,14 @@ public class StarRocksQueryBuilderTests
     }
 
     [Fact]
-    public void BuildGroupBy_HavingPropertyWithBacktick_EscapesEmbeddedBacktick()
+    public void BuildGroupBy_HavingPropertyNeitherAliasNorColumn_ThrowsTranslationException()
     {
+        // Was BuildGroupBy_HavingPropertyWithBacktick_EscapesEmbeddedBacktick: previously HAVING
+        // properties were escaped but never authorized, so an arbitrary string like this one
+        // would be spliced straight into the SQL (correctly escaped, but never checked against
+        // the statement's alias set or the schema's allowed columns). "evil`alias" is neither a
+        // metric/key alias ("cnt"/"Name") nor a real Author column, so it must now be REJECTED —
+        // EscapeIdentifier is defence-in-depth, not the primary control.
         var registry = BuildRegistry(AuthorSchema());
 
         var request = new GroupByRequest
@@ -2080,9 +2281,10 @@ public class StarRocksQueryBuilderTests
             ClauseType = SearchClauseType.Filter
         });
 
-        var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
-        sql.Should().Contain("HAVING `evil``alias` > @h0");
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*evil`alias*");
     }
 
     [Fact]
@@ -2627,11 +2829,43 @@ public class StarRocksQueryBuilderTests
                 Value = new SearchValue { NumberVal = 3 }, ClauseType = SearchClauseType.Filter
             }
         };
+        // "article_count" is authorized via alias-set membership alone (mirrors the pipeline
+        // call site, which has no schema/resolver available either) — this test is about the
+        // paramPrefix behavior, not the authorization gate itself.
+        var aliases = new Dictionary<string, string> { ["article_count"] = "article_count" };
 
-        var sql = StarRocksQueryBuilder.BuildHaving(clauses, SearchLogic.And, param, "s3_h");
+        var sql = StarRocksQueryBuilder.BuildHaving(
+            clauses, SearchLogic.And, param, aliases,
+            resolveColumn: null, schema: null, tableMap: null, authz: null,
+            paramPrefix: "s3_h");
 
         sql.Should().Be("`article_count` > @s3_h0");
         param.Get<double>("s3_h0").Should().Be(3);
+    }
+
+    [Fact]
+    public void BuildHaving_PropertyNotInAliasSet_NoSchemaAvailable_ThrowsTranslationException()
+    {
+        // Direct unit test of the pipeline route's exact shape: no schema/resolver/tableMap is
+        // available there (a CTE step name is not a registered type), so a HAVING property that
+        // misses the alias set must be rejected on that basis alone — there is no column-resolver
+        // fallback to consult.
+        var param = new DynamicParameters();
+        var clauses = new[]
+        {
+            new SearchClause
+            {
+                Property = "not_an_alias", Operator = SearchOperator.GreaterThan,
+                Value = new SearchValue { NumberVal = 1 }, ClauseType = SearchClauseType.Filter
+            }
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildHaving(
+            clauses, SearchLogic.And, param,
+            aliases: new Dictionary<string, string>(),
+            resolveColumn: null, schema: null, tableMap: null, authz: null);
+
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*not_an_alias*");
     }
 
     // ── VectorSimilar rejection ────────────────────────────────────────────────
@@ -2659,9 +2893,15 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildHaving_VectorSimilarClause_ThrowsInvalidArgument()
     {
+        // VectorClause()'s Property is "Name", which is neither an alias (the alias set below is
+        // empty) nor an authorized column in this fixture (no resolver/schema is even supplied),
+        // so this pins that the VectorSimilar guard fires FIRST — ahead of the new authorization
+        // validation — rather than the call instead failing with an "is not authorized" message.
         var param = new DynamicParameters();
         var act = () => StarRocksQueryBuilder.BuildHaving(
-            [VectorClause()], SearchLogic.And, param);
+            [VectorClause()], SearchLogic.And, param,
+            aliases: new Dictionary<string, string>(),
+            resolveColumn: null, schema: null, tableMap: null, authz: null);
 
         act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message.Contains("VECTOR_SIMILAR")
@@ -2981,5 +3221,283 @@ public class StarRocksQueryBuilderTests
             "authors", LegacyAuthorSchema(), query, 0, 10, authz: LegacyAuthz());
 
         sql.Should().Contain($"ORDER BY `{LegacyTenantCol}` DESC");
+    }
+
+    // ── CSR finding #5: query-DSL shape caps ────────────────────────────────────
+
+    private static SearchQuery QueryWithClauses(int count)
+    {
+        var query = new SearchQuery();
+        for (var i = 0; i < count; i++)
+            query.Clauses.Add(new SearchClause
+            {
+                Property   = "Name",
+                Operator   = SearchOperator.Equals,
+                Value      = new SearchValue { StringVal = $"v{i}" },
+                ClauseType = SearchClauseType.Filter
+            });
+        return query;
+    }
+
+    private static List<JoinSpec> Joins(int count) => Enumerable.Range(0, count)
+        .Select(_ => new JoinSpec { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner })
+        .ToList();
+
+    [Fact]
+    public void BuildSearch_ClauseCountAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxClauses = 3 };
+        var query  = QueryWithClauses(3);
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildSearch_ClauseCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxClauses = 3 };
+        var query  = QueryWithClauses(4);
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*4*WHERE*3*");
+    }
+
+    [Fact]
+    public void BuildSearch_JoinCountAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxJoins = 2 };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, joins: Joins(2),
+            registry: _ => ArticleSchema(), limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildSearch_JoinCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxJoins = 2 };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, joins: Joins(3),
+            registry: _ => ArticleSchema(), limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*3*joins*2*");
+    }
+
+    [Fact]
+    public void BuildAggregate_HavingClauseCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxClauses = 1 };
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
+        var having = QueryWithClauses(2);
+        having.Clauses[0].Property = "doc_count";
+        having.Clauses[1].Property = "doc_count";
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, having, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*2*HAVING*1*");
+    }
+
+    [Fact]
+    public void BuildAggregate_GroupByFieldCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByKeys = 1 };
+        var spec = new AggregationDescriptor(
+            "multi", AggregationKind.Terms, "Name", GroupByFields: ["Name", "Rating"]);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*2*GROUP BY*1*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_KeyCountAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByKeys = 2 };
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name", "Rating" }, Limit = 10 };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "authors", AuthorSchema(), request, _ => null, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_KeyCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByKeys = 1 };
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name", "Rating" }, Limit = 10 };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "authors", AuthorSchema(), request, _ => null, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*2*GROUP BY*1*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_JoinCountOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxJoins = 1 };
+        var request = new GroupByRequest
+        {
+            TypeName = "Author", Keys = { "Article.Title" }, Limit = 50,
+            Joins =
+            {
+                new JoinSpec { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Inner },
+                new JoinSpec { LeftType = "Author", RightType = "Tag", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Inner }
+            }
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "authors", AuthorSchema(), request, t => t == "Article" ? ArticleSchema() : t == "Tag" ? TagSchema() : null, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*2*joins*1*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_DefaultLimits_AreUsedWhenNoneSupplied()
+    {
+        var request = new GroupByRequest { TypeName = "Author", Limit = 10 };
+        for (var i = 0; i < EngagementQueryLimitOptions.Default.MaxGroupByKeys + 1; i++)
+            request.Keys.Add("Name");
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, _ => null);
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
+    // ── CSR finding #6: query-DSL OUTPUT caps (result-set size) ─────────────────
+
+    [Fact]
+    public void BuildSearch_PageSizeAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxPageSize = 100 };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), null, 0, 100, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildSearch_PageSizeOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxPageSize = 100 };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), null, 0, 101, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*101*100*");
+    }
+
+    [Fact]
+    public void BuildSearch_DefaultPageSize_OverLimit_Throws()
+    {
+        // pageSize <= 0 resolves to the implicit default of 50 (unchanged behavior) — a cap
+        // below 50 must still catch that resolved value, not just an explicit pageSize.
+        var limits = new EngagementQueryLimitOptions { MaxPageSize = 10 };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), null, 0, 0, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*50*10*");
+    }
+
+    [Fact]
+    public void BuildSearch_PageTimesLimitOverflowsInt32_ThrowsInsteadOfWrappingNegative()
+    {
+        // page * limit computed as int * int would silently wrap into a negative OFFSET here —
+        // a real bug the CSR finding flagged alongside the missing page-size cap, closed by
+        // widening to `long` and range-checking before narrowing back to `int`.
+        var limits = new EngagementQueryLimitOptions { MaxPageSize = int.MaxValue };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, page: 3_000_000, pageSize: 1000, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*OFFSET*");
+    }
+
+    [Fact]
+    public void BuildAggregate_TermsSizeAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxAggregationSize = 50 };
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 50);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildAggregate_TermsSizeOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxAggregationSize = 50 };
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 51);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*51*50*");
+    }
+
+    [Fact]
+    public void BuildAggregate_NonTermsKind_IgnoresAggregationSizeLimit()
+    {
+        // spec.Size only means anything for Terms (bucket count) — Avg/Sum/etc. never read it,
+        // so the cap must not fire for them regardless of what Size happens to hold.
+        var limits = new EngagementQueryLimitOptions { MaxAggregationSize = 1 };
+        var spec = new AggregationDescriptor("avg_rating", AggregationKind.Avg, "Rating", Size: 999);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_LimitAtLimit_Passes()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByLimit = 500 };
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" }, Limit = 500 };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, _ => null, limits: limits);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_LimitOverLimit_Throws()
+    {
+        var limits = new EngagementQueryLimitOptions { MaxGroupByLimit = 500 };
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" }, Limit = 501 };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, _ => null, limits: limits);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("*501*500*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_DefaultResolvedLimit_MatchesMaxGroupByLimitDefault_DoesNotThrow()
+    {
+        // GroupByRequest.Limit <= 0 resolves to the implicit default of 10,000 (unchanged
+        // behavior) — MaxGroupByLimit's own default (10,000) must not reject that default.
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" }, Limit = 0 };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, _ => null);
+
+        act.Should().NotThrow();
     }
 }

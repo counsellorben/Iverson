@@ -38,6 +38,11 @@ public sealed class TenantRepositoryPostgresContainerFixture : IAsyncLifetime
         SchemaManager = new PostgresSchemaManager(
             _container.GetConnectionString(),
             NullLogger<PostgresSchemaManager>.Instance);
+
+        // Mirrors Program.cs startup ordering: ApplySchemaAsync GRANTs to iverson_maintenance on
+        // every table it manages (and to iverson_runtime on the tenant-scoped ones), so both roles
+        // must exist before the first apply.
+        await SchemaManager.EnsureRolesAsync();
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();

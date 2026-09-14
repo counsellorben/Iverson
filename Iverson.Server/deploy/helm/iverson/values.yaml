@@ -15,26 +15,50 @@ networkPolicy:
 
 # global values are visible to every subchart (unlike top-level keys like `api:`,
 # which are scoped only to the matching subchart) — used here so the authentik
-# subchart's blueprint (the human OIDC provider's redirect_uri) can reference the
-# same hostname as api.ingress.host without duplicating it out of sync. Keep this
-# in lockstep with api.ingress.host in every values-*.yaml file.
+# subchart's blueprint (the human OIDC provider's redirect_uri) AND the api
+# subchart's Ingress (charts/api/templates/ingress.yaml) both reference this one
+# hostname directly, with no separate api.ingress.host to fall out of lockstep
+# (CSR round-3 finding #11 — a values.yaml/values-*.yaml duplicate of this key used
+# to exist and had no enforcement against drifting).
 global:
   ingressHost: "iverson.local"
+  # Scheme alone (http/https), not a URL and not an origin — templated onto the
+  # external-facing URLs (OIDC authority, external issuer, redirect URIs) that a
+  # values file cannot compose itself, since Helm never renders values files as
+  # templates. Default matches the kind/local profile; cloud profiles set "https".
+  externalScheme: "http"
   # The generative model used for ingest enrichment. Lives under `global` (not under
   # `ollama:`) because two subcharts must agree on it: the ollama subchart PULLS it, and
   # the api/worker subcharts REQUEST it via Enrichment__ModelId. Scoping it to one subchart
   # would let the pulled model and the requested model drift apart, which fails at runtime
   # with a 404 from Ollama on every generative call.
   generativeModel: "qwen2.5:3b"
+  # Pins the model-registry pull above (CSR round-2 finding #6): the ollama subchart's
+  # pull-model initContainer pulls the floating tag "qwen2.5:3b" (registry.ollama.ai has no
+  # supported CLI/API syntax to pull by digest directly — Ollama's own model-name parser
+  # documents digest support as removed pending a future re-add), so instead it verifies the
+  # digest the registry actually served against this pinned value and refuses to start on a
+  # mismatch. This is the manifest digest reported by the registry for "qwen2.5:3b" as of
+  # 2026-09-10 (also the short ID `ollama list` reports locally): confirmed against
+  # registry.ollama.ai/v2/library/qwen2.5/manifests/3b (Ollama-Content-Digest response
+  # header). Bump this deliberately if the upstream tag is ever intentionally re-pointed.
+  generativeModelDigest: "357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b"
   # Every entry is served by the tei subchart (one StatefulSet + headless Service per entry). `slug`
   # is the DNS-safe suffix of that entry's objects: <release>-tei-<slug>. The prefix keys stay
   # three-state (omitted = derive from the model family; "" = deliberately none).
   # This list must still contain every model any REGISTERED type's stored `_iverson_schema`
   # row names, not merely the active one — under TEI, trimming a still-carried entry now
   # surfaces as the API's /info identity guard, not an Ollama 404.
+  #
+  # `revision` pins the model-registry pull (CSR round-2 finding #6): TEI's `--model-id` names
+  # only org/repo, a floating pointer the Hub owner can repoint at any time — `revision` passes
+  # TEI's own `--revision` flag (an exact commit SHA, not a branch/tag) so the weights actually
+  # served are the ones this value names. Confirmed against
+  # huggingface.co/api/models/<name> ("sha" field) as of 2026-09-10.
   embeddingModels:
     - name: BAAI/bge-base-en-v1.5
       slug: bge-base
+      revision: a5beb1e3e68b9ab74eb54cfd186867f64f240e1a
   # The default model api and worker request for any registered type that does not declare its
   # own. Must name an entry above; a mismatch renders cleanly and surfaces as an identity mismatch
   # from the backend's /info naming the unpulled model on the first embed call, not at deploy.
@@ -46,6 +70,12 @@ global:
   engagementEnabled: true
   # Drives the jaeger subchart's condition AND the api/worker OTLP env vars.
   tracingEnabled: true
+  # Gates the Authentik blueprint's dev-only test identities (smoke-test user, loadtest-bypass
+  # user/group, loadtest/webtest service clients, the loadtest-human provider, and the
+  # localhost:5173 redirect URIs) AND Tenancy__SeedLegacyTenants (the five-tenant legacy seeding
+  # loop in Program.cs). Default false so no production install provisions test credentials or
+  # seeds placeholder tenants; values-local.yaml and values-laptop.yaml set this true.
+  provisionTestIdentities: false
 
 postgres:
   enabled: true
@@ -143,8 +173,17 @@ api:
   ingress:
     className: ""
     annotations: {}
-    host: "iverson.local"
+    # No `host` key here (CSR round-3 finding #11): it used to duplicate
+    # global.ingressHost, which could drift out of lockstep with no enforcement.
+    # charts/api/templates/ingress.yaml now templates directly off
+    # global.ingressHost, the single source of truth (see that comment there,
+    # and the values.yaml global.ingressHost comment above).
     tlsSecretName: ""   # set per-environment; empty disables the tls: block (kind only — see values-local.yaml)
+    securityHeadersRuleSet: ""   # name of a pre-provisioned azurerm_application_gateway_rewrite_rule_set
+                                 # carrying the security-header rewrite rules; only used when
+                                 # className is "azure-application-gateway". This repo's Terraform
+                                 # does not provision one — leave empty unless you have provisioned
+                                 # it yourself, otherwise AGIC references a rule set that does not exist.
 
 worker:
   enabled: true
@@ -196,12 +235,12 @@ adminUi:
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "250m", memory: "256Mi" }
-  oidcAuthority: "http://authentik.iverson.local/application/o/iverson-api/"
   apiBaseUrl: "http://iverson.local"
   ingress:
     className: ""
     annotations: {}
     tlsSecretName: ""   # set per-environment; empty disables the tls: block (kind only — see values-local.yaml)
+    securityHeadersRuleSet: ""   # see api.ingress.securityHeadersRuleSet above — same opt-in, same default.
 
 authentik:
   enabled: true

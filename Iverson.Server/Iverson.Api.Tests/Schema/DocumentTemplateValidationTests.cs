@@ -337,7 +337,8 @@ public class DocumentTemplateValidationTests
             new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
             Options.Create(new DecayOptions()),
-            Options.Create(new PopularitySignalOptions()));
+            Options.Create(new PopularitySignalOptions()),
+            EngagementQueryLimitOptions.Default);
 
         var writer = Substitute.For<IServerStreamWriter<ChunkSearchResponse>>();
         writer.WriteAsync(Arg.Any<ChunkSearchResponse>(), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);

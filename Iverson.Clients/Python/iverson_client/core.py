@@ -817,22 +817,48 @@ class IversonClient:
     Args:
         host: gRPC server host (default: ``localhost``).
         port: gRPC server port (default: ``5000``).
-        use_tls: whether to use TLS (default: ``False`` for h2c).
+        use_tls: whether to use TLS (default: ``True``).
         credentials: optional OAuth2 client-credentials for authenticated calls.
         acting_user_token: optional pre-minted acting-user token, propagated on
             every call as ``x-acting-user-authorization`` metadata.
+        allow_insecure_credentials: explicit, named opt-in required to attach
+            ``credentials`` or ``acting_user_token`` when ``use_tls`` is ``False``. Defaults
+            to ``False``: without it, combining plaintext with either credential raises
+            ``ValueError`` at construction rather than silently substituting
+            ``grpc.local_channel_credentials()`` (a "trusted network" designation, NOT real
+            TLS/encryption) to satisfy grpcio's security-level check while the Bearer token
+            or acting-user token rides the channel in the clear. Note that
+            ``acting_user_token`` travels as per-call metadata, not as ``CallCredentials``,
+            so this check is enforced explicitly here rather than by grpcio itself. Set
+            ``True`` only for a known-local, non-TLS endpoint.
     """
 
     def __init__(
         self,
         host: str = "localhost",
         port: int = 5000,
-        use_tls: bool = False,
+        use_tls: bool = True,
         *,
         credentials: IversonClientCredentials | None = None,
         acting_user_token: str | None = None,
+        allow_insecure_credentials: bool = False,
     ) -> None:
         address = f"{host}:{port}"
+
+        if (
+            not use_tls
+            and (credentials is not None or acting_user_token is not None)
+            and not allow_insecure_credentials
+        ):
+            raise ValueError(
+                "Refusing to attach credentials or an acting-user token to a plaintext "
+                "(use_tls=False) channel without an explicit allow_insecure_credentials=True "
+                "opt-in. grpcio requires some ChannelCredentials as the base whenever "
+                "CallCredentials are present; substituting grpc.local_channel_credentials() to "
+                "satisfy that check is NOT real TLS/encryption, so a Bearer token or "
+                "acting-user token would otherwise be sent in the clear. Pass "
+                "allow_insecure_credentials=True only for a known-local, non-TLS endpoint."
+            )
 
         if credentials is not None:
             call_creds_list = []
@@ -844,7 +870,8 @@ class IversonClient:
             # "UNAUTHENTICATED: Established channel does not have a sufficient security
             # level to transfer call credential" — confirmed live. Some ChannelCredentials
             # is therefore always required as the base here. When use_tls is True we use
-            # real TLS via ssl_channel_credentials(); otherwise we fall back to
+            # real TLS via ssl_channel_credentials(); otherwise (only once the caller has
+            # explicitly set allow_insecure_credentials=True above) we fall back to
             # local_channel_credentials(), a lightweight "trusted network" designation
             # (NOT real TLS/encryption) that satisfies the check without requiring actual
             # certificates.

@@ -34,6 +34,14 @@ public interface IVectorSchemaManager
 {
     Task EnsureCollectionAsync(string collectionName, ulong vectorSize);
     Task ApplyCollectionAsync(CollectionSchema schema);
+
+    /// <summary>
+    /// A non-mutating Qdrant connectivity check — lists collections rather than creating one.
+    /// CSR finding #7: the anonymous <c>/health</c> endpoint used to call
+    /// <see cref="EnsureCollectionAsync"/> against a fixed probe collection name, which CREATES
+    /// the collection if it does not already exist — a write, reachable with no authentication.
+    /// </summary>
+    Task<bool> PingAsync();
 }
 
 public interface IVectorWriteService

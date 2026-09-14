@@ -198,6 +198,23 @@ def test_expand_document_keeps_passages_best_first_after_topup():
     assert answer.citations[0].passages == ["a-new", "a1"]
 
 
+def test_expand_document_result_is_delimited():
+    # expand_document is the tool that pulls MORE passages out of a document — precisely where an
+    # injected instruction buried in a document would surface — so its tool result must carry the
+    # same <doc>...</doc> delimiter _render_one emits for the initial page and search_more.
+    session, anthropic, _ = make_session(
+        [message(tool_use("expand_document", doc_number=1, query_text="more"), stop_reason="tool_use"),
+         message(text("Done [doc 1]."))],
+        chunks=[[chunk("A", "a1", 0.9), chunk("B", "b1", 0.5)], [chunk("A", "a-new", 0.99)]],
+        entities=[[doc("A"), doc("B")], [doc("A")]],
+        cfg=AgentConfig(m=1))
+    session.run("q?", "tok", trace_id="t")
+    tool_result = anthropic.messages.create.call_args.kwargs["messages"][-1]["content"][0]
+    content = tool_result["content"]
+    assert content.startswith('<doc n="1" key="A">') and content.rstrip().endswith("</doc>")
+    assert "[doc 1] key=A" in content and "passage: a-new" in content
+
+
 def test_refusal_carries_the_stop_details():
     session, _, _ = make_session([SimpleNamespace(
         content=[], stop_reason="refusal",
@@ -240,12 +257,21 @@ def test_expand_document_out_of_range_and_unknown_tool_are_reported_not_raised()
     assert answer.tool_calls == 2 and answer.text == "Done [doc 1]."
 
 
-def test_user_key_is_the_jwt_subject_when_the_token_is_a_jwt():
+def test_user_key_does_not_collide_when_a_forged_token_copies_another_users_subject_claim():
+    # The cache key must depend on the whole signed token, not an unverified claim: a forged
+    # token that copies another user's `sub` (but cannot reproduce their signature, since that
+    # requires the signing key) must key differently, or it would return that user's cached
+    # schema without ever contacting the server (SchemaCache.get is a hit-return).
     import base64
     import json
     from iverson_agent.session import _user_key
     payload = base64.urlsafe_b64encode(json.dumps({"sub": "user-42"}).encode()).rstrip(b"=").decode()
-    assert _user_key(f"hdr.{payload}.sig") == "user-42"
-    assert _user_key("opaque-token") == "opaque-token"
-    no_sub = base64.urlsafe_b64encode(b'{"iss":"x"}').rstrip(b"=").decode()
-    assert _user_key(f"hdr.{no_sub}.sig") == f"hdr.{no_sub}.sig"
+    real_token = f"hdr.{payload}.real-signature"
+    forged_token = f"hdr.{payload}.forged-signature"
+    assert _user_key(real_token) != _user_key(forged_token)
+
+
+def test_user_key_gives_distinct_tokens_distinct_keys_and_is_stable_for_the_same_token():
+    from iverson_agent.session import _user_key
+    assert _user_key("token-a") != _user_key("token-b")
+    assert _user_key("token-a") == _user_key("token-a")

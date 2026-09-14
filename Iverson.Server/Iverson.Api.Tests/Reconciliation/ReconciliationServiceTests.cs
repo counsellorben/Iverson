@@ -45,10 +45,26 @@ public class ReconciliationServiceTests
     }
 
     [Fact]
+    public async Task ReconcileTypeAsync_ReadsUnderTheCrossTenantMaintenanceRole()
+    {
+        // CSR round-3 #5: an admin reconcile of a type re-projects EVERY tenant's rows, so this
+        // read is cross-tenant by design — but it must SAY so (iverson_maintenance, BYPASSRLS)
+        // rather than get there by silently running as the table owner.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities.FetchAllAsync(Arg.Any<TableSchema>(), Arg.Any<EntityAccess>())
+            .Returns(Array.Empty<string>());
+
+        await _sut.ReconcileTypeAsync("Author");
+
+        await _entities.Received(1).FetchAllAsync(
+            Arg.Any<TableSchema>(), EntityAccess.CrossTenantMaintenance);
+    }
+
+    [Fact]
     public async Task ReconcileTypeAsync_RepublishesEveryRow_ReturnsCount()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _entities.FetchAllAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"))
+        _entities.FetchAllAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<EntityAccess>())
             .Returns(new[]
             {
                 """{"Id":"11111111-1111-1111-1111-111111111111","Name":"Alice"}""",
@@ -72,9 +88,7 @@ public class ReconciliationServiceTests
         _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 0) });
         _entities
-            .FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"),
-                Arg.Any<string>())
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns("""{"Id":"author-1","Name":"Alice"}""");
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
@@ -94,7 +108,7 @@ public class ReconciliationServiceTests
         var queueId = Guid.NewGuid();
         _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-missing", 0) });
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns((string?)null);
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
@@ -112,7 +126,7 @@ public class ReconciliationServiceTests
             .PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 3) });
         _entities
-            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns("""{"Id":"author-1","Name":"Alice"}""");
         _events
             .ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>())
@@ -145,7 +159,7 @@ public class ReconciliationServiceTests
                 e.TypeName == "Author" && e.Key == "author-1" && e.PayloadJson == payload &&
                 e.TargetStores == StoreTarget.Engagement && e.EventType == EntityEventType.Deleted));
 
-        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
+        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
 
         await _queue.Received(1).DeleteRowAsync(queueId);
     }

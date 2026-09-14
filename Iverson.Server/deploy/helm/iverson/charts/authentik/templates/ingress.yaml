@@ -2,14 +2,13 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Release.Name }}-authentik
+  # No ingress-level CORS annotations: Authentik's own OAuth2 provider CORS middleware already
+  # scopes Access-Control-Allow-Origin to each client's registered redirect-URI origins (verified
+  # empirically against a live Authentik instance — see Task 2 report) — this is application-layer
+  # behavior, independent of ingress class, so it covers nginx/alb/gce alike. An ingress-nginx-only
+  # annotation here would have been redundant on nginx and silently absent on alb/gce.
   annotations:
-    nginx.ingress.kubernetes.io/enable-cors: "true"
-    nginx.ingress.kubernetes.io/cors-allow-origin: "http://{{ .Values.global.ingressHost }}"
-    nginx.ingress.kubernetes.io/cors-allow-methods: "POST, OPTIONS"
-    nginx.ingress.kubernetes.io/cors-allow-headers: "content-type"
-    {{- with .Values.ingress.annotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
 spec:
   ingressClassName: {{ .Values.ingress.className | quote }}
 {{- if .Values.ingress.tlsSecretName }}

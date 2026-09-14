@@ -456,8 +456,12 @@ git commit -m "key the agent schema cache on the token and delimit retrieved doc
 - [ ] **Step 6: Run the .NET suite** and render `values-laptop.yaml` (engagement off) plus `values-local.yaml` (engagement on) to confirm both profiles start.
 
 - [ ] **Step 7: Commit**
+
+  **Do not `git add -f` the whole path list below.** `Iverson.Server/Iverson.StarRocks` is a *directory*, and `-f` force-adds ignored paths — including `bin/`/`obj/` build output underneath it — the moment it appears anywhere in a `-f` invocation, even alongside unrelated files. Force-add only the one genuinely gitignored file (`appsettings.Development.json`), then `git add` (no `-f`) everything else, the directory included:
+
 ```bash
-git add -f Iverson.Server/Iverson.Api/appsettings.json Iverson.Server/Iverson.Api/appsettings.Development.json \
+git add -f Iverson.Server/Iverson.Api/appsettings.Development.json
+git add Iverson.Server/Iverson.Api/appsettings.json \
         .gitignore Iverson.Server/Iverson.Api/Iverson.Api.csproj \
         Iverson.Server/Iverson.Api/Program.cs Iverson.Server/Iverson.StarRocks Iverson.Server/docker-compose.yml \
         Iverson.Server/deploy/helm/iverson/charts/api/templates/deployment.yaml \

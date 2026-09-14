@@ -46,14 +46,14 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
         // than production, and irreproducible the moment upstream publishes again.
         .WithImage("starrocks/allin1-ubuntu:4.1.1")
         .WithPortBinding(StarRocksMysqlPort, true)
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(StarRocksMysqlPort))
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(StarRocksMysqlPort))
         .Build();
 
     private readonly IContainer _qdrant = new ContainerBuilder()
         .WithImage("qdrant/qdrant:v1.18.2")
         .WithPortBinding(QdrantGrpcPort, assignRandomHostPort: true)
         .WithPortBinding(6333, assignRandomHostPort: true)
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(QdrantGrpcPort))
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(QdrantGrpcPort))
         .Build();
 
     public string ConnectionString { get; private set; } = null!;
@@ -80,7 +80,7 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
         // ApplySchemaAsync call that GRANTs to it for a tenant-scoped table (this fixture's tests
         // register tenant-scoped schemas — every schema is tenant-scoped now that the server
         // owns the column).
-        await PostgresSchemaManager.EnsureRuntimeRoleAsync();
+        await PostgresSchemaManager.EnsureRolesAsync();
 
         var qdrantClient = new QdrantClient(
             _qdrant.Hostname,
@@ -243,7 +243,8 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             Substitute.For<IRowFieldAuthorizationEvaluator>(),
             Substitute.For<IEntityRelationResolver>(),
             schemaRegistration,
-            new AuditLog(NullLogger<AuditLog>.Instance));
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            EngagementQueryLimitOptions.Default);
 
         var typeDesc = SimpleType("ArticleWithAuth", "Title", "OwnerId", "TenantId");
         typeDesc.Authorization = new Client.Contracts.AuthorizationRules

@@ -69,11 +69,14 @@ def main(argv: list[str] | None = None) -> int:
     token = os.environ["IVERSON_ACTING_USER_TOKEN"]
     cfg = AgentConfig()
     client = anthropic.Anthropic()
-    with IversonClient(host, port, use_tls=tls, credentials=creds) as iverson:
+    # IVERSON_GRPC_URL defaults to http://localhost:8080 — the compose stack's plaintext h2c
+    # listener — so this CLI must explicitly defeat IversonClient's default guard against
+    # attaching credentials to a plaintext channel. Inert (but harmless) when tls=True.
+    with IversonClient(host, port, use_tls=tls, credentials=creds, allow_insecure_credentials=True) as iverson:
         session = AgentSession(
             client, iverson, _entity(args.entity), cfg,
             schema_client_factory=lambda t: IversonClient(host, port, use_tls=tls, credentials=creds,
-                                                          acting_user_token=t),
+                                                          acting_user_token=t, allow_insecure_credentials=True),
             title_field=args.title_field)
         if args.cmd == "ask":
             answer = session.run(args.question, token, trace_id=args.trace_id)

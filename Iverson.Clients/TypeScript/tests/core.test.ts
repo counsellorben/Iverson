@@ -131,8 +131,46 @@ describe('IversonClient — construction', () => {
     });
 
     it('stores an optional 5th actingUserToken argument', () => {
-        const client = new IversonClient('localhost', 5000, false, undefined, 'tok-static');
+        // Plaintext + actingUserToken now requires the opt-in (CSR round-3 finding #4) — see
+        // the dedicated throws/succeeds tests below for that guard itself.
+        const client = new IversonClient('localhost', 5000, false, undefined, 'tok-static', true);
         expect((client as unknown as { _actingUserToken: unknown })._actingUserToken).toBe('tok-static');
+        client.close();
+    });
+
+    // Closes CSR finding #10: grpc-js attaches CallCredentials per-call as
+    // CallOptions.credentials, so its own composition-time security check never runs —
+    // IversonClient must supply its own guard rather than silently sending a Bearer token
+    // over a plaintext channel.
+    it('throws when credentials are combined with a plaintext channel and no opt-in', () => {
+        const callCredentials = grpc.credentials.createFromMetadataGenerator((_options, callback) => {
+            callback(null, new grpc.Metadata());
+        });
+        expect(() => new IversonClient('localhost', 5000, false, callCredentials, undefined))
+            .toThrow(/allowInsecureCredentials/);
+    });
+
+    it('succeeds when credentials are combined with a plaintext channel and the opt-in is set', () => {
+        const callCredentials = grpc.credentials.createFromMetadataGenerator((_options, callback) => {
+            callback(null, new grpc.Metadata());
+        });
+        const client = new IversonClient('localhost', 5000, false, callCredentials, undefined, true);
+        expect(client).toBeInstanceOf(IversonClient);
+        client.close();
+    });
+
+    // CSR round-3 finding #4: the acting-user token travels as per-call metadata (see
+    // resolveActingUserMetadata), not grpc.CallCredentials, so it was invisible to the
+    // callCredentials-only guard above — a caller could combine useTls=false with only an
+    // acting-user token (no service CallCredentials) and it would pass silently.
+    it('throws when an acting-user token is combined with a plaintext channel and no opt-in', () => {
+        expect(() => new IversonClient('localhost', 5000, false, undefined, 'tok-static'))
+            .toThrow(/allowInsecureCredentials/);
+    });
+
+    it('succeeds when an acting-user token is combined with a plaintext channel and the opt-in is set', () => {
+        const client = new IversonClient('localhost', 5000, false, undefined, 'tok-static', true);
+        expect(client).toBeInstanceOf(IversonClient);
         client.close();
     });
 });
@@ -295,7 +333,7 @@ describe('IversonClient — search-family execution methods', () => {
             { data: { Id: '2', Title: 'B', WordCount: 20 }, score: 0, traceId: '' },
         ];
         const { fn, calls } = makeStreamStub<SearchRequest, SearchResponse>(rows);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { search: fn, close: vi.fn() };
         (client as unknown as { _actingUserToken: unknown })._actingUserToken = 'tok';
 
@@ -318,7 +356,7 @@ describe('IversonClient — search-family execution methods', () => {
     it('searchSimilar() converts each row into a T instance via the shared Struct-conversion path and preserves score', async () => {
         const rows: SearchResponse[] = [{ data: { Id: '9', Title: 'Vec', WordCount: 5 }, score: 0.9, traceId: '' }];
         const { fn } = makeStreamStub<SearchSimilarRequest, SearchResponse>(rows);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { searchSimilar: fn, close: vi.fn() };
 
         const req: SearchSimilarRequest = {
@@ -338,7 +376,7 @@ describe('IversonClient — search-family execution methods', () => {
     it('groupBy() returns plain records — no entity conversion applied', async () => {
         const rows: SearchResponse[] = [{ data: { category: 'tech', count: 5 }, score: 0, traceId: '' }];
         const { fn } = makeStreamStub<GroupByRequest, SearchResponse>(rows);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { groupBy: fn, close: vi.fn() };
 
         const req: GroupByRequest = {
@@ -356,7 +394,7 @@ describe('IversonClient — search-family execution methods', () => {
     it('pipeline() returns plain records — no entity conversion applied', async () => {
         const rows: SearchResponse[] = [{ data: { rank: 1, total: 100 }, score: 0, traceId: '' }];
         const { fn } = makeStreamStub<PipelineRequest, SearchResponse>(rows);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { pipeline: fn, close: vi.fn() };
 
         const req: PipelineRequest = {
@@ -373,7 +411,7 @@ describe('IversonClient — search-family execution methods', () => {
     it('searchChunks() is a typed pass-through of ChunkSearchResponse rows', async () => {
         const rows: ChunkSearchResponse[] = [{ parentKey: 'p1', chunkText: 'hello', score: 0.9, traceId: '' }];
         const { fn } = makeStreamStub<SearchChunksRequest, ChunkSearchResponse>(rows);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { searchChunks: fn, close: vi.fn() };
 
         const req: SearchChunksRequest = {
@@ -390,7 +428,7 @@ describe('IversonClient — search-family execution methods', () => {
     it('aggregate() is a typed pass-through of the unary AggregateResponse', async () => {
         const response: AggregateResponse = { results: [], total: 42, traceId: '' };
         const { fn, calls } = makeUnaryStub<AggregateRequest, AggregateResponse>(response);
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _searchClient: unknown })._searchClient = { aggregate: fn, close: vi.fn() };
         (client as unknown as { _actingUserToken: unknown })._actingUserToken = 'tok-agg';
 

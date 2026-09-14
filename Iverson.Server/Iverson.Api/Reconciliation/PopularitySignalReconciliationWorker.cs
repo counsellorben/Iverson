@@ -54,8 +54,12 @@ internal sealed class PopularitySignalReconciliationWorker(
         string? afterKey = null;
         while (!ct.IsCancellationRequested)
         {
+            // Cross-tenant by design: this sweep enumerates every parent of this type across every
+            // tenant, per-row deriving the tenant to update through (row.TenantId below) — the same
+            // reasoning as DocumentRerenderQueueWorker's identical call.
             var page = (await entities.FetchKeysAndTenantsPagedAsync(
-                SchemaBuilder.ToTableSchema(parentSchema), afterKey, PageSize)).ToList();
+                SchemaBuilder.ToTableSchema(parentSchema), afterKey, PageSize,
+                EntityAccess.CrossTenantMaintenance)).ToList();
             if (page.Count == 0) break;
 
             foreach (var row in page)

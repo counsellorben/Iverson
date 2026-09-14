@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func stringPtr(s string) *string { return &s }
@@ -36,11 +39,55 @@ func TestOAuth2ClientCredentials_GetRequestMetadata_FetchesAndCachesToken(t *tes
 	}
 }
 
-func TestOAuth2ClientCredentials_RequireTransportSecurity_ReturnsFalse(t *testing.T) {
+func TestOAuth2ClientCredentials_RequireTransportSecurity_DefaultsToTrue(t *testing.T) {
 	creds := &OAuth2ClientCredentials{}
-	if creds.RequireTransportSecurity() {
-		t.Error("RequireTransportSecurity() = true, want false (plaintext h2c deployment)")
+	if !creds.RequireTransportSecurity() {
+		t.Error("RequireTransportSecurity() = false, want true (default must enforce transport security)")
 	}
+}
+
+func TestOAuth2ClientCredentials_RequireTransportSecurity_FalseWhenOptedIn(t *testing.T) {
+	creds := &OAuth2ClientCredentials{AllowInsecureCredentials: true}
+	if creds.RequireTransportSecurity() {
+		t.Error("RequireTransportSecurity() = true, want false when AllowInsecureCredentials is set")
+	}
+}
+
+// TestNewIversonClient_PlaintextWithCredentials_FailsWithoutOptIn pins the
+// construction-time behavior the opt-in exists to preserve: grpc-go's own
+// ClientConn.validateTransportCredentials refuses to build a channel that
+// combines insecure transport credentials with a PerRPCCredentials that
+// requires transport security (the default), so the Bearer token can never
+// ride a plaintext channel silently.
+func TestNewIversonClient_PlaintextWithCredentials_FailsWithoutOptIn(t *testing.T) {
+	client, err := NewIversonClient("127.0.0.1:0",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithPerRPCCredentials(&OAuth2ClientCredentials{
+			ClientID: "id", ClientSecret: "secret", TokenEndpoint: "http://example.invalid",
+		}),
+	)
+	if err == nil {
+		client.Close()
+		t.Fatal("NewIversonClient succeeded, want an error: plaintext channel + credentials with no opt-in must be refused at construction")
+	}
+}
+
+// TestNewIversonClient_PlaintextWithCredentials_SucceedsWithOptIn is the
+// matching positive leg: the same combination succeeds once the caller has
+// explicitly set AllowInsecureCredentials, mirroring the conformance driver's
+// deliberate dev/test use of a plaintext h2c channel with credentials.
+func TestNewIversonClient_PlaintextWithCredentials_SucceedsWithOptIn(t *testing.T) {
+	client, err := NewIversonClient("127.0.0.1:0",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithPerRPCCredentials(&OAuth2ClientCredentials{
+			ClientID: "id", ClientSecret: "secret", TokenEndpoint: "http://example.invalid",
+			AllowInsecureCredentials: true,
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewIversonClient failed with opt-in set: %v", err)
+	}
+	client.Close()
 }
 
 func TestGetRequestMetadata_CtxTokenWinsOverDefault(t *testing.T) {

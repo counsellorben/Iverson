@@ -36,7 +36,7 @@ public sealed class QdrantJwtRbacContainerFixture : IAsyncLifetime
             .WithPortBinding(6333,     assignRandomHostPort: true)
             .WithEnvironment("QDRANT__SERVICE__API_KEY", ApiKey)
             .WithEnvironment("QDRANT__SERVICE__JWT_RBAC", "true")
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(GrpcPort))
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(GrpcPort))
             .Build();
 
     // Shared client with NO static credential — mirrors ServiceCollectionExtensions.AddQdrant's

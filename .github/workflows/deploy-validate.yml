@@ -15,10 +15,10 @@ jobs:
   helm-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: v3.15.0
 
@@ -40,16 +40,18 @@ jobs:
   helm-template-kubeconform:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: v3.15.0
 
       - name: Install kubeconform
         run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          curl -sSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  kubeconform.tar.gz" | sha256sum -c -
+          tar xzf kubeconform.tar.gz kubeconform
           sudo mv kubeconform /usr/local/bin/
 
       - name: helm dependency build
@@ -78,16 +80,18 @@ jobs:
   security-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: v3.15.0
 
       - name: Install kube-score
         run: |
-          curl -sSL https://github.com/zegl/kube-score/releases/download/v1.19.0/kube-score_1.19.0_linux_amd64.tar.gz | tar xz
+          curl -sSL -o kube-score.tar.gz https://github.com/zegl/kube-score/releases/download/v1.19.0/kube-score_1.19.0_linux_amd64.tar.gz
+          echo "a5b10e509bd845f0bc32a529f4e8165c021877f924ee6f6be66678039f75a761  kube-score.tar.gz" | sha256sum -c -
+          tar xzf kube-score.tar.gz kube-score
           sudo mv kube-score /usr/local/bin/
 
       - name: helm dependency build
@@ -110,8 +114,14 @@ jobs:
           done
 
       - name: Install tfsec
+        # tfsec publishes a raw unarchived binary at tfsec-linux-amd64 with no checksum
+        # manifest entry for that exact asset; the tar.gz sibling asset is the only form
+        # the project publishes a SHA-256 for (tfsec_1.28.6_checksums.txt), so fetch
+        # that instead.
         run: |
-          curl -sSL https://github.com/aquasecurity/tfsec/releases/download/v1.28.6/tfsec-linux-amd64 -o tfsec
+          curl -sSL -o tfsec.tar.gz https://github.com/aquasecurity/tfsec/releases/download/v1.28.6/tfsec_1.28.6_linux_amd64.tar.gz
+          echo "8cbd8d64cbd1f25b38f33fa04db602466dade79e99c99dc9da053b5962d34014  tfsec.tar.gz" | sha256sum -c -
+          tar xzf tfsec.tar.gz tfsec
           chmod +x tfsec && sudo mv tfsec /usr/local/bin/
 
       - name: tfsec against all 3 cloud Terraform modules
@@ -123,10 +133,10 @@ jobs:
       matrix:
         cloud: [aws, azure, gcp]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: "1.7.5"
 
@@ -137,8 +147,15 @@ jobs:
       - name: terraform fmt -check
         run: terraform fmt -check -recursive Iverson.Server/deploy/terraform
 
-      - name: terraform init (no backend)
-        run: terraform -chdir=Iverson.Server/deploy/terraform/${{ matrix.cloud }} init -backend=false
+      # -lockfile=readonly (CSR round-3 finding #13): enforce the committed
+      # .terraform.lock.hcl rather than silently re-resolving providers to
+      # whatever is newest at CI-run time — a floating resolution is exactly
+      # the supply-chain risk pinning is meant to close. Fails loudly if a
+      # root module's lockfile is missing or out of date with its version
+      # constraints: update it locally (`terraform providers lock`) and
+      # commit it, don't let CI paper over the drift.
+      - name: terraform init (no backend, enforce committed lockfile)
+        run: terraform -chdir=Iverson.Server/deploy/terraform/${{ matrix.cloud }} init -backend=false -lockfile=readonly
 
       - name: terraform validate
         run: terraform -chdir=Iverson.Server/deploy/terraform/${{ matrix.cloud }} validate

@@ -193,9 +193,7 @@ public class DocumentRendererTests
         await _registry.RegisterAsync(WidgetSchema("By {Author.Name}"));
         await _registry.RegisterAsync(AuthorSchema());
 
-        _entities.FetchManyByKeysAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"),
-                Arg.Any<IReadOnlyList<string>>(), true, Tenant)
+        _entities.FetchManyByKeysAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant(Tenant))
             .Returns([new KeyedRow(AuthorId, $$"""{"Id":"{{AuthorId}}","Name":"Alice","TenantId":"{{Tenant}}"}""")]);
 
         var result = await _sut.RenderAsync(
@@ -218,8 +216,7 @@ public class DocumentRendererTests
             Tenant, Ct);
 
         result.Should().Be("By ");
-        await _entities.DidNotReceive().FetchManyByKeysAsync(
-            Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<bool>(), Arg.Any<string?>());
+        await _entities.DidNotReceive().FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
@@ -230,9 +227,7 @@ public class DocumentRendererTests
 
         // The FK still points at AuthorId, but the row was deleted: the repository returns no
         // match for that key.
-        _entities.FetchManyByKeysAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"),
-                Arg.Any<IReadOnlyList<string>>(), true, Tenant)
+        _entities.FetchManyByKeysAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant(Tenant))
             .Returns([]);
 
         var result = await _sut.RenderAsync(
@@ -251,9 +246,7 @@ public class DocumentRendererTests
         await _registry.RegisterAsync(WidgetSchema("Edited by {Editor.Name}"));
         await _registry.RegisterAsync(AuthorSchema());
 
-        _entities.FetchManyByKeysAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"),
-                Arg.Is<IReadOnlyList<string>>(k => k.Contains(AuthorId)), true, Tenant)
+        _entities.FetchManyByKeysAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Is<IReadOnlyList<string>>(k => k.Contains(AuthorId)), EntityAccess.ForTenant(Tenant))
             .Returns([new KeyedRow(AuthorId, $$"""{"Id":"{{AuthorId}}","Name":"Bob","TenantId":"{{Tenant}}"}""")]);
 
         var result = await _sut.RenderAsync(
@@ -273,8 +266,7 @@ public class DocumentRendererTests
         await _registry.RegisterAsync(WidgetSchema("Comments:{#Comments}[{Body}]{/Comments}"));
         await _registry.RegisterAsync(CommentSchema());
 
-        _entities.FetchByColumnAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "comments"), "WidgetId", WidgetId, true, Tenant)
+        _entities.FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "comments"), "WidgetId", WidgetId, EntityAccess.ForTenant(Tenant))
             .Returns([
                 $$"""{"Id":"{{CommentA}}","Body":"first","WidgetId":"{{WidgetId}}","TenantId":"{{Tenant}}"}""",
                 $$"""{"Id":"{{CommentB}}","Body":"second","WidgetId":"{{WidgetId}}","TenantId":"{{Tenant}}"}"""
@@ -288,8 +280,7 @@ public class DocumentRendererTests
         // CommentA < CommentB, so this ordering is also confirming the sort (see the dedicated
         // determinism test below for the mutation-testable guard).
         result.Should().Be("Comments:[first][second]");
-        await _entities.Received(1).FetchByColumnAsync(
-            Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>(), tenantScoped: true, tenantId: Tenant);
+        await _entities.Received(1).FetchByColumnAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>(), EntityAccess.ForTenant(Tenant));
     }
 
     [Fact]
@@ -298,8 +289,7 @@ public class DocumentRendererTests
         await _registry.RegisterAsync(WidgetSchema("Before|{#Comments}prefix-{Body}{/Comments}|After"));
         await _registry.RegisterAsync(CommentSchema());
 
-        _entities.FetchByColumnAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "comments"), "WidgetId", WidgetId, true, Tenant)
+        _entities.FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "comments"), "WidgetId", WidgetId, EntityAccess.ForTenant(Tenant))
             .Returns([]);
 
         var result = await _sut.RenderAsync(
@@ -318,9 +308,7 @@ public class DocumentRendererTests
         await _registry.RegisterAsync(WidgetSchema("Cats:{#Categories}[{Label}]{/Categories}"));
         await _registry.RegisterAsync(CategorySchema());
 
-        _entities.FetchManyByKeysAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "categories"),
-                Arg.Any<IReadOnlyList<string>>(), true, Tenant)
+        _entities.FetchManyByKeysAsync(Arg.Is<TableSchema>(s => s.TableName == "categories"), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant(Tenant))
             .Returns([
                 new KeyedRow(CategoryA, $$"""{"Id":"{{CategoryA}}","Label":"red","TenantId":"{{Tenant}}"}"""),
                 new KeyedRow(CategoryB, $$"""{"Id":"{{CategoryB}}","Label":"blue","TenantId":"{{Tenant}}"}""")
@@ -332,8 +320,7 @@ public class DocumentRendererTests
             Tenant, Ct);
 
         result.Should().Be("Cats:[red][blue]");
-        await _entities.Received(1).FetchManyByKeysAsync(
-            Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), tenantScoped: true, tenantId: Tenant);
+        await _entities.Received(1).FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant(Tenant));
     }
 
     // ── Sort determinism (block rows must render identically regardless of fetch order) ────────
@@ -346,16 +333,14 @@ public class DocumentRendererTests
 
         var payload = Payload($$"""{"Id":"{{WidgetId}}","TenantId":"{{Tenant}}"}""");
 
-        _entities.FetchByColumnAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "comments"), "WidgetId", WidgetId, true, Tenant)
+        _entities.FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "comments"), "WidgetId", WidgetId, EntityAccess.ForTenant(Tenant))
             .Returns([
                 $$"""{"Id":"{{CommentB}}","Body":"second","WidgetId":"{{WidgetId}}","TenantId":"{{Tenant}}"}""",
                 $$"""{"Id":"{{CommentA}}","Body":"first","WidgetId":"{{WidgetId}}","TenantId":"{{Tenant}}"}"""
             ]);
         var firstOrderResult = await _sut.RenderAsync(_registry.Get("Widget")!, payload, Tenant, Ct);
 
-        _entities.FetchByColumnAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "comments"), "WidgetId", WidgetId, true, Tenant)
+        _entities.FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "comments"), "WidgetId", WidgetId, EntityAccess.ForTenant(Tenant))
             .Returns([
                 $$"""{"Id":"{{CommentA}}","Body":"first","WidgetId":"{{WidgetId}}","TenantId":"{{Tenant}}"}""",
                 $$"""{"Id":"{{CommentB}}","Body":"second","WidgetId":"{{WidgetId}}","TenantId":"{{Tenant}}"}"""
@@ -376,18 +361,14 @@ public class DocumentRendererTests
         var payload = Payload(
             $$"""{"Id":"{{WidgetId}}","CategoryIds":["{{CategoryA}}","{{CategoryB}}"],"TenantId":"{{Tenant}}"}""");
 
-        _entities.FetchManyByKeysAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "categories"),
-                Arg.Any<IReadOnlyList<string>>(), true, Tenant)
+        _entities.FetchManyByKeysAsync(Arg.Is<TableSchema>(s => s.TableName == "categories"), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant(Tenant))
             .Returns([
                 new KeyedRow(CategoryB, $$"""{"Id":"{{CategoryB}}","Label":"blue","TenantId":"{{Tenant}}"}"""),
                 new KeyedRow(CategoryA, $$"""{"Id":"{{CategoryA}}","Label":"red","TenantId":"{{Tenant}}"}""")
             ]);
         var firstOrderResult = await _sut.RenderAsync(_registry.Get("Widget")!, payload, Tenant, Ct);
 
-        _entities.FetchManyByKeysAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "categories"),
-                Arg.Any<IReadOnlyList<string>>(), true, Tenant)
+        _entities.FetchManyByKeysAsync(Arg.Is<TableSchema>(s => s.TableName == "categories"), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant(Tenant))
             .Returns([
                 new KeyedRow(CategoryA, $$"""{"Id":"{{CategoryA}}","Label":"red","TenantId":"{{Tenant}}"}"""),
                 new KeyedRow(CategoryB, $$"""{"Id":"{{CategoryB}}","Label":"blue","TenantId":"{{Tenant}}"}""")
@@ -407,9 +388,7 @@ public class DocumentRendererTests
         await _registry.RegisterAsync(WidgetSchema("{Author.Name}-{Author.Name}-{Author.Name}"));
         await _registry.RegisterAsync(AuthorSchema());
 
-        _entities.FetchManyByKeysAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"),
-                Arg.Any<IReadOnlyList<string>>(), true, Tenant)
+        _entities.FetchManyByKeysAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant(Tenant))
             .Returns([new KeyedRow(AuthorId, $$"""{"Id":"{{AuthorId}}","Name":"Alice","TenantId":"{{Tenant}}"}""")]);
 
         var result = await _sut.RenderAsync(
@@ -418,8 +397,7 @@ public class DocumentRendererTests
             Tenant, Ct);
 
         result.Should().Be("Alice-Alice-Alice");
-        await _entities.Received(1).FetchManyByKeysAsync(
-            Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<bool>(), Arg.Any<string?>());
+        await _entities.Received(1).FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>());
     }
 
     // ── Tenant scoping ───────────────────────────────────────────────────────
@@ -430,8 +408,7 @@ public class DocumentRendererTests
         await _registry.RegisterAsync(WidgetSchema("By {Author.Name}"));
         await _registry.RegisterAsync(AuthorSchema());
 
-        _entities.FetchManyByKeysAsync(
-                Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns([]);
 
         await _sut.RenderAsync(
@@ -439,8 +416,7 @@ public class DocumentRendererTests
             Payload($$"""{"Id":"{{WidgetId}}","AuthorId":"{{AuthorId}}","TenantId":"{{Tenant}}"}"""),
             Tenant, Ct);
 
-        await _entities.Received(1).FetchManyByKeysAsync(
-            Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), tenantScoped: true, tenantId: Tenant);
+        await _entities.Received(1).FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant(Tenant));
     }
 
     [Fact]
@@ -452,13 +428,9 @@ public class DocumentRendererTests
         await _registry.RegisterAsync(WidgetSchema("By {Author.Name}"));
         await _registry.RegisterAsync(AuthorSchema());
 
-        _entities.FetchManyByKeysAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"),
-                Arg.Any<IReadOnlyList<string>>(), true, "other-tenant")
+        _entities.FetchManyByKeysAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant("other-tenant"))
             .Returns([new KeyedRow(AuthorId, $$"""{"Id":"{{AuthorId}}","Name":"Alice","TenantId":"other-tenant"}""")]);
-        _entities.FetchManyByKeysAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"),
-                Arg.Any<IReadOnlyList<string>>(), true, Tenant)
+        _entities.FetchManyByKeysAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant(Tenant))
             .Returns([]);
 
         var result = await _sut.RenderAsync(
@@ -481,9 +453,7 @@ public class DocumentRendererTests
         await _registry.RegisterAsync(WidgetSchema("By {author.Name}"));
         await _registry.RegisterAsync(AuthorSchema());
 
-        _entities.FetchManyByKeysAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"),
-                Arg.Any<IReadOnlyList<string>>(), true, Tenant)
+        _entities.FetchManyByKeysAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<IReadOnlyList<string>>(), EntityAccess.ForTenant(Tenant))
             .Returns([new KeyedRow(AuthorId, $$"""{"Id":"{{AuthorId}}","Name":"Alice","TenantId":"{{Tenant}}"}""")]);
 
         var result = await _sut.RenderAsync(
@@ -501,8 +471,7 @@ public class DocumentRendererTests
         await _registry.RegisterAsync(WidgetSchema("{#comments}{Body}{/comments}"));
         await _registry.RegisterAsync(CommentSchema());
 
-        _entities.FetchByColumnAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "comments"), "WidgetId", WidgetId, true, Tenant)
+        _entities.FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "comments"), "WidgetId", WidgetId, EntityAccess.ForTenant(Tenant))
             .Returns([$$"""{"Id":"{{CommentA}}","Body":"first","WidgetId":"{{WidgetId}}","TenantId":"{{Tenant}}"}"""]);
 
         var result = await _sut.RenderAsync(
@@ -547,7 +516,7 @@ public class DocumentRendererTests
 
         (await act.Should().NotThrowAsync()).Which.Should().Be("By ");
         await _entities.DidNotReceiveWithAnyArgs()
-            .FetchManyByKeysAsync(default!, default!, default, default);
+            .FetchManyByKeysAsync(default!, default!, default);
     }
 
     [Fact]
@@ -563,6 +532,6 @@ public class DocumentRendererTests
 
         (await act.Should().NotThrowAsync()).Which.Should().Be("[]");
         await _entities.DidNotReceiveWithAnyArgs()
-            .FetchByColumnAsync(default!, default!, default!, default, default);
+            .FetchByColumnAsync(default!, default!, default!, default);
     }
 }

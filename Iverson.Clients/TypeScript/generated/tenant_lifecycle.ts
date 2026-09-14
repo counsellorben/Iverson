@@ -27,7 +27,6 @@ export interface CreateTenantRequest {
   displayName: string;
   adminUsername: string;
   adminEmail: string;
-  adminInitialPassword: string;
 }
 
 export interface ListTenantsRequest {
@@ -53,10 +52,18 @@ export interface Tenant {
   tenantId: string;
   displayName: string;
   status: string;
+  /**
+   * Populated only by CreateTenant: the one-time Authentik recovery link the new tenant's
+   * admin user follows to set their own password (CSR round-2 finding #4 follow-up —
+   * previously this link was only written to the server log). Empty for every other RPC that
+   * returns a Tenant (ListTenants, SuspendTenant, ReactivateTenant), since those never mint a
+   * new recovery link.
+   */
+  adminRecoveryLink: string;
 }
 
 function createBaseCreateTenantRequest(): CreateTenantRequest {
-  return { tenantId: "", displayName: "", adminUsername: "", adminEmail: "", adminInitialPassword: "" };
+  return { tenantId: "", displayName: "", adminUsername: "", adminEmail: "" };
 }
 
 export const CreateTenantRequest: MessageFns<CreateTenantRequest> = {
@@ -72,9 +79,6 @@ export const CreateTenantRequest: MessageFns<CreateTenantRequest> = {
     }
     if (message.adminEmail !== "") {
       writer.uint32(34).string(message.adminEmail);
-    }
-    if (message.adminInitialPassword !== "") {
-      writer.uint32(42).string(message.adminInitialPassword);
     }
     return writer;
   },
@@ -118,14 +122,6 @@ export const CreateTenantRequest: MessageFns<CreateTenantRequest> = {
           message.adminEmail = reader.string();
           continue;
         }
-        case 5: {
-          if (tag !== 42) {
-            break;
-          }
-
-          message.adminInitialPassword = reader.string();
-          continue;
-        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -157,11 +153,6 @@ export const CreateTenantRequest: MessageFns<CreateTenantRequest> = {
         : isSet(object.admin_email)
         ? globalThis.String(object.admin_email)
         : "",
-      adminInitialPassword: isSet(object.adminInitialPassword)
-        ? globalThis.String(object.adminInitialPassword)
-        : isSet(object.admin_initial_password)
-        ? globalThis.String(object.admin_initial_password)
-        : "",
     };
   },
 
@@ -179,9 +170,6 @@ export const CreateTenantRequest: MessageFns<CreateTenantRequest> = {
     if (message.adminEmail !== "") {
       obj.adminEmail = message.adminEmail;
     }
-    if (message.adminInitialPassword !== "") {
-      obj.adminInitialPassword = message.adminInitialPassword;
-    }
     return obj;
   },
 
@@ -194,7 +182,6 @@ export const CreateTenantRequest: MessageFns<CreateTenantRequest> = {
     message.displayName = object.displayName ?? "";
     message.adminUsername = object.adminUsername ?? "";
     message.adminEmail = object.adminEmail ?? "";
-    message.adminInitialPassword = object.adminInitialPassword ?? "";
     return message;
   },
 };
@@ -495,7 +482,7 @@ export const DeleteTenantRequest: MessageFns<DeleteTenantRequest> = {
 };
 
 function createBaseTenant(): Tenant {
-  return { tenantId: "", displayName: "", status: "" };
+  return { tenantId: "", displayName: "", status: "", adminRecoveryLink: "" };
 }
 
 export const Tenant: MessageFns<Tenant> = {
@@ -508,6 +495,9 @@ export const Tenant: MessageFns<Tenant> = {
     }
     if (message.status !== "") {
       writer.uint32(26).string(message.status);
+    }
+    if (message.adminRecoveryLink !== "") {
+      writer.uint32(34).string(message.adminRecoveryLink);
     }
     return writer;
   },
@@ -543,6 +533,14 @@ export const Tenant: MessageFns<Tenant> = {
           message.status = reader.string();
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.adminRecoveryLink = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -565,6 +563,11 @@ export const Tenant: MessageFns<Tenant> = {
         ? globalThis.String(object.display_name)
         : "",
       status: isSet(object.status) ? globalThis.String(object.status) : "",
+      adminRecoveryLink: isSet(object.adminRecoveryLink)
+        ? globalThis.String(object.adminRecoveryLink)
+        : isSet(object.admin_recovery_link)
+        ? globalThis.String(object.admin_recovery_link)
+        : "",
     };
   },
 
@@ -579,6 +582,9 @@ export const Tenant: MessageFns<Tenant> = {
     if (message.status !== "") {
       obj.status = message.status;
     }
+    if (message.adminRecoveryLink !== "") {
+      obj.adminRecoveryLink = message.adminRecoveryLink;
+    }
     return obj;
   },
 
@@ -590,6 +596,7 @@ export const Tenant: MessageFns<Tenant> = {
     message.tenantId = object.tenantId ?? "";
     message.displayName = object.displayName ?? "";
     message.status = object.status ?? "";
+    message.adminRecoveryLink = object.adminRecoveryLink ?? "";
     return message;
   },
 };

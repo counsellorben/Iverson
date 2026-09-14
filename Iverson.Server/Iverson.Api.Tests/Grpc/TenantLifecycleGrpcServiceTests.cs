@@ -41,21 +41,27 @@ public class TenantLifecycleGrpcServiceTests
             TenantId = "acme",
             DisplayName = "Acme Corp",
             AdminUsername = "acme-admin",
-            AdminEmail = "admin@acme.example",
-            AdminInitialPassword = "correct-horse-battery-staple"
+            AdminEmail = "admin@acme.example"
         };
+        _authentikAdminClient
+            .CreateUserAsync(
+                "acme-admin",
+                "admin@acme.example",
+                "acme",
+                Arg.Is<IReadOnlyList<string>>(g => g.Contains("tenant-admins")))
+            .Returns(Task.FromResult(new CreateUserResult("user-1", "https://authentik.example/if/flow/iverson-recovery/?flow_token=abc")));
 
         var response = await _sut.CreateTenant(request, ContextWithUser());
 
         response.TenantId.Should().Be("acme");
         response.DisplayName.Should().Be("Acme Corp");
         response.Status.Should().Be("active");
+        response.AdminRecoveryLink.Should().Be("https://authentik.example/if/flow/iverson-recovery/?flow_token=abc");
 
         await _tenantRepository.Received(1).InsertAsync("acme", "Acme Corp", "active");
         await _authentikAdminClient.Received(1).CreateUserAsync(
             "acme-admin",
             "admin@acme.example",
-            "correct-horse-battery-staple",
             "acme",
             Arg.Is<IReadOnlyList<string>>(g => g.Contains("tenant-admins")));
         await _tenantRepository.DidNotReceive().DeleteAsync(Arg.Any<string>());
@@ -69,8 +75,7 @@ public class TenantLifecycleGrpcServiceTests
             TenantId = "not a valid id; DROP TABLE--",
             DisplayName = "Bad Tenant",
             AdminUsername = "bad-admin",
-            AdminEmail = "admin@bad.example",
-            AdminInitialPassword = "pw"
+            AdminEmail = "admin@bad.example"
         };
 
         var act = () => _sut.CreateTenant(request, TestServerCallContext.Create());
@@ -88,7 +93,6 @@ public class TenantLifecycleGrpcServiceTests
                 Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),
-                Arg.Any<string>(),
                 Arg.Any<IReadOnlyList<string>>());
     }
 
@@ -100,8 +104,7 @@ public class TenantLifecycleGrpcServiceTests
             TenantId = "acme",
             DisplayName = "Acme Corp",
             AdminUsername = "acme-admin",
-            AdminEmail = "admin@acme.example",
-            AdminInitialPassword = "correct-horse-battery-staple"
+            AdminEmail = "admin@acme.example"
         };
         var authentikFailure = new InvalidOperationException("Authentik is unreachable");
         _authentikAdminClient
@@ -109,9 +112,8 @@ public class TenantLifecycleGrpcServiceTests
                 Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),
-                Arg.Any<string>(),
                 Arg.Any<IReadOnlyList<string>>())
-            .Returns<Task<string>>(_ => throw authentikFailure);
+            .Returns<Task<CreateUserResult>>(_ => throw authentikFailure);
 
         var act = () => _sut.CreateTenant(request, ContextWithUser());
 

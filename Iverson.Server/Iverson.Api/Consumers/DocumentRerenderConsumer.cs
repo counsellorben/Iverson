@@ -47,7 +47,7 @@ public sealed class DocumentRerenderConsumer(
 
         // Tenant sourcing deliberately splits by event type — the same split
         // IntelligenceStoreConsumer makes between HandleAsync and HandleDeleteAsync. A null
-        // tenant is not an error (RunTenantScopedAsync sets the RLS GUC to NULL and any scoped
+        // tenant is not an error (RunAsRoleAsync sets the RLS GUC to NULL and any scoped
         // lookup below would silently return zero rows), but the OneToMany branch below reads
         // its parent key straight out of the payload with no query in between, bypassing that
         // natural zero-rows gate. Returning early here is what keeps a null tenant from ever
@@ -141,7 +141,8 @@ public sealed class DocumentRerenderConsumer(
         // Created/Updated: the event payload is unsigned JSON and must not be trusted for a
         // value that drives which rows a tenant-scoped lookup returns — re-derive from the
         // authoritative Postgres row instead.
-        var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(changedSchema), ev.Key);
+        var rowJson = await entities.FetchByKeyAsync(
+            SchemaBuilder.ToTableSchema(changedSchema), ev.Key, EntityAccess.CrossTenantMaintenance);
         if (rowJson is null) return null;
 
         using var rowDoc = JsonDocument.Parse(rowJson);
@@ -151,7 +152,7 @@ public sealed class DocumentRerenderConsumer(
     private async Task EnqueueByColumnAsync(SchemaDescriptor declaringSchema, string foreignKey, string changedKey, string tenantId)
     {
         var rows = await entities.FetchByColumnAsync(
-            SchemaBuilder.ToTableSchema(declaringSchema), foreignKey, changedKey, tenantScoped: true, tenantId: tenantId);
+            SchemaBuilder.ToTableSchema(declaringSchema), foreignKey, changedKey, EntityAccess.ForTenant(tenantId));
 
         foreach (var rowJson in rows)
         {
@@ -165,7 +166,7 @@ public sealed class DocumentRerenderConsumer(
     private async Task EnqueueByArrayContainsAsync(SchemaDescriptor declaringSchema, string foreignKey, string changedKey, string tenantId)
     {
         var rows = await entities.FetchByArrayContainsAsync(
-            SchemaBuilder.ToTableSchema(declaringSchema), foreignKey, changedKey, tenantScoped: true, tenantId: tenantId);
+            SchemaBuilder.ToTableSchema(declaringSchema), foreignKey, changedKey, EntityAccess.ForTenant(tenantId));
 
         foreach (var rowJson in rows)
         {

@@ -33,6 +33,11 @@ public sealed class DocumentRerenderQueuePostgresContainerFixture : IAsyncLifeti
         SchemaManager = new PostgresSchemaManager(
             _container.GetConnectionString(),
             NullLogger<PostgresSchemaManager>.Instance);
+
+        // Mirrors Program.cs startup ordering: ApplySchemaAsync GRANTs to iverson_maintenance on
+        // every table it manages (and to iverson_runtime on the tenant-scoped ones), so both roles
+        // must exist before the first apply.
+        await SchemaManager.EnsureRolesAsync();
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -292,9 +297,9 @@ public sealed class DocumentRerenderQueuePostgresIntegrationTests(DocumentRerend
             ]
         };
         // TenantColumn triggers RLS policy/grant DDL that GRANTs to iverson_runtime — the role
-        // must exist first (matches Program.cs's EnsureRuntimeRoleAsync-before-ApplySchemaAsync
+        // must exist first (matches Program.cs's EnsureRolesAsync-before-ApplySchemaAsync
         // ordering).
-        await _schemaManager.EnsureRuntimeRoleAsync();
+        await _schemaManager.EnsureRolesAsync();
         await _schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(schema));
 
         var entities = new EntityRepository(_repo);
@@ -307,16 +312,16 @@ public sealed class DocumentRerenderQueuePostgresIntegrationTests(DocumentRerend
             """INSERT INTO "authors" ("Id", "Name", "TenantId") VALUES (@Id, @Name, @TenantId)""",
             new { Id = idB, Name = "Bob", TenantId = "tenant-b" });
 
-        var firstPage = (await entities.FetchKeysAndTenantsPagedAsync(SchemaBuilder.ToTableSchema(schema), afterKey: null, pageSize: 1)).ToList();
+        var firstPage = (await entities.FetchKeysAndTenantsPagedAsync(SchemaBuilder.ToTableSchema(schema), afterKey: null, pageSize: 1, EntityAccess.CrossTenantMaintenance)).ToList();
         firstPage.Should().HaveCount(1);
         firstPage[0].Key.Should().NotBeNullOrEmpty();
         firstPage[0].TenantId.Should().NotBeNullOrEmpty();
 
-        var secondPage = (await entities.FetchKeysAndTenantsPagedAsync(SchemaBuilder.ToTableSchema(schema), afterKey: firstPage[0].Key, pageSize: 1)).ToList();
+        var secondPage = (await entities.FetchKeysAndTenantsPagedAsync(SchemaBuilder.ToTableSchema(schema), afterKey: firstPage[0].Key, pageSize: 1, EntityAccess.CrossTenantMaintenance)).ToList();
         secondPage.Should().HaveCount(1);
         secondPage[0].Key.Should().NotBe(firstPage[0].Key);
 
-        var thirdPage = await entities.FetchKeysAndTenantsPagedAsync(SchemaBuilder.ToTableSchema(schema), afterKey: secondPage[0].Key, pageSize: 1);
+        var thirdPage = await entities.FetchKeysAndTenantsPagedAsync(SchemaBuilder.ToTableSchema(schema), afterKey: secondPage[0].Key, pageSize: 1, EntityAccess.CrossTenantMaintenance);
         thirdPage.Should().BeEmpty();
     }
 }

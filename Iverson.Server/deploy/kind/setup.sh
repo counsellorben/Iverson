@@ -23,8 +23,13 @@ kubectl create namespace tigera-operator --dry-run=client -o yaml | kubectl appl
 # (CRs disabled) so it can register its CRDs, then re-run with defaults
 # restored (--reset-values, since `helm upgrade` otherwise keeps reusing the
 # disabled values) to add the CRs now that the CRDs exist.
+# CSR round-2 finding #12: pin every operator install to an explicit chart
+# version rather than letting it float to whatever the repo's index.yaml
+# currently calls "latest" — verified current stable as of this fix pass
+# (docs.tigera.io/calico/charts/index.yaml).
 helm upgrade --install calico tigera-operator \
   --repo https://docs.tigera.io/calico/charts \
+  --version v3.32.2 \
   --namespace tigera-operator \
   --set installation.enabled=false \
   --set apiServer.enabled=false \
@@ -41,6 +46,7 @@ done
 kubectl wait --for=condition=Established crd/installations.operator.tigera.io --timeout=60s
 helm upgrade --install calico tigera-operator \
   --repo https://docs.tigera.io/calico/charts \
+  --version v3.32.2 \
   --namespace tigera-operator \
   --reset-values \
   --wait
@@ -50,16 +56,51 @@ kubectl create namespace iverson --dry-run=client -o yaml | kubectl apply -f -
 kubectl label namespace iverson pod-security.kubernetes.io/enforce=baseline --overwrite
 
 echo "Installing ingress-nginx..."
+# allow-snippet-annotations is disabled by default since ingress-nginx v1.9; the
+# api and admin-ui charts' Ingress templates emit
+# nginx.ingress.kubernetes.io/configuration-snippet on this className, which the
+# validating admission webhook rejects (or the controller silently drops) without
+# this setting. This install is this repo's only source of the controller for the
+# only ingress class the kind profile actually runs, so this is the one place that
+# setting can be turned on.
+#
+# SECURITY TRADE-OFF (CSR round-2 finding #13): upstream disables snippet annotations
+# by default because they let anyone who can create/edit an Ingress inject arbitrary
+# nginx.conf directives (Lua, arbitrary proxying, config-level RCE surface) into the
+# shared controller — a real risk on a multi-tenant cluster where Ingress creation isn't
+# trusted. Here it is acceptable: this is a single-tenant kind/local cluster, every
+# Ingress in the namespace is rendered from this repo's own chart templates (not
+# arbitrary user input), and the only annotation actually emitted is the fixed
+# security-header snippet those templates hardcode — there is no untrusted path that can
+# reach configuration-snippet. This setting is scoped to the `nginx` ingress class used
+# only by kind/local; production/cloud profiles use alb/gce/azure-application-gateway
+# (see values-aws/azure/gcp.yaml) and never enable this flag — azure wires the same
+# security headers through AGIC's own rewrite-rule-set mechanism instead (see
+# charts/api/templates/ingress.yaml's `securityHeadersRuleSet`), and none of the cloud
+# ingress classes support or need nginx's snippet-annotation feature at all.
+# CSR round-3 finding #7: chart 4.11.3 shipped controller v1.11.3, which predates the
+# March-2025 "IngressNightmare" CVE fixes (CVE-2025-1097, CVE-2025-1098, CVE-2025-1974,
+# CVE-2025-24513, CVE-2025-24514), landed in controller v1.11.5 / v1.12.1. Bumped to
+# chart 4.12.8 (controller v1.12.8, confirmed via the ingress-nginx Helm repo's
+# index.yaml chart-version-to-appVersion mapping as of this fix), well past the fixed
+# versions. Re-verified `helm template` output with this repo's exact --set flags
+# renders cleanly at this chart version.
 helm upgrade --install ingress-nginx ingress-nginx \
   --repo https://kubernetes.github.io/ingress-nginx \
+  --version 4.12.8 \
   --namespace ingress-nginx --create-namespace \
   --set controller.hostPort.enabled=true \
   --set controller.service.type=ClusterIP \
+  --set controller.allowSnippetAnnotations=true \
   --wait
 
 echo "Installing CloudNativePG operator..."
+# CSR round-2 finding #12: pinned to the same version as
+# modules/operators/main.tf's cloudnative_pg helm_release, so kind and the
+# cloud Terraform installs run the identical operator build.
 helm upgrade --install cnpg cloudnative-pg \
   --repo https://cloudnative-pg.github.io/charts \
+  --version 0.29.0 \
   --namespace cnpg-system --create-namespace \
   --wait
 
@@ -74,16 +115,24 @@ echo "Installing Strimzi operator..."
 # are installed into the "iverson" namespace (wherever the app release goes)
 # — without this, the operator never sees them and the KafkaNodePool sits at
 # 0 broker pods forever, no error, no event, nothing to grep for.
+# CSR round-2 finding #12: pinned to the same version as
+# modules/operators/main.tf's strimzi helm_release, so kind and the cloud
+# Terraform installs run the identical operator build.
 helm upgrade --install strimzi strimzi-kafka-operator \
   --repo https://strimzi.io/charts/ \
+  --version 1.1.0 \
   --namespace kafka --create-namespace \
   --set watchNamespaces="{iverson}" \
   --wait
 
 echo "Installing StarRocks operator..."
 # Chart was renamed upstream from "kube-starrocks-operator" to "operator".
+# CSR round-2 finding #12: pinned to the same version as
+# modules/operators/main.tf's starrocks_operator helm_release, so kind and
+# the cloud Terraform installs run the identical operator build.
 helm upgrade --install starrocks-operator operator \
   --repo https://starrocks.github.io/starrocks-kubernetes-operator \
+  --version 1.11.5 \
   --namespace starrocks --create-namespace \
   --wait
 
@@ -94,8 +143,11 @@ echo "Installing metrics-server..."
 # `kubectl top` work, which the laptop profile's capacity numbers depend on.
 # --kubelet-insecure-tls is required on kind: kubelet serves a self-signed cert that
 # metrics-server will otherwise reject.
+# CSR round-2 finding #12: verified current stable as of this fix pass
+# (kubernetes-sigs.github.io/metrics-server/index.yaml).
 helm upgrade --install metrics-server metrics-server \
   --repo https://kubernetes-sigs.github.io/metrics-server/ \
+  --version 3.9.0 \
   --namespace kube-system \
   --set 'args={--kubelet-insecure-tls}' \
   --wait

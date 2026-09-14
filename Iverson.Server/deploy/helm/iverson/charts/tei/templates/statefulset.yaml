@@ -47,8 +47,11 @@ spec:
           image: "ghcr.io/huggingface/text-embeddings-inference:{{ $.Values.imageTag }}"
           imagePullPolicy: IfNotPresent
           # --port 8080: the image listens on 80, which uid 1000 cannot bind. --auto-truncate: without it
-          # TEI answers 413 above 512 tokens (Phase 1 spec §3.4).
-          args: ["--model-id", {{ .name | quote }}, "--auto-truncate", "--port", "8080"]
+          # TEI answers 413 above 512 tokens (Phase 1 spec §3.4). --revision: pins the model-registry
+          # pull to an exact Hub commit rather than a floating org/repo pointer (CSR round-2 finding
+          # #6) — `required` fails the render rather than silently falling back to the mutable
+          # "main" branch if an entry is ever added to embeddingModels without one.
+          args: ["--model-id", {{ .name | quote }}, "--revision", {{ required (printf "global.embeddingModels[%s].revision must pin an exact Hub commit SHA (CSR round-2 finding #6)" .name) .revision | quote }}, "--auto-truncate", "--port", "8080"]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -99,7 +99,9 @@ public sealed class EnrichmentConsumer(
         // re-enrich and every writeback would republish entity.updated — the loop breaker
         // inverted into unbounded re-enrichment.
         var tableSchema = SchemaBuilder.ToTableSchema(schema);
-        var rowJson = await entities.FetchByKeyAsync(tableSchema, ev.Key);
+        // Cross-tenant by necessity: this read is what DERIVES the tenant (line below), so there
+        // is no tenant to scope it to yet. The event's own payload must not be trusted for it.
+        var rowJson = await entities.FetchByKeyAsync(tableSchema, ev.Key, EntityAccess.CrossTenantMaintenance);
         if (rowJson is null)
         {
             logger.LogWarning(
@@ -179,13 +181,13 @@ public sealed class EnrichmentConsumer(
 
             await txRunner.ExecuteInTransactionAsync(async tx =>
             {
-                // SET LOCAL ROLE iverson_runtime persists for the remainder of the
-                // transaction, and neither the enrichment-state table nor the outbox has a
-                // grant for that role — so tenant scope must be exited before either write.
-                // OutboxWriter.UpsertAndEnqueueOutboxAsync performs the identical sequence.
-                await tx.EnterTenantScopeAsync(tenantValue);
-                await entities.UpdateColumnsAsync(tx, tableSchema, ev.Key, columns);
-                await tx.ExitTenantScopeAsync();
+                // UpdateColumnsAsync enters and exits the tenant role itself. That matters here:
+                // SET LOCAL ROLE iverson_runtime persists for the remainder of the transaction,
+                // and neither the enrichment-state table nor the outbox has a grant for that role,
+                // so the two writes below must run after the reset. This used to be a hand-rolled
+                // Enter/Exit pair around the call — see EntityRepository.UpdateColumnsAsync.
+                await entities.UpdateColumnsAsync(
+                    tx, tableSchema, ev.Key, columns, EntityAccess.ForTenant(tenantValue));
 
                 await state.UpsertAsync(
                     tx, tenantValue, schema.TypeName, ev.Key, hash, DateTimeOffset.UtcNow);
@@ -199,7 +201,8 @@ public sealed class EnrichmentConsumer(
             // and Qdrant and win over the client's own event — reintroducing on the publish path
             // exactly the clobber the targeted UPDATE removes from the write path.
             // ReconciliationService.ProcessOneAsync re-fetches before republishing for the same reason.
-            var publishJson = await entities.FetchByKeyAsync(tableSchema, ev.Key);
+            var publishJson = await entities.FetchByKeyAsync(
+                tableSchema, ev.Key, EntityAccess.ForTenant(tenantValue));
             if (publishJson is null)
             {
                 logger.LogWarning(

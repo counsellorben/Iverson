@@ -25,16 +25,26 @@ spec:
       database: iverson
       owner: iverson
       # Run once, as superuser, right after initdb. The API's startup (PostgresSchemaManager
-      # .EnsureRuntimeRoleAsync) creates the NOLOGIN role `iverson_runtime` and later runs
-      # `SET LOCAL ROLE iverson_runtime` for tenant-scoped writes. On docker-compose the app user is
-      # the Postgres superuser, so both work implicitly; here enableSuperuserAccess is false and the
-      # app user can neither CREATE ROLE (SqlState 42501) nor SET ROLE without membership. Creating
-      # the role and granting membership at bootstrap makes the API's own CREATE a no-op.
-      # An already-initialised cluster does not re-run this: apply the two statements by hand
-      # (`kubectl cnpg psql <release>-postgres -- -d iverson`).
+      # .EnsureRolesAsync) creates two NOLOGIN roles and every entity-table access then runs under
+      # one of them via `SET LOCAL ROLE`: `iverson_runtime` for tenant-scoped reads and writes
+      # (owns nothing, holds no BYPASSRLS, so the tenant-isolation policy genuinely applies), and
+      # `iverson_maintenance` for the deliberately cross-tenant reconciliation and tenant/owner
+      # re-derivation paths (BYPASSRLS, since entity tables are now FORCE ROW LEVEL SECURITY and
+      # the owner is no longer exempt).
+      #
+      # On docker-compose the app user is the Postgres superuser, so both creations work
+      # implicitly; here enableSuperuserAccess is false and the app user can neither CREATE ROLE
+      # (SqlState 42501) nor grant BYPASSRLS nor SET ROLE without membership. Creating both roles
+      # and granting membership at bootstrap makes the API's own CREATEs a no-op.
+      #
+      # An already-initialised cluster does not re-run this: apply the four statements by hand
+      # (`kubectl cnpg psql <release>-postgres -- -d iverson`). EnsureRolesAsync fails startup with
+      # the exact statement to run rather than a bare 42501 if you forget.
       postInitApplicationSQL:
         - CREATE ROLE iverson_runtime NOLOGIN
         - GRANT iverson_runtime TO iverson
+        - CREATE ROLE iverson_maintenance NOLOGIN BYPASSRLS
+        - GRANT iverson_maintenance TO iverson
   managed:
     roles:
       - name: authentik

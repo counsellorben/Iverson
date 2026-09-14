@@ -1,3 +1,4 @@
+{{- include "iverson.validateNoPlaceholders" . -}}
 {{- if .Values.networkPolicy.enabled }}
 # Default-deny: nothing in the namespace can talk to anything else unless a
 # more specific policy below explicitly allows it.

@@ -298,15 +298,56 @@ entries:
     identifiers:
       name: tenant-admins
     attrs: {}
-  # Authentik derives User.is_superuser from group membership — it is a property computed over the
-  # user's groups, not a writable field — so `is_superuser: true` set directly on the user was
-  # silently discarded, leaving the orchestrator with no admin rights and every IdpAdminClient call
-  # failing 403. The superuser flag has to live on a group the user belongs to.
+  # CSR round-3 finding #1 remediation: this file is a hand-maintained mirror of the Helm
+  # template at ../../templates/secret-service-clients.yaml (rendered, with the
+  # dev-only static credentials substituted for Helm's generated ones — finding #15 later
+  # merged that template's blueprint content into the same file that emits the real Secrets,
+  # so there is no separate blueprints-secret-service-clients.yaml to point at anymore).
+  # Round 1 replaced the
+  # orchestrator's blanket superuser grant with a scoped RBAC role in the HELM template only —
+  # this copy was left on `is_superuser: true`, so the docker-compose target kept running the
+  # tenant orchestrator as a full authentik superuser and no test exercised the scoped role
+  # against a real instance. Both halves are fixed here; see the Helm template for the full
+  # rationale on each permission, the InitialPermissions object-scoping mechanism, and the
+  # deliberately-recorded residual around global `add_user`.
+  #
+  # This copy is ALSO what Iverson.Api.Tests' AuthentikContainerFixture applies (authentik's
+  # blueprint discovery rglobs the bind-mounted directory, so compose-only/ is picked up),
+  # which is what makes AuthentikRecoveryFlowIntegrationTests a test of the shipped
+  # blueprint rather than of a test-local reconstruction of it. Keep it in sync with the Helm
+  # template.
+  - model: authentik_rbac.role
+    identifiers:
+      name: iverson-admin-orchestrator
+    attrs:
+      permissions:
+        - authentik_core.add_user
+        - authentik_core.view_user
+        - authentik_core.view_group
+  - model: authentik_rbac.initialpermissions
+    identifiers:
+      name: iverson-admin-orchestrator-created-users
+    attrs:
+      role: !Find [authentik_rbac.role, [name, iverson-admin-orchestrator]]
+      permissions:
+        - !Find [auth.permission, [codename, change_user], [content_type__app_label, authentik_core]]
+        - !Find [auth.permission, [codename, reset_user_password], [content_type__app_label, authentik_core]]
+  # RBAC roles bind to groups (not directly to users) in authentik, so the orchestrator user
+  # inherits the scoped role through membership in this group.
+  #
+  # is_superuser is pinned to false EXPLICITLY rather than just omitted: blueprint attrs are a
+  # partial update, so on a dev stack whose database was provisioned by the previous version of
+  # this file the group would otherwise keep its stale is_superuser: true and the scoped role
+  # below would be decorative. (authentik's own GroupSerializer.validate_is_superuser
+  # short-circuits when there is no request, which is the case during blueprint import, so
+  # writing the flag from a blueprint needs no permission.)
   - model: authentik_core.group
     identifiers:
       name: iverson-admin-orchestrators
     attrs:
-      is_superuser: true
+      is_superuser: false
+      roles:
+        - !Find [authentik_rbac.role, [name, iverson-admin-orchestrator]]
   - model: authentik_core.user
     identifiers:
       username: iverson-admin-orchestrator

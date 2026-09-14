@@ -47,14 +47,18 @@ public class Main {
         }
 
         // ── Connect ────────────────────────────────────────────────────────────
-        try (IversonClient client = new IversonClient(
+        // This sample deliberately targets a local plaintext (h2c) endpoint — the accepted
+        // dev/test model — so it must explicitly defeat IversonClient's default guard against
+        // attaching credentials to a plaintext channel.
+        try (IversonClient client = IversonClient.plaintext(
                 "localhost", 5000,
                 new OAuth2ClientCredentials(
                     clientId,
                     clientSecret,
                     tokenEndpoint,
                     "admin schema_admin"),
-                actingUserToken)) {
+                actingUserToken,
+                true)) {
 
             // ── Register schemas ───────────────────────────────────────────────
             ObjectMapping.AuthorizationRules sampleRules = ObjectMapping.AuthorizationRules.newBuilder()

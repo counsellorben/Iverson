@@ -18,6 +18,19 @@ internal static class StarRocksQueryBuilder
     private static readonly ConditionalWeakTable<
         EngagementQuerySchema,
         Dictionary<string, string>> _columnCache = new();
+
+    // BuildAggregate's HAVING alias set: the three result-column names its own SELECT can ever
+    // emit (bucket_key for Terms/DateHistogram/Range, metric_val for Avg/Sum/Min/Max/Count).
+    // Fixed and identical for every call — BuildAggregate issues exactly one of these shapes per
+    // AggregationDescriptor, never both, so a HAVING clause can only ever legitimately reference
+    // one of the three regardless of which AggregationKind produced it.
+    private static readonly IReadOnlyDictionary<string, string> AggregateHavingAliases =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["bucket_key"] = "bucket_key",
+            ["doc_count"]  = "doc_count",
+            ["metric_val"] = "metric_val",
+        };
     internal static (string Sql, DynamicParameters Param) BuildSearch(
         string tableName,
         EngagementQuerySchema schema,
@@ -28,12 +41,28 @@ internal static class StarRocksQueryBuilder
         IReadOnlyList<JoinSpec>? joins = null,
         Func<string, EngagementQuerySchema?>? registry = null,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
-        string? tenantDatabase = null)
+        string? tenantDatabase = null,
+        EngagementQueryLimitOptions? limits = null)
     {
+        var lim = limits ?? EngagementQueryLimitOptions.Default;
+        EngagementQueryLimitValidator.CheckClauseCount(query?.Clauses?.Count ?? 0, lim, "WHERE");
+        EngagementQueryLimitValidator.CheckJoinCount(joins?.Count ?? 0, lim);
+
         var param = new DynamicParameters();
 
         var limit  = pageSize > 0 ? pageSize : 50;
-        var offset = page > 0 ? page * limit : 0;
+        EngagementQueryLimitValidator.CheckPageSize(limit, lim);
+
+        // page * limit computed in `long` and range-checked before narrowing: page is
+        // caller-controlled (SearchRequest.page), and with limit capped but page unbounded,
+        // int * int can silently overflow into a negative OFFSET (invalid SQL StarRocks would
+        // reject, but only after accepting the request) rather than the enormous-but-valid
+        // OFFSET the caller actually asked for.
+        var offsetLong = page > 0 ? (long)page * limit : 0L;
+        if (offsetLong > int.MaxValue)
+            throw new EngagementQueryTranslationException(
+                $"Requested page {page} at page size {limit} would produce an OFFSET of {offsetLong}, which is not supported.");
+        var offset = (int)offsetLong;
 
         string from;
         string where;
@@ -146,8 +175,17 @@ internal static class StarRocksQueryBuilder
         IReadOnlyList<JoinSpec>? joins = null,
         Func<string, EngagementQuerySchema?>? registry = null,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
-        string? tenantDatabase = null)
+        string? tenantDatabase = null,
+        EngagementQueryLimitOptions? limits = null)
     {
+        var lim = limits ?? EngagementQueryLimitOptions.Default;
+        EngagementQueryLimitValidator.CheckClauseCount(query?.Clauses?.Count ?? 0, lim, "WHERE");
+        EngagementQueryLimitValidator.CheckClauseCount(having?.Clauses?.Count ?? 0, lim, "HAVING");
+        EngagementQueryLimitValidator.CheckJoinCount(joins?.Count ?? 0, lim);
+        EngagementQueryLimitValidator.CheckGroupByKeyCount(spec.GroupByFields?.Count ?? 0, lim);
+        if (spec.Kind == AggregationKind.Terms)
+            EngagementQueryLimitValidator.CheckAggregationSize(spec.Size > 0 ? spec.Size : 10, lim);
+
         var param = new DynamicParameters();
 
         string from;
@@ -259,7 +297,9 @@ internal static class StarRocksQueryBuilder
             && string.IsNullOrEmpty(spec.Field)
             && string.IsNullOrEmpty(spec.Expression);
 
-        var havingSql = BuildHaving(having?.Clauses, having?.Logic ?? SearchLogic.And, param);
+        var havingSql = BuildHaving(
+            having?.Clauses, having?.Logic ?? SearchLogic.And, param,
+            AggregateHavingAliases, ResolveStrict, schema, tableMap, authz);
         var hc = havingSql.Length > 0 ? $" HAVING {havingSql}" : "";
 
         // Multi-key GROUP BY: spec.GroupByFields, when present with more than one entry,
@@ -288,7 +328,7 @@ internal static class StarRocksQueryBuilder
                 $"{from}{wc} " +
                 $"GROUP BY bucket_key{hc} ORDER BY bucket_key",
 
-            AggregationKind.Range => BuildRangeSql(from, Quote(col), spec.RangeBuckets, wc, hc),
+            AggregationKind.Range => BuildRangeSql(from, Quote(col), spec.RangeBuckets, param, wc, hc),
 
             // spec.Expression is a client-settable field on the public AggregateRequest proto
             // contract (object_search.proto's AggregationSpec.expression) — it IS reachable by
@@ -323,8 +363,16 @@ internal static class StarRocksQueryBuilder
         GroupByRequest request,
         Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
-        string? tenantDatabase = null)
+        string? tenantDatabase = null,
+        EngagementQueryLimitOptions? limits = null)
     {
+        var lim = limits ?? EngagementQueryLimitOptions.Default;
+        EngagementQueryLimitValidator.CheckClauseCount(request.Query?.Clauses?.Count ?? 0, lim, "WHERE");
+        EngagementQueryLimitValidator.CheckClauseCount(request.Having?.Clauses?.Count ?? 0, lim, "HAVING");
+        EngagementQueryLimitValidator.CheckJoinCount(request.Joins?.Count ?? 0, lim);
+        EngagementQueryLimitValidator.CheckGroupByKeyCount(request.Keys?.Count ?? 0, lim);
+        EngagementQueryLimitValidator.CheckGroupByLimit(request.Limit > 0 ? request.Limit : 10_000, lim);
+
         var param = new DynamicParameters();
         // Joined-type ownership predicates are appended to each JOIN's own ON clause inside
         // BuildFromWithJoins (never the outer WHERE — see that method's remarks for why).
@@ -377,7 +425,21 @@ internal static class StarRocksQueryBuilder
             .Concat(metricExprs)
             .ToList();
 
-        var havingSql = BuildHaving(request.Having?.Clauses, request.Having?.Logic ?? SearchLogic.And, param);
+        // HAVING alias set: the compound SELECT's own metric aliases plus the (already-authorized,
+        // per keyCols above) GROUP BY key columns — the two sets of names a HAVING clause can
+        // legitimately reference without being a fresh, unauthorized column reference.
+        // request.Keys (the caller's own, pre-resolution property names, e.g. "Name" or
+        // "Article.Body") rather than keyCols (the resolved "alias.field" form) — a HAVING clause
+        // refers to a GROUP BY key the same way the caller named it in Keys, and keyCols above has
+        // already run every entry through IsFieldAllowed once, so admitting it here on alias-set
+        // membership alone (no re-resolution) does not skip an authorization check.
+        var havingAliases = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var m in request.Metrics) havingAliases[m.Name] = m.Name;
+        foreach (var k in request.Keys) havingAliases[k] = k;
+
+        var havingSql = BuildHaving(
+            request.Having?.Clauses, request.Having?.Logic ?? SearchLogic.And, param,
+            havingAliases, p => ResolveColumn(tableMap, p), schema, tableMap, authz);
         var hc = havingSql.Length > 0 ? $" HAVING {havingSql}" : "";
 
         // Field reject-on-reference: an ORDER BY over a disallowed field would leak that field's
@@ -593,11 +655,21 @@ internal static class StarRocksQueryBuilder
     }
 
     /// <summary>
-    /// Builds a HAVING clause from the same clause-matching logic as <see cref="BuildWhere(EngagementQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?)"/>,
-    /// but without the schema-backed <see cref="ResolveColumn(EngagementQuerySchema, string)"/> guard —
-    /// HAVING clauses reference SQL output aliases (e.g. "doc_count", "metric_val") which are not
-    /// schema columns, so the clause's Property is used verbatim as the column name. Uses an
-    /// "h{n}" parameter prefix by default (vs. "p{n}" for WHERE) so both can share one
+    /// Builds a HAVING clause. Unlike <see cref="BuildWhere(EngagementQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?)"/>,
+    /// a HAVING clause's Property is most often a SQL output alias (e.g. "doc_count", "metric_val",
+    /// a metric name) rather than a schema column, so it is validated two ways: <paramref
+    /// name="aliases"/> is checked first (a plain alias-membership test — no resolution, no
+    /// authorization needed, since an alias only exists because this same query already produced
+    /// it), and only a Property that misses the alias set falls through to <paramref
+    /// name="resolveColumn"/> + <see cref="IsFieldAllowed"/> so a caller can also filter on an
+    /// authorized schema column that was not itself selected. A Property that is neither is
+    /// rejected with the same exception shape the WHERE/GROUP BY/ORDER BY gates use — this closes
+    /// the gap where HAVING was escaped but never authorized. <paramref name="schema"/> is
+    /// nullable: the pipeline route (<see cref="StarRocksPipelineBuilder"/>) has no
+    /// <see cref="EngagementQuerySchema"/> or column resolver available at its call site (a CTE
+    /// step name is not a registered type), so it passes null for <paramref name="resolveColumn"/>/
+    /// <paramref name="schema"/>/<paramref name="tableMap"/> and gates on alias membership alone.
+    /// Uses an "h{n}" parameter prefix by default (vs. "p{n}" for WHERE) so both can share one
     /// DynamicParameters instance without name collisions when a query has both a filter and a
     /// HAVING clause; pipeline steps pass "s{i}_h" so multiple steps can share one instance too.
     /// </summary>
@@ -605,9 +677,34 @@ internal static class StarRocksQueryBuilder
         IEnumerable<SearchClause>? clauses,
         SearchLogic logic,
         DynamicParameters param,
+        IReadOnlyDictionary<string, string> aliases,
+        Func<string, string?>? resolveColumn,
+        EngagementQuerySchema? schema,
+        IReadOnlyDictionary<string, JoinContext>? tableMap,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz,
         string paramPrefix = "h")
     {
         if (clauses is null) return "";
+
+        // Resolves and authorizes one clause's Property: alias-set membership first (no
+        // resolution needed — see the method doc comment), then — only when a schema-backed
+        // resolver is available — a real column passing IsFieldAllowed. Returns the already-
+        // quoted SQL identifier to splice in, or null with the disallowed field's type name (when
+        // known) for the caller to build the rejection message from.
+        (string? QuotedCol, string? TypeName) Authorize(string prop)
+        {
+            if (aliases.ContainsKey(prop))
+                return ($"`{EscapeIdentifier(prop)}`", null);
+
+            if (schema is null) return (null, null);
+
+            var resolved = resolveColumn?.Invoke(prop);
+            if (resolved is null) return (null, null);
+
+            return IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName)
+                ? (QuoteQualified(resolved), null)
+                : (null, typeName);
+        }
 
         var parts = new List<string>();
         var nextIdx = 0;
@@ -619,9 +716,16 @@ internal static class StarRocksQueryBuilder
                     "VECTOR_SIMILAR clauses are not supported by the SQL search path; " +
                     "use the SearchSimilar or SearchChunks RPCs for vector search.");
 
-            var col = clause.Property;
-            if (string.IsNullOrEmpty(col)) continue;
-            var quotedCol = $"`{EscapeIdentifier(col)}`";
+            var prop = clause.Property;
+            if (string.IsNullOrEmpty(prop)) continue;
+
+            var (quotedCol, typeName) = Authorize(prop);
+            if (quotedCol is null)
+            {
+                var suffix = typeName is null ? "" : $" on '{typeName}'";
+                throw new EngagementQueryTranslationException(
+                    $"HAVING property '{prop}'{suffix} is not authorized for this caller.");
+            }
 
             var pName = $"{paramPrefix}{nextIdx++}";
 
@@ -857,24 +961,35 @@ internal static class StarRocksQueryBuilder
     /// <c>FROM `authors`</c> or the multi-table form emitted by <see cref="BuildFromWithJoins"/>),
     /// and <paramref name="quotedCol"/> must already be fully quoted — see <see cref="BuildEq"/>
     /// for the equivalent contract on WHERE-clause columns.
+    /// <para>
+    /// The bucket <c>Key</c> is a caller-supplied display label reachable by any client via the
+    /// public <c>AggregationSpec.range_buckets[].key</c> proto field. It is a VALUE, not an
+    /// identifier, and is emitted as a bound parameter (<c>@__rbN</c>) — never spliced into a
+    /// string literal. Splicing it (even with single-quote doubling) is a SQL-injection sink:
+    /// StarRocks honours backslash string escapes, so a key ending in <c>\</c> escapes the
+    /// literal's closing quote and drops following tokens into SQL context, downstream of every
+    /// field-authorization check. Parameterization is the same discipline every other value
+    /// operand in this builder already follows.
+    /// </para>
     /// </summary>
     private static string BuildRangeSql(
         string from, string quotedCol,
-        IReadOnlyList<RangeBucketDescriptor>? buckets, string wc, string hc = "")
+        IReadOnlyList<RangeBucketDescriptor>? buckets, DynamicParameters param, string wc, string hc = "")
     {
         if (buckets is null || buckets.Count == 0)
             return $"SELECT NULL AS bucket_key, COUNT(*) AS doc_count {from}{wc}{hc}";
 
-        var cases = buckets.Select(b =>
+        var cases = buckets.Select((b, i) =>
         {
-            var key = EscapeSqlString(b.Key);
-            if (b.From is null && b.To is not null)
-                return $"WHEN {quotedCol} < {b.To.Value} THEN '{key}'";
-            if (b.From is not null && b.To is null)
-                return $"WHEN {quotedCol} >= {b.From.Value} THEN '{key}'";
-            if (b.From is not null && b.To is not null)
-                return $"WHEN {quotedCol} >= {b.From.Value} AND {quotedCol} < {b.To.Value} THEN '{key}'";
-            return null;
+            var when =
+                b.From is null && b.To is not null     ? $"WHEN {quotedCol} < {b.To.Value}"
+                : b.From is not null && b.To is null    ? $"WHEN {quotedCol} >= {b.From.Value}"
+                : b.From is not null && b.To is not null ? $"WHEN {quotedCol} >= {b.From.Value} AND {quotedCol} < {b.To.Value}"
+                : null;
+            if (when is null)
+                return null;   // a bucket with neither bound is meaningless — skip it, and bind no parameter for it
+            param.Add($"__rb{i}", b.Key);
+            return $"{when} THEN @__rb{i}";
         }).OfType<string>();
 
         return $"SELECT CASE {string.Join(" ", cases)} END AS bucket_key, " +
@@ -969,8 +1084,6 @@ internal static class StarRocksQueryBuilder
         "year"    => "%Y",
         _         => "%Y-%m"
     };
-
-    private static string EscapeSqlString(string value) => value.Replace("'", "''");
 
     // Escapes an embedded backtick in a developer-supplied identifier (metric alias / HAVING
     // property) before it is wrapped in backticks — otherwise a literal backtick would close

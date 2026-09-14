@@ -30,7 +30,7 @@ public sealed class QdrantGrpcContainerFixture : IAsyncLifetime
             .WithImage("qdrant/qdrant:v1.18.2")
             .WithPortBinding(GrpcPort, assignRandomHostPort: true)
             .WithPortBinding(6333, assignRandomHostPort: true)
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(GrpcPort))
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(GrpcPort))
             .Build();
 
     public IntelligenceVectorService Service { get; private set; } = null!;
@@ -94,7 +94,8 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             new ResultDiversifier(),
             Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
             Options.Create(new DecayOptions()),
-            Options.Create(popularity ?? new PopularitySignalOptions()));
+            Options.Create(popularity ?? new PopularitySignalOptions()),
+            EngagementQueryLimitOptions.Default);
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
     {
@@ -258,7 +259,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             .Returns(Task.CompletedTask);
 
         var entities = Substitute.For<IEntityRepository>();
-        entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                 .Returns($$"""{"TenantId":"{{TestTenant}}"}""");
 
         var vectorSchema = Substitute.For<IVectorSchemaManager>();

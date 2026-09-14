@@ -140,7 +140,11 @@ public sealed class EngagementStoreConsumer(
     private async Task<string?> FetchAuthoritativeOwnerValueAsync(
         SchemaDescriptor schema, string ownerField, string key, CancellationToken ct)
     {
-        var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
+        // Cross-tenant by necessity: this read is the authoritative source for a value the
+        // unsigned event payload must not be trusted for, so it cannot be scoped by anything the
+        // payload says. Its result is only ever read back out of the row itself.
+        var rowJson = await entities.FetchByKeyAsync(
+            SchemaBuilder.ToTableSchema(schema), key, EntityAccess.CrossTenantMaintenance);
         if (rowJson is null)
         {
             logger.LogWarning(

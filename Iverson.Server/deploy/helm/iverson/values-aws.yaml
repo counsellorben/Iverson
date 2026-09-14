@@ -1,10 +1,9 @@
 # AWS EKS overlay — StorageClass names and node-pool labels match modules/operators
 # and modules/cluster-aws's fixed naming exactly (see Tasks 2 and 3 of this plan).
 
-# Keep in lockstep with api.ingress.host below — see values.yaml's global.ingressHost
-# comment for why this is a separate key instead of a single source of truth.
 global:
   ingressHost: "iverson.example.com"
+  externalScheme: "https"
 
 postgres:
   storageClassName: "iverson-postgres"
@@ -92,7 +91,6 @@ api:
       alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
       alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
       alb.ingress.kubernetes.io/ssl-redirect: "443"
-    host: "iverson.example.com"
 
 # worker/prometheus/redis/authentik: none of these get a dedicated node pool in
 # modules/cluster-aws (only postgres/kafka/starrocks/qdrant/ollama do — confirmed
@@ -149,7 +147,6 @@ authentik:
       alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
 
 adminUi:
-  oidcAuthority: "http://authentik.iverson.example.com/application/o/iverson-api/"
   apiBaseUrl: "https://iverson.example.com"
   ingress:
     className: "alb"

@@ -25,7 +25,7 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
         // than production, and irreproducible the moment upstream publishes again.
         .WithImage("starrocks/allin1-ubuntu:4.1.1")
         .WithPortBinding(MysqlPort, true)
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(MysqlPort))
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(MysqlPort))
         .Build();
 
     private string _connectionString = null!;

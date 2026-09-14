@@ -788,7 +788,7 @@ describe('IversonClient.getSchema', () => {
         );
         const stub = { getSchema, close: vi.fn() } as unknown as ObjectMappingServiceClient;
 
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _mappingClient: unknown })._mappingClient = stub;
 
         const types = await client.getSchema('trace-1');

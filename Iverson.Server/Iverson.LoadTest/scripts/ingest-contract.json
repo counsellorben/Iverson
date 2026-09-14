@@ -13,9 +13,9 @@
   "distance": "Cosine",
   "collectionNaming": {
     "base": "benchmark_documents",
-    "template": "{base}{suffix}_{tenant}",
-    "objectSuffix": "",
-    "chunksSuffix": "_chunks"
+    "knownTenantId": "tenant_bypass",
+    "objectCollectionForKnownTenant": "benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk",
+    "chunksCollectionForKnownTenant": "benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk"
   },
   "embedding": {
     "documentPrefixes": {

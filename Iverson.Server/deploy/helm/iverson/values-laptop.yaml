@@ -16,9 +16,15 @@ global:
   # activeEmbeddingModel (inherited from values.yaml) must name an entry here. This list must still
   # contain every model any REGISTERED type's stored `_iverson_schema` row names — under TEI,
   # trimming a still-carried entry now surfaces as the API's /info identity guard, not an Ollama 404.
+  # revision pins the Hub commit (CSR round-2 finding #6) — see values.yaml's
+  # embeddingModels comment.
   embeddingModels:
     - name: BAAI/bge-base-en-v1.5
       slug: bge-base
+      revision: a5beb1e3e68b9ab74eb54cfd186867f64f240e1a
+  # Laptop dev needs the Authentik test identities and legacy tenant seeding the production
+  # default (values.yaml) turns off.
+  provisionTestIdentities: true
 
 prometheus:
   enabled: false
@@ -79,7 +85,6 @@ api:
   ingress:
     className: "nginx"
     annotations: {}
-    host: "iverson.local"
     tlsSecretName: ""
 
 worker:

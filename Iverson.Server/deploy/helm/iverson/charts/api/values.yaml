@@ -13,5 +13,10 @@ hpa:
 ingress:
   className: ""
   annotations: {}
-  host: "iverson.local"
+  # No `host` key here (CSR round-3 finding #11): charts/api/templates/ingress.yaml
+  # templates directly off global.ingressHost — see that file's comment and
+  # values.yaml's global.ingressHost comment. This subchart-local default was
+  # missed in the first remediation pass even after every umbrella values-*.yaml
+  # override was removed; left in place it would have been a silent no-op for
+  # any operator who still (harmlessly but confusingly) set it.
   tlsSecretName: ""

@@ -43,6 +43,28 @@ public class IntelligenceCollectionManager(
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
+    public async Task<bool> PingAsync()
+    {
+        using var _ = RequestHeaders.Use("api-key", apiKey);
+        using var activity = Telemetry.Source.StartActivity("qdrant.ping", ActivityKind.Client);
+        activity?.SetTag("db.system", "qdrant");
+
+        try
+        {
+            // A metadata read (list collections), never a write — unlike EnsureCollectionAsync,
+            // this cannot create anything even the first time it runs against a fresh instance.
+            await client.ListCollectionsAsync();
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            logger.LogWarning(ex, "Qdrant ping (ListCollectionsAsync) failed");
+            return false;
+        }
+    }
+
     public async Task ApplyCollectionAsync(CollectionSchema schema)
     {
         using var _ = RequestHeaders.Use("api-key", apiKey);

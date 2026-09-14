@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http.Features;
 using Iverson.Api;
 using Iverson.Api.Authorization;
 using Iverson.Api.Consumers;
@@ -160,12 +161,27 @@ builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, AuditingAut
 
 builder.Services.AddScoped<IActingUserAccessor, ActingUserAccessor>();
 
-builder.Services.AddPostgres(cfg.GetConnectionString("Postgres")
-    ?? "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
+var engagementStoreEnabledAtStartup = cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true);
 
+// string.IsNullOrWhiteSpace, not `??`: an explicitly-configured "" (or whitespace-only string)
+// is non-null and would otherwise silently bypass a plain `??` check, reaching AddPostgres /
+// AddStarRocks without ever throwing even though the value is unusable as a real connection
+// string. The plan's fail-closed intent is "no usable value", not merely "no null value".
+var postgresConnectionString = cfg.GetConnectionString("Postgres");
+builder.Services.AddPostgres(
+    string.IsNullOrWhiteSpace(postgresConnectionString)
+        ? throw new InvalidOperationException(
+            "ConnectionStrings:Postgres is required and was not configured.")
+        : postgresConnectionString);
+
+var starRocksConnectionString = cfg.GetConnectionString("StarRocks");
 builder.Services.AddStarRocks(
-    cfg.GetConnectionString("StarRocks")
-    ?? "Server=localhost;Port=9030;Database=iverson;User Id=root;Password=;AllowPublicKeyRetrieval=true;",
+    string.IsNullOrWhiteSpace(starRocksConnectionString)
+        ? (engagementStoreEnabledAtStartup
+            ? throw new InvalidOperationException(
+                "ConnectionStrings:StarRocks is required when Engagement:Enabled is true and was not configured.")
+            : string.Empty)
+        : starRocksConnectionString,
     new EngagementResilienceOptions
     {
         BackendReadyTimeout = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:BackendReadyTimeoutSeconds", 120)),
@@ -177,7 +193,27 @@ builder.Services.AddStarRocks(
             BreakDuration     = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:CircuitBreaker:BreakDurationSeconds", 15))
         }
     },
-    cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true));
+    engagementStoreEnabledAtStartup,
+    // CSR finding #5: caps on query-DSL shape (clause/join/GROUP BY key/pipeline step/window
+    // function counts) so an authenticated tenant user cannot compose a request expensive enough
+    // to degrade StarRocks for every tenant. Configurable under StarRocks:QueryLimits:*;
+    // defaults to EngagementQueryLimitOptions' built-in values when unconfigured.
+    // CSR finding #6 extends this same options object with OUTPUT-size caps (page size,
+    // aggregation size, GROUP BY/pipeline limit, vector top_k, relation depth) alongside
+    // round 2's shape caps above — same section, same configuration mechanism.
+    new EngagementQueryLimitOptions
+    {
+        MaxClauses         = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxClauses", EngagementQueryLimitOptions.Default.MaxClauses),
+        MaxJoins           = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxJoins", EngagementQueryLimitOptions.Default.MaxJoins),
+        MaxGroupByKeys     = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxGroupByKeys", EngagementQueryLimitOptions.Default.MaxGroupByKeys),
+        MaxPipelineSteps   = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxPipelineSteps", EngagementQueryLimitOptions.Default.MaxPipelineSteps),
+        MaxWindowFunctions = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxWindowFunctions", EngagementQueryLimitOptions.Default.MaxWindowFunctions),
+        MaxPageSize        = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxPageSize", EngagementQueryLimitOptions.Default.MaxPageSize),
+        MaxAggregationSize = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxAggregationSize", EngagementQueryLimitOptions.Default.MaxAggregationSize),
+        MaxGroupByLimit    = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxGroupByLimit", EngagementQueryLimitOptions.Default.MaxGroupByLimit),
+        MaxTopK            = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxTopK", EngagementQueryLimitOptions.Default.MaxTopK),
+        MaxRelationDepth   = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxRelationDepth", EngagementQueryLimitOptions.Default.MaxRelationDepth)
+    });
 
 builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",
@@ -222,9 +258,19 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITenantStatusCache, Iverson.Api.Tenancy.TenantStatusCache>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
+// CSR finding #4: IdpAdminClient used to post a cleartext user password to Authentik's
+// set_password endpoint over whatever transport this base URL specifies, which is what the
+// startup guard formerly here existed to fail closed against for production/https profiles. The
+// deeper fix (see IdpAdminClient.CreateUserAsync) removed the password transmission entirely —
+// the platform never sends a user password to Authentik at all — so that guard's entire
+// justification is gone. The remaining admin-token-over-plaintext-in-cluster hop is the accepted
+// architecture decision this deployment already makes elsewhere, compensated by default-deny
+// NetworkPolicy, not something this startup path needs to gate.
+var authentikBaseUrlValue = cfg["Authentik:BaseUrl"] ?? "http://authentik-server:9000";
+
 builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName, client =>
 {
-    client.BaseAddress = new Uri(cfg["Authentik:BaseUrl"] ?? "http://authentik-server:9000");
+    client.BaseAddress = new Uri(authentikBaseUrlValue);
     var adminToken = cfg["Authentik:AdminToken"];
     if (!string.IsNullOrEmpty(adminToken))
         client.DefaultRequestHeaders.Authorization =
@@ -315,14 +361,18 @@ app.MapGet("/health", async (
     IRecordStoreQueryExecutor db,
     IEngagementStoreHealthCheck sr,
     IVectorSchemaManager vector,
-    IEventProducer kafka,
+    IEventBrokerHealthCheck kafka,
     IOptions<EngagementStoreOptions> engagementOptions) =>
 {
+    // CSR finding #7: this endpoint is AllowAnonymous, reachable by anything that can reach the
+    // port — so every check here must be passive. Postgres reads (never writes), StarRocks'
+    // CheckHealthAsync is SELECT 1 + a backend-status read, Qdrant's PingAsync lists collections
+    // (never creates one), and Kafka's PingAsync reads broker metadata (never produces). None of
+    // the four performs a write; do not reintroduce one here.
     var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
     var srTask     = sr.CheckHealthAsync();
-    var vectorTask = vector.EnsureCollectionAsync("iverson-probe", 4).ContinueWith(t => t.IsCompletedSuccessfully);
-    var kafkaTask  = kafka.ProduceAsync("iverson.health.probe", "probe", new { ts = DateTime.UtcNow })
-                         .ContinueWith(t => t.IsCompletedSuccessfully);
+    var vectorTask = vector.PingAsync();
+    var kafkaTask  = kafka.PingAsync();
 
     await Task.WhenAll(pgTask, srTask, vectorTask, kafkaTask);
 
@@ -345,31 +395,6 @@ app.MapGet("/health", async (
 })
 .WithName("Health")
 .AllowAnonymous();
-
-app.MapGet("/probe/sql", async (IRecordStoreQueryExecutor db) =>
-{
-    var result = await db.QuerySingleOrDefaultAsync<int>("SELECT 1");
-    return Results.Ok(new { connected = result == 1, traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeSql").AllowAnonymous();
-
-app.MapGet("/probe/starrocks", async (IEngagementStoreHealthCheck sr) =>
-{
-    var healthy = await sr.IsHealthyAsync();
-    return Results.Ok(new { connected = healthy, traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeStarRocks").AllowAnonymous();
-
-app.MapGet("/probe/vector", async (IVectorSchemaManager vector) =>
-{
-    await vector.EnsureCollectionAsync("iverson-probe", 4);
-    return Results.Ok(new { connected = true, collection = "iverson-probe", traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeVector").AllowAnonymous();
-
-app.MapPost("/probe/kafka", async (IEventProducer producer) =>
-{
-    var traceId = Activity.Current?.TraceId.ToString();
-    await producer.ProduceAsync("iverson.probe", "probe", new { timestamp = DateTime.UtcNow, traceId });
-    return Results.Ok(new { produced = true, topic = "iverson.probe", traceId });
-}).WithName("ProbeKafka").AllowAnonymous();
 
 app.MapPost("/admin/reconcile/{typeName}", async (
     string typeName,
@@ -436,17 +461,21 @@ await app.Services.GetRequiredService<IEnrichmentStateRepository>().EnsureTableA
 // cannot express.
 await app.Services.GetRequiredService<IDocumentRerenderQueueRepository>().EnsureTableAsync();
 
-// EnsureRuntimeRoleAsync must run before any ApplySchemaAsync call for a tenant-scoped table,
-// since that DDL GRANTs to iverson_runtime — the role has to exist first.
+// EnsureRolesAsync must run before ANY ApplySchemaAsync call, since that DDL now GRANTs to
+// iverson_maintenance on every table (and to iverson_runtime on the tenant-scoped ones) — both
+// roles have to exist first.
 var schemaManager = app.Services.GetRequiredService<IRecordStoreSchemaManager>();
-await schemaManager.EnsureRuntimeRoleAsync();
+await schemaManager.EnsureRolesAsync();
 await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
 await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
 await schemaManager.ApplySchemaAsync(Iverson.Api.Tenancy.TenantSchema.Table);
 
-var tenantRepository = app.Services.GetRequiredService<ITenantRepository>();
-foreach (var legacyTenantId in new[] { "tenant_loadtest", "tenant_webtest", "tenant_admin", "tenant_smoke_test", "tenant_bypass" })
-    await tenantRepository.SeedIfMissingAsync(legacyTenantId, legacyTenantId, "active");
+if (cfg.GetValue("Tenancy:SeedLegacyTenants", false))
+{
+    var tenantRepository = app.Services.GetRequiredService<ITenantRepository>();
+    foreach (var legacyTenantId in new[] { "tenant_loadtest", "tenant_webtest", "tenant_admin", "tenant_smoke_test", "tenant_bypass" })
+        await tenantRepository.SeedIfMissingAsync(legacyTenantId, legacyTenantId, "active");
+}
 
 // Self-heal RLS state for tables whose descriptor was registered before this change shipped —
 // their physical DDL predates the tenant policy/RLS/grant this schema manager now applies.
@@ -466,13 +495,45 @@ if (workloadRole == "api")
     // Relays the admin-ui browser's OTel Web SDK spans to Jaeger's OTLP/HTTP endpoint.
     // Same-origin so the browser never needs Jaeger's own network address, and
     // authenticated so only signed-in admin-ui sessions can write traces through it.
-    // Body is relayed byte-for-byte (StreamContent straight from the request body) since
-    // it's OTLP protobuf, not JSON — this must not attempt to parse or re-serialize it.
+    // Body is relayed byte-for-byte (StreamContent straight from the request body), so this
+    // must not attempt to parse or re-serialize it. The endpoint's only consumer is the
+    // admin UI's browser OTel SDK, whose JsonTraceSerializer hardcodes
+    // "Content-Type: application/json" — there is no -proto exporter dependency anywhere in
+    // the admin UI — so JSON is the payload actually sent, not protobuf. Both
+    // application/json and application/x-protobuf are allow-listed (the latter for any OTLP
+    // exporter that does emit it); anything else is rejected with 415 rather than forwarded.
+    // The body is also bounded, both by a declared-Content-Length check (so an oversized
+    // request is rejected immediately, before any bytes are relayed to Jaeger) and by
+    // IHttpMaxRequestBodySizeFeature (so a request that lies about its length is still cut
+    // off by the transport once actually read) — this relay must not be usable to push an
+    // unbounded payload at Jaeger.
+    const long MaxTraceBodyBytes = 1 * 1024 * 1024; // 1 MiB: a browser span batch is KBs; ample headroom, still bounded.
+
     app.MapPost("/v1/traces", async (HttpContext ctx, IHttpClientFactory httpClientFactory) =>
     {
+        var contentType = ctx.Request.ContentType;
+        var mediaType = contentType is not null && MediaTypeHeaderValue.TryParse(contentType, out var parsedContentType)
+            ? parsedContentType.MediaType
+            : null;
+        if (mediaType is not ("application/json" or "application/x-protobuf"))
+        {
+            ctx.Response.StatusCode = StatusCodes.Status415UnsupportedMediaType;
+            return;
+        }
+
+        if (ctx.Request.ContentLength is long declaredLength && declaredLength > MaxTraceBodyBytes)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+            return;
+        }
+
+        var maxBodySizeFeature = ctx.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (maxBodySizeFeature is not null && !maxBodySizeFeature.IsReadOnly)
+            maxBodySizeFeature.MaxRequestBodySize = MaxTraceBodyBytes;
+
         var client = httpClientFactory.CreateClient("JaegerOtlpHttp");
         using var content = new StreamContent(ctx.Request.Body);
-        content.Headers.ContentType = MediaTypeHeaderValue.Parse(ctx.Request.ContentType ?? "application/x-protobuf");
+        content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType!);
         using var response = await client.PostAsync("/v1/traces", content);
         ctx.Response.StatusCode = (int)response.StatusCode;
         await response.Content.CopyToAsync(ctx.Response.Body);

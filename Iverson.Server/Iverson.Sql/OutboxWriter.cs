@@ -54,7 +54,7 @@ public sealed class OutboxWriter(
             }
             await tx.ExecuteAsync(upsertSql, new { Json = payloadJson });
             if (tenantId is not null)
-                await tx.ExitTenantScopeAsync();
+                await tx.ExitRoleScopeAsync();
             await tx.ExecuteAsync(outboxSql, new
             {
                 Id = outboxRowId,

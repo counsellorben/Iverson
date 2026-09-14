@@ -16,46 +16,89 @@ public sealed class QdrantTenantScopeTests
 
     // ── ResolveCollectionName ────────────────────────────────────────────────
 
+    // Fingerprints below are the low 128 bits of SHA-256 over the literal tenant/sentinel text,
+    // rendered as 25 base-36 digits — the exact construction IntelligenceTenantScope.Fingerprint
+    // implements (mirroring Iverson.StarRocks.TenantIdentifier.Fingerprint). Computed independently
+    // in Python against the documented algorithm, not read back out of the SUT.
+    private const string Tenant42Fingerprint = "emo5tahabce26iljnao1rps5c";
+    private const string NoTenantFingerprint = "74zc32639tuhty7qvmca0gtmn";
+
     [Fact]
-    public void ResolveCollectionName_MainCollection_WithTenant_AppendsTenantId()
+    public void ResolveCollectionName_MainCollection_WithTenant_AppendsSanitizedTenantAndFingerprint()
     {
         var scope = CreateScope();
 
         var name = scope.ResolveCollectionName("players", "tenant-42", isChunks: false);
 
-        name.Should().Be("players_tenant-42");
+        // "-" is not carried into the tenant segment (folded to "_" by Sanitize); the fingerprint
+        // is what actually disambiguates, not this readable half.
+        name.Should().Be($"players_tenant_42_{Tenant42Fingerprint}");
     }
 
     [Fact]
-    public void ResolveCollectionName_ChunksCollection_WithTenant_AppendsChunksAndTenantId()
+    public void ResolveCollectionName_ChunksCollection_WithTenant_AppendsChunksSanitizedTenantAndFingerprint()
     {
         var scope = CreateScope();
 
         var name = scope.ResolveCollectionName("players", "tenant-42", isChunks: true);
 
-        name.Should().Be("players_chunks_tenant-42");
+        name.Should().Be($"players_chunks_tenant_42_{Tenant42Fingerprint}");
     }
 
     [Fact]
-    public void ResolveCollectionName_MainCollection_NullTenant_UsesSentinel()
+    public void ResolveCollectionName_MainCollection_NullTenant_UsesSanitizedSentinelAndFingerprint()
     {
         var scope = CreateScope();
 
         var name = scope.ResolveCollectionName("players", null, isChunks: false);
 
-        // The "_" separator in the format string plus the sentinel's own leading "__" yields
-        // three underscores between the base name and the sentinel text.
-        name.Should().Be("players___no-tenant-claim__");
+        // The sentinel's own hyphens fold to "_" under Sanitize, same as any other tenant id would.
+        name.Should().Be($"players___no_tenant_claim___{NoTenantFingerprint}");
     }
 
     [Fact]
-    public void ResolveCollectionName_ChunksCollection_NullTenant_UsesSentinel()
+    public void ResolveCollectionName_ChunksCollection_NullTenant_UsesSanitizedSentinelAndFingerprint()
     {
         var scope = CreateScope();
 
         var name = scope.ResolveCollectionName("players", null, isChunks: true);
 
-        name.Should().Be("players_chunks___no-tenant-claim__");
+        name.Should().Be($"players_chunks___no_tenant_claim___{NoTenantFingerprint}");
+    }
+
+    [Fact]
+    public void ResolveCollectionName_DifferentTenantIds_NeverCollideEvenAcrossIsChunks()
+    {
+        var scope = CreateScope();
+
+        // Before the fix: ResolveCollectionName("players", "chunks_a", isChunks: false) and
+        // ResolveCollectionName("players", "a", isChunks: true) were BOTH "players_chunks_a" —
+        // tenant "chunks_a"'s object collection aliased tenant "a"'s chunks collection, byte for
+        // byte. This is the regression test for finding #9: the fingerprint (over the ORIGINAL,
+        // unsanitized tenant id) must disambiguate them even though the readable text collides.
+        var aliasingObjectCollection = scope.ResolveCollectionName("players", "chunks_a", isChunks: false);
+        var aliasingChunksCollection = scope.ResolveCollectionName("players", "a", isChunks: true);
+
+        aliasingObjectCollection.Should().NotBe(aliasingChunksCollection);
+
+        // Confirms the readable halves really would have collided pre-fix (so this test would have
+        // caught the original bug, not just exercised an unrelated code path).
+        aliasingObjectCollection.Should().StartWith("players_chunks_a_");
+        aliasingChunksCollection.Should().StartWith("players_chunks_a_");
+    }
+
+    [Theory]
+    [InlineData("tenant-a", "tenant-b")]
+    [InlineData("chunks_a", "a")]
+    [InlineData("a_b", "a-b")]
+    public void ResolveCollectionName_DistinctTenantIds_ProduceDistinctCollectionNames(string tenantA, string tenantB)
+    {
+        var scope = CreateScope();
+
+        var nameA = scope.ResolveCollectionName("players", tenantA, isChunks: false);
+        var nameB = scope.ResolveCollectionName("players", tenantB, isChunks: false);
+
+        nameA.Should().NotBe(nameB);
     }
 
     // ── MintScopedApiKey ─────────────────────────────────────────────────────

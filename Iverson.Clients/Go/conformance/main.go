@@ -333,6 +333,12 @@ func reportGet(
 type staticServiceToken struct {
 	token       string
 	actingToken string
+	// allowInsecureCredentials is this driver's explicit, named opt-in to send the
+	// service token over the plaintext h2c channel it deliberately dials — the
+	// accepted dev/test model. False by default so RequireTransportSecurity reports
+	// true and grpc-go's own construction-time guard would refuse a plaintext dial
+	// that forgot to set it, mirroring iverson.OAuth2ClientCredentials.
+	allowInsecureCredentials bool
 }
 
 func (s staticServiceToken) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
@@ -343,7 +349,7 @@ func (s staticServiceToken) GetRequestMetadata(_ context.Context, _ ...string) (
 	return md, nil
 }
 
-func (s staticServiceToken) RequireTransportSecurity() bool { return false }
+func (s staticServiceToken) RequireTransportSecurity() bool { return !s.allowInsecureCredentials }
 
 // typeNameOf reports the type name the client itself derives for an entity, so the raw retrieval
 // probe above addresses exactly the type EntityCoordinator addresses.
@@ -468,12 +474,16 @@ func run(argv []string) int {
 	// it via --service-token.
 	if serviceToken != "" {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(
-			staticServiceToken{token: serviceToken, actingToken: actingToken}))
+			staticServiceToken{token: serviceToken, actingToken: actingToken, allowInsecureCredentials: true}))
 	} else if clientID != "" && clientSecret != "" && tokenEndpoint != "" {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(&iverson.OAuth2ClientCredentials{
 			ClientID:      clientID,
 			ClientSecret:  clientSecret,
 			TokenEndpoint: tokenEndpoint,
+			// This driver deliberately dials a plaintext h2c channel (grpc.WithInsecure above) —
+			// the accepted dev/test model documented on grpcDialTarget/NewIversonClient — so it
+			// must explicitly defeat OAuth2ClientCredentials' default transport-security guard.
+			AllowInsecureCredentials: true,
 		}))
 	}
 
@@ -739,7 +749,7 @@ func run(argv []string) int {
 			wrongActingToken := a.optional("--wrong-acting-token")
 			wrongOpts := []grpc.DialOption{
 				grpc.WithInsecure(), //nolint:staticcheck
-				grpc.WithPerRPCCredentials(staticServiceToken{token: serviceToken, actingToken: wrongActingToken}),
+				grpc.WithPerRPCCredentials(staticServiceToken{token: serviceToken, actingToken: wrongActingToken, allowInsecureCredentials: true}),
 			}
 			wrongClient, err := iverson.NewIversonClient(dialTarget, wrongOpts...)
 			if err != nil {

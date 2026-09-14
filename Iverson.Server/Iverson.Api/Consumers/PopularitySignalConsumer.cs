@@ -248,7 +248,8 @@ internal sealed class PopularitySignalConsumer(
             return ExtractString(doc.RootElement, changedSchema.TenantColumn);
         }
 
-        var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(changedSchema), ev.Key);
+        var rowJson = await entities.FetchByKeyAsync(
+            SchemaBuilder.ToTableSchema(changedSchema), ev.Key, EntityAccess.CrossTenantMaintenance);
         if (rowJson is null) return null;
 
         using var rowDoc = JsonDocument.Parse(rowJson);

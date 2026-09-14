@@ -12,10 +12,12 @@ namespace Iverson.StarRocks;
 public sealed class EngagementRepository(
     string connectionString,
     ILogger<EngagementRepository> logger,
-    EngagementResilienceOptions? resilienceOptions = null)
+    EngagementResilienceOptions? resilienceOptions = null,
+    EngagementQueryLimitOptions? queryLimitOptions = null)
     : IEngagementStoreQueryExecutor, IEngagementStoreEntityStore, IEngagementStoreSearchService
 {
     private readonly EngagementResilienceOptions _resilience = resilienceOptions ?? EngagementResilienceOptions.Default;
+    private readonly EngagementQueryLimitOptions _queryLimits = queryLimitOptions ?? EngagementQueryLimitOptions.Default;
 
     private readonly StarRocksReadinessGate _readinessGate = new(
         ct => CheckBackendAliveAsync(connectionString, ct),
@@ -190,7 +192,7 @@ public sealed class EngagementRepository(
                     {
                         // The connection is being disposed either way; a broken connection here must
                         // never replace the operation's own result or exception — same discipline as
-                        // PostgresRepository.RunTenantScopedAsync's rollback-failure handling.
+                        // PostgresRepository.ExecuteInTransactionAsync's rollback-failure handling.
                         logger.LogWarning(ex, "SET ROLE NONE failed while releasing a tenant-scoped StarRocks connection");
                     }
                 }
@@ -340,7 +342,8 @@ public sealed class EngagementRepository(
         if (authz is null)
         {
             var (unscopedSql, unscopedParam) = StarRocksQueryBuilder.BuildSearch(
-                schema.TableName, schema, query, page, pageSize, fields, joins, registry, authz);
+                schema.TableName, schema, query, page, pageSize, fields, joins, registry, authz,
+                limits: _queryLimits);
             return await QueryAsync<dynamic>(unscopedSql, unscopedParam);
         }
 
@@ -350,7 +353,7 @@ public sealed class EngagementRepository(
 
         var (sql, param) = StarRocksQueryBuilder.BuildSearch(
             schema.TableName, schema, query, page, pageSize, fields, joins, registry, authz,
-            TenantIdentifier.DatabaseName(tenantId));
+            TenantIdentifier.DatabaseName(tenantId), _queryLimits);
 
         try
         {
@@ -380,7 +383,8 @@ public sealed class EngagementRepository(
         if (authz is null)
         {
             var (unscopedSql, unscopedParam) = StarRocksQueryBuilder.BuildAggregate(
-                schema.TableName, schema, query, spec, having, joins, registry, authz);
+                schema.TableName, schema, query, spec, having, joins, registry, authz,
+                limits: _queryLimits);
             rows = (await QueryAsync<dynamic>(unscopedSql, unscopedParam)).ToList();
         }
         else
@@ -391,7 +395,7 @@ public sealed class EngagementRepository(
 
             var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
                 schema.TableName, schema, query, spec, having, joins, registry, authz,
-                TenantIdentifier.DatabaseName(tenantId));
+                TenantIdentifier.DatabaseName(tenantId), _queryLimits);
             try
             {
                 rows = (await RunTenantScopedAsync(
@@ -440,7 +444,8 @@ public sealed class EngagementRepository(
         // all (e.g. a unit test exercising raw SQL generation) — preserve today's unscoped behavior.
         if (authz is null)
         {
-            var (unscopedSql, unscopedParam) = StarRocksQueryBuilder.BuildGroupBy(schema.TableName, schema, request, registry, authz);
+            var (unscopedSql, unscopedParam) = StarRocksQueryBuilder.BuildGroupBy(
+                schema.TableName, schema, request, registry, authz, limits: _queryLimits);
             return await QueryAsync<dynamic>(unscopedSql, unscopedParam);
         }
 
@@ -449,7 +454,7 @@ public sealed class EngagementRepository(
             return [];
 
         var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(
-            schema.TableName, schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId));
+            schema.TableName, schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId), _queryLimits);
 
         try
         {
@@ -470,7 +475,8 @@ public sealed class EngagementRepository(
     {
         if (authz is null)
         {
-            var (unscopedSql, unscopedParam, unscopedLastCols) = StarRocksPipelineBuilder.Build(schema, request, registry, authz);
+            var (unscopedSql, unscopedParam, unscopedLastCols) = StarRocksPipelineBuilder.Build(
+                schema, request, registry, authz, limits: _queryLimits);
             var unscopedRows = await QueryAsync<dynamic>(unscopedSql, unscopedParam);
             return MaskPipelineRows(unscopedRows, unscopedLastCols);
         }
@@ -479,7 +485,8 @@ public sealed class EngagementRepository(
         if (tenantId is null || !TenantIdentifier.IsValid(tenantId))
             return [];
 
-        var (sql, param, lastCols) = StarRocksPipelineBuilder.Build(schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId));
+        var (sql, param, lastCols) = StarRocksPipelineBuilder.Build(
+            schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId), _queryLimits);
         try
         {
             var rows = await RunTenantScopedAsync(

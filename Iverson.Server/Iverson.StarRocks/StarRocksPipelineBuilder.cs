@@ -57,6 +57,34 @@ internal static class StarRocksPipelineBuilder
         return cols;
     }
 
+    /// <summary>
+    /// CSR finding #5: caps pipeline shape BEFORE <see cref="TrackAndValidate"/> or any SQL is
+    /// built. <c>base_where</c> and every step's <c>where</c>/<c>having</c>/<c>joins</c>/
+    /// <c>group_by</c> are checked independently against <see cref="EngagementQueryLimitOptions"/>
+    /// (a request with 3 steps each just under the clause cap is fine; one step alone over it is
+    /// not), while step count and total window-function count are checked once for the whole
+    /// pipeline — a chain of 21 one-clause steps is exactly the shape-based cost this guards
+    /// against even though no single step's own clause/join/group-by count is high.
+    /// </summary>
+    private static void ValidateLimits(PipelineRequest request, EngagementQueryLimitOptions limits)
+    {
+        EngagementQueryLimitValidator.CheckPipelineStepCount(request.Steps.Count, limits);
+        EngagementQueryLimitValidator.CheckClauseCount(request.BaseWhere.Count, limits, "WHERE");
+        EngagementQueryLimitValidator.CheckGroupByLimit(request.Limit > 0 ? request.Limit : 10_000, limits);
+
+        var totalWindows = 0;
+        foreach (var step in request.Steps)
+        {
+            EngagementQueryLimitValidator.CheckClauseCount(step.Where.Count, limits, "WHERE");
+            EngagementQueryLimitValidator.CheckClauseCount(step.Having.Count, limits, "HAVING");
+            EngagementQueryLimitValidator.CheckJoinCount(step.Joins.Count, limits);
+            EngagementQueryLimitValidator.CheckGroupByKeyCount(step.GroupBy.Count, limits);
+            totalWindows += step.Windows.Count;
+        }
+
+        EngagementQueryLimitValidator.CheckWindowFunctionCount(totalWindows, limits);
+    }
+
     internal static IReadOnlyList<StepColumns> TrackAndValidate(
         EngagementQuerySchema schema,
         PipelineRequest request,
@@ -345,10 +373,14 @@ internal static class StarRocksPipelineBuilder
     /// </summary>
     internal static void RejectForbiddenCharacters(string expr, string errorContext)
     {
+        // CSR finding #9: '#' is a third SQL line-comment introducer alongside "--" and "/* */"
+        // in StarRocks' MySQL-derived dialect — omitting it left the same comment-injection class
+        // this denylist otherwise closes reachable via a single character.
         if (expr.Contains(';') || expr.Contains('\'') || expr.Contains('`') ||
+            expr.Contains('#') ||
             expr.Contains("--") || expr.Contains("/*") || expr.Contains("*/"))
             throw Invalid($"{errorContext} contains a forbidden character " +
-                          "(no semicolons, quotes, backticks, or SQL comment sequences).");
+                          "(no semicolons, quotes, backticks, or SQL comment sequences, including '#').");
     }
 
     private static void ValidateDeriveExpr(
@@ -393,8 +425,11 @@ internal static class StarRocksPipelineBuilder
         PipelineRequest request,
         Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
-        string? tenantDatabase = null)
+        string? tenantDatabase = null,
+        EngagementQueryLimitOptions? limits = null)
     {
+        ValidateLimits(request, limits ?? EngagementQueryLimitOptions.Default);
+
         var tracked = TrackAndValidate(schema, request, registry, authz);
         var byName  = tracked.ToDictionary(s => s.Name, StringComparer.OrdinalIgnoreCase);
         var baseColumns = byName[BaseStepName].Columns;
@@ -449,7 +484,9 @@ internal static class StarRocksPipelineBuilder
             var step  = request.Steps[i];
             var input = byName[string.IsNullOrEmpty(step.Reads) ? prev : step.Reads];
             sb.Append($", `{step.Name}` AS (");
-            EmitStep(sb, step, input, emitted, registry, param, stepIdx: i + 1, authz, tenantDatabase);
+            EmitStep(
+                sb, step, input, emitted, registry, param, stepIdx: i + 1,
+                outputAliases: byName[step.Name].Columns, authz: authz, tenantDatabase: tenantDatabase);
             sb.Append(')');
             prev = step.Name;
             emitted.Add(byName[step.Name]);
@@ -480,6 +517,7 @@ internal static class StarRocksPipelineBuilder
         Func<string, EngagementQuerySchema?> registry,
         DynamicParameters param,
         int stepIdx,
+        IReadOnlyDictionary<string, string> outputAliases,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
         string? tenantDatabase = null)
     {
@@ -515,8 +553,16 @@ internal static class StarRocksPipelineBuilder
             if (where.Length > 0) sb.Append($" WHERE {where}");
             sb.Append($" GROUP BY {string.Join(", ", groupCols)}");
 
+            // Gates on alias membership alone: this route has no EngagementQuerySchema and no
+            // tableMap (a CTE step name is not a registered type, so IsFieldAllowed cannot run
+            // here) — resolveColumn/schema/tableMap are explicitly null. outputAliases is this
+            // step's OWN output (forwarded from Build, which computed it via TrackAndValidate),
+            // not the input step's columns — a HAVING clause filters the aggregate this step just
+            // produced, so it must be checked against what this step emits, not what it read.
             var having = StarRocksQueryBuilder.BuildHaving(
-                step.Having, SearchLogic.And, param, $"s{stepIdx}_h");
+                step.Having, SearchLogic.And, param, outputAliases,
+                resolveColumn: null, schema: null, tableMap: null, authz: authz,
+                paramPrefix: $"s{stepIdx}_h");
             if (having.Length > 0) sb.Append($" HAVING {having}");
             return;
         }

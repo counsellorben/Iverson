@@ -2,10 +2,9 @@
 # and modules/cluster-gcp's fixed naming exactly (see Tasks 2 and 5 of this plan).
 # No separate ingress controller to install — GKE's built-in GCE ingress class is used directly.
 
-# Keep in lockstep with api.ingress.host below — see values.yaml's global.ingressHost
-# comment for why this is a separate key instead of a single source of truth.
 global:
   ingressHost: "iverson.example.com"
+  externalScheme: "https"
 
 postgres:
   storageClassName: "iverson-postgres"
@@ -81,7 +80,6 @@ api:
   ingress:
     className: "gce"
     annotations: {}
-    host: "iverson.example.com"
     # GCE ingress terminates TLS from a standard Kubernetes Secret
     # referenced via the Ingress's tls: block, same as Azure above — replace
     # with a real cert-manager-issued Secret name for the real host before
@@ -141,7 +139,6 @@ authentik:
     tlsSecretName: "iverson-authentik-tls"
 
 adminUi:
-  oidcAuthority: "http://authentik.iverson.example.com/application/o/iverson-api/"
   apiBaseUrl: "https://iverson.example.com"
   ingress:
     className: "gce"

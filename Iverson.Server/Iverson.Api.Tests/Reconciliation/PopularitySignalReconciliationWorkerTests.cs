@@ -95,20 +95,20 @@ public class PopularitySignalReconciliationWorkerTests
 
         var page1 = new[] { new KeyedTenantRow("article-1", TenantA), new KeyedTenantRow("article-2", TenantA) };
         var page2 = new[] { new KeyedTenantRow("article-3", TenantA) };
-        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500).Returns(page1);
-        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-2", 500).Returns(page2);
-        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-3", 500).Returns([]);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>()).Returns(page1);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-2", 500, Arg.Any<EntityAccess>()).Returns(page2);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-3", 500, Arg.Any<EntityAccess>()).Returns([]);
 
         await BuildSut().SweepSignalAsync(Signal(), CancellationToken.None);
 
         foreach (var key in new[] { "article-1", "article-2", "article-3" })
             await _vector.Received(1).SetPayloadAsync(
-                "articles_" + TenantA, IntelligenceStoreConsumer.KeyToUlong(key),
+                _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false), IntelligenceStoreConsumer.KeyToUlong(key),
                 Arg.Any<IReadOnlyDictionary<string, object>>());
 
-        await _entities.Received(1).FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500);
-        await _entities.Received(1).FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-2", 500);
-        await _entities.Received(1).FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-3", 500);
+        await _entities.Received(1).FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>());
+        await _entities.Received(1).FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-2", 500, Arg.Any<EntityAccess>());
+        await _entities.Received(1).FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-3", 500, Arg.Any<EntityAccess>());
     }
 
     // ── Unregistered schema: sweep skips without throwing and never pages. ──────────────
@@ -119,7 +119,7 @@ public class PopularitySignalReconciliationWorkerTests
         var act = () => BuildSut().SweepSignalAsync(Signal(), CancellationToken.None);
         await act.Should().NotThrowAsync();
 
-        await _entities.DidNotReceiveWithAnyArgs().FetchKeysAndTenantsPagedAsync(default!, default, default);
+        await _entities.DidNotReceiveWithAnyArgs().FetchKeysAndTenantsPagedAsync(default!, default, default, default!);
     }
 
     [Fact]
@@ -131,7 +131,7 @@ public class PopularitySignalReconciliationWorkerTests
         var act = () => BuildSut().SweepSignalAsync(Signal(), CancellationToken.None);
         await act.Should().NotThrowAsync();
 
-        await _entities.DidNotReceiveWithAnyArgs().FetchKeysAndTenantsPagedAsync(default!, default, default);
+        await _entities.DidNotReceiveWithAnyArgs().FetchKeysAndTenantsPagedAsync(default!, default, default, default!);
     }
 
     // ── Null-tenant row: skipped without calling UpdateAsync (proxied by AggregateAsync). ──
@@ -143,8 +143,8 @@ public class PopularitySignalReconciliationWorkerTests
         StubAggregate(1);
 
         var page = new[] { new KeyedTenantRow("article-1", null), new KeyedTenantRow("article-2", TenantA) };
-        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500).Returns(page);
-        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-2", 500).Returns([]);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>()).Returns(page);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-2", 500, Arg.Any<EntityAccess>()).Returns([]);
 
         await BuildSut().SweepSignalAsync(Signal(), CancellationToken.None);
 
@@ -152,7 +152,7 @@ public class PopularitySignalReconciliationWorkerTests
         await _vector.Received(1).SetPayloadAsync(
             Arg.Any<string>(), Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, object>>());
         await _vector.Received(1).SetPayloadAsync(
-            "articles_" + TenantA, IntelligenceStoreConsumer.KeyToUlong("article-2"),
+            _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false), IntelligenceStoreConsumer.KeyToUlong("article-2"),
             Arg.Any<IReadOnlyDictionary<string, object>>());
     }
 
@@ -166,15 +166,15 @@ public class PopularitySignalReconciliationWorkerTests
         StubAggregate(1);
 
         var page = new[] { new KeyedTenantRow("article-1", TenantA), new KeyedTenantRow("article-2", TenantA) };
-        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500).Returns(page);
-        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-2", 500).Returns([]);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>()).Returns(page);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-2", 500, Arg.Any<EntityAccess>()).Returns([]);
 
         // article-1's write to Qdrant throws a non-NotFound exception — the one exception
         // UpdateAsync does NOT swallow itself (contrast the two documented degrade cases in
         // PopularitySignalUpdater), so it propagates out to the worker's own per-row try/catch.
         // article-2's write succeeds.
         _vector.SetPayloadAsync(
-                "articles_" + TenantA, IntelligenceStoreConsumer.KeyToUlong("article-1"),
+                _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false), IntelligenceStoreConsumer.KeyToUlong("article-1"),
                 Arg.Any<IReadOnlyDictionary<string, object>>())
             .Returns(Task.FromException(new InvalidOperationException("qdrant unavailable")));
 
@@ -182,7 +182,7 @@ public class PopularitySignalReconciliationWorkerTests
         await act.Should().NotThrowAsync();
 
         await _vector.Received(1).SetPayloadAsync(
-            "articles_" + TenantA, IntelligenceStoreConsumer.KeyToUlong("article-2"),
+            _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false), IntelligenceStoreConsumer.KeyToUlong("article-2"),
             Arg.Any<IReadOnlyDictionary<string, object>>());
     }
 }
