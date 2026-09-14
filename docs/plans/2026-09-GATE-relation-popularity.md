@@ -245,3 +245,56 @@ not select an arm structure.
    permutation is what would supply one.
 4. **16 queries were lost to unresolved relevant documents**, each of them a single-positive query.
    Whether that loss is ignorable or should be chased with a second fetch pass is not decided here.
+
+## Phase 1 prerequisite — is the divisor uniform?
+
+Recorded 2026-09-14 on branch `popularity-measurement-phase0`, from HEAD `9b1b261`
+(`pin the drop-count scope and the date/count predicate, correct the distinct-document count` —
+Task 2).
+
+**This section reports a count and draws no conclusion about the arm structure.** It answers one
+precondition question for Task 4's re-ranker identity: whether every candidate divides by the same
+constant.
+
+### Why this matters
+
+`Iverson.Server/Iverson.Vector/ResultReranker.cs:37-38` seeds `weightTotal = WBase = 0.45`, and
+`:40-45` adds `WCentroid = 0.45` only when the point's `body_centroid` named vector is present. A
+document carrying it divides by 0.90; a document without it divides by 0.45 — a different formula,
+not a rounding difference. `body_centroid` is a **named vector**, not a payload field
+(`Iverson.Server/Iverson.LoadTest/scripts/ingest.py:656` writes it into `object_vectors`; `:838`
+declares it beside `body_vector` in the collection's vector config), so the check reads the point's
+vector set, never its payload keys. `ingest.py:651-656` writes it only when at least one chunk
+vector has non-zero magnitude, so a real object could in principle lack it.
+
+### Method
+
+Restored both scifact-2048 Qdrant snapshots into a fresh disposable container
+(`sdd-phase0-qdrant`, image `docker.io/qdrant/qdrant:v1.18.2`, fresh volume, not the pre-existing
+`confident_cohen`), per `iverson-benchmark-corpora/scifact-2048-qdrant-snapshots/RESTORE.md`, which
+delegates its restore loop to `../scifact-512-qdrant-snapshots/RESTORE.md`. Verified against the
+2048 directory's own numbers — **5,183 object points, 6,587 chunk points** — not the 512 corpus's
+19,967-chunk figure, which is a different corpus and does not apply here.
+
+Scrolled every point in `benchmark_documents_tenant_bypass` with `with_vector: true` and, for each,
+tested whether `body_centroid` is a key of the returned named-vector map (the same set
+`ResultReranker.cs:40-45` reads). Where a point lacked it, its docId was read from the point's
+`docId` payload key (`ingest.py:660` writes `"docId": doc_id`) — never the Qdrant point id, since
+Task 4 keys on TREC docids.
+
+### Result
+
+| | Count |
+|---|---|
+| Object points in `benchmark_documents_tenant_bypass` | 5,183 |
+| Points carrying `body_centroid` | 5,183 |
+| **Points lacking `body_centroid`** | **0** |
+
+The exception list — docIds only, empty in this case — is `scratchpad/popularity/divisor-exceptions.txt`
+(untracked, the same treatment as `citations.json`; Task 4's `--divisor-exceptions` input).
+
+### Open items this section hands forward
+
+None. Every object point in this benchmark collection carries `body_centroid`, so on this corpus the
+0.90 divisor is uniform and Task 4's re-ranker identity may assume it throughout without a
+per-document exception path.
