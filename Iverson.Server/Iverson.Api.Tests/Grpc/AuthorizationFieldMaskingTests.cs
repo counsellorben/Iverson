@@ -69,7 +69,8 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
-            new AuditLog(NullLogger<AuditLog>.Instance));
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            Substitute.For<IPayloadSizeValidator>());
 
     [Fact]
     public void EnforceWriteAuthorization_CamelCaseTenantKey_LeavesOnlyCanonicalKey()
@@ -199,7 +200,8 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
-            new AuditLog(NullLogger<AuditLog>.Instance));
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            Substitute.For<IPayloadSizeValidator>());
 
         act.Should().NotThrow();
     }
@@ -316,7 +318,8 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to update this entity.",
             existingRowJson: """{"Id":"tag-1","Name":"old","TenantId":"tenant-from-token"}""",
-            new AuditLog(NullLogger<AuditLog>.Instance));
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            Substitute.For<IPayloadSizeValidator>());
 
         payload.Fields["TenantId"].StringValue.Should().Be("tenant-from-token");
     }
@@ -340,7 +343,11 @@ public sealed class AuthorizationFieldMaskingTests
         TenantColumn = SchemaDescriptor.TenantColumnName,
     };
 
-    private static RpcException EnforceAndCatch(Struct payload, AuthorizationDecision decision, string? existingRowJson)
+    private static RpcException EnforceAndCatch(
+        Struct payload,
+        AuthorizationDecision decision,
+        string? existingRowJson,
+        IPayloadSizeValidator? payloadSizeValidator = null)
     {
         var act = () => AuthorizationFieldMasking.EnforceWriteAuthorization(
             EvaluatorReturning(decision),
@@ -350,7 +357,8 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson,
-            new AuditLog(NullLogger<AuditLog>.Instance));
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            payloadSizeValidator ?? Substitute.For<IPayloadSizeValidator>());
 
         return act.Should().Throw<RpcException>().Which;
     }
@@ -472,9 +480,77 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
-            new AuditLog(NullLogger<AuditLog>.Instance));
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            Substitute.For<IPayloadSizeValidator>());
 
         act.Should().NotThrow();
         payload.Fields[SchemaDescriptor.TenantColumnName].StringValue.Should().Be("tenant-from-token");
+    }
+
+    // ── Task 7 (Finding #3): payload-size guard runs INSIDE EnforceWriteAuthorization ─────────
+    //
+    // Moving the check into this shared helper is the fix: both ObjectMapping and
+    // ObjectPersistence call EnforceWriteAuthorization for every write, so this is what makes
+    // ObjectMapping's writes get the guard it previously lacked entirely.
+
+    [Fact]
+    public void EnforceWriteAuthorization_OversizedTextColumn_ThrowsInvalidArgument()
+    {
+        // A real validator, not a mock — this pins the actual byte-size check, not merely that
+        // "some validator" is invoked.
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["Id"]   = Value.ForString("tag-1"),
+                // Schema()'s "Name" column is an ordinary (non-large-field) column, capped at
+                // StarRocksLimits.StringAliasBytes (65,533 bytes). One byte over.
+                ["Name"] = Value.ForString(new string('a', 65_534)),
+            }
+        };
+
+        var act = () => AuthorizationFieldMasking.EnforceWriteAuthorization(
+            EvaluatorReturning(Allowed() with { TenantColumn = "TenantId" }),
+            new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "user-1")], "test")),
+            Schema(),
+            payload,
+            AuthorizationAction.Write,
+            "Not authorized to create this entity.",
+            existingRowJson: null,
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            new PayloadSizeValidator());
+
+        var ex = act.Should().Throw<RpcException>().Which;
+        ex.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Status.Detail.Should().Contain("Name").And.Contain("exceeds");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_DeniedCallerWithOversizedPayload_StillGetsPermissionDenied()
+    {
+        // Denial-first precedence: the size guard sits AFTER the `decision.Denied` throw in the
+        // production code, so a denied caller must never see InvalidArgument for an oversized
+        // payload — they must get PermissionDenied, exactly as an authorized caller with a
+        // conforming payload would if denied for any other reason. A real validator is used so
+        // this test would fail (wrong status) if the ordering were ever reversed.
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["Id"]   = Value.ForString("tag-1"),
+                ["Name"] = Value.ForString(new string('a', 65_534)),
+            }
+        };
+
+        var ex = EnforceAndCatch(
+            payload,
+            new AuthorizationDecision(
+                Denied: true, OwnershipRequired: false, OwnerFieldName: null, OwnerValue: null,
+                AllowedFields: null, TenantColumn: null, TenantValue: null),
+            existingRowJson: null,
+            payloadSizeValidator: new PayloadSizeValidator());
+
+        ex.StatusCode.Should().Be(StatusCode.PermissionDenied);
+        ex.StatusCode.Should().NotBe(StatusCode.InvalidArgument);
     }
 }

@@ -24,6 +24,7 @@ public sealed class ObjectMappingGrpcService(
     IOutboxPublisher _outboxPublisher,
     SchemaRegistry _registry,
     IRelationValidator _relationValidator,
+    IPayloadSizeValidator _payloadSizeValidator,
     IEntityKeyAccessor _keyAccessor,
     IOutboxWriter _outboxWriter,
     ILogger<ObjectMappingGrpcService> _logger,
@@ -302,7 +303,8 @@ public sealed class ObjectMappingGrpcService(
 
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
-            AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, _auditLog);
+            AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, _auditLog,
+            _payloadSizeValidator);
 
         _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
@@ -368,7 +370,8 @@ public sealed class ObjectMappingGrpcService(
             AuthorizationAction.Write,
             "Not authorized to update this entity.",
             existingRowJson,
-            _auditLog);
+            _auditLog,
+            _payloadSizeValidator);
 
         _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 

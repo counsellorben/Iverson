@@ -40,10 +40,10 @@ public sealed class ObjectPersistenceGrpcService(
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
-            auditLog);
+            auditLog,
+            payloadSizeValidator);
 
         relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
-        payloadSizeValidator.ValidateTextColumnSizes(request.Payload, schema);
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
@@ -116,10 +116,10 @@ public sealed class ObjectPersistenceGrpcService(
             AuthorizationAction.Write,
             "Not authorized to update this entity.",
             existingRowJson,
-            auditLog);
+            auditLog,
+            payloadSizeValidator);
 
         relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
-        payloadSizeValidator.ValidateTextColumnSizes(request.Payload, schema);
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 

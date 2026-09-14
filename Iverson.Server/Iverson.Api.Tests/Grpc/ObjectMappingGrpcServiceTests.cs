@@ -98,6 +98,7 @@ public class ObjectMappingGrpcServiceTests
             _outboxPublisher,
             _registry,
             new RelationValidator(),
+            new PayloadSizeValidator(),
             new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
@@ -205,6 +206,7 @@ public class ObjectMappingGrpcServiceTests
             _outboxPublisher,
             _registry,
             new RelationValidator(),
+            new PayloadSizeValidator(),
             new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
@@ -232,7 +234,7 @@ public class ObjectMappingGrpcServiceTests
             .Returns(new List<string> { "Widget" });
         var sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
-            new RelationValidator(), new EntityKeyAccessor(),
+            new RelationValidator(), new PayloadSizeValidator(), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
             _actingUserAccessor, _authEvaluator, _relationResolver, mockOrchestrator, _auditLog,
@@ -494,7 +496,7 @@ public class ObjectMappingGrpcServiceTests
 
         var sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
-            new RelationValidator(), new EntityKeyAccessor(),
+            new RelationValidator(), new PayloadSizeValidator(), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
             _actingUserAccessor, evaluator, _relationResolver, _schemaRegistration, _auditLog,
@@ -947,6 +949,35 @@ public class ObjectMappingGrpcServiceTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
     }
 
+    // ── CSR finding #3: payload-size guard now reachable from Mapping writes ──
+    //
+    // Before Task 7, ObjectMappingGrpcService's Post/Update never called IPayloadSizeValidator at
+    // all — only ObjectPersistenceGrpcService did, directly. Moving the call into the shared
+    // AuthorizationFieldMasking.EnforceWriteAuthorization (which both services already call) is
+    // what closes that gap; this test is what would have failed before that change.
+
+    [Fact]
+    public async Task Post_WithOversizedTextColumn_ThrowsInvalidArgument()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        // AuthorSchema's "Bio" is an ordinary (non-large-field) column, capped at
+        // StarRocksLimits.StringAliasBytes (65,533 bytes). One byte over.
+        var payload = MakePayload(new()
+        {
+            ["Name"] = Value.ForString("Alice"),
+            ["Bio"]  = Value.ForString(new string('a', 65_534))
+        });
+
+        var act = () => _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("Bio").And.Contain("exceeds");
+    }
+
     [Fact]
     public async Task Post_ForOrdinaryCaller_WithFieldPermissionRestrictingOwnerColumn_StillForceSetsOwnerField()
     {
@@ -1034,6 +1065,7 @@ public class ObjectMappingGrpcServiceTests
             _outboxPublisher,
             _registry,
             new RelationValidator(),
+            new PayloadSizeValidator(),
             new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
@@ -1068,6 +1100,7 @@ public class ObjectMappingGrpcServiceTests
             _outboxPublisher,
             _registry,
             new RelationValidator(),
+            new PayloadSizeValidator(),
             new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
@@ -1096,7 +1129,7 @@ public class ObjectMappingGrpcServiceTests
         var capturedLogger = Substitute.For<ILogger<ObjectMappingGrpcService>>();
         var sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
-            new RelationValidator(), new EntityKeyAccessor(),
+            new RelationValidator(), new PayloadSizeValidator(), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             capturedLogger,
             _actingUserAccessor, _authEvaluator, _relationResolver, _schemaRegistration, _auditLog,
@@ -1125,7 +1158,7 @@ public class ObjectMappingGrpcServiceTests
         var capturedLogger = Substitute.For<ILogger<ObjectMappingGrpcService>>();
         var sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
-            new RelationValidator(), new EntityKeyAccessor(),
+            new RelationValidator(), new PayloadSizeValidator(), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             capturedLogger,
             _actingUserAccessor, _authEvaluator, _relationResolver, _schemaRegistration, _auditLog,
@@ -1157,7 +1190,7 @@ public class ObjectMappingGrpcServiceTests
         var limits = new EngagementQueryLimitOptions { MaxRelationDepth = 3 };
         var sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
-            new RelationValidator(), new EntityKeyAccessor(),
+            new RelationValidator(), new PayloadSizeValidator(), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
             _actingUserAccessor, _authEvaluator, mockResolver, _schemaRegistration, _auditLog,
@@ -1181,7 +1214,7 @@ public class ObjectMappingGrpcServiceTests
         var limits = new EngagementQueryLimitOptions { MaxRelationDepth = 3 };
         var sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
-            new RelationValidator(), new EntityKeyAccessor(),
+            new RelationValidator(), new PayloadSizeValidator(), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
             _actingUserAccessor, _authEvaluator, mockResolver, _schemaRegistration, _auditLog,

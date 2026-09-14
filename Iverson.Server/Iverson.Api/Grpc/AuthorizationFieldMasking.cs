@@ -14,6 +14,14 @@ internal static class AuthorizationFieldMasking
     /// ObjectPersistence services: evaluates row+field authorization for the acting user,
     /// denies/throws as appropriate, force-sets or validates the owner field, and rejects
     /// any field the caller isn't allowed to write.
+    /// <para>
+    /// Also runs <paramref name="payloadSizeValidator"/>'s text-column-size guard, immediately
+    /// after the denial check and before any of the ownership/tenant logic below. Denial-first:
+    /// an unauthorized caller with an oversized payload still gets <c>PermissionDenied</c>, not
+    /// <c>InvalidArgument</c> — the size check never runs for a denied caller. Centralizing the
+    /// call here (rather than at each service's call site) is what makes both write paths get the
+    /// guard automatically instead of relying on each RPC to remember to call it.
+    /// </para>
     /// </summary>
     /// <param name="existingRowJson">
     /// JSON of the row being written, or null when there is no pre-existing row — either
@@ -33,7 +41,8 @@ internal static class AuthorizationFieldMasking
         AuthorizationAction action,
         string deniedMessage,
         string? existingRowJson,
-        AuditLog auditLog)
+        AuditLog auditLog,
+        IPayloadSizeValidator payloadSizeValidator)
     {
         var auditAction = existingRowJson is null ? "Create" : "Update";
         var resourceKey = StructFieldAccess.GetFieldString(payload, schema.KeyColumn.Name);
@@ -70,6 +79,8 @@ internal static class AuthorizationFieldMasking
             auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "AccessDenied");
             throw new RpcException(new Status(StatusCode.PermissionDenied, deniedMessage));
         }
+
+        payloadSizeValidator.ValidateTextColumnSizes(payload, schema);
 
         if (existingRowJson is null)
         {
