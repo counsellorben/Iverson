@@ -91,7 +91,10 @@ smoothed over.** The plan expected 275 eligible queries and a 311 × 13,439 = 4,
 cross-product. Those are the **raw-pool** figures, and this run reproduces them exactly (275 / 311 /
 13,439, with 15,129 within-pool pairs) — they were computed before accounting for in-pool documents
 that the fetch could not resolve. 803 in-pool observations across the 275 raw-eligible pools, spread
-over **260 distinct documents, every one of them in the cache's `unresolved` list**, carry no count.
+over **255 distinct documents, every one of them in the cache's `unresolved` list**, carry no count.
+(Both figures are scoped to the 275 raw-eligible pools. Across all 300 pools the corresponding
+figures are 897 observations over 260 distinct documents; 803 pairs with 255, and the two scopes must
+not be mixed.)
 Of the 16 queries lost, **every one had exactly one in-pool relevant document and that document was
 unresolved**, so the whole pool drops. The analysed cross-product is therefore 293 × 11,928 =
 **3,494,904** pairs, of which **13,450** are within-pool.

@@ -138,17 +138,52 @@ def test_eligibility_is_judged_after_the_admissibility_restriction_not_before():
     assert pt.eligible_queries(pool, relevant, counted.__contains__) == []
 
 
+#: Three queries, deliberately spanning all three cases the drop count has to distinguish:
+#:   `kept`     -- raw-eligible, survives the restriction, holds 1 uncounted observation
+#:   `lost`     -- raw-eligible, loses its only positive to the restriction, holds 1 uncounted
+#:   `unjudged` -- NOT raw-eligible (no relevant document at all), holds 2 uncounted observations
+#: `unjudged` is what makes the fixture able to tell the two candidate scopes apart: counted over the
+#: RAW-ELIGIBLE pools the drop is 2, counted over every pool in the run it is 4. On the real data that
+#: same distinction is 803 against 897, and 25 of the 300 queries are `unjudged`-shaped.
+DROP_SCOPE_POOL = {
+    "kept": ["r1", "n1", "n-no-count"],
+    "lost": ["r-no-count", "n2", "n3"],
+    "unjudged": ["u1", "u-no-count-a", "u-no-count-b"],
+}
+DROP_SCOPE_RELEVANT = {"kept": {"r1"}, "lost": {"r-no-count"}}
+DROP_SCOPE_COUNTED = {"r1", "n1", "n2", "n3", "u1"}
+
+
 def test_observations_reports_the_drop_that_reconciles_the_two_populations():
-    """`kept` survives the restriction; `lost` does not. The dropped count is taken over the
-    RAW-eligible pools -- both of these queries -- which is what makes the unrestricted figures and
-    the analysed figures reconcilable rather than merely different."""
-    pool = {"kept": ["r1", "n1", "n-no-count"], "lost": ["r-no-count", "n2", "n3"]}
-    relevant = {"kept": {"r1"}, "lost": {"r-no-count"}}
-    counted = {"r1", "n1", "n2", "n3"}
-    eligible, split, dropped = pt.observations(pool, relevant, counted.__contains__)
+    """`kept` survives the restriction; `lost` does not."""
+    eligible, split, dropped = pt.observations(
+        DROP_SCOPE_POOL, DROP_SCOPE_RELEVANT, DROP_SCOPE_COUNTED.__contains__)
     assert eligible == ["kept"]
     assert split == {"kept": (["r1"], ["n1"])}
     assert dropped == 2  # `n-no-count` from kept's pool and `r-no-count` from lost's
+
+
+def test_the_drop_count_is_scoped_to_the_raw_eligible_pools_not_to_every_pool():
+    """THE SCOPE TEST. The drop count is the figure that reconciles the raw-pool population against
+    the analysed one, so it must be counted over exactly the pools the raw-pool population is counted
+    over -- the RAW-ELIGIBLE ones -- and not over every pool in the run. An ineligible query's
+    uncounted observations were never in the 311/13,439 side of the reconciliation, so counting them
+    into the drop would make the two sides fail to reconcile while still looking plausible.
+
+    `unjudged` is ineligible and holds 2 uncounted observations. Widening the scope to `pool` would
+    report 4 instead of 2; on the real data it reports 897 instead of 803."""
+    _, _, dropped = pt.observations(
+        DROP_SCOPE_POOL, DROP_SCOPE_RELEVANT, DROP_SCOPE_COUNTED.__contains__)
+    raw_eligible = pt.eligible_queries(DROP_SCOPE_POOL, DROP_SCOPE_RELEVANT, lambda _d: True)
+    assert set(raw_eligible) == {"kept", "lost"}  # `unjudged` is NOT raw-eligible
+
+    over_raw_eligible = sum(1 for q in raw_eligible for d in DROP_SCOPE_POOL[q]
+                            if d not in DROP_SCOPE_COUNTED)
+    over_every_pool = sum(1 for q in DROP_SCOPE_POOL for d in DROP_SCOPE_POOL[q]
+                          if d not in DROP_SCOPE_COUNTED)
+    assert (over_raw_eligible, over_every_pool) == (2, 4)  # the two scopes genuinely differ here
+    assert dropped == over_raw_eligible
+    assert dropped != over_every_pool
 
 
 def test_has_resolved_count_uses_membership_not_truthiness():
@@ -164,10 +199,20 @@ def test_has_resolved_count_uses_membership_not_truthiness():
 def test_has_resolved_date_requires_a_count_as_well_as_a_date():
     """4a runs over the same analysis population as measurement 1, so a dated document with no
     count is still inadmissible."""
-    admissible = pt.has_resolved_date({"a": 0, "b": 3}, {"a": "2001-01-01"}, {"b": 1999})
+    counts = {"a": 0, "b": 3}
+    dates = {"a": "2001-01-01", "dated-uncounted": "2001-01-01"}
+    years = {"b": 1999, "yearonly-uncounted": 1999}
+    admissible = pt.has_resolved_date(counts, dates, years)
     assert admissible("a") is True      # resolved zero count + publicationDate
     assert admissible("b") is True      # count + year-only fallback
-    assert admissible("c") is False     # no count at all
+    assert admissible("c") is False     # neither a count nor a date
+
+    # The two cases the name is actually about: a document that HAS a date but NO count. Without
+    # these, dropping `doc_id in counts` from the predicate passes every other assertion here --
+    # no other fixture document carries a date without a count.
+    assert admissible("dated-uncounted") is False     # publicationDate, but absent from counts
+    assert admissible("yearonly-uncounted") is False  # year fallback, but absent from counts
+
     assert pt.has_resolved_date({"d": 1}, {}, {})("d") is False  # count but no date of either kind
 
 
