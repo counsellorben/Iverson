@@ -82,7 +82,7 @@ entries:
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       client_type: confidential
       client_id: "dev-iverson-loadtest-client-id"
-      client_secret: "dev-only-not-for-production-loadtest-secret-0123456789"
+      client_secret: !Env [IVERSON_LOADTEST_CLIENT_SECRET, "MISSING_ENV_VAR_IVERSON_LOADTEST_CLIENT_SECRET"]
       redirect_uris: []
       grant_types: ["client_credentials"]
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
@@ -104,7 +104,7 @@ entries:
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       client_type: confidential
       client_id: "dev-iverson-webtest-client-id"
-      client_secret: "dev-only-not-for-production-webtest-secret-0123456789"
+      client_secret: !Env [IVERSON_WEBTEST_CLIENT_SECRET, "MISSING_ENV_VAR_IVERSON_WEBTEST_CLIENT_SECRET"]
       redirect_uris: []
       grant_types: ["client_credentials"]
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
@@ -125,7 +125,7 @@ entries:
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       client_type: confidential
       client_id: "dev-iverson-admin-automation-client-id"
-      client_secret: "dev-only-not-for-production-admin-secret-0123456789"
+      client_secret: !Env [IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET, "MISSING_ENV_VAR_IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET"]
       redirect_uris: []
       grant_types: ["client_credentials"]
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
@@ -273,7 +273,7 @@ entries:
       username: iverson-acting-user-smoke-test
       name: "Iverson Acting-User Smoke Test"
       email: iverson-acting-user-smoke-test@example.invalid
-      password: "dev-only-not-for-production-smoke-test-password-0123456789"
+      password: !Env [IVERSON_SMOKE_TEST_PASSWORD, "MISSING_ENV_VAR_IVERSON_SMOKE_TEST_PASSWORD"]
       is_active: true
       attributes:
         tenant_id: "tenant_smoke_test"
@@ -288,7 +288,7 @@ entries:
       username: iverson-loadtest-bypass-user
       name: "Iverson LoadTest Bypass"
       email: iverson-loadtest-bypass-user@example.invalid
-      password: "dev-only-not-for-production-bypass-password-0123456789"
+      password: !Env [IVERSON_BYPASS_PASSWORD, "MISSING_ENV_VAR_IVERSON_BYPASS_PASSWORD"]
       is_active: true
       attributes:
         tenant_id: "tenant_bypass"
@@ -355,7 +355,7 @@ entries:
       username: iverson-admin-orchestrator
       name: "Iverson Admin Orchestrator"
       email: iverson-admin-orchestrator@example.invalid
-      password: "dev-only-not-for-production-admin-orchestrator-password"
+      password: !Env [IVERSON_ADMIN_ORCHESTRATOR_PASSWORD, "MISSING_ENV_VAR_IVERSON_ADMIN_ORCHESTRATOR_PASSWORD"]
       is_active: true
       groups:
         - !Find [authentik_core.group, [name, iverson-admin-orchestrators]]
@@ -363,7 +363,7 @@ entries:
     identifiers:
       identifier: iverson-admin-orchestrator-token
     attrs:
-      key: "dev-only-not-for-production-admin-orchestrator-token"
+      key: !Env [IVERSON_ADMIN_ORCHESTRATOR_TOKEN, "MISSING_ENV_VAR_IVERSON_ADMIN_ORCHESTRATOR_TOKEN"]
       user: !Find [authentik_core.user, [username, iverson-admin-orchestrator]]
       intent: api
       # Authentik's Token model defaults `expiring` to true, and an expiring intent:api token has

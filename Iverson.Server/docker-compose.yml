@@ -360,6 +360,13 @@ services:
       AUTHENTIK_BOOTSTRAP_TOKEN: dev-bootstrap-token-0123456789
       # authentik-migrate owns migrations; this role must never run them concurrently.
       AUTHENTIK_SKIP_MIGRATIONS: "true"
+      IVERSON_LOADTEST_CLIENT_SECRET: ${IVERSON_LOADTEST_CLIENT_SECRET}
+      IVERSON_WEBTEST_CLIENT_SECRET: ${IVERSON_WEBTEST_CLIENT_SECRET}
+      IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET: ${IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET}
+      IVERSON_SMOKE_TEST_PASSWORD: ${IVERSON_SMOKE_TEST_PASSWORD}
+      IVERSON_BYPASS_PASSWORD: ${IVERSON_BYPASS_PASSWORD}
+      IVERSON_ADMIN_ORCHESTRATOR_PASSWORD: ${IVERSON_ADMIN_ORCHESTRATOR_PASSWORD}
+      IVERSON_ADMIN_ORCHESTRATOR_TOKEN: ${IVERSON_ADMIN_ORCHESTRATOR_TOKEN}
     ports:
       - "127.0.0.1:9000:9000"
     volumes:
@@ -396,6 +403,13 @@ services:
       AUTHENTIK_BOOTSTRAP_TOKEN: dev-bootstrap-token-0123456789
       # authentik-migrate owns migrations; this role must never run them concurrently.
       AUTHENTIK_SKIP_MIGRATIONS: "true"
+      IVERSON_LOADTEST_CLIENT_SECRET: ${IVERSON_LOADTEST_CLIENT_SECRET}
+      IVERSON_WEBTEST_CLIENT_SECRET: ${IVERSON_WEBTEST_CLIENT_SECRET}
+      IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET: ${IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET}
+      IVERSON_SMOKE_TEST_PASSWORD: ${IVERSON_SMOKE_TEST_PASSWORD}
+      IVERSON_BYPASS_PASSWORD: ${IVERSON_BYPASS_PASSWORD}
+      IVERSON_ADMIN_ORCHESTRATOR_PASSWORD: ${IVERSON_ADMIN_ORCHESTRATOR_PASSWORD}
+      IVERSON_ADMIN_ORCHESTRATOR_TOKEN: ${IVERSON_ADMIN_ORCHESTRATOR_TOKEN}
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
     depends_on:
@@ -477,7 +491,7 @@ services:
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=http://authentik-server:9000
-      - Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token
+      - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN}
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
       - Tenancy__SeedLegacyTenants=true
     # Kestrel does not begin listening until Program.cs's startup block has finished — the
@@ -559,7 +573,7 @@ services:
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=http://authentik-server:9000
-      - Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token
+      - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN}
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
       - Tenancy__SeedLegacyTenants=true
     depends_on:
