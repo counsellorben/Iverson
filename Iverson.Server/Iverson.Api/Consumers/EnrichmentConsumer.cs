@@ -328,14 +328,14 @@ public sealed class EnrichmentConsumer(
                         string.Format(EnrichmentPrompts.Keywords, sourceText), ct);
                     break;
                 case EnrichmentKind.Extracted:
-                    // EnrichmentPrompts.Extraction carries a single {0} slot for the source text;
-                    // the per-target hint (mandatory for [IversonExtracted], enforced at
-                    // registration) is appended so the model knows what to pull out.
+                    // EnrichmentPrompts.Extraction carries two slots: {0} is the per-target hint
+                    // (mandatory for [IversonExtracted], enforced at registration), and {1} is the
+                    // source text. The hint is positioned ahead of the text so the model knows what
+                    // to pull out before reading the untrusted content.
                     try
                     {
                         generated = await enrichment.GenerateJsonAsync(
-                            string.Format(EnrichmentPrompts.Extraction, sourceText) +
-                            $"\n\nExtract specifically: {target.Hint}", ct);
+                            string.Format(EnrichmentPrompts.Extraction, target.Hint, sourceText), ct);
                     }
                     catch (InvalidOperationException ex)
                     {

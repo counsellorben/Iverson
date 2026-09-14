@@ -289,9 +289,9 @@ public class EnrichmentConsumerTests
             Arg.Any<CancellationToken>());
     }
 
-    // The cap sits on the SOURCE TEXT, not the assembled prompt: three prompts lead with their
-    // instruction and the extraction prompt trails with its hint, so a cut on the prompt would drop
-    // one of them (spec §3.5). A cap on the assembled prompt fails the EndWith assertion.
+    // The cap sits on the SOURCE TEXT, not the assembled prompt: all prompts lead with their
+    // instruction (the extraction prompt's hint is positioned in {0} ahead of {1} source text), so a cut
+    // on the prompt would drop one of them (spec §3.5). A cap on the assembled prompt fails the EndWith assertion.
     [Fact]
     public async Task HandleUpdated_CutsTheSourceTextTo8000Chars_KeepingTheInstructionAndTheHint()
     {
@@ -304,8 +304,8 @@ public class EnrichmentConsumerTests
         await BuildSut().HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
 
         extractionPrompt.Should().NotBeNull();
-        extractionPrompt.Should().StartWith("Extract structured information");
-        extractionPrompt.Should().EndWith("Extract specifically: the author's stated conclusion");
+        extractionPrompt.Should().StartWith("Extract specifically: the author's stated conclusion");
+        extractionPrompt.Should().EndWith("<<<END_SOURCE_TEXT>>>");
         extractionPrompt.Should().Contain(new string('x', EnrichmentConsumer.MaxSourceChars));
         extractionPrompt.Should().NotContain(new string('x', EnrichmentConsumer.MaxSourceChars + 1));
     }
