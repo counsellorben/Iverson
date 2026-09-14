@@ -559,6 +559,23 @@ public class PopularitySignalConsumerTests
         outcome.Should().Be(PopularityUpdateOutcome.Skipped);
     }
 
+    // The histogram's catch has no return — the count was already written, so the outcome stays
+    // Updated even though the series degrades to empty. This is the one row of the spec's exit-path
+    // table with no outcome-level assertion: Dispatch_HistogramFails_StillWritesCountWithEmptySeries
+    // above exercises the same path but goes through DispatchAsync, which discards the outcome.
+    [Fact]
+    public async Task UpdateAsync_HistogramThrows_ReturnsUpdated()
+    {
+        StubCount(5);
+        StubHistogramThrows(new InvalidOperationException("boom"));
+
+        var outcome = await BuildUpdater().UpdateAsync(
+            ArticleSchema(), new PopularitySignalEntry("Article", "Comments"), CommentSchema("PostedAt"),
+            ArticleSchema().Relations[0], ArticleId, TenantA);
+
+        outcome.Should().Be(PopularityUpdateOutcome.Updated);
+    }
+
     // ── Spec test 6: the fifth exit path. This is the ONLY assertion in the suite that a catch-all
     //    converting the propagating class into an outcome would fail — the two pre-existing tests
     //    that document the contract in comments assert only NotThrowAsync, which a swallowing

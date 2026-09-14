@@ -255,8 +255,9 @@ public class PopularitySignalReconciliationWorkerTests
         var logs = new RecordingLogger<PopularitySignalReconciliationWorker>();
         await BuildSut(logger: logs).SweepSignalAsync(Signal(), CancellationToken.None);
 
-        logs.Entries.Should().ContainSingle(e => e.Message.Contains("Abandoning sweep"))
-            .Which.Message.Should().Contain("after 5 consecutive parent-update failures");
+        var summary = logs.Entries.Should().ContainSingle(e => e.Message.Contains("Abandoning sweep")).Which;
+        summary.Message.Should().Contain("after 5 consecutive parent-update failures");
+        summary.Level.Should().Be(LogLevel.Error);
 
         // Abandoned mid-page: parents 6-8 were never attempted, and no second page was requested.
         await _vector.DidNotReceive().SetPayloadAsync(
@@ -318,12 +319,13 @@ public class PopularitySignalReconciliationWorkerTests
         var logs = new RecordingLogger<PopularitySignalReconciliationWorker>();
         await BuildSut(logger: logs).SweepSignalAsync(Signal(), CancellationToken.None);
 
-        logs.Entries.Should().ContainSingle(e => e.Message.Contains("Abandoning sweep"))
-            .Which.Message.Should().Contain("after 5 consecutive parent-update failures");
+        var summary = logs.Entries.Should().ContainSingle(e => e.Message.Contains("Abandoning sweep")).Which;
+        summary.Message.Should().Contain("after 5 consecutive parent-update failures");
+        summary.Level.Should().Be(LogLevel.Error);
     }
 
-    // ── A test logger that records level + formatted message, so the exhaustion
-    //    warning's content (not merely its presence) can be asserted. ──────────
+    // ── A test logger that records level + formatted message, so the sweep-abandonment
+    //    error's content (not merely its presence) can be asserted. ──────────
     private sealed class RecordingLogger<T> : ILogger<T>
     {
         public List<(LogLevel Level, string Message)> Entries { get; } = [];
