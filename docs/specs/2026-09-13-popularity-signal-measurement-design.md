@@ -1,7 +1,9 @@
 # Measuring the relation-popularity signal — experiment design
 
-**Status:** design, not yet executed.
-**Measures:** the `relation-popularity-signal` branch (`30734e3..8190a2a`, 7 commits, unmerged).
+**Status:** design, not yet executed. **Amended 2026-09-14** — adds Phase 0 (triage) and corrects
+seven claims about the shipped code that were written before the time-decay feature merged.
+**Measures:** the `relation-popularity-signal` feature, **merged to local main at `b32f870`**
+(this spec originally described it as the unmerged branch `30734e3..8190a2a`).
 **Source feature spec:** `docs/specs/2026-09-13-relation-popularity-signal-design.md`.
 
 ## The premise this corrects
@@ -32,9 +34,52 @@ exists in no corpus here. It was wrong that no corpus supplies the signal's *sha
 
 Whether `WPopularity` earns a non-zero default, and at what `SaturationPoint`.
 
+Since the 2026-09-14 amendment it decides this in three stages rather than two: Phase 0 chooses
+which arms are worth running, Phase 1 screens them offline, Phase 2 is the live gate. Only Phase 2
+is pre-registered; Phases 0 and 1 are exploratory and select nothing.
+
 It does not decide whether the consumer, the StarRocks aggregate, or the reconciliation worker
 function against live infrastructure. Those are a separate question, deliberately out of scope
 (see "Out of scope").
+
+## Phase 0 — triage
+
+**Added 2026-09-14.** Purpose: buy the cheap evidence that decides which arms Phase 1 runs, before
+committing to a grid. Phase 0 is **exploratory and selects nothing**. It may inform the choice among
+{lifetime arm only, lifetime + decayed arm, abandon} and may inform Phase 1's grid bounds. It may
+**not** alter Phase 2 (see "Phase 2 is locked against Phase 0 and Phase 1").
+
+### Data
+
+Complete the count + date fetch for all 5,183 corpus ids. The requirement is that **every resolved
+id carries a citation count and, where Semantic Scholar has one, a publication date.**
+
+This is not satisfied by resuming the existing cache. `citations-countonly.json.bak` holds 1,288
+counts and 112 unresolved ids from a run that predates date collection, and the fetcher's resume
+predicate is `known = set(cache['counts']) | set(cache['unresolved'])` — so those 1,288 ids are
+treated as done and would never acquire a date. Since the age-preserving null is Phase 1's *binding*
+comparison, that would silently hollow out the age control for the first 27% of the corpus, in
+corpus order rather than at random. Either add a second pass over ids that have a count but no date,
+or discard the partial cache and refetch clean. Refetching clean is 52 batches — about 2.6 minutes
+unauthenticated — and is the simpler of the two.
+
+### Measurements
+
+Exactly two, both already defined in Phase 1's list and not repeated here:
+
+- **Measurement 1 — pool-matched AUC.** The honest version of the citation-count signal. The 0.6201
+  already on record is against *random corpus documents*, which is a different and weaker claim.
+- **Measurement 4a and 4b — the age control's descriptive half.** AUC of publication date alone,
+  then within-age-stratum AUC of citation count.
+
+Measurements 2, 3, 4c and 4d — the ceiling and both nulls, and citations-per-year — are **not** in
+Phase 0. They belong to whichever arm structure Phase 0's read selects.
+
+### Output
+
+A Phase 0 section appended to `docs/plans/2026-09-GATE-relation-popularity.md`, per this spec's
+existing convention. It reports the numbers, the completed-fetch corpus median that fixes `S`, and
+the resolved/unresolved split. It draws no conclusion the arm-structure choice has not been made on.
 
 ## Phase 1 — offline screen
 
@@ -83,6 +128,10 @@ that converts an assumption into a fact; it is not optional.
 
 ### Inputs
 
+Run and qrel paths are relative to `/home/ben/repositories/iverson-benchmark-corpora/` and
+`/home/ben/iverson-benchmark-data/` respectively — two different roots, which is worth stating
+because searching the wrong one makes the control run look missing.
+
 | Input | Source |
 |---|---|
 | Control ranking | `scifact-2048-2026-09-06/runs/sci-2048.similar.trec` — 300 queries, pool depth exactly 50, 4,441 distinct docids, all present in the corpus |
@@ -107,9 +156,11 @@ that converts an assumption into a fact; it is not optional.
    manufacture from noise.
 
 4. **The age control.** Citation count is age-confounded: older papers accrue citations regardless
-   of merit. The shipped signal has no time decay of any kind (see "The signal is a lifetime count"
-   below), and `BenchmarkDocument` has no date property, so `WDecay` is inert — **no shipped
-   mechanism can control for this**. Age must therefore be carried as a measured covariate:
+   of merit. A decay mechanism now ships (`b32f870`, see "The signal is a lifetime count at the
+   shipped default" below) but it is **inert at the default `RecencyBoost = 0.0`**, and it decays
+   engagement recency rather than document age in any case; `BenchmarkDocument` has no date
+   property, so `WDecay` is inert too — **no shipped mechanism controls for document age**. Age
+   must therefore be carried as a measured covariate:
 
    a. Report the AUC of publication date alone. If age does not separate relevant from
       non-relevant documents, the confound is not live and b/c/d are reported for completeness only.
@@ -134,13 +185,17 @@ Proceed to Phase 2 only if **real ceiling − age-preserving null ceiling > 0.01
 comparison; the plain shuffled null is reported alongside it, and a real ceiling that clears the
 plain null but not the age-preserving one is an **age** finding, not a popularity finding.
 
-### The signal is a lifetime count
+### The signal is a lifetime count at the shipped default
 
 Worth stating explicitly, because it is unrecorded in the feature spec and it is what makes the age
 control necessary:
 
-- `PopularityFor` (`ObjectSearchGrpcService.cs:1019`) is `count / (count + SaturationPoint)` — a
-  pure function of the count, reading no clock and no timestamp.
+- `PopularityFor` (`ObjectSearchGrpcService.cs:1040`) is
+  `effective = count + RecencyBoost × D; effective / (effective + SaturationPoint)`, where `D` is a
+  half-life sum over the monthly bucket series and the method takes a `DateTimeOffset now`. **At the
+  shipped default `RecencyBoost = 0.0` this reduces exactly to `count / (count + SaturationPoint)`**
+  — a pure function of the count — which is what keeps this experiment's design valid. The clock is
+  read but its contribution is multiplied by zero.
 - `ResultReranker` documents itself as "Pure and I/O-free… reads no clock"; decay arrives
   pre-computed.
 - `PopularitySignalConsumer.cs:60` aggregates `AggregationDescriptor("count", AggregationKind.Count,
@@ -157,20 +212,28 @@ product decision the feature spec never states.
 
 Per-citation dates **are** available: `/paper/{id}/citations?fields=year,publicationDate` returns
 each citing paper's date at day granularity. So the data to build a time-windowed or decayed
-popularity exists. It is nevertheless out of scope here, for three reasons in increasing order of
-importance:
+popularity exists. It is nevertheless out of scope **for Phase 1**, for the reasons below in increasing order of
+importance — though only the first still stands, and Phase 0 exists to decide whether to spend it:
 
-1. **Cost.** ~5,183 papers at a mean of ~800 citations is ≈ 4.1M citing records against a
-   per-paper, 1,000-per-page endpoint — 4,100+ requests minimum, on top of the rate limit that
-   already dominates this experiment's wall-clock.
+1. **Cost — measured, and smaller than first estimated.** 5,183 papers at a *measured* mean of
+   **985** citations (n = 1,288 cached) is ≈ 5.1M citing records against a per-paper,
+   1,000-per-page endpoint. Because a paper with fewer than 1,000 citations still costs one
+   request, the true floor is **8,797 requests**, not the 4,100 first estimated — roughly 2×.
+   At the keyed pace of 1.2 s that is **≈ 2.9 h**, which is real but not prohibitive. This reason
+   is weaker than originally written and no longer carries the decision on its own.
 2. **The obvious shortcut is unsound.** Citations appear to be returned newest-first (a probe
    returned 2026-08, 2026-05, 2026-04, 2026-03, 2026-02 in order), which would allow early-stopping
    at a window cutoff. S2 does not document citation ordering as guaranteed, and a measurement must
    not rest on an ordering inferred from five rows.
-3. **The shipped code cannot express it.** `PopularitySignalConsumer.cs:60` issues
-   `AggregationDescriptor("count", AggregationKind.Count, Field: "")` — an unfiltered `COUNT(*)`
-   with no date predicate. A decayed count is not a configuration of this feature; it is a
-   different feature. An arm testing it would be measuring code that does not exist.
+3. ~~**The shipped code cannot express it.**~~ **No longer true — corrected `2026-09-14`.** This
+   read on `PopularitySignalConsumer.cs:60` was written at 13:15 on 2026-09-13; the time-decay
+   feature merged at 20:21 the same day (`b32f870`). The consumer now *also* issues a
+   `DateHistogram` aggregation over the child timestamp column and writes a monthly bucket series
+   alongside the count, and `PopularityFor` consumes it. A decayed arm **is** a configuration of
+   this feature — `RecencyBoost` and `RecencyHalfLifeDays` — not a different one. The count
+   aggregate itself remains an unfiltered lifetime `COUNT(*)`, so the *count* is still all-time;
+   what changed is that a decayed term can now be fused with it. Cost (reason 1) is the only
+   reason that survives, and Phase 0 decides whether to spend it.
 
 **Recorded as a separate design question:** should relation popularity be time-windowed rather than
 lifetime? This experiment does not answer it, but it establishes that the data to answer it exists
@@ -249,8 +312,11 @@ new constants.
 
 Fixed before any outcome is examined.
 
-**Parameters.** `SaturationPoint = 186`, the corpus median citation count — the BM25 saturation
-convention. Setting `S` to the median places the median document at `pop = 0.5`, the steepest point
+**Parameters.** `SaturationPoint` = **the corpus median citation count**, the BM25 saturation
+convention. The number originally written here was `186`, estimated from a 400-id sample; the
+1,288 ids cached by 2026-09-14 have a median of **235**. `S` is pre-registered as a *rule*, so the
+exact value is computed once from the completed fetch and recorded in the gate doc before any
+outcome is examined — executing the rule, not revising it. Setting `S` to the median places the median document at `pop = 0.5`, the steepest point
 of the saturation curve, which is where the transform discriminates best among typical documents.
 A larger `S` (≈300) yields a marginally wider IQR across a random corpus sample, but it buys that
 width in the heavy tail, among documents that rank on citations alone rather than on the margin
@@ -286,6 +352,14 @@ popularity. It is also not the same as `count = 0`, which scores 0.0 and is puni
 "Exclude unresolved documents from the corpus" is reported as a sensitivity check. If the two
 diverge, that divergence is a finding about the shipped code.
 
+**Phase 2 is locked against Phase 0 and Phase 1.** Added 2026-09-14. Phase 0's triage read and
+Phase 1's grid select **arm structure only**. Phase 2's primary endpoint, its PASS bar, and both
+parameter rules (`S` = corpus median, `W` = 0.90 × σ_fused / σ_popularity) are unchanged by anything
+those phases return. `S`'s *number* is computed from the completed fetch because `S` is defined as a
+rule; that is execution, not revision. If a later decision does move a Phase 2 parameter, this
+section must record that it moved and why — the pre-registration's value is entirely in being able
+to tell the two cases apart.
+
 **Also reported, not gating.** Top-10 churn across arms, the measure that showed fusion triples A
 and B are not interchangeable.
 
@@ -305,7 +379,8 @@ cheap: opaque `MED-xxx` ids with `metadata: null`, needing a PubMed mapping and 
 API.
 
 **Age is a confound with no shipped control.** Citation count rises with paper age, and neither the
-popularity term (a lifetime count, no clock) nor `WDecay` (inert — no date property on
+popularity term (a lifetime count at the default `RecencyBoost = 0.0`; and its decay term tracks
+engagement recency, not document age) nor `WDecay` (inert — no date property on
 `BenchmarkDocument`) can correct for it. Age is therefore handled statistically, not
 mechanically: measurement 4's within-stratum AUC, the age-preserving null that binds the gate, and
 the citations-per-year variant. A result that clears the plain shuffled null but not the
@@ -348,7 +423,13 @@ disk-cached, so it costs wall-clock rather than risk. A free API key would reduc
 | — | Citation counts have usable variance | n = 375: min 3, p25 75, median 186, p75 460, p90 1,196, max 75,285; zero documents with 0 citations |
 | — | Counts carry relevance information | AUC 0.6201 vs. random non-relevant (95% CI [0.569, 0.672], z ≈ 4.55) |
 | — | The shipped `SaturationPoint = 50` suits this corpus | **No.** At S = 50 the median maps to 0.788 and IQR is 0.303; S ≈ 300 maximises spread (IQR 0.409). S = 50 compresses the corpus into the saturated tail |
-| — | The popularity signal has no time decay | `PopularityFor` is `count/(count+S)` with no clock (`ObjectSearchGrpcService.cs:1019`); `ResultReranker`'s doc comment states it "reads no clock"; `PopularitySignalConsumer.cs:60` aggregates an unfiltered `COUNT(*)` with no date predicate |
+| A30 | `RecencyBoost` defaults to `0.0`, so the shipped default transform is exactly `count/(count+S)` | `PopularitySignalOptions.cs:17`; `PopularityFor` (`ObjectSearchGrpcService.cs:1040`) computes `effective = count + RecencyBoost × D` |
+| A31 | A decay mechanism ships and is expressible as configuration | `PopularitySignalConsumer.cs:108` issues a `DateHistogram` with `CalendarInterval: "month"`; `:131` writes the `…Buckets` payload key; merged `b32f870` at 20:21 on 2026-09-13, 7 h after this spec was written at 13:15 |
+| A32 | Phase 1's inputs exist and match their stated shapes | `sci-2048.similar.trec` (in `iverson-benchmark-corpora`, not `iverson-benchmark-data`): 15,000 lines, 300 queries, 4,441 distinct docids, max rank 50. `qrels/test.tsv`: 300 queries, 339 judgments, 283 distinct relevant docs |
+| A33 | The existing cache cannot supply dates, and resuming would not fix it | `citations-countonly.json.bak` has top-level keys `counts`, `unresolved` only — no `years`/`dates`; `fetch_citations.py:43` computes `known` from those two, so cached ids are skipped |
+| A34 | The count + date fetch is cheap; the per-citation decay fetch is ~2.9 h | 5,183 corpus ids, 1,400 already known → 38 batches to resume / 52 clean, at 1.2 s keyed or 3.0 s anonymous. Decay arm: measured mean 985 citations over 1,288 papers → 8,797 paged requests ≈ 2.9 h keyed |
+| A35 | `WDecay` still cannot control for document age | `BenchmarkDocument.cs` declares `Id`, `DocId`, `Title`, `Body`, `OwnerId` — no date property. Unchanged by `b32f870` |
+| — | ~~The popularity signal has no time decay~~ **Superseded 2026-09-14:** a decay term ships (`b32f870`) but is inert at the default `RecencyBoost = 0.0`, so the measured transform is unchanged | `PopularityFor` is `count/(count+S)` with no clock (`ObjectSearchGrpcService.cs:1019`); `ResultReranker`'s doc comment states it "reads no clock"; `PopularitySignalConsumer.cs:60` aggregates an unfiltered `COUNT(*)` with no date predicate |
 | — | `WDecay` cannot control for document age here | `BenchmarkDocument` declares no date property, so `DecayFieldResolver` returns null and the decay term is inert on this corpus |
 | — | `publicationDate` is available and finer than `year` | Probe of 40 ids: 38 resolved, `year` 38/38, `publicationDate` 38/38, month-granular (e.g. `1998-10-01`), occasionally day-granular (`1993-11-15`) |
 | — | Per-citation dates exist but are out of scope | `/paper/{id}/citations?fields=year,publicationDate` returns citing-paper dates at day granularity; ≈4.1M records over a 1,000-per-page per-paper endpoint, and the shipped consumer cannot express a windowed count |
