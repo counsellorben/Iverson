@@ -13,8 +13,11 @@ namespace Iverson.Api.Tests.Helpers;
 /// <c>SchemaRegistry.LoadAsync</c>, so exercising it is valuable — but it is WHY two findings hid:
 /// Ruling 70 (Iverson.StarRocks keyed its tenant-column exclusion on the per-schema VALUE while
 /// Iverson.Api keyed every one of its own on the RESERVED LITERAL, and no fixture that met both
-/// sides existed), and Task 7's <c>tenantScoped:</c> mutants M4/M5, which survive because the
-/// expression they mutate is already true for every fixture here.
+/// sides existed), and Task 7's <c>tenantScoped:</c> mutants M4/M5 (that boolean parameter has
+/// since been replaced by <c>EntityAccess</c> — see CSR round-3 finding #5 — but the same
+/// fixture-shape gap applies to whichever expression now distinguishes tenant-scoped from
+/// cross-tenant access), which survive because that expression is already true for every fixture
+/// here.
 /// </para>
 /// <para>
 /// DELIBERATELY NOT MASS-REWRITTEN. Flipping 45 sites to the reserved name would silently retire
