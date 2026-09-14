@@ -61,7 +61,7 @@ Newly introduced by this plan and verified at plan-write time:
 | 10 | Code validity | `HttpClient.Redirect.NEVER` and the `.newBuilder().followRedirects(...).build()` chain compile against this project's toolchain | `Iverson.Clients/Java/pom.xml:24-25` and `client/pom.xml:121-122` both target Java 21 (API available since Java 11); `OAuth2ClientCredentials.java:11` already imports `java.net.http.HttpClient` |
 | 11 | Test command | `mvn -f Iverson.Clients/Java/pom.xml test -pl client` is the correct scoped invocation, matching this repo's own established `-f <path>` convention | `Iverson.Clients/Java/pom.xml`'s `<modules>` lists `client` as the exact module directory name; `.github/workflows/codeql.yml:72` already uses the identical `-f Iverson.Clients/Java/pom.xml` pattern for a Maven command from repo root |
 | 12 | Consumer impact (Cat 6) | No other test constructs `OAuth2ClientCredentials` and drives a real network call through it (only the static `ACTING_USER_TOKEN` key constant is referenced elsewhere) | `grep -rln "OAuth2ClientCredentials" Iverson.Clients/Java --include="*.java"` found 4 other test files; read each — all reference only the `ACTING_USER_TOKEN` constant or use their own fake `applyRequestMetadata` override, never invoking the real class's `getToken()` |
-| 13 | Test command | `cd Iverson.Agents/Python && .venv/bin/pytest tests/test_evaluate.py -v` is a valid, working invocation | `pyproject.toml:18-19`: `[tool.pytest.ini_options] testpaths = ["tests"]`; `.venv/bin/pytest` confirmed present on disk |
+| 13 | Test command | `cd Iverson.Agents/Python && PYTHONPATH=/home/ben/repositories/Iverson/Iverson.Clients/Python .venv/bin/python3 -m pytest tests/test_evaluate.py -v` is a valid, working invocation — the plain `.venv/bin/pytest` form is NOT (its shebang and the venv's `iverson_client.pth` both hard-code a deleted `.worktrees/reasoning-agent` path) | Found via `critical-implementation-review` round 1: reproduced the broken invocation's `bad interpreter` error myself, confirmed the worktree is absent from `git worktree list`, then independently re-ran the `PYTHONPATH` form myself and got `3 passed` |
 | 14 | Consumer impact (Cat 6) | `tests/test_evaluate.py`'s existing `test_judge_parses_structured_output` (line 38-42) mocks `client.messages.parse` to return a fixed value unconditionally — it never inspects the `content`/`system` arguments, so it stays green after the prompt-construction change | Read the test directly: `client = MagicMock(); client.messages.parse.return_value = SimpleNamespace(...)` — no `assert_called_with` or content inspection of any kind |
 | 15 | Consumer impact (Cat 6) | `global.ingressHost` has 7 consumers across the chart (not just the 3 the spec named for context), all reading the same single value — validating at `_validate.tpl`'s single source, which `fail()`s the entire `helm template`/`helm install` operation before any manifest renders, covers all of them without a plan change | `grep -rln "ingressHost" Iverson.Server/deploy/helm --include="*.yaml" --include="*.tpl"` (excluding values files) — `api/ingress.yaml`, `api/deployment.yaml`, `authentik/ingress.yaml`, `authentik/secret-service-clients.yaml`, `admin-ui/ingress.yaml`, `admin-ui/deployment.yaml`, `_validate.tpl` itself. This strengthens rather than changes the spec's chosen approach — patching each consumer individually (the rejected alternative) would have needed to cover all 7, not the 3 named for illustration |
 | 16 | Function signature | `IversonClientCredentials` is `sealed record IversonClientCredentials(string ClientId, string ClientSecret, string TokenEndpoint, string? Scope = null, string? HostHeader = null)` — Task 1's test constructs it with 3 positional args, relying on the two optional params' defaults | Read `IversonClientCredentials.cs:13-18` directly |
@@ -300,12 +300,14 @@ Newly introduced by this plan and verified at plan-write time:
 
 - [ ] **Step 2: Manually verify (no automated chart-test harness exists in this repo)**
 
-  Matching the exact invocation already established in `.github/workflows/deploy-validate.yml:65` (release name `iverson`, chart path, single `-f` override — Helm merges the chart's own `values.yaml` defaults automatically), after first resolving chart dependencies:
+  Matching the exact invocation already established in `.github/workflows/deploy-validate.yml:65` (release name `iverson`, chart path, single `-f` override — Helm merges the chart's own `values.yaml` defaults automatically), after first resolving chart dependencies. `values-aws.yaml` ships with its own unfilled placeholders (`iverson.example.com`, `<ACM_CERT_ARN>`) that trip the chart's *existing* round-2/round-3 guards before this new one is ever reached, so both are resolved to realistic values first; the hostile value is injected via single-quoted YAML so only the new guard's mechanism is exercised (a double-quoted in-place edit leaves the line's original quotes behind, producing invalid YAML that fails before any template evaluates — confirmed via `critical-implementation-review` round 1):
   ```bash
   helm dependency build Iverson.Server/deploy/helm/iverson
-  helm template iverson Iverson.Server/deploy/helm/iverson -f Iverson.Server/deploy/helm/iverson/values-aws.yaml > /dev/null && echo "PASS: real value accepted"
-  cp Iverson.Server/deploy/helm/iverson/values-aws.yaml /tmp/hostile-values-aws.yaml
-  sed -i 's/iverson\.example\.com/evil.com"; foo bar;/' /tmp/hostile-values-aws.yaml
+  cp Iverson.Server/deploy/helm/iverson/values-aws.yaml /tmp/verify-values-aws.yaml
+  sed -i 's/iverson\.example\.com/iverson.realcompany.com/; s/<ACM_CERT_ARN>/arn:aws:acm:us-east-1:123456789012:certificate\/abc-123/' /tmp/verify-values-aws.yaml
+  helm template iverson Iverson.Server/deploy/helm/iverson -f /tmp/verify-values-aws.yaml > /dev/null && echo "PASS: real value accepted"
+  cp /tmp/verify-values-aws.yaml /tmp/hostile-values-aws.yaml
+  sed -i "s/ingressHost: \"iverson.realcompany.com\"/ingressHost: 'evil.com\"; foo bar;'/" /tmp/hostile-values-aws.yaml
   helm template iverson Iverson.Server/deploy/helm/iverson -f /tmp/hostile-values-aws.yaml 2>&1 | grep -q "CSR round-5 finding #4" && echo "PASS: hostile value rejected"
   ```
   Record the result in a one-line comment directly above the new guard, matching the file's existing "confirmed empirically" convention (e.g., referencing the two commands above and their outcomes).
@@ -450,8 +452,10 @@ Newly introduced by this plan and verified at plan-write time:
   ```
 
 - [ ] **Step 3: Run tests** (no new test needed — confirms the existing test stays green)
+
+  `.venv/bin/pytest`'s console-script shebang and the venv's `iverson_client.pth` both hard-code an absolute path into a deleted `.worktrees/reasoning-agent` tree (confirmed via `critical-implementation-review` round 1 — that worktree no longer appears in `git worktree list`), so the plain `.venv/bin/pytest` invocation fails before any test runs. Work around it without touching the shared venv:
   ```bash
-  cd Iverson.Agents/Python && .venv/bin/pytest tests/test_evaluate.py -v
+  cd Iverson.Agents/Python && PYTHONPATH=/home/ben/repositories/Iverson/Iverson.Clients/Python .venv/bin/python3 -m pytest tests/test_evaluate.py -v
   ```
 
 - [ ] **Step 4: Commit**
