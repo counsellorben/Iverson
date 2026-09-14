@@ -95,14 +95,30 @@ def main():
             except (urllib.error.URLError, TimeoutError):
                 pass
         if not ok:
-            print(f'  batch at {start} exhausted backoff; leaving for a re-run', flush=True)
+            save(cache, args.cache)
+            sys.exit(f'batch at {start} exhausted all 7 backoff attempts; cache saved, re-run to resume')
         save(cache, args.cache)
         print(f'  {start+len(batch)}/{len(todo)}  resolved={len(cache["counts"])} '
               f'years={len(cache["years"])} dates={len(cache["dates"])} '
               f'unresolved={len(cache["unresolved"])}', flush=True)
         time.sleep(BATCH_GAP)
 
+    # Completeness: every corpus id must land in exactly one of counts/unresolved. This is the
+    # assertion that currently exists only as a manual plan step -- a coverage ratio alone
+    # (len(counts)/len(ids)) cannot distinguish a complete fetch from a partial one, since ids that
+    # are legitimately unresolved (the paper left the index) depress the ratio on a complete fetch
+    # exactly as a stalled-out partial fetch would.
+    accounted = set(cache['counts']) | set(cache['unresolved'])
+    missing = [i for i in ids if i not in accounted]
+    extra_unresolved = [i for i in cache['unresolved'] if i in cache['counts']]
+    if missing or extra_unresolved:
+        sys.exit(
+            f'completeness check FAILED: {len(missing)} corpus id(s) in neither counts nor '
+            f'unresolved, {len(extra_unresolved)} id(s) in both -- fetch is not complete')
+
     print(f'DONE resolved={len(cache["counts"])} unresolved={len(cache["unresolved"])} '
           f'coverage={len(cache["counts"])/len(ids):.4f}', flush=True)
 
-main()
+
+if __name__ == "__main__":
+    main()

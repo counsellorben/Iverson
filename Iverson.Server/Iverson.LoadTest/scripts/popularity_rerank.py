@@ -7,9 +7,15 @@ Applies the shipped server's fusion identity to one already-recorded TREC run, o
 signals PRESENT on a candidate: `weightTotal` starts at `WBase = 0.45`; `hasCentroid` adds
 `WCentroid = 0.45` (uniform on this corpus -- Task 3 found zero object points lacking
 `body_centroid`); `hasPopularity` adds `WPopularity` to the weighted sum *and* to the weight total
-under one guard. `LambdaSimilar = 1.00` collapses `IResultDiversifier.Diversify` to `Take(topK)`
-exactly (`ResultDiversifier.cs:74-75`), so `.similar.trec`'s score column *is* the fused score and
-this identity applies to it directly, with no re-derivation from raw hits needed:
+under one guard. `.similar.trec`'s score column *is* the fused score at every lambda, not only at
+lambda=1.00: `ResultDiversifier.cs:80` emits `new RerankedResult(ranked[index].Id, ranked[index].Score)`
+-- the fused score, unmodified, for every selected result regardless of how MMR chose the selection
+order. (`LambdaSimilar = 1.00` was NOT live when `sci-2048.similar.trec` was recorded --
+`sci-2048.meta.json` gives `recordedAtUtc 2026-09-07T04:46:40Z`, about 18 hours before `c27eb98`,
+2026-09-07T18:26:13-04:00 = 22:26:13Z, set it -- so an argument resting on lambda=1.00 would not even
+apply to this run. It doesn't need to: the score column is the fused score at whatever lambda was
+live.) So this identity applies to `.similar.trec`'s score column directly, with no re-derivation
+from raw hits needed:
 
     pop = count / (count + SaturationPoint)
 
