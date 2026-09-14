@@ -9,9 +9,12 @@ manage tenants, view storage, and inspect performance data via Iverson.Api.
 - Node.js 20+ and npm
 - The rest of the Iverson stack running locally — this app talks to
   Iverson.Api and redirects to Authentik for login, so both need to be up
-  first. From `Iverson.Server/`:
+  first. From the repo root, generate the compose stack's dev secrets, then
+  from `Iverson.Server/`:
 
   ```bash
+  ./scripts/generate-compose-secrets.sh
+  cd Iverson.Server
   docker compose build iverson-api
   docker compose up -d
   ```

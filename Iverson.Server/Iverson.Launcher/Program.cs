@@ -19,7 +19,8 @@ await RunCommandAsync(
     "docker",
     "compose up -d postgres starrocks qdrant kafka zookeeper jaeger ollama ollama-init tei-embed",
     solutionRoot,
-    cts.Token);
+    cts.Token,
+    exitOnFailure: true);
 Console.WriteLine("[Launcher] Docker Compose up — waiting for services to be ready...");
 
 // Step 2: wait for each service port
@@ -152,7 +153,8 @@ static async Task RunCommandAsync(
     string cmd,
     string args,
     string workingDir,
-    CancellationToken ct)
+    CancellationToken ct,
+    bool exitOnFailure = false)
 {
     var psi = new ProcessStartInfo(cmd, args)
     {
@@ -164,7 +166,13 @@ static async Task RunCommandAsync(
     await proc.WaitForExitAsync(ct);
 
     if (proc.ExitCode != 0)
+    {
         Console.Error.WriteLine($"[Launcher] {cmd} exited with code {proc.ExitCode}");
+        if (exitOnFailure)
+            throw new InvalidOperationException(
+                $"[Launcher] '{cmd} {args}' failed with exit code {proc.ExitCode}. " +
+                "Run ./scripts/generate-compose-secrets.sh (from the repo root) and retry.");
+    }
 }
 
 static Process StartProcess(string cmd, string args, string workingDir,

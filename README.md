@@ -91,11 +91,16 @@ tokens against the API, see [`docs/user-management-and-security.md`](docs/user-m
 Run everything with the launcher:
 
 ```bash
+./scripts/generate-compose-secrets.sh
 cd Iverson.Server/Iverson.Launcher
 dotnet run
 ```
 
-It starts Docker, waits for every service (including the Ollama embedding model), and spawns the API. Ctrl+C tears it all down cleanly.
+`generate-compose-secrets.sh` writes `Iverson.Server/.env` with 7 randomized dev-only credentials for
+Authentik's OAuth2 clients, users, and admin-orchestrator API token; the launcher shells out to `docker
+compose up`, which reads `.env` automatically and now fails fast (`docker-compose.yml`'s `${VAR:?...}`
+required-variable syntax) without it. It starts Docker, waits for every service (including the Ollama
+embedding model), and spawns the API. Ctrl+C tears it all down cleanly.
 
 Or bring up the stack manually:
 
