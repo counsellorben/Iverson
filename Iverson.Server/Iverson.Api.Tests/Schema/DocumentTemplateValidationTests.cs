@@ -220,6 +220,104 @@ public class DocumentTemplateValidationTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
     }
 
+    // ── Rule 11: template traverses a relation to a row-owned type (OwnerField) ──
+
+    [Fact]
+    public async Task RegisterAsync_OneHopTraversesToRowOwnedTypeWithOwnerField_ThrowsInvalidArgument()
+    {
+        var root = WidgetType("{Owner.Name}");
+        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ClrType = ClrType.ClrGuid });
+        root.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
+        });
+
+        var dependent = SimpleType("User", "Name");
+        dependent.Authorization = new Client.Contracts.AuthorizationRules
+        {
+            OwnerField = "Name"
+        };
+
+        var act = () => _sut.RegisterAsync(
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_OneHopTraversesToRowOwnedTypeWithRowPermissions_ThrowsInvalidArgument()
+    {
+        var root = WidgetType("{Owner.Name}");
+        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ClrType = ClrType.ClrGuid });
+        root.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
+        });
+
+        var dependent = SimpleType("User", "Name");
+        dependent.Authorization = new Client.Contracts.AuthorizationRules
+        {
+            RowPermissions =
+            {
+                new Client.Contracts.RowPermission { Role = "admin", CanReadAll = true }
+            }
+        };
+
+        var act = () => _sut.RegisterAsync(
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_BlockTraversesToRowOwnedTypeWithOwnerField_ThrowsInvalidArgument()
+    {
+        var root = WidgetType("{#Children}{Name}{/Children}");
+        root.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Children", Kind = Client.Contracts.RelationKind.OneToMany, RelatedType = "Gadget", ForeignKey = "WidgetId"
+        });
+
+        var dependent = SimpleType("Gadget", "Name");
+        dependent.Authorization = new Client.Contracts.AuthorizationRules
+        {
+            OwnerField = "Name"
+        };
+
+        var act = () => _sut.RegisterAsync(
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_BlockTraversesToRowOwnedTypeWithRowPermissions_ThrowsInvalidArgument()
+    {
+        var root = WidgetType("{#Children}{Name}{/Children}");
+        root.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Children", Kind = Client.Contracts.RelationKind.OneToMany, RelatedType = "Gadget", ForeignKey = "WidgetId"
+        });
+
+        var dependent = SimpleType("Gadget", "Name");
+        dependent.Authorization = new Client.Contracts.AuthorizationRules
+        {
+            RowPermissions =
+            {
+                new Client.Contracts.RowPermission { Role = "admin", CanReadAll = true }
+            }
+        };
+
+        var act = () => _sut.RegisterAsync(
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
     // ── Rule 9: a FieldPermission naming "Document" ─────────────────────────────
 
     [Fact]

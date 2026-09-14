@@ -424,6 +424,7 @@ public sealed class SchemaRegistrationOrchestrator(
                 }
 
                 var target = RequireTargetDescriptor(declaring, relation, allDescriptors, statusCode);
+                RequireNotRowOwned(declaring, segment, target, statusCode);
                 RequireScalarProperty(target, segment.PropertyName!, statusCode);
                 break;
             }
@@ -440,6 +441,7 @@ public sealed class SchemaRegistrationOrchestrator(
                 }
 
                 var target = RequireTargetDescriptor(declaring, relation, allDescriptors, statusCode);
+                RequireNotRowOwned(declaring, segment, target, statusCode);
                 foreach (var inner in segment.Inner ?? [])
                     if (inner.Kind == DocumentSegmentKind.Scalar)
                         RequireScalarProperty(target, inner.PropertyName!, statusCode);
@@ -474,6 +476,18 @@ public sealed class SchemaRegistrationOrchestrator(
             throw new RpcException(new Status(statusCode,
                 $"Document template references property '{propertyName}' on '{context.TypeName}', which " +
                 "carries a FieldPermission; a document template cannot selectively exclude fields per caller."));
+        }
+    }
+
+    private static void RequireNotRowOwned(
+        SchemaDescriptor declaring, DocumentSegment segment, SchemaDescriptor target, StatusCode statusCode)
+    {
+        if (target.Authorization?.OwnerField is not null || target.Authorization?.RowPermissions.Count > 0)
+        {
+            throw new RpcException(new Status(statusCode,
+                $"Document template on '{declaring.TypeName}' traverses relation '{segment.RelationName}' to " +
+                $"'{target.TypeName}', which declares row-level authorization (OwnerField/RowPermissions); a " +
+                "document template cannot traverse a relation to a row-owned type."));
         }
     }
 
