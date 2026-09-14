@@ -54,8 +54,9 @@ CSR round-3 finding #11 (part 2): azure/gcp both set a real tlsSecretName (e.g.
 "iverson-api-tls") that this chart never creates — it must already exist as a Secret
 in the release namespace (provisioned out-of-band, e.g. cert-manager or a manual
 cert import) or the rendered Ingress's `tls:` block references nothing and TLS
-silently doesn't work. Reuses $ingressBlocks from part 2 above rather than
-re-deriving api/authentik/adminUi.ingress a second time.
+silently doesn't work. Reuses $ingressBlocks computed for the CSR round-2 finding
+#3 annotation check above, rather than re-deriving api/authentik/adminUi.ingress a
+second time.
 
 lookup only queries a live API server: `helm template`/`--dry-run` has no cluster to
 ask and ALWAYS returns an empty result regardless of the real state, which would
@@ -63,15 +64,21 @@ otherwise make this check fail every valid values-azure.yaml/values-gcp.yaml ren
 (both legitimately set a real tlsSecretName). `.Release.IsInstall` does NOT
 distinguish this — confirmed empirically it is `true` under plain `helm template`
 too (Helm simulates a fresh install by default), so it cannot gate this check.
-Instead, probe for live cluster access the same way `lookup` itself is documented
-to behave: look up a namespace ("kube-system") that exists on every real
-Kubernetes cluster but which `lookup` — per Helm's own docs — always resolves to
-an empty map under `helm template`/`--dry-run` regardless of target, confirmed
-empirically in this environment. The placeholder checks above need no such gate:
-they only ever inspect rendered .Values content, never a live lookup, so they
-behave identically under `helm template` and a real install/upgrade.
+
+Instead, probe for live cluster access with a namespace-scoped read: every
+namespace has a "default" ServiceAccount, and the release's own identity should
+be able to read resources in its own namespace regardless of how narrowly its
+RBAC is scoped (unlike a cluster-scoped Namespace lookup, e.g. against
+"kube-system", which `lookup` also resolves empty on a Forbidden response — not
+just on "no live cluster" — so under namespace-scoped RBAC, a common CI/GitOps
+setup, that probe would silently skip this entire guard exactly where a missing
+TLS Secret matters most). Confirmed empirically in this environment that
+`lookup` on this ServiceAccount resolves empty under `helm template`/no cluster,
+matching Helm's documented behavior. The placeholder checks above need no such
+gate: they only ever inspect rendered .Values content, never a live lookup, so
+they behave identically under `helm template` and a real install/upgrade.
 */}}
-{{- if lookup "v1" "Namespace" "" "kube-system" }}
+{{- if lookup "v1" "ServiceAccount" $.Release.Namespace "default" }}
 {{- range $label, $ing := $ingressBlocks }}
 {{- $tlsName := dig "tlsSecretName" "" $ing }}
 {{- if $tlsName }}

@@ -34,8 +34,9 @@ each of the 10 credential values exactly once and has both the real Secrets and 
 embedded YAML reference that same computed value — there is no longer a second independent
 `randAlphaNum` draw to diverge from the first. Verified by rendering the merged template (both the
 "no existing Secret" first-install branch and the "Secret already exists" branch, the latter
-against a live cluster) and confirming all 10 values are byte-identical between the emitted
-Secrets and the blueprint's `stringData` on the very first `helm install` — no second pass needed
+against a live cluster) and confirming all 13 credential values (10 Secrets, 3 of which carry
+both a client-id and a client-secret) are byte-identical between the emitted Secrets and the
+blueprint's `stringData` on the very first `helm install` — no second pass needed
 for these credentials specifically. (This was verified at the template-rendering level, not via a
 full live multi-service `helm install` against a fully-provisioned cluster with CNPG/Strimzi/
 StarRocks operators installed — the bug and its fix both live entirely in what value a template
