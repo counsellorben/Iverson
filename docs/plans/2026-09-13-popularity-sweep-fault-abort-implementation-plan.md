@@ -52,15 +52,22 @@ Verified by `thorough-brainstorming` at spec-write time and re-confirmed across 
 | 18 | Code validity | The throw-stub idiom is `.Returns(Task.FromException(...))` with `RpcException`/`Status`/`StatusCode` already imported | `PopularitySignalConsumerTests.cs:420`; `using Grpc.Core;` at `:3` |
 | 19 | Code validity | Consumer-test fixtures the new tests call all exist: `ArticleSchema()`, `CommentSchema()`, `TenantA`, `ArticleId`, and `Relations[0]` as a `SchemaRelationDescriptor` | `:73`, `:90`, `:35`, `:37`, `:83` |
 | 20 | Code validity | `PopularitySignalUpdater`'s constructor is `(search, vector, tenantScope, logger)` | `PopularitySignalConsumerTests.cs:61-62`; `PopularitySignalReconciliationWorkerTests.cs:72-73` |
-| 21 | Command | `dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~PopularitySignal"` is valid and scopes to both suites | run at plan-write time: **41 passed, 0 failed, 6 s** |
-| 22 | Command | Both suites are pure NSubstitute unit tests — no Testcontainers, so no Ryuk/container prefix is needed | the 41-test run completed in 6 s with no container startup |
+| 21 | Command | The narrow filter `--filter "FullyQualifiedName~PopularitySignalConsumerTests\|FullyQualifiedName~PopularitySignalReconciliationWorkerTests"` selects exactly the two edited classes | executed at CIR round 1 close: **19 passed, 0 failed, 821 ms**, no container startup. VSTest's `\|` (OR) syntax confirmed working |
+| 22 | Command | The **broad** filter `~PopularitySignal` is a substring match reaching **five** classes, one of which is a Testcontainers test — so the broad command requires a running container runtime. The two edited suites are pure NSubstitute, but that does not discharge the broad command's requirement | `--list-tests` bucketed by class: `PopularitySignalOptionsTests` 17, `PopularitySignalConsumerTests` 14, `PopularitySignalReconciliationWorkerTests` 5, `SchemaBuilderTests` 4, `ObjectSearchVectorIntegrationTests` 1 (= 41). `ObjectSearchVectorIntegrationTests.cs:25` declares `QdrantGrpcContainerFixture`, `:29` constructs `new ContainerBuilder()`; a broad run starts a reaper + Qdrant on 6334. **Corrected at CIR round 1** — the original row claimed "no Testcontainers", inferring it from a 6 s run time rather than from what the filter matches |
 | 23 | Ordering | Task 2 consumes Task 1's enum and its new return type; Task 1 depends on nothing Task 2 introduces | Task 1 touches only `PopularitySignalConsumer.cs` + its test file; the worker's `outcome` local cannot compile before the enum exists |
 | 24 | Command | Commit messages are lowercase imperative with no Conventional-Commits prefix | `git log --oneline -20`: "add three missing CSP directives…", "close csr round-3 finding #15…", "fuse the decayed recency count…" |
 | 25 | Code validity | The worker test file imports `Microsoft.Extensions.Logging.Abstractions` but **not** `Microsoft.Extensions.Logging`, and `ImplicitUsings` on `Microsoft.NET.Sdk` supplies only `System.*` — so `RecordingLogger<T>` needs the import added (Task 2 Step 3) | target usings `:1-13`; donor `DocumentRerenderQueueWorkerTests.cs:6` carries it; `Iverson.Api.Tests.csproj:1,6` |
+| 26 | Ordering | Task 1 alone leaves a compiling, green tree — Step 5's "Expect 23" depends on it | verified at CIR round 1 by transcribing Task 1 in isolation: the production edit alone → `Build succeeded. 0 Error(s)`; production + tests → 45 green on the broad filter, i.e. **23** on the narrow filter both Step 5s pin |
+| 27 | Code validity | None of the four new helpers or seven new `[Fact]` names collides with an existing member of either test class | `BuildUpdater`, `StubAggregateFailingFor`, `Page(`, `RecordingLogger` and all seven test-method names → **0 hits** in both test files |
+| 28 | Code validity | Adding `using Microsoft.Extensions.Logging;` introduces no ambiguity against the file's imports and three aliases | the aliases are `EngagementAggResult`, `SchemaRelationDescriptor`, `SchemaRelationKind` (`…WorkerTests.cs:17-19`) — none is a type in `Microsoft.Extensions.Logging`; CIR round 1's transcription built clean with no CS0104 |
+| 29 | Code validity | NSubstitute accepts `StubAggregateFailingFor`'s `.Returns(Func<CallInfo, Task<T>>)` lambda, and the faulted branch actually throws | NSubstitute **5.3.0** (`Iverson.Api.Tests.csproj:16`); verified at CIR round 1 by execution — tests 3 and 4 discriminate correctly by key, which is impossible if either branch mis-bound |
+| 30 | Code validity | Test 3's unstubbed page-2 continuation fails loudly, not silently or fatally | verified at CIR round 1 by mutation probe (`MaxConsecutiveFailures = 500`): the unstubbed call returned an **empty sequence**, the paging loop broke, and the test failed in 223 ms on "the collection is empty" — no null-dereference, no hang |
 
 **One test beyond the spec's list of six.** Task 1 Step 4 adds `UpdateAsync_SetPayloadNotFound_ReturnsSkipped`, which the spec's §4 does not enumerate. It is included because spec §2 and assumption A1c warn explicitly that the `NotFound` catch shares a terminal point with success and that "a single `return Updated;` at the end would therefore mislabel it" — the exit-path table mandates `NotFound → Skipped`, and no other test in the plan or the existing suite pins that mapping. Without it the specific bug the design warns about ships untested.
 
-**Baseline at plan-write time:** 41 tests matching `~PopularitySignal` pass. Any failure after Task 1 or Task 2 is introduced by this plan.
+**Baseline:** **19** tests pass across the two edited classes under the narrow filter both Step 5s use (measured: 19 passed, 821 ms, no containers). Expect **23** after Task 1 and **26** after Task 2. Any failure of *those* counts after Task 1 or Task 2 is introduced by this plan.
+
+The broader `~PopularitySignal` filter matches **41** tests across five classes, one of them a Testcontainers integration test — see assumption #22. Use it only as an optional final whole-feature check, and only on a host with a working container runtime; a red result there is not by itself attributable to this plan.
 
 **Drift note:** the spec's last commit (`f18081d`) is one commit behind HEAD (`6a219ce`); the only intervening commit adds the round-2 review file. No code drift.
 
@@ -196,9 +203,9 @@ public async Task UpdateAsync_SetPayloadThrowsNonNotFound_Propagates()
 - [ ] **Step 5: Build and test.**
 ```bash
 dotnet build Iverson.Server/Iverson.Api/Iverson.Api.csproj
-dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~PopularitySignal"
+dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~PopularitySignalConsumerTests|FullyQualifiedName~PopularitySignalReconciliationWorkerTests"
 ```
-  Expect 45 passed (41 baseline + 4 new), 0 failed. Every pre-existing `Dispatch_*` test staying green **is** spec test 5.
+  Expect 23 passed (19 baseline + 4 new), 0 failed. Every pre-existing `Dispatch_*` test staying green **is** spec test 5 — they live in `PopularitySignalConsumerTests`, which this filter still selects.
 
 - [ ] **Step 6: Commit.**
 ```bash
@@ -382,9 +389,11 @@ public async Task SweepSignalAsync_ScatteredNonConsecutiveFailures_DoesNotAbando
 - [ ] **Step 5: Build and test.**
 ```bash
 dotnet build Iverson.Server/Iverson.Api/Iverson.Api.csproj
-dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~PopularitySignal"
+dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~PopularitySignalConsumerTests|FullyQualifiedName~PopularitySignalReconciliationWorkerTests"
 ```
-  Expect 48 passed (45 after Task 1 + 3 new), 0 failed.
+  Expect 26 passed (23 after Task 1 + 3 new), 0 failed.
+
+  Optionally, as a final whole-feature check on a host with a working container runtime, run the broad filter — `--filter "FullyQualifiedName~PopularitySignal"`, expect 48 — which additionally exercises `ObjectSearchVectorIntegrationTests` against a live Qdrant. Per assumption #22 this is not part of the gate: a failure there is not by itself attributable to this plan.
 
 - [ ] **Step 6: Commit.**
 ```bash
