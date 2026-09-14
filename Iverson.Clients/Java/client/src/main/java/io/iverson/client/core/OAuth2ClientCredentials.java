@@ -26,6 +26,7 @@ public final class OAuth2ClientCredentials extends CallCredentials {
     private final String clientSecret;
     private final String tokenEndpoint;
     private final String scope;
+    private final boolean allowInsecureCredentials;
     private final HttpClient httpClient = HttpClient.newHttpClient();
     private final ReentrantLock lock = new ReentrantLock();
 
@@ -37,14 +38,26 @@ public final class OAuth2ClientCredentials extends CallCredentials {
     public static final String ACTING_USER_METADATA_KEY = "x-acting-user-authorization";
 
     public OAuth2ClientCredentials(String clientId, String clientSecret, String tokenEndpoint) {
-        this(clientId, clientSecret, tokenEndpoint, null);
+        this(clientId, clientSecret, tokenEndpoint, null, false);
     }
 
     public OAuth2ClientCredentials(String clientId, String clientSecret, String tokenEndpoint, String scope) {
+        this(clientId, clientSecret, tokenEndpoint, scope, false);
+    }
+
+    public OAuth2ClientCredentials(
+            String clientId, String clientSecret, String tokenEndpoint, String scope,
+            boolean allowInsecureCredentials) {
+        if (!allowInsecureCredentials && !"https".equals(URI.create(tokenEndpoint).getScheme())) {
+            throw new IllegalArgumentException(
+                "Refusing to send OAuth2 client credentials to a non-https token endpoint '" + tokenEndpoint +
+                "' without an explicit allowInsecureCredentials=true opt-in.");
+        }
         this.clientId = clientId;
         this.clientSecret = clientSecret;
         this.tokenEndpoint = tokenEndpoint;
         this.scope = scope;
+        this.allowInsecureCredentials = allowInsecureCredentials;
     }
 
     @Override
