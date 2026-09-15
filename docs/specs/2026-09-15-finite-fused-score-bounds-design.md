@@ -68,8 +68,8 @@ double).
   and both RPCs must emit only finite scores). Without the admitted case they would exercise only the rejection path.
 - **`VectorRankingOptionsTests`:** a weight at `1000000` binds; `1000001` throws; `WBase = 0` with another weight positive
   throws. The existing `AllThreeWeightsZero` and `AllFourWeightsZero` tests still throw, now through the `WBase` rule.
-- **`ResultRerankerTests`:** the largest admitted weights (`WBase` smallest positive and `1000000`, others `1000000`) over
-  every signal-presence combination fuse to a finite score.
+- **`ResultRerankerTests`:** the extreme admitted weights (`WBase` smallest positive and `1000000`, each other weight `0`
+  and `1000000`) over every signal-presence combination fuse to a finite score.
 
 ## Out of scope
 
