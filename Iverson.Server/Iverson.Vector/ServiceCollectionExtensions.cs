@@ -79,10 +79,18 @@ public static class ServiceCollectionExtensions
                 $"(WBase={opts.WBase}, WCentroid={opts.WCentroid}, WDecay={opts.WDecay}, " +
                 $"WPopularity={opts.WPopularity}).");
 
-        if (opts.WBase + opts.WCentroid + opts.WDecay + opts.WPopularity <= 0)
+        if (opts.WBase > 1000000 || opts.WCentroid > 1000000 || opts.WDecay > 1000000 || opts.WPopularity > 1000000)
             throw new InvalidOperationException(
-                $"{VectorRankingOptions.Section}: at least one weight must be greater than zero; " +
-                "all-zero weights make every fused score NaN.");
+                $"{VectorRankingOptions.Section}: weights must be at most 1000000 " +
+                $"(WBase={opts.WBase}, WCentroid={opts.WCentroid}, WDecay={opts.WDecay}, " +
+                $"WPopularity={opts.WPopularity}). Weights matter only relative to one another, and " +
+                "larger values can overflow the fused score to NaN.");
+
+        if (opts.WBase <= 0)
+            throw new InvalidOperationException(
+                $"{VectorRankingOptions.Section}:WBase must be greater than zero (was {opts.WBase}). " +
+                "The base similarity score is the only signal every candidate carries, so a zero WBase " +
+                "leaves a candidate whose other present signals all weigh zero with a NaN fused score.");
 
         if (opts.LambdaSimilar is < 0 or > 1)
             throw new InvalidOperationException(
