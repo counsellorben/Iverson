@@ -187,7 +187,13 @@ public sealed class SchemaRegistry(
                 }
 
                 if (!SchemaRegistrationOrchestrator.IsValidIdentifier(descriptor.TypeName) ||
-                    descriptor.ScalarColumns.Any(c => !SchemaRegistrationOrchestrator.IsValidIdentifier(c.Name)) ||
+                    // The server-owned tenant column is exempt: SchemaBuilder appends the reserved
+                    // "__TenantId" to every descriptor's ScalarColumns, and its underscores fail the
+                    // client identifier pattern. Checked against the fixed reserved name (not the row's
+                    // own tenantColumn value), so a tampered row cannot exempt an arbitrary column.
+                    descriptor.ScalarColumns.Any(c =>
+                        !SchemaDescriptor.IsTenantColumn(c.Name) &&
+                        !SchemaRegistrationOrchestrator.IsValidIdentifier(c.Name)) ||
                     descriptor.FkColumns.Any(c => !SchemaRegistrationOrchestrator.IsValidIdentifier(c.ColumnName)) ||
                     // OrdinalIgnoreCase, not Ordinal: production (SchemaBuilder) always emits
                     // "UUID", but the check's security intent is catching a genuinely wrong SQL
