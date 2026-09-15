@@ -7,6 +7,7 @@ using Iverson.Client.Contracts;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NSubstitute;
@@ -67,13 +68,16 @@ public class PopularitySignalReconciliationWorkerTests
 
     private static PopularitySignalEntry Signal() => new("Article", "Comments");
 
-    private PopularitySignalReconciliationWorker BuildSut(PopularitySignalOptions? options = null)
+    private PopularitySignalReconciliationWorker BuildSut(
+        PopularitySignalOptions? options = null,
+        ILogger<PopularitySignalReconciliationWorker>? logger = null)
     {
         var updater = new PopularitySignalUpdater(
             _search, _vector, _tenantScope, NullLogger<PopularitySignalUpdater>.Instance);
         return new PopularitySignalReconciliationWorker(
             Options.Create(options ?? new PopularitySignalOptions { Signals = [Signal()] }),
-            _registry, _entities, updater, NullLogger<PopularitySignalReconciliationWorker>.Instance);
+            _registry, _entities, updater,
+            logger ?? NullLogger<PopularitySignalReconciliationWorker>.Instance);
     }
 
     private void StubAggregate(long count) =>
@@ -184,5 +188,194 @@ public class PopularitySignalReconciliationWorkerTests
         await _vector.Received(1).SetPayloadAsync(
             _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false), IntelligenceStoreConsumer.KeyToUlong("article-2"),
             Arg.Any<IReadOnlyDictionary<string, object>>());
+    }
+
+    // Fails the first `failures` parents by key, succeeds for the rest — drives UpdateAsync's
+    // aggregate catch, which is the Failed outcome the counter reacts to.
+    private void StubAggregateFailingFor(params string[] failingKeys)
+    {
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(ci =>
+            {
+                var q = ci.ArgAt<SearchQuery?>(1);
+                var key = q?.Clauses.FirstOrDefault()?.Value?.StringVal;
+                return key is not null && failingKeys.Contains(key)
+                    ? Task.FromException<EngagementAggResult?>(new InvalidOperationException("starrocks down"))
+                    : Task.FromResult<EngagementAggResult?>(
+                        new EngagementAggResult("count", AggregationKind.Count, MetricValue: 1));
+            });
+    }
+
+    private static KeyedTenantRow[] Page(int count, int from = 1) =>
+        Enumerable.Range(from, count).Select(i => new KeyedTenantRow($"article-{i}", TenantA)).ToArray();
+
+    // ── Spec test 2, threshold half: an all-Skipped sweep must run to COMPLETION. Skipped is a
+    //    designed no-op (unprovisioned tenant), and it can affect every parent at once — if it
+    //    counted toward the threshold the sweep would abandon itself during normal operation. ──
+    [Fact]
+    public async Task SweepSignalAsync_AllParentsSkipped_RunsToCompletionWithoutAbandoning()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema());
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns((EngagementAggResult?)null);
+
+        var page = Page(8);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>()).Returns(page);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-8", 500, Arg.Any<EntityAccess>()).Returns([]);
+
+        var logs = new RecordingLogger<PopularitySignalReconciliationWorker>();
+        await BuildSut(logger: logs).SweepSignalAsync(Signal(), CancellationToken.None);
+
+        // Paged to exhaustion rather than abandoning at 5.
+        await _entities.Received(1).FetchKeysAndTenantsPagedAsync(
+            Arg.Any<TableSchema>(), "article-8", 500, Arg.Any<EntityAccess>());
+        logs.Entries.Should().NotContain(e => e.Message.Contains("Abandoning sweep"));
+    }
+
+    // ── Spec test 3: five CONSECUTIVE failures abandon the sweep with EXACTLY ONE summary line. ──
+    [Fact]
+    public async Task SweepSignalAsync_FiveConsecutiveFailures_AbandonsWithExactlyOneSummary()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema());
+        StubAggregateFailingFor("article-1", "article-2", "article-3", "article-4", "article-5");
+
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>())
+            .Returns(Page(8));
+
+        var logs = new RecordingLogger<PopularitySignalReconciliationWorker>();
+        await BuildSut(logger: logs).SweepSignalAsync(Signal(), CancellationToken.None);
+
+        var summary = logs.Entries.Should().ContainSingle(e => e.Message.Contains("Abandoning sweep")).Which;
+        summary.Message.Should().Contain("after 5 consecutive parent-update failures");
+        summary.Level.Should().Be(LogLevel.Error);
+
+        // Abandoned mid-page: parents 6-8 were never attempted, and no second page was requested.
+        await _vector.DidNotReceive().SetPayloadAsync(
+            Arg.Any<string>(), IntelligenceStoreConsumer.KeyToUlong("article-6"),
+            Arg.Any<IReadOnlyDictionary<string, object>>());
+        await _entities.DidNotReceive().FetchKeysAndTenantsPagedAsync(
+            Arg.Any<TableSchema>(), "article-8", 500, Arg.Any<EntityAccess>());
+    }
+
+    // ── Spec test 4: scattered, non-consecutive failures must NOT abandon. A systemic fault fails
+    //    every parent; a poisoned row fails one. Cumulative counting would abandon a 400k-parent
+    //    sweep over five unrelated failures — this is the test that pins the difference. ──
+    [Fact]
+    public async Task SweepSignalAsync_ScatteredNonConsecutiveFailures_DoesNotAbandon()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema());
+        // Six failures, never more than two in a row.
+        StubAggregateFailingFor("article-1", "article-2", "article-4", "article-5", "article-7", "article-8");
+
+        var page = Page(9);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>()).Returns(page);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-9", 500, Arg.Any<EntityAccess>()).Returns([]);
+
+        var logs = new RecordingLogger<PopularitySignalReconciliationWorker>();
+        await BuildSut(logger: logs).SweepSignalAsync(Signal(), CancellationToken.None);
+
+        logs.Entries.Should().NotContain(e => e.Message.Contains("Abandoning sweep"));
+        await _entities.Received(1).FetchKeysAndTenantsPagedAsync(
+            Arg.Any<TableSchema>(), "article-9", 500, Arg.Any<EntityAccess>());
+    }
+
+    // ── Fix round 1: five CONSECUTIVE PROPAGATING exceptions — as opposed to the three tests
+    //    above, which all drive Failed via StubAggregateFailingFor throwing INSIDE
+    //    AggregateAsync, caught by UpdateAsync's own try/catch and returned as a normal Failed
+    //    value. That path never touches the seeded `outcome = Failed` local. This test instead
+    //    makes SetPayloadAsync throw a non-NotFound exception, which UpdateAsync does NOT catch
+    //    (contrast the documented NotFound degrade case) — the exception propagates out to the
+    //    worker's own per-row try/catch, which never assigns `outcome`, so only the seed reaching
+    //    the counter-increment branch makes this abandon. Mirrors the pre-existing
+    //    SweepSignalAsync_OneParentUpdateThrows_DoesNotStopSweepForRemainingParents idiom. ──
+    [Fact]
+    public async Task SweepSignalAsync_FiveConsecutivePropagatingExceptions_AbandonsSweep()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema());
+        StubAggregate(1); // must reach the Qdrant write — an unstubbed/null aggregate returns
+                           // Skipped at the null-result branch and never gets there.
+
+        foreach (var key in new[] { "article-1", "article-2", "article-3", "article-4", "article-5" })
+            _vector.SetPayloadAsync(
+                    _tenantScope.ResolveCollectionName("articles", TenantA, isChunks: false), IntelligenceStoreConsumer.KeyToUlong(key),
+                    Arg.Any<IReadOnlyDictionary<string, object>>())
+                .Returns(Task.FromException(new InvalidOperationException("qdrant unavailable")));
+
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>())
+            .Returns(Page(8));
+
+        var logs = new RecordingLogger<PopularitySignalReconciliationWorker>();
+        await BuildSut(logger: logs).SweepSignalAsync(Signal(), CancellationToken.None);
+
+        var summary = logs.Entries.Should().ContainSingle(e => e.Message.Contains("Abandoning sweep")).Which;
+        summary.Message.Should().Contain("after 5 consecutive parent-update failures");
+        summary.Level.Should().Be(LogLevel.Error);
+    }
+
+    // ── A null-tenant row sits between the 2nd and 3rd failures of a five-in-a-row streak. Its
+    //    `continue` fires before the outcome local is even assigned, so it neither resets nor
+    //    increments consecutiveFailures — the streak survives across it and the sweep still
+    //    abandons at 5. Pins that inertness against a refactor that made the guard reset the
+    //    counter (which would need a sixth failure to ever abandon). ──────────────────────────
+    [Fact]
+    public async Task SweepSignalAsync_NullTenantRowInsideFailureStreak_DoesNotResetTheStreak()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema());
+        StubAggregateFailingFor("article-1", "article-2", "article-3", "article-4", "article-5");
+
+        var page = new[]
+        {
+            new KeyedTenantRow("article-1", TenantA),
+            new KeyedTenantRow("article-2", TenantA),
+            new KeyedTenantRow("article-null", null),
+            new KeyedTenantRow("article-3", TenantA),
+            new KeyedTenantRow("article-4", TenantA),
+            new KeyedTenantRow("article-5", TenantA),
+            new KeyedTenantRow("article-6", TenantA),
+            new KeyedTenantRow("article-7", TenantA),
+        };
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>())
+            .Returns(page);
+
+        var logs = new RecordingLogger<PopularitySignalReconciliationWorker>();
+        await BuildSut(logger: logs).SweepSignalAsync(Signal(), CancellationToken.None);
+
+        var summary = logs.Entries.Should().ContainSingle(e => e.Message.Contains("Abandoning sweep")).Which;
+        summary.Message.Should().Contain("after 5 consecutive parent-update failures");
+        summary.Level.Should().Be(LogLevel.Error);
+
+        // Abandoned mid-page: article-6 (past the streak) was never attempted.
+        await _vector.DidNotReceive().SetPayloadAsync(
+            Arg.Any<string>(), IntelligenceStoreConsumer.KeyToUlong("article-6"),
+            Arg.Any<IReadOnlyDictionary<string, object>>());
+    }
+
+    // ── A test logger that records level + formatted message, so the sweep-abandonment
+    //    error's content (not merely its presence) can be asserted. ──────────
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
     }
 }
