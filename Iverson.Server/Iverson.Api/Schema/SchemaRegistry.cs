@@ -195,6 +195,14 @@ public sealed class SchemaRegistry(
                         !SchemaDescriptor.IsTenantColumn(c.Name) &&
                         !SchemaRegistrationOrchestrator.IsValidIdentifier(c.Name)) ||
                     descriptor.FkColumns.Any(c => !SchemaRegistrationOrchestrator.IsValidIdentifier(c.ColumnName)) ||
+                    // The TenantColumn VALUE is interpolated raw into SQL identifiers (the RLS policy
+                    // DDL every startup re-applies, EntityRepository's tenant select, every StarRocks
+                    // tenant predicate), and nothing above validates it unless it happens to be one of
+                    // the ScalarColumns. Reserved name or a valid identifier — NOT pinned to the reserved
+                    // name: legacy rows carrying a client-declared tenant column (e.g. "TenantId") are
+                    // still admitted and scoped by their own column.
+                    !(SchemaDescriptor.IsTenantColumn(descriptor.TenantColumn) ||
+                      SchemaRegistrationOrchestrator.IsValidIdentifier(descriptor.TenantColumn)) ||
                     // OrdinalIgnoreCase, not Ordinal: production (SchemaBuilder) always emits
                     // "UUID", but the check's security intent is catching a genuinely wrong SQL
                     // type (e.g. "TEXT" masquerading as a key column), not policing letter case —
