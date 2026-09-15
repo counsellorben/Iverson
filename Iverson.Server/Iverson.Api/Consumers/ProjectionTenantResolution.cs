@@ -68,16 +68,17 @@ internal static class ProjectionTenantResolution
     // null-tenant snapshot through.
     internal static string? ReadString(JsonElement element, string propertyName)
     {
+        static string? Extract(JsonElement e) =>
+            e.ValueKind == JsonValueKind.String ? e.GetString()
+            : e.ValueKind == JsonValueKind.Null ? null
+            : e.ToString();
+
         if (element.TryGetProperty(propertyName, out var v))
-            return v.ValueKind == JsonValueKind.String ? v.GetString()
-                 : v.ValueKind == JsonValueKind.Null   ? null
-                 : v.ToString();
+            return Extract(v);
 
         var camel = char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
         if (element.TryGetProperty(camel, out var vc))
-            return vc.ValueKind == JsonValueKind.String ? vc.GetString()
-                 : vc.ValueKind == JsonValueKind.Null   ? null
-                 : vc.ToString();
+            return Extract(vc);
 
         return null;
     }
