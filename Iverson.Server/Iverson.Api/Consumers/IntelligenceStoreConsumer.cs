@@ -637,7 +637,8 @@ public sealed class IntelligenceStoreConsumer(
             try
             {
                 prefix = await enrichment.GenerateAsync(
-                    string.Format(EnrichmentPrompts.ChunkContext, documentContext, chunkText), ct);
+                    string.Format(EnrichmentPrompts.ChunkContext,
+                        EnrichmentPrompts.EscapeUntrustedText(documentContext), EnrichmentPrompts.EscapeUntrustedText(chunkText)), ct);
             }
             finally
             {

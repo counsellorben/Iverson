@@ -321,11 +321,11 @@ public sealed class EnrichmentConsumer(
             {
                 case EnrichmentKind.Summary:
                     generated = await enrichment.GenerateAsync(
-                        string.Format(EnrichmentPrompts.Summary, sourceText), ct);
+                        string.Format(EnrichmentPrompts.Summary, EnrichmentPrompts.EscapeUntrustedText(sourceText)), ct);
                     break;
                 case EnrichmentKind.Keywords:
                     generated = await enrichment.GenerateAsync(
-                        string.Format(EnrichmentPrompts.Keywords, sourceText), ct);
+                        string.Format(EnrichmentPrompts.Keywords, EnrichmentPrompts.EscapeUntrustedText(sourceText)), ct);
                     break;
                 case EnrichmentKind.Extracted:
                     // EnrichmentPrompts.Extraction carries two slots: {0} is the per-target hint
@@ -335,7 +335,7 @@ public sealed class EnrichmentConsumer(
                     try
                     {
                         generated = await enrichment.GenerateJsonAsync(
-                            string.Format(EnrichmentPrompts.Extraction, target.Hint, sourceText), ct);
+                            string.Format(EnrichmentPrompts.Extraction, target.Hint, EnrichmentPrompts.EscapeUntrustedText(sourceText)), ct);
                     }
                     catch (InvalidOperationException ex)
                     {
