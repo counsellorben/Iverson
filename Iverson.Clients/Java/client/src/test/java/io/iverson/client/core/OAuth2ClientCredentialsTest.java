@@ -18,10 +18,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Closes CSR finding #2 for the Java SDK: {@link OAuth2ClientCredentials} must refuse to send
- * client credentials to a non-https token endpoint unless the caller has explicitly opted in via
- * {@code allowInsecureCredentials=true}, mirroring the analogous fix applied to the .NET/Python/
- * Go/TypeScript SDKs.
+ * Closes CSR round 4 finding #2 for the Java SDK (plaintext token-endpoint rejection):
+ * {@link OAuth2ClientCredentials} must refuse to send client credentials to a non-https token
+ * endpoint unless the caller has explicitly opted in via {@code allowInsecureCredentials=true},
+ * mirroring the analogous fix applied to the .NET/Python/Go/TypeScript SDKs. Also covers CSR
+ * round 5 finding #5 (explicit redirect-policy pinning): the underlying {@link java.net.http.HttpClient}
+ * must not silently follow a redirect away from the configured token endpoint.
  */
 class OAuth2ClientCredentialsTest {
 

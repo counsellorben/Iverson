@@ -72,7 +72,9 @@ jobs:
         with:
           java-version: "21"
           distribution: "temurin"
-      - run: mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7
+      - run: mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
 
   pip-audit-python-sdk:
     runs-on: ubuntu-latest

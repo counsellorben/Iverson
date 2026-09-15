@@ -56,4 +56,23 @@
       </dependency>
     </dependencies>
   </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <!--
+          Pinned explicitly (CSR round-5 finding #3 follow-up): CI invokes this
+          plugin as a bare `org.owasp:dependency-check-maven:check` goal with no
+          version qualifier, which floats to whatever is newest at build time.
+          Confirmed empirically it currently resolves to 13.0.0 — pin it so a
+          future plugin release can't silently change CI's gating behavior.
+        -->
+        <plugin>
+          <groupId>org.owasp</groupId>
+          <artifactId>dependency-check-maven</artifactId>
+          <version>13.0.0</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
 </project>

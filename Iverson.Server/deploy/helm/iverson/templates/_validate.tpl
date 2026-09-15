@@ -22,6 +22,32 @@ silently producing a broken Ingress.
 */}}
 {{- define "iverson.validateNoPlaceholders" -}}
 {{- /*
+Fatal guard against a shell-breakout ingressHost value, on EVERY profile
+regardless of scheme (CSR round-5 finding #4).
+
+Unlike the placeholder-sentinel and TLS-secret checks below (which really are
+https/cloud-deployment-only concerns), this one runs unconditionally: the sink
+it protects — charts/admin-ui/templates/deployment.yaml's OIDC_AUTHORITY /
+OIDC_ORIGIN env vars, which docker-entrypoint.sh's `envsubst` rewrites
+straight into nginx.conf — templates global.ingressHost into a
+shell-substituted config file with no scheme gate of its own. An http profile
+(e.g. values-local.yaml, which defaults externalScheme to "http") reaches the
+exact same vulnerable sink, so this guard must fire there too.
+
+Confirmed empirically: `helm template` with values-aws.yaml's placeholders
+resolved to a real hostname/ARN renders clean ("PASS: real value accepted"),
+and re-injecting a single-quoted hostile ingressHost
+(evil.com"; foo bar;) is rejected with this guard's fail message on BOTH an
+https profile (values-aws.yaml) and an http profile (values-local.yaml)
+("PASS: hostile value rejected") — CSR round-5 finding #4.
+*/}}
+{{- if eq (dig "ingressHost" "" .Values.global) "" }}
+{{- fail "global.ingressHost is not set — every profile must set a real external hostname (CSR round-5 finding #4)." }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$" (dig "ingressHost" "" .Values.global)) }}
+{{- fail (printf "global.ingressHost %q is not a bare hostname — it must not contain quotes, semicolons, or other characters that could break out of a shell-substituted config file (CSR round-5 finding #4)." (dig "ingressHost" "" .Values.global)) }}
+{{- end }}
+{{- /*
 CSR round-3 finding #11 (part 1): api.ingress.host used to duplicate
 global.ingressHost out of lockstep with no enforcement. Fixed by removing the
 duplicate value entirely — charts/api/templates/ingress.yaml now templates
@@ -32,16 +58,6 @@ nothing left to drift and no equality check is needed here.
 {{- if eq (dig "externalScheme" "http" .Values.global) "https" }}
 {{- if eq (dig "ingressHost" "" .Values.global) "iverson.example.com" }}
 {{- fail (printf "global.ingressHost is still the shipped placeholder %q — set it to the real external hostname before deploying a cloud/https profile (CSR round-2 finding #3)." (dig "ingressHost" "" .Values.global)) }}
-{{- end }}
-{{- /*
-Confirmed empirically: `helm template` with values-aws.yaml's placeholders
-resolved to a real hostname/ARN renders clean ("PASS: real value accepted"),
-and re-injecting a single-quoted hostile ingressHost
-(evil.com"; foo bar;) is rejected with this guard's fail message
-("PASS: hostile value rejected") — CSR round-5 finding #4.
-*/}}
-{{- if not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$" (dig "ingressHost" "" .Values.global)) }}
-{{- fail (printf "global.ingressHost %q is not a bare hostname — it must not contain quotes, semicolons, or other characters that could break out of a shell-substituted config file (CSR round-5 finding #4)." (dig "ingressHost" "" .Values.global)) }}
 {{- end }}
 {{- $placeholderRe := "^<.*>$" }}
 {{/*

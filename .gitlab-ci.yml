@@ -154,9 +154,11 @@ owasp-dependency-check-java:
   stage: dependency-scan
   image: maven:3.9-eclipse-temurin-21
   extends: .rules-dependency-scan
+  variables:
+    NVD_API_KEY: $NVD_API_KEY
   script:
     - cd Iverson.Clients/Java
-    - mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7
+    - mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
 
 pip-audit-python-sdk:
   stage: dependency-scan
