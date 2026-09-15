@@ -27,7 +27,7 @@ public final class OAuth2ClientCredentials extends CallCredentials {
     private final String tokenEndpoint;
     private final String scope;
     private final boolean allowInsecureCredentials;
-    private final HttpClient httpClient = HttpClient.newHttpClient();
+    private final HttpClient httpClient = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
     private final ReentrantLock lock = new ReentrantLock();
 
     private volatile String cachedToken;
