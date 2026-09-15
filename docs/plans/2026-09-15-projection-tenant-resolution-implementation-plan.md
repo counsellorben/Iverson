@@ -10,7 +10,7 @@
 
 **Tech stack:** .NET 10, System.Text.Json, xUnit 2.9.3, NSubstitute 5.3.0 (+ `NSubstitute.ExceptionExtensions`), FluentAssertions 8.11.0.
 
-All paths below are relative to `Iverson.Server/`, and every `dotnet` command runs from `Iverson.Server/`.
+All paths below are relative to `Iverson.Server/`, and every `dotnet` command runs from `Iverson.Server/`. The exception is the Commit steps: their `git add` paths are relative to the repo root, so run `git` from the repo root.
 
 ---
 
@@ -99,7 +99,9 @@ All paths below are relative to `Iverson.Server/`, and every `dotnet` command ru
 | 18 | File path | The Rerender "THREE producers" comment block is `DocumentRerenderConsumer.cs:57-66`, directly above `var tenantId = await ResolveTenantIdAsync(...)` (`:67`) | Read of `:50-68` |
 | 19 | Command | The full-suite completion gate needs Docker, because `Iverson.Api.Tests` uses Testcontainers | `grep -l Testcontainers Iverson.Api.Tests/Iverson.Api.Tests.csproj` → matches |
 | 20 | Convention | Commit messages are lowercase imperative with no conventional-commit prefix; `docs/plans/` is gitignored (`git add -f` is needed for the plan only, not for code) | `git log --format=%s -8` (e.g. `resolve Value ambiguity from FluentAssertions 8.11.0 in .NET test projects`); `git check-ignore -v docs/plans/x.md` → `.gitignore:49:**/docs/plans/` |
-| 21 | Code validity | The new `row` local introduces no name collision in `IntelligenceStoreConsumer.HandleAsync` or `EngagementStoreConsumer.HandleUpsertAsync` (Enrichment already names its local `row`), and every replaced or deleted range's boundary lines are as cited | `awk` for `\<row\>` over `IntelligenceStoreConsumer.cs:73-401` and `EngagementStoreConsumer.cs:43-95` → comments only. Boundary reads: `EnrichmentConsumer.cs:295-302` (tenant `if` closes at `:302`); `PopularitySignalConsumerTests.cs:474`, `DocumentRerenderConsumerTests.cs:541`, `IntelligenceStoreConsumerTests.cs:2375` and `TenantLifecycleGrpcServiceTests.cs:97` close their tests; `IntelligenceStoreConsumerTests.cs:763` is `RegisterAsync(twoVectorSchema)` |
+| 21 | Code validity | The new `row` local introduces no name collision in `IntelligenceStoreConsumer.HandleAsync` or `EngagementStoreConsumer.HandleUpsertAsync` (Enrichment already names its local `row`), and every replaced or deleted range's boundary lines are as cited | `awk` for `\<row\>` over `IntelligenceStoreConsumer.cs:73-401` and `EngagementStoreConsumer.cs:43-95` → comments only. Boundary reads: `EnrichmentConsumer.cs:295-302` (tenant `if` closes at `:302`); `PopularitySignalConsumerTests.cs:474`, `DocumentRerenderConsumerTests.cs:541`, `IntelligenceStoreConsumerTests.cs:2375` and `TenantLifecycleGrpcServiceTests.cs:97` close their tests; `IntelligenceStoreConsumerTests.cs:763` is `RegisterAsync(twoVectorSchema)`; `IntelligenceStoreConsumerTests.cs:463` closes `HandleCreated_WithOwnerFieldAndNoAuthoritativeRow_OmitsOwnerKeyFromChunkPayload` (`[Fact]` at `:423`) |
+| 22 | Command | The Commit steps' `git add` paths resolve from the repo root and not from `Iverson.Server/` | From the repo root, `git add -n Iverson.Server/Iverson.Api/Consumers/DocumentRerenderConsumer.cs` → exit 0; from `Iverson.Server/` → `fatal: pathspec 'Iverson.Server/Iverson.Api/Consumers/DocumentRerenderConsumer.cs' did not match any files` |
+| 23 | Code validity | Task 6's red-step diagnostics are as stated | Build probe in a throwaway worktree at `4024cca`, referencing `IntelligenceTenantScope.NoTenantSentinel` from `Iverson.Api.Tests`: `error CS0117: 'IntelligenceTenantScope' does not contain a definition for 'NoTenantSentinel'`. `TenantLifecycleGrpcService.cs:44` calls `context.GetHttpContext().User` after the id check and insert; `Helpers/TestServerCallContext.cs:26-31` sets `"__HttpContext"` only when a `user` is passed |
 
 ## Tasks
 
@@ -779,14 +781,14 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `Iverson.Api/Consumers/IntelligenceStoreConsumer.cs:113-127`, `:156`, `:174`, `:197-216`, `:361-365`, `:532-546`, `:571-593`
-- Test: `Iverson.Api.Tests/Consumers/IntelligenceStoreConsumerTests.cs:423-462` (rewrite), `:740-786` (fixture), `:2322-2375` (delete), plus one new test
+- Test: `Iverson.Api.Tests/Consumers/IntelligenceStoreConsumerTests.cs:423-463` (rewrite), `:740-786` (fixture), `:2322-2375` (delete), plus one new test
 
 **Interfaces:**
 - Consumes: `ProjectionTenantResolution.FetchAuthoritativeRowAsync`, `ProjectionTenantResolution.TenantFromSnapshot`, `AuthoritativeRow.TenantId`/`.ReadString` (Task 1).
 
 - [ ] **Step 1: Rewrite, fix the fixture, delete, and add the tests**
 
-**(a)** Replace the whole `HandleCreated_WithOwnerFieldAndNoAuthoritativeRow_OmitsOwnerKeyFromChunkPayload` test (`:423-462`) with:
+**(a)** Replace the whole `HandleCreated_WithOwnerFieldAndNoAuthoritativeRow_OmitsOwnerKeyFromChunkPayload` test (`:423-463`) with:
 
 ```csharp
     [Fact]
@@ -949,7 +951,7 @@ Delete the comment `:571-575` (`// Re-derives the ownership value from the autho
 - [ ] **Step 6: Run the tests and confirm they pass**
 
 Run: `dotnet test Iverson.Api.Tests --filter "FullyQualifiedName~IntelligenceStoreConsumerTests"`
-Expected: `Failed: 0` (67 tests: 66 − 1 deleted + 2 added).
+Expected: `Failed: 0` (66 tests: 66 − 1 replaced by (a) + 2 added by (a) − 1 deleted by (c)).
 
 These tests must still pass unchanged:
 - `HandleCreated_WithForgedOwnerValueInPayload_ChunkPayloadUsesAuthoritativeValueNotPayloadValue`;
@@ -1020,7 +1022,7 @@ Add `using Iverson.Vector;` to the usings of `TenantLifecycleGrpcServiceTests.cs
 - [ ] **Step 2: Run the test and confirm it fails**
 
 Run: `dotnet test Iverson.Api.Tests --filter "FullyQualifiedName~TenantLifecycleGrpcServiceTests"`
-Expected: the build fails with `CS0122` ("`IntelligenceTenantScope.NoTenantSentinel` is inaccessible due to its protection level").
+Expected: the build fails with `CS0117` (`'IntelligenceTenantScope' does not contain a definition for 'NoTenantSentinel'`). A private member of a referenced assembly isn't imported, so this is CS0117, not CS0122.
 
 - [ ] **Step 3: Make the sentinel public**
 
@@ -1039,7 +1041,7 @@ with:
 - [ ] **Step 4: Run the test and confirm it now fails on behaviour**
 
 Run: `dotnet test Iverson.Api.Tests --filter "FullyQualifiedName~TenantLifecycleGrpcServiceTests"`
-Expected: 1 failure, `CreateTenant_NoTenantSentinelId_ThrowsInvalidArgumentAndTouchesNoDependency` ("no exception was thrown"). The other 10 pass.
+Expected: 1 failure, `CreateTenant_NoTenantSentinelId_ThrowsInvalidArgumentAndTouchesNoDependency` (`Expected a <Grpc.Core.RpcException> to be thrown, but found <System.InvalidOperationException>: Could not get HttpContext from ServerCallContext`; with nothing rejecting the id, the call reaches the audit log, and the test's context has no HttpContext). The other 10 pass.
 
 - [ ] **Step 5: Reject the sentinel in `CreateTenant`**
 
@@ -1078,7 +1080,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 This needs Docker running for the Testcontainers-based tests.
 
 Run: `dotnet test Iverson.Api.Tests --filter "FullyQualifiedName~Consumers&FullyQualifiedName!~KafkaOrdering"`
-Expected: `Failed: 0`. Before counting, confirm the matched set with `--list-tests`: 165 today, plus 15 from Task 1, plus 1 from Task 3, plus 1 net from Task 5, for 182.
+Expected: `Failed: 0`. Before counting, confirm the matched set with `--list-tests`: 165 today, plus 15 from Task 1, plus 1 from Task 3 (one test replaced by two), and 0 net from Task 5 (one test replaced by two, one deleted), for 181.
 
 Run: `dotnet test Iverson.Api.Tests`
 Expected: `Failed: 0`. If anything fails, report the failing test names and output. Do not weaken or skip tests to make the gate pass.
