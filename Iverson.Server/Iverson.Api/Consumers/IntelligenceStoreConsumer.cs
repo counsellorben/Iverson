@@ -110,21 +110,22 @@ public sealed class IntelligenceStoreConsumer(
 
         var pointId = KeyToUlong(ev.Key);
 
-        // Re-derive the ownership value from the authoritative Postgres row rather than
-        // trusting the event payload's own value for it — the payload is unsigned JSON
-        // and this value feeds Qdrant's read-time row authorization filtering (CSR #7).
-        var ownerField = schema.Authorization?.OwnerField;
-        var authoritativeOwnerValue = ownerField is not null
-            ? await FetchAuthoritativeOwnerValueAsync(schema, ownerField, ev.Key, ct)
-            : null;
+        // Tenant and owner come from the authoritative Postgres row, never the unsigned event
+        // payload (CSR #7): the tenant routes which physical Qdrant collection this point is
+        // written to, and the owner feeds Qdrant's read-time row authorization filtering. One
+        // read serves both, and the chunk and centroid blocks below reuse these values.
+        var row = await ProjectionTenantResolution.FetchAuthoritativeRowAsync(entities, schema, ev.Key, "[Intelligence]");
+        if (row is null)
+        {
+            logger.LogWarning(
+                "[Intelligence] Dropped event — no authoritative row for type={Type} key={Key}",
+                ev.TypeName.SanitizeForLog(), ev.Key.SanitizeForLog());
+            return;
+        }
 
-        // Same re-derivation, for the tenant boundary (qdrant-tenant-collection-isolation):
-        // the tenant value routes which physical Qdrant collection this point is written to,
-        // so it must come from the authoritative Postgres row, not the unsigned event payload.
-        // Computed unconditionally (not gated on VectorFields.Count > 0) because a chunks-only
-        // schema needs it too — both the vector- and chunk-upsert blocks below reuse this value.
-        var authoritativeTenantValue =
-            await FetchAuthoritativeOwnerValueAsync(schema, schema.TenantColumn, ev.Key, ct);
+        var ownerField = schema.Authorization?.OwnerField;
+        var authoritativeOwnerValue = ownerField is not null ? row.ReadString(ownerField) : null;
+        var authoritativeTenantValue = row.TenantId;
 
         // ── Named vector upsert (entity-level embeddings) ──────────────────────
         var objectPointWritten = false;
@@ -153,8 +154,7 @@ public sealed class IntelligenceStoreConsumer(
             {
                 var pointPayload = BuildObjectPointPayload(ev.Key, schema, payload, ownerField, authoritativeOwnerValue);
                 var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: false);
-                if (authoritativeTenantValue is not null)
-                    await EnsureCollectionAsync(SchemaBuilder.ToCollectionSchema(schema) with { CollectionName = collectionName });
+                await EnsureCollectionAsync(SchemaBuilder.ToCollectionSchema(schema) with { CollectionName = collectionName });
 
                 using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(collectionName, readOnly: false)))
                 {
@@ -171,8 +171,7 @@ public sealed class IntelligenceStoreConsumer(
         if (schema.ChunkFields.Count > 0)
         {
             var chunksCollectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: true);
-            if (authoritativeTenantValue is not null)
-                await EnsureCollectionAsync(SchemaBuilder.ToChunkCollectionSchema(schema) with { CollectionName = chunksCollectionName });
+            await EnsureCollectionAsync(SchemaBuilder.ToChunkCollectionSchema(schema) with { CollectionName = chunksCollectionName });
 
             // Contextual prefixes are conditioned on the object's generated summary. It lives on
             // the authoritative row, so it is fetched at most once per event and only when some
@@ -196,23 +195,7 @@ public sealed class IntelligenceStoreConsumer(
                     string? text;
                     if (cf.PropertyName == "Document")
                     {
-                        // authoritativeTenantValue can still be null even though every registered
-                        // type carries a tenant column — FetchAuthoritativeOwnerValueAsync
-                        // returns null when the authoritative Postgres row is gone by the time
-                        // this event is processed. That is still safe to render through: a null
-                        // tenant becomes a SQL NULL RLS GUC, so relation fetches return zero rows
-                        // and the document renders from payload scalars only — but it is a
-                        // silently degraded document, so log it rather than assert it away.
-                        if (authoritativeTenantValue is null)
-                        {
-                            logger.LogWarning(
-                                "[Intelligence] Rendering document for type={Type} key={Key} with no " +
-                                "authoritative tenant value — relation-backed placeholders will render empty.",
-                                schema.TypeName.SanitizeForLog(), ev.Key.SanitizeForLog());
-                        }
-
-                        text = await documentRenderer.RenderAsync(
-                            schema, payload, authoritativeTenantValue ?? string.Empty, ct);
+                        text = await documentRenderer.RenderAsync(schema, payload, authoritativeTenantValue, ct);
                     }
                     else
                     {
@@ -358,11 +341,7 @@ public sealed class IntelligenceStoreConsumer(
         // silently destroy its *_vector values. UpdateNamedVectorsAsync is therefore always tried
         // first when we didn't just write the point ourselves; only a genuine "point not found"
         // (surfaced by Qdrant as gRPC NotFound) falls back to upsert.
-        // Gated on authoritativeTenantValue is not null, unlike the chunk upserts above (:239,
-        // ungated) — inherited asymmetry, not accidental: on the documented delete-then-recreate
-        // race (authoritative row missing), chunks are still written but the centroid is silently
-        // dropped. Plan-conformant; not changed here.
-        if (centroids.Count > 0 && authoritativeTenantValue is not null)
+        if (centroids.Count > 0)
         {
             var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: false);
             if (!objectPointWritten)
@@ -532,18 +511,7 @@ public sealed class IntelligenceStoreConsumer(
         // Source the tenant value from the pre-delete row snapshot ObjectMappingGrpcService.Delete
         // published in ev.PayloadJson — the row is already gone from Postgres by the time a delete
         // event is consumed, so there is no authoritative row left to re-fetch (unlike HandleAsync).
-        JsonElement payload;
-        try
-        {
-            using var doc = JsonDocument.Parse(ev.PayloadJson);
-            payload = doc.RootElement.Clone();
-        }
-        catch (JsonException ex)
-        {
-            throw new PoisonMessageException($"[Intelligence] Malformed payload JSON type={ev.TypeName} key={key}", ex);
-        }
-
-        var tenantValue = ExtractString(payload, schema.TenantColumn);
+        var tenantValue = ProjectionTenantResolution.TenantFromSnapshot(ev.PayloadJson, schema, ev.Key, "[Intelligence]");
 
         var pointId = KeyToUlong(ev.Key);
 
@@ -567,30 +535,6 @@ public sealed class IntelligenceStoreConsumer(
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    // Re-derives the ownership value from the authoritative Postgres row instead of trusting
-    // the event payload's own value for it (CSR #7 — event JSON is unsigned and this value
-    // feeds Qdrant's read-time row authorization filtering). Fails closed: if the row can't be
-    // found (e.g. a delete-then-recreate race), the owner value is treated as absent rather
-    // than falling back to the unvalidated payload value.
-    private async Task<string?> FetchAuthoritativeOwnerValueAsync(
-        SchemaDescriptor schema, string ownerField, string key, CancellationToken ct)
-    {
-        // Cross-tenant by necessity: the authoritative row is the only trustworthy source for
-        // this value, and the event payload it would otherwise be scoped by is unsigned.
-        var rowJson = await entities.FetchByKeyAsync(
-            SchemaBuilder.ToTableSchema(schema), key, EntityAccess.CrossTenantMaintenance);
-        if (rowJson is null)
-        {
-            logger.LogWarning(
-                "[Intelligence] Owner re-derivation found no authoritative row for type={Type} key={Key} — omitting owner value.",
-                schema.TypeName.SanitizeForLog(), key);
-            return null;
-        }
-
-        using var doc = JsonDocument.Parse(rowJson);
-        return ExtractString(doc.RootElement, ownerField);
-    }
 
     // Locates the object's summary via the type's EnrichmentTargets and reads it out of the
     // authoritative row. Returns null when the type declares no summary target, when the row is

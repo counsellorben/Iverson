@@ -421,45 +421,53 @@ public class IntelligenceStoreConsumerTests
     }
 
     [Fact]
-    public async Task HandleCreated_WithOwnerFieldAndNoAuthoritativeRow_OmitsOwnerKeyFromChunkPayload()
+    public async Task HandleCreated_WithNoAuthoritativeRow_DropsWithoutAnyVectorWrite()
     {
-        // Fail-closed: if the authoritative row can't be found (e.g. a delete-then-recreate race),
-        // do NOT fall back to the event payload's unvalidated owner value — omit the key entirely.
-        var schema = SchemaFixtures.ArticleSchema() with
-        {
-            Authorization = new AuthorizationRules(
-                "AuthorId",
-                new List<RowPermission> { new("test-bypass", true, true, true) },
-                new List<FieldPermission>())
-        };
-        await _registry.RegisterAsync(schema);
+        // Case (i): the authoritative row is gone — the entity was deleted after this write, and
+        // its Deleted event follows and cleans up. The event is dropped before any embedding or
+        // Qdrant call: no sentinel-collection write, no retry, no dead letter.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         _entities
             .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns((string?)null);
 
-        var longBody = new string('x', 3000);
-        var payload  = $$$"""{"Title":"Test","Body":"{{{longBody}}}","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
         var ev = new EntityEvent(
             EventType: EntityEventType.Created, TypeName: "Article", Key: Guid.NewGuid().ToString(),
-            PayloadJson: payload, TraceId: "trace-missing-row", SchemaVersion: "1",
+            PayloadJson: """{"Title":"Test","Body":"Body text"}""", TraceId: "trace-missing-row", SchemaVersion: "1",
             OccurredAt: DateTimeOffset.UtcNow, TargetStores: StoreTarget.Intelligence);
 
-        // The same stub now also serves the tenant fetch, so "no authoritative row found" means
-        // no tenant value either — the write fails closed to the sentinel (no-tenant) collection.
-        IReadOnlyDictionary<string, object>? capturedPayload = null;
-        _vectorWrite
-            .UpsertNamedAsync(
-                "articles_chunks___no_tenant_claim___74zc32639tuhty7qvmca0gtmn",
-                Arg.Any<ulong>(),
-                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
-                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
-            .Returns(Task.CompletedTask);
+        var act = () => BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        await act.Should().NotThrowAsync();
+        _ = _embedding.DidNotReceiveWithAnyArgs().EmbedDocumentAsync(default!, default);
+        await _vectorSchema.DidNotReceiveWithAnyArgs().ApplyCollectionAsync(default!);
+        await _vectorWrite.DidNotReceiveWithAnyArgs().UpsertNamedAsync(default!, default, default!, default);
+        await _vectorWrite.DidNotReceiveWithAnyArgs().DeleteByFilterAsync(default!, default!);
+    }
 
-        capturedPayload.Should().NotBeNull();
-        capturedPayload!.Should().NotContainKey("authorId");
+    [Fact]
+    public async Task HandleDeleted_WithNoTenantInSnapshot_ThrowsPoisonAndDeletesNothing()
+    {
+        // The snapshot is the raw pre-delete row, which carries the tenant by construction; one
+        // without it is an invariant violation. It used to delete against the sentinel collection.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Deleted,
+            TypeName:      "Article",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   "{}",
+            TraceId:       "trace-no-tenant-delete",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        var act = () => BuildSut().HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().ThrowAsync<PoisonMessageException>();
+        await _vectorWrite.DidNotReceiveWithAnyArgs().DeleteAsync(default!, default);
+        await _vectorWrite.DidNotReceiveWithAnyArgs().DeleteByFilterAsync(default!, default!);
     }
 
     [Fact]
@@ -761,6 +769,11 @@ public class IntelligenceStoreConsumerTests
             TenantColumn   = SchemaDescriptor.TenantColumnName
         };
         await _registry.RegisterAsync(twoVectorSchema);
+
+        // This schema names the reserved tenant column, but the constructor's row stub carries the
+        // tenant under "TenantId" — without this override the row would have no tenant value.
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
+                 .Returns($$"""{"{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
 
         _embedding
             .EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
@@ -2316,61 +2329,6 @@ public class IntelligenceStoreConsumerTests
             "templated_docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1",
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("body_vector")),
-            Arg.Any<IReadOnlyDictionary<string, object>?>());
-    }
-
-    [Fact]
-    public async Task HandleCreated_AuthoritativeTenantValueMissing_RendersDocumentWithoutThrowingAndLogsWarning()
-    {
-        // final-review Finding 5: authoritativeTenantValue can be null independent of whether
-        // TenantColumn is configured — FetchAuthoritativeOwnerValueAsync also returns null when
-        // the authoritative Postgres row is simply gone (e.g. a delete-then-recreate race). The
-        // previous `authoritativeTenantValue!` asserted that away; this proves the render still
-        // completes safely (from payload scalars only) and the degradation is now logged rather
-        // than silent.
-        await _registry.RegisterAsync(TemplatedDocSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
-                 .Returns((string?)null);
-
-        var recordingLogger = new RecordingLogger<IntelligenceStoreConsumer>();
-        var sut = new IntelligenceStoreConsumer(
-            _consumer,
-            _vectorSchema,
-            _vectorWrite,
-            _resolver,
-            _registry,
-            _entities,
-            new DocumentRenderer(_registry, _entities),
-            new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
-            _enrichment,
-            Options.Create(_enrichmentOptions),
-            recordingLogger);
-
-        var key = Guid.NewGuid().ToString();
-        var ev = TemplatedDocEvent(
-            key,
-            """{"Body":"some body text","Tagline":"a tagline","TenantId":"test-tenant"}""",
-            "trace-null-tenant");
-
-        var act = () => sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
-        await act.Should().NotThrowAsync();
-
-        // Distinct from FetchAuthoritativeOwnerValueAsync's own "no authoritative row" warning
-        // (also logged here, on the tenant re-derivation call, since the row is null) — assert
-        // on wording unique to the document-render degradation warning itself, so this doesn't
-        // pass merely because the pre-existing re-derivation log fired.
-        recordingLogger.Entries.Should().Contain(e =>
-            e.Level == LogLevel.Warning &&
-            e.Message.Contains("Rendering document") &&
-            e.Message.Contains("TemplatedDoc") &&
-            e.Message.Contains(key));
-
-        // The document still rendered from payload scalars alone and was chunked/upserted, just
-        // routed to the no-tenant-claim collection rather than dropped.
-        await _vectorWrite.Received().UpsertNamedAsync(
-            Arg.Is<string>(c => c.StartsWith("templated_docs_chunks_")),
-            Arg.Any<ulong>(),
-            Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
     }
 
