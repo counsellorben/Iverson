@@ -50,7 +50,11 @@ helm-template-kubeconform:
     - |
       for values in values-local values-aws values-azure values-gcp; do
         echo "kubeconform ($values.yaml)"
-        helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" \
+        extra_arg=""
+        if [ -f "Iverson.Server/deploy/helm/iverson/$values.ci-override.yaml" ]; then
+          extra_arg="-f Iverson.Server/deploy/helm/iverson/$values.ci-override.yaml"
+        fi
+        helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" $extra_arg \
           | kubeconform -kubernetes-version 1.30.0 -summary -ignore-missing-schemas
       done
     # helm lint only proves the rendered YAML parses; schema validation is what catches
