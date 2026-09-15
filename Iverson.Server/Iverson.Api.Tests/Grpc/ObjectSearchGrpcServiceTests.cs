@@ -4685,4 +4685,125 @@ public class ObjectSearchGrpcServiceTests
         written.Should().HaveCount(2);
         written.Select(w => w.ParentKey).Should().Equal("parent-fresh", "parent-old");
     }
+
+    // RecencyBoost overflow. The validator checks only finite and non-negative, so a value near
+    // double.MaxValue binds cleanly; count + RecencyBoost × D then overflows to +∞ for any document
+    // with recent citations, ∞ / (∞ + SaturationPoint) is NaN, and that NaN poisons the fused score
+    // even at WPopularity = 0 (0 × NaN = NaN) and sorts below every real score. These two tests are
+    // deliberately fix-agnostic: a misconfiguration must either be REJECTED at startup (the throw
+    // must name RecencyBoost, so an unrelated bind failure cannot pass the test) or, when the
+    // validator admits it, the options it actually produced must never yield a non-finite score.
+    private static PopularitySignalOptions? BindRecencyBoostOrRejected(double recencyBoost)
+    {
+        var config = Microsoft.Extensions.Configuration.MemoryConfigurationBuilderExtensions.AddInMemoryCollection(
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder(),
+            new Dictionary<string, string?> { ["PopularitySignal:RecencyBoost"] = recencyBoost.ToString("R") }).Build();
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        try
+        {
+            services.AddPopularitySignalOptions(config);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("RecencyBoost"))
+        {
+            return null;
+        }
+        var provider = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
+        return Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
+            .GetRequiredService<IOptions<PopularitySignalOptions>>(provider).Value;
+    }
+
+    [Fact]
+    public async Task SearchSimilar_RecencyBoostTheValidatorAdmits_NeverEmitsANonFiniteScore()
+    {
+        var popularity = BindRecencyBoostOrRejected(double.MaxValue);
+        if (popularity is null) return; // rejected at startup: the misconfiguration fails loudly
+
+        popularity.Signals = [new PopularitySignalEntry("Article", "Author")];
+        popularity.SaturationPoint = 100.0;
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WBase = 0.45, WPopularity = 5.0 })),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 1.00, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(popularity),
+            EngagementQueryLimitOptions.Default);
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        var currentBucket = DateTime.UtcNow.ToString("yyyy-MM");
+        var results = new List<VectorSearchResult>
+        {
+            // Recent citations in the current month: D ≈ 100, so RecencyBoost × D overflows.
+            new(1, 0.90, new Dictionary<string, string>
+            {
+                ["title"] = "recently-cited", ["authorCount"] = "5", ["authorCountBuckets"] = $"{currentBucket}:100",
+            }),
+            new(2, 0.50, new Dictionary<string, string> { ["title"] = "no-series", ["authorCount"] = "5" }),
+        };
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written.Should().OnlyContain(r => float.IsFinite(r.Score));
+    }
+
+    [Fact]
+    public async Task SearchChunks_RecencyBoostTheValidatorAdmits_NeverEmitsANonFiniteScore()
+    {
+        var popularity = BindRecencyBoostOrRejected(double.MaxValue);
+        if (popularity is null) return; // rejected at startup: the misconfiguration fails loudly
+
+        popularity.Signals = [new PopularitySignalEntry("Article", "Author")];
+        popularity.SaturationPoint = 100.0;
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WBase = 0.45, WPopularity = 5.0 })),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(popularity),
+            EngagementQueryLimitOptions.Default);
+
+        var queryVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
+        const string parent = "parent-1";
+        var parentId = InvokeKeyToUlong(parent);
+        var currentBucket = DateTime.UtcNow.ToString("yyyy-MM");
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   new(1, 0.70, new Dictionary<string, string> { ["text"] = "c1", ["parent_id"] = parent })
+               }.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
+        _vector.RetrievePayloadAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
+                   new Dictionary<ulong, IReadOnlyDictionary<string, string>>
+                   {
+                       [parentId] = new Dictionary<string, string>
+                       {
+                           ["authorCount"] = "5", ["authorCountBuckets"] = $"{currentBucket}:100",
+                       }
+                   });
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written.Should().OnlyContain(r => float.IsFinite(r.Score));
+    }
 }
