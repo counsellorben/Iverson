@@ -19,7 +19,7 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
-    <PackageReference Include="Confluent.Kafka" Version="2.14.2" />
+    <PackageReference Include="Confluent.Kafka" Version="2.15.1" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Iverson.Events/Iverson.Events.csproj" />
