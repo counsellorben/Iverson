@@ -55,13 +55,14 @@ public sealed class EngagementStoreConsumer(
                 $"[Engagement] No schema registered for type '{ev.TypeName}' (key '{key}') after a forced registry reload.");
         }
 
-        var authoritativeTenantValue =
-            await FetchAuthoritativeOwnerValueAsync(schema, schema.TenantColumn, ev.Key, ct);
-        if (authoritativeTenantValue is null)
+        var row = await ProjectionTenantResolution.FetchAuthoritativeRowAsync(entities, schema, ev.Key, "[Engagement]");
+        if (row is null)
         {
             logger.LogWarning("[Engagement] Dropped upsert — no authoritative tenant value for type={Type} key={Key}", ev.TypeName.SanitizeForLog(), key);
             return;
         }
+
+        var authoritativeTenantValue = row.TenantId;
 
         var srSchema = SchemaBuilder.ToEngagementTableSchema(schema);
 
@@ -78,7 +79,7 @@ public sealed class EngagementStoreConsumer(
         var payloadJson = ev.PayloadJson;
         if (ownerField is not null)
         {
-            var authoritativeOwnerValue = await FetchAuthoritativeOwnerValueAsync(schema, ownerField, ev.Key, ct);
+            var authoritativeOwnerValue = row.ReadString(ownerField);
             try
             {
                 payloadJson = WithOwnerValue(ev.PayloadJson, ownerField, authoritativeOwnerValue);
@@ -106,58 +107,13 @@ public sealed class EngagementStoreConsumer(
                 $"[Engagement] No schema registered for type '{ev.TypeName}' (key '{key}') after a forced registry reload.");
         }
 
-        JsonElement payload;
-        try
-        {
-            using var doc = JsonDocument.Parse(ev.PayloadJson);
-            payload = doc.RootElement.Clone();
-        }
-        catch (JsonException ex)
-        {
-            throw new PoisonMessageException($"[Engagement] Malformed payload JSON type={ev.TypeName} key={key}", ex);
-        }
-
-        var tenantValue = payload.TryGetProperty(schema.TenantColumn, out var v)
-            ? (v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString())
-            : null;
-        if (tenantValue is null)
-        {
-            logger.LogWarning("[Engagement] Dropped delete — no tenant value in payload for type={Type} key={Key}", ev.TypeName.SanitizeForLog(), key);
-            return;
-        }
+        var tenantValue = ProjectionTenantResolution.TenantFromSnapshot(ev.PayloadJson, schema, ev.Key, "[Engagement]");
 
         await sr.DeleteAsync(schema.TableName, schema.KeyColumn.Name, ev.Key, tenantValue);
         logger.LogInformation("[Engagement] Deleted {Type}:{Key}", ev.TypeName.SanitizeForLog(), key);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    // Re-derives the ownership value from the authoritative Postgres row instead of trusting
-    // the event payload's own value for it (CSR #7, StarRocks sibling — event JSON is unsigned
-    // and this value feeds StarRocks's read-time row authorization filtering). Fails closed: if
-    // the row can't be found (e.g. a delete-then-recreate race), the owner value is treated as
-    // absent rather than falling back to the unvalidated payload value.
-    private async Task<string?> FetchAuthoritativeOwnerValueAsync(
-        SchemaDescriptor schema, string ownerField, string key, CancellationToken ct)
-    {
-        // Cross-tenant by necessity: this read is the authoritative source for a value the
-        // unsigned event payload must not be trusted for, so it cannot be scoped by anything the
-        // payload says. Its result is only ever read back out of the row itself.
-        var rowJson = await entities.FetchByKeyAsync(
-            SchemaBuilder.ToTableSchema(schema), key, EntityAccess.CrossTenantMaintenance);
-        if (rowJson is null)
-        {
-            logger.LogWarning(
-                "[Engagement] Owner re-derivation found no authoritative row for type={Type} key={Key} — omitting owner value.",
-                schema.TypeName.SanitizeForLog(), key);
-            return null;
-        }
-
-        using var doc = JsonDocument.Parse(rowJson);
-        return doc.RootElement.TryGetProperty(ownerField, out var v)
-            ? (v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString())
-            : null;
-    }
 
     // Overrides the owner-column key in a raw event payload JSON document with the authoritative
     // value, or removes the key entirely when the authoritative value is null (fail closed —
