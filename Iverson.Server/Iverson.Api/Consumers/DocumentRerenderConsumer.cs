@@ -45,25 +45,11 @@ public sealed class DocumentRerenderConsumer(
         var changedSchema = registry.Get(ev.TypeName);
         if (changedSchema is null) return;
 
-        // Tenant sourcing deliberately splits by event type — the same split
-        // IntelligenceStoreConsumer makes between HandleAsync and HandleDeleteAsync. A null
-        // tenant is not an error (RunAsRoleAsync sets the RLS GUC to NULL and any scoped
-        // lookup below would silently return zero rows), but the OneToMany branch below reads
-        // its parent key straight out of the payload with no query in between, bypassing that
-        // natural zero-rows gate. Returning early here is what keeps a null tenant from ever
-        // reaching EnqueueEntityAsync — see T6 review note: the partial unique index on
-        // ("TenantId","TypeName","EntityKey") does not collapse duplicate NULL-tenant rows.
         //
-        // THREE producers can put a null here; the guard's TEST coverage is two of them.
-        //   1. the authoritative Postgres row is already gone by consumption time
-        //      (ResolveTenantIdAsync's `if (rowJson is null) return null`);
-        //   2. ExtractString finds no tenant value on that row;
-        //   3. the DELETED-event arm's ExtractString finds none on the pre-delete snapshot.
-        // (3) is UNGRADED and deliberately so (final-review Task 7 minor a): it is a bare `return`
-        // with no branch, so a branch-coverage diff cannot see it, and the mutant that grades this
-        // guard already dies on (1) and (2). Its production reachability is LOW — the delete path
-        // stores the raw pre-delete Postgres row, which carries the tenant column by construction —
-        // judged unlikely rather than proven impossible. Recorded, not tested.
+        // A null here means only one thing: the authoritative Postgres row is already gone by
+        // consumption time (ProjectionTenantResolution.FetchAuthoritativeRowAsync returned null),
+        // and the entity's Deleted event follows. A row or delete snapshot that is present but
+        // carries no tenant value throws PoisonMessageException inside the helper instead.
         var tenantId = await ResolveTenantIdAsync(ev, changedSchema, ct);
         if (tenantId is null) return;
 
@@ -128,26 +114,13 @@ public sealed class DocumentRerenderConsumer(
         }
     }
 
-    private async Task<string?> ResolveTenantIdAsync(EntityEvent ev, SchemaDescriptor changedSchema, CancellationToken ct)
-    {
-        if (ev.EventType == EntityEventType.Deleted)
-        {
-            // The row is already gone from Postgres by the time a delete event is consumed —
-            // read the tenant from the pre-delete snapshot in the payload instead.
-            using var doc = JsonDocument.Parse(ev.PayloadJson);
-            return ExtractString(doc.RootElement, changedSchema.TenantColumn);
-        }
-
-        // Created/Updated: the event payload is unsigned JSON and must not be trusted for a
-        // value that drives which rows a tenant-scoped lookup returns — re-derive from the
-        // authoritative Postgres row instead.
-        var rowJson = await entities.FetchByKeyAsync(
-            SchemaBuilder.ToTableSchema(changedSchema), ev.Key, EntityAccess.CrossTenantMaintenance);
-        if (rowJson is null) return null;
-
-        using var rowDoc = JsonDocument.Parse(rowJson);
-        return ExtractString(rowDoc.RootElement, changedSchema.TenantColumn);
-    }
+    // Created/Updated re-derive from the authoritative Postgres row (the event payload is
+    // unsigned and must not decide which rows a tenant-scoped lookup returns); Deleted reads
+    // the pre-delete snapshot. See ProjectionTenantResolution for the drop-vs-dead-letter rule.
+    private async Task<string?> ResolveTenantIdAsync(EntityEvent ev, SchemaDescriptor changedSchema, CancellationToken ct) =>
+        ev.EventType == EntityEventType.Deleted
+            ? ProjectionTenantResolution.TenantFromSnapshot(ev.PayloadJson, changedSchema, ev.Key, "[DocumentRerender]")
+            : (await ProjectionTenantResolution.FetchAuthoritativeRowAsync(entities, changedSchema, ev.Key, "[DocumentRerender]"))?.TenantId;
 
     private async Task EnqueueByColumnAsync(SchemaDescriptor declaringSchema, string foreignKey, string changedKey, string tenantId)
     {

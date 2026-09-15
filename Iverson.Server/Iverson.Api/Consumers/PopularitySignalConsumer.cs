@@ -247,39 +247,13 @@ internal sealed class PopularitySignalConsumer(
         }
     }
 
-    // Identical shape to DocumentRerenderConsumer's private helper of the same name
-    // (DocumentRerenderConsumer.cs:131-149): Created/Updated resolve from the authoritative
-    // Postgres row (the event payload is unsigned JSON and must not be trusted for a value that
-    // drives which rows a tenant-scoped lookup returns); Deleted resolves from the pre-delete
-    // payload snapshot, since the row is already gone from Postgres by consumption time.
-    // Duplicated rather than extracted to a shared base class — see the plan's YAGNI ruling
-    // (no third caller exists yet); IntelligenceStoreConsumer and DocumentRerenderConsumer don't
-    // share these either.
-    private async Task<string?> ResolveTenantIdAsync(EntityEvent ev, SchemaDescriptor changedSchema, CancellationToken ct)
-    {
-        if (ev.EventType == EntityEventType.Deleted)
-        {
-            JsonElement payloadDoc;
-            try
-            {
-                using var doc = JsonDocument.Parse(ev.PayloadJson);
-                payloadDoc = doc.RootElement.Clone();
-            }
-            catch (JsonException ex)
-            {
-                throw new PoisonMessageException($"[PopularitySignal] Malformed payload JSON key={ev.Key}", ex);
-            }
-
-            return ExtractString(payloadDoc, changedSchema.TenantColumn);
-        }
-
-        var rowJson = await entities.FetchByKeyAsync(
-            SchemaBuilder.ToTableSchema(changedSchema), ev.Key, EntityAccess.CrossTenantMaintenance);
-        if (rowJson is null) return null;
-
-        using var rowDoc = JsonDocument.Parse(rowJson);
-        return ExtractString(rowDoc.RootElement, changedSchema.TenantColumn);
-    }
+    // Created/Updated re-derive from the authoritative Postgres row (the event payload is
+    // unsigned and must not decide which rows a tenant-scoped lookup returns); Deleted reads
+    // the pre-delete snapshot. See ProjectionTenantResolution for the drop-vs-dead-letter rule.
+    private async Task<string?> ResolveTenantIdAsync(EntityEvent ev, SchemaDescriptor changedSchema, CancellationToken ct) =>
+        ev.EventType == EntityEventType.Deleted
+            ? ProjectionTenantResolution.TenantFromSnapshot(ev.PayloadJson, changedSchema, ev.Key, "[PopularitySignal]")
+            : (await ProjectionTenantResolution.FetchAuthoritativeRowAsync(entities, changedSchema, ev.Key, "[PopularitySignal]"))?.TenantId;
 
     // Identical shape to DocumentRerenderConsumer.cs:195.
     private static EntityEvent Deserialize(string key, string value)

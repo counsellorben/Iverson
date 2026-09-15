@@ -523,20 +523,21 @@ public class DocumentRerenderConsumerTests
     }
 
     [Fact]
-    public async Task Dispatch_AuthoritativeRowHasNoTenantValue_EnqueuesNothing()
+    public async Task Dispatch_AuthoritativeRowHasNoTenantValue_ThrowsPoisonAndEnqueuesNothing()
     {
         await _registry.RegisterAsync(WidgetSchema());
         await _registry.RegisterAsync(CommentSchema());
 
-        // Row present, tenant column absent from it — ExtractString returns null.
+        // Row present, tenant column absent from it — an invariant violation, so it dead-letters.
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}"}""");
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId,
             $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}"}""");
 
-        await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        var act = () => BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
+        await act.Should().ThrowAsync<PoisonMessageException>();
         await _queue.DidNotReceiveWithAnyArgs().EnqueueEntityAsync(default, default!, default!);
     }
 

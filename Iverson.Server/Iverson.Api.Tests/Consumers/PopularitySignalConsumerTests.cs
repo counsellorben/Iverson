@@ -455,20 +455,21 @@ public class PopularitySignalConsumerTests
     }
 
     [Fact]
-    public async Task Dispatch_AuthoritativeRowHasNoTenantValue_SkipsWithoutCallingAggregate()
+    public async Task Dispatch_AuthoritativeRowHasNoTenantValue_ThrowsPoisonWithoutCallingAggregate()
     {
         await _registry.RegisterAsync(ArticleSchema());
         await _registry.RegisterAsync(CommentSchema());
 
-        // Row present, tenant column absent from it — ExtractString returns null.
+        // Row present, tenant column absent from it — an invariant violation, so it dead-letters.
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
         var sut = BuildSut(OptionsWith("Article", "Comments"));
 
-        await sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        var act = () => sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
+        await act.Should().ThrowAsync<PoisonMessageException>();
         await _search.DidNotReceiveWithAnyArgs().AggregateAsync(
             default!, default, default!, default, default, default, default);
     }
