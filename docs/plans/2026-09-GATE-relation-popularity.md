@@ -544,11 +544,12 @@ evidence that citation popularity does not help this kind of relevance, and weak
 popularity in search where many results are comparably relevant.
 
 **Disposition.** The shipped relation-popularity signal (`b32f870`) stays, **off by default** (`WPopularity = 0`,
-`RecencyBoost = 0`); it is not removed. Two prerequisites must be on `main` before anyone enables it:
+`RecencyBoost = 0`); it is not removed. Two prerequisites had to be on `main` before anyone enables it; both now are
+(local `main`, not pushed, as of 2026-09-15):
 
-- **The reconciliation sweep's fault abort** — branch `popularity-sweep-fault-abort`, complete and reviewed. Held on
-  2026-09-15 behind the projection tenant-resolution work, whose plan edits the same `PopularitySignalConsumer`; to be
-  merged on top of it once that lands.
+- **The reconciliation sweep's fault abort** — done: merged to local `main` as `d7cc239` on 2026-09-15, on top of the
+  projection tenant-resolution work (`f3e7532`), which edits the same `PopularitySignalConsumer`. The only conflict was
+  both branches appending tests to `PopularitySignalConsumerTests.cs`; merged tree Vector 169/169, Api 1086/1086.
 - **An upper bound on `RecencyBoost`** — done: merged to local `main` as `f37bdf0` on 2026-09-15 (not pushed). The
   validator checked only finite and non-negative, and a configured value past ~10³⁰⁷ overflowed
   `count + RecencyBoost × D` to a NaN popularity. That NaN poisoned fusion even at `WPopularity = 0` (`0 × NaN = NaN`)
