@@ -45,6 +45,14 @@ public sealed class DocumentRerenderConsumer(
         var changedSchema = registry.Get(ev.TypeName);
         if (changedSchema is null) return;
 
+        // Tenant sourcing deliberately splits by event type — the same split
+        // IntelligenceStoreConsumer makes between HandleAsync and HandleDeleteAsync. A null
+        // tenant is not an error (RunAsRoleAsync sets the RLS GUC to NULL and any scoped
+        // lookup below would silently return zero rows), but the OneToMany branch below reads
+        // its parent key straight out of the payload with no query in between, bypassing that
+        // natural zero-rows gate. Returning early here is what keeps a null tenant from ever
+        // reaching EnqueueEntityAsync — see T6 review note: the partial unique index on
+        // ("TenantId","TypeName","EntityKey") does not collapse duplicate NULL-tenant rows.
         //
         // A null here means only one thing: the authoritative Postgres row is already gone by
         // consumption time (ProjectionTenantResolution.FetchAuthoritativeRowAsync returned null),
