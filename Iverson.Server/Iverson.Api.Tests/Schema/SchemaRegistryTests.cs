@@ -613,6 +613,32 @@ public class SchemaRegistryTests
             e.Message.Contains("Article"));
     }
 
+    // The TenantColumn VALUE is interpolated raw into SQL identifiers — the RLS policy DDL every
+    // startup re-applies (PostgresSchemaManager), EntityRepository's tenant select, and every
+    // StarRocks tenant predicate — so a stored value that is not itself one of the validated
+    // ScalarColumns must pass the same identifier check. Not pinned to the reserved "__TenantId":
+    // legacy client-declared tenant columns (LoadAsync_RowCarryingATenantColumn_IsAdmitted) stay
+    // admitted.
+    [Fact]
+    public async Task LoadAsync_DescriptorWithInvalidTenantColumnIdentifier_IsSkippedAndLogsError()
+    {
+        var badSchema = SchemaFixtures.ArticleSchema() with { TenantColumn = "TenantId\" = '' OR true; --" };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(badSchema))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse(
+            "a tenant column name that fails SchemaRegistrationOrchestrator's own identifier pattern must never be admitted on rehydration");
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("failed identifier/key-type validation on rehydration") &&
+            e.Message.Contains("Article"));
+    }
+
     // Positive control mirroring LoadAsync_RowCarryingATenantColumn_IsAdmitted above: a
     // capitalization-only difference from the canonical "UUID" (what every real fixture in this
     // suite — and legacy rows predating a naming cleanup — would carry) must still be admitted;
