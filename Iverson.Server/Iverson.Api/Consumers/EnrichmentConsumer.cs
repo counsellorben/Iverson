@@ -102,10 +102,11 @@ public sealed class EnrichmentConsumer(
         // re-enrich and every writeback would republish entity.updated — the loop breaker
         // inverted into unbounded re-enrichment.
         var tableSchema = SchemaBuilder.ToTableSchema(schema);
-        // Cross-tenant by necessity: this read is what DERIVES the tenant (line below), so there
-        // is no tenant to scope it to yet. The event's own payload must not be trusted for it.
-        var rowJson = await entities.FetchByKeyAsync(tableSchema, ev.Key, EntityAccess.CrossTenantMaintenance);
-        if (rowJson is null)
+        // Fails closed with PoisonMessageException when the row carries no tenant value: with a
+        // null tenant EnterTenantScopeAsync would set app.tenant_id to NULL, the targeted UPDATE
+        // would match zero rows, and recording a hash would mark the object enriched forever.
+        var row = await ProjectionTenantResolution.FetchAuthoritativeRowAsync(entities, schema, ev.Key, "[Enrichment]");
+        if (row is null)
         {
             logger.LogWarning(
                 "[Enrichment] No authoritative row for type={Type} key={Key} — skipping.",
@@ -113,36 +114,10 @@ public sealed class EnrichmentConsumer(
             return;
         }
 
-        JsonElement row;
-        try
-        {
-            using var doc = JsonDocument.Parse(rowJson);
-            row = doc.RootElement.Clone();
-        }
-        catch (JsonException ex)
-        {
-            logger.LogError(ex,
-                "[Enrichment] Malformed authoritative row JSON for type={Type} key={Key} — skipping.",
-                ev.TypeName.SanitizeForLog(), key);
-            return;
-        }
-
-        // Fail closed when the authoritative row carries no tenant value, and deliberately write
-        // NO state row: with a null tenant EnterTenantScopeAsync sets app.tenant_id to NULL, the
-        // RLS predicate fails closed and the targeted UPDATE would match zero rows — recording a
-        // hash anyway would mark the object enriched forever while it carried none of the
-        // enriched values.
-        var tenantValue = ExtractString(row, schema.TenantColumn);
-        if (tenantValue is null)
-        {
-            logger.LogWarning(
-                "[Enrichment] Skipped — no authoritative tenant value for type={Type} key={Key}; no state row written.",
-                ev.TypeName.SanitizeForLog(), key);
-            return;
-        }
+        var tenantValue = row.TenantId;
 
         // ── Step 2: hash source text + enrichment specification, and compare ──────
-        var sourceText = BuildSourceText(schema, row);
+        var sourceText = BuildSourceText(schema, row.Row);
         if (sourceText.Length > MaxSourceChars) sourceText = sourceText[..MaxSourceChars];
         var hash = ComputeHash(sourceText, schema.EnrichmentTargets);
 
@@ -220,7 +195,7 @@ public sealed class EnrichmentConsumer(
                 await state.UpsertAsync(
                     tx, tenantValue, schema.TypeName, ev.Key, hash, DateTimeOffset.UtcNow);
                 await outboxWriter.EnqueueUpdateOutboxRowAsync(
-                    tx, outboxRowId, schema.TypeName, ev.Key, rowJson);
+                    tx, outboxRowId, schema.TypeName, ev.Key, row.Row.GetRawText());
             });
 
             // Re-fetch after commit rather than publishing the pre-generation snapshot with the
@@ -278,28 +253,7 @@ public sealed class EnrichmentConsumer(
         // ev.PayloadJson. Leaving the state row behind is not safe: a client-supplied key
         // (ObjectMappingGrpcService.cs:127-132) lets a delete-then-recreate of the same key
         // hash equal against the orphan row and be skipped forever.
-        JsonElement payload;
-        try
-        {
-            using var doc = JsonDocument.Parse(ev.PayloadJson);
-            payload = doc.RootElement.Clone();
-        }
-        catch (JsonException ex)
-        {
-            logger.LogError(ex,
-                "[Enrichment] Malformed delete payload JSON for type={Type} key={Key} — state row not removed.",
-                ev.TypeName.SanitizeForLog(), key);
-            return;
-        }
-
-        var tenantValue = ExtractString(payload, schema.TenantColumn);
-        if (tenantValue is null)
-        {
-            logger.LogWarning(
-                "[Enrichment] Dropped delete — no tenant value in payload for type={Type} key={Key}",
-                ev.TypeName.SanitizeForLog(), key);
-            return;
-        }
+        var tenantValue = ProjectionTenantResolution.TenantFromSnapshot(ev.PayloadJson, schema, ev.Key, "[Enrichment]");
 
         await state.DeleteAsync(tenantValue, schema.TypeName, ev.Key);
         logger.LogInformation(

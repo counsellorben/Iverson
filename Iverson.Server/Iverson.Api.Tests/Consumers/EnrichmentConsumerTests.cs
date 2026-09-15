@@ -371,15 +371,16 @@ public class EnrichmentConsumerTests
     }
 
     [Fact]
-    public async Task HandleUpdated_WithNullTenantValueInRow_SkipsAndWritesNoStateRow()
+    public async Task HandleUpdated_WithNullTenantValueInRow_ThrowsPoisonAndWritesNoStateRow()
     {
         await _registry.RegisterAsync(EnrichedArticle());
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns(RowJson(tenant: null));
 
         var sut = BuildSut();
-        await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+        var act = () => sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
 
+        await act.Should().ThrowAsync<PoisonMessageException>();
         await _state.DidNotReceiveWithAnyArgs().UpsertAsync(
             default!, default!, default!, default!, default!, default);
         await _txRunner.DidNotReceiveWithAnyArgs().ExecuteInTransactionAsync(default!);
@@ -401,14 +402,15 @@ public class EnrichmentConsumerTests
     }
 
     [Fact]
-    public async Task HandleDelete_WithNoTenantInSnapshot_SkipsTheStateDelete()
+    public async Task HandleDelete_WithNoTenantInSnapshot_ThrowsPoisonAndSkipsTheStateDelete()
     {
         await _registry.RegisterAsync(EnrichedArticle());
 
         var sut = BuildSut();
-        await sut.HandleDeleteAsync(Key, Event(EntityEventType.Deleted, RowJson(tenant: null)),
+        var act = () => sut.HandleDeleteAsync(Key, Event(EntityEventType.Deleted, RowJson(tenant: null)),
             CancellationToken.None);
 
+        await act.Should().ThrowAsync<PoisonMessageException>();
         await _state.DidNotReceiveWithAnyArgs().DeleteAsync(default!, default!, default!);
     }
 
