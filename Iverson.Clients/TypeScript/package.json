@@ -24,7 +24,7 @@
   "devDependencies": {
     "@grpc/proto-loader": "^0.7.15",
     "ts-proto": "^2.7.0",
-    "typescript": "^5.8.0",
+    "typescript": "^7.0.2",
     "vitest": "^3.2.0"
   },
   "vitest": {
