@@ -636,6 +636,36 @@ public class SchemaRegistryTests
         _logs.Entries.Should().NotContain(e => e.Level == LogLevel.Error);
     }
 
+    // The positive control the identifier tests above lacked: every hand-built fixture in this file
+    // names its tenant column "TenantId", but SchemaBuilder appends the SERVER-OWNED "__TenantId"
+    // column to every real descriptor's ScalarColumns — and "__TenantId" fails the identifier
+    // pattern. Built by the real SchemaBuilder so the stored row has exactly the production shape;
+    // without the tenant-column exemption, every registered schema is skipped on reload.
+    [Fact]
+    public async Task LoadAsync_DescriptorBuiltBySchemaBuilder_WithServerOwnedTenantColumn_IsAdmitted()
+    {
+        var typeDesc = new Iverson.Client.Contracts.TypeDescriptor { TypeName = "Article" };
+        typeDesc.Properties.Add(new Iverson.Client.Contracts.PropertyDescriptor
+            { Name = "Id", ClrType = Iverson.Client.Contracts.ClrType.ClrGuid, IsKey = true });
+        typeDesc.Properties.Add(new Iverson.Client.Contracts.PropertyDescriptor
+            { Name = "Title", ClrType = Iverson.Client.Contracts.ClrType.ClrString });
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, Substitute.For<Iverson.Embeddings.IEmbeddingService>());
+        descriptor.ScalarColumns.Select(c => c.Name).Should().Contain("__TenantId",
+            "the precondition this test exists for: production descriptors carry the server-owned tenant column");
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(descriptor))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeTrue(
+            "a descriptor exactly as SchemaBuilder produces it must survive rehydration");
+        _logs.Entries.Should().NotContain(e => e.Level == LogLevel.Error);
+    }
+
     // Serializes exactly as SchemaRegistry.RegisterAsync does, so the fixtures above are real
     // _iverson_schema rows minus/with the one key under test rather than hand-written JSON that
     // could drift from the shape LoadAsync actually meets.
