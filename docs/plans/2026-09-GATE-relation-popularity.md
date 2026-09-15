@@ -4,6 +4,11 @@ Spec: `docs/specs/2026-09-13-popularity-signal-measurement-design.md` (amended 2
 added Phase 0). Plan:
 `docs/plans/2026-09-14-popularity-measurement-phase0-implementation-plan.md`.
 
+**Data location (moved 2026-09-15).** The untracked data files this record cites were moved out of the repo to
+`~/iverson-benchmark-data/popularity-measurement-2026-09/` (byte-identical; every md5 pinned below re-verified at the
+move). Read `scratchpad/popularity/<file>` as `<that dir>/<file>`, and `docs/plans/popularity-triage.json` as
+`<that dir>/popularity-triage.json`. Its README indexes each file.
+
 ## Phase 0 — triage
 
 Recorded 2026-09-14 on branch `popularity-measurement-phase0`, from HEAD `9ba9dad`
