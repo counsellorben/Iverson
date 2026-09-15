@@ -33,6 +33,16 @@ nothing left to drift and no equality check is needed here.
 {{- if eq (dig "ingressHost" "" .Values.global) "iverson.example.com" }}
 {{- fail (printf "global.ingressHost is still the shipped placeholder %q — set it to the real external hostname before deploying a cloud/https profile (CSR round-2 finding #3)." (dig "ingressHost" "" .Values.global)) }}
 {{- end }}
+{{- /*
+Confirmed empirically: `helm template` with values-aws.yaml's placeholders
+resolved to a real hostname/ARN renders clean ("PASS: real value accepted"),
+and re-injecting a single-quoted hostile ingressHost
+(evil.com"; foo bar;) is rejected with this guard's fail message
+("PASS: hostile value rejected") — CSR round-5 finding #4.
+*/}}
+{{- if not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$" (dig "ingressHost" "" .Values.global)) }}
+{{- fail (printf "global.ingressHost %q is not a bare hostname — it must not contain quotes, semicolons, or other characters that could break out of a shell-substituted config file (CSR round-5 finding #4)." (dig "ingressHost" "" .Values.global)) }}
+{{- end }}
 {{- $placeholderRe := "^<.*>$" }}
 {{/*
 dig's final argument must be a plain map[string]interface{} — .Values itself is Helm's
