@@ -156,7 +156,7 @@ owasp-dependency-check-java:
   extends: .rules-dependency-scan
   script:
     - cd Iverson.Clients/Java
-    - mvn org.owasp:dependency-check-maven:check
+    - mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7
 
 pip-audit-python-sdk:
   stage: dependency-scan

@@ -72,7 +72,7 @@ jobs:
         with:
           java-version: "21"
           distribution: "temurin"
-      - run: mvn org.owasp:dependency-check-maven:check
+      - run: mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7
 
   pip-audit-python-sdk:
     runs-on: ubuntu-latest
