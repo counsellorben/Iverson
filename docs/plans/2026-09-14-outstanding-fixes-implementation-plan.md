@@ -173,8 +173,9 @@ Newly introduced by this plan and verified at plan-write time:
       client.messages.parse.side_effect = capture
       judge_grounding(client, "claude-opus-5", forged_answer, ["p1"])
 
-      assert captured_content.index("</answer>") == captured_content.rindex("</answer>"), \
-          "the forged closing tag inside answer_text must be escaped, leaving only the one real, template-inserted tag"
+      assert captured_content.endswith("</answer>"), \
+          "the real template-inserted closing tag must be the last thing in the message — its absence " \
+          "means the forged tag inside answer_text was never escaped and fenced"
   ```
   (`SimpleNamespace` and `MagicMock` are both already imported at the top of this file — no new import needed.)
 
