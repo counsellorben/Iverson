@@ -12,7 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Npgsql" Version="10.0.3" />
-    <PackageReference Include="Dapper" Version="2.1.79" />
+    <PackageReference Include="Dapper" Version="2.1.86" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Iverson.ClientConformance.Tests" />
