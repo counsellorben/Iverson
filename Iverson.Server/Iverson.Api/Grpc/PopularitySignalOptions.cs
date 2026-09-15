@@ -35,10 +35,12 @@ public static class PopularitySignalOptionsExtensions
                 $"{PopularitySignalOptions.Section}:SaturationPoint must be finite and greater than " +
                 $"zero (was {opts.SaturationPoint}).");
 
-        if (!double.IsFinite(opts.RecencyBoost) || opts.RecencyBoost < 0)
+        if (!double.IsFinite(opts.RecencyBoost) || opts.RecencyBoost < 0 || opts.RecencyBoost > 1000000)
             throw new InvalidOperationException(
-                $"{PopularitySignalOptions.Section}:RecencyBoost must be finite and non-negative " +
-                $"(was {opts.RecencyBoost}).");
+                $"{PopularitySignalOptions.Section}:RecencyBoost must be finite and in [0, 1000000] " +
+                $"(was {opts.RecencyBoost}). Beyond that, popularity saturates towards a constant for " +
+                "almost every document, so a larger value cannot usefully change ranking and only " +
+                "risks overflowing the popularity score to NaN.");
 
         if (!double.IsFinite(opts.RecencyHalfLifeDays) || opts.RecencyHalfLifeDays <= 0 ||
             opts.RecencyHalfLifeDays > 300)
