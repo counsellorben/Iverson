@@ -58,3 +58,5 @@ def test_judge_escapes_forged_answer_tag():
     assert captured_content.endswith("</answer>"), \
         "the real template-inserted closing tag must be the last thing in the message — its absence " \
         "means the forged tag inside answer_text was never escaped and fenced"
+    assert "</answer><answer>" not in captured_content, \
+        "the forged tag sequence inside answer_text must not survive unescaped, or the fence provides no protection"
