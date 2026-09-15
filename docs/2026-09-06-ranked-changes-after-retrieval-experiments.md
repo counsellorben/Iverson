@@ -1,6 +1,6 @@
 # Changes needed after the retrieval experiments — ranked choices
 
-> **Status: living index + decision record. Index (§0) reconciled 2026-09-10.** §0 is the durable half and
+> **Status: living index + decision record. Index (§0) reconciled 2026-09-15.** §0 is the durable half and
 > is kept current — see §0 below for the rule on what counts as a gate document. The tiered items below are
 > decision content and expire as they are settled; a settled item collapses to its verdict and a pointer to
 > the gate that settled it.
@@ -8,7 +8,7 @@
 Supersedes `docs/2026-08-28-proposed-code-changes-from-retrieval-experiments.md`, which was written while
 ArguAna was still running and lists four items that have since shipped. This document originated against
 local main at `9eb99f7` (2026-09-06) and has been kept current since; §0 is reconciled against whatever gate
-documents exist under `docs/plans/*GATE*.md` at the time it is read — currently ten. Nothing here has been
+documents exist under `docs/plans/*GATE*.md` at the time it is read — currently eleven. Nothing here has been
 through `thorough-brainstorming`; each item is the input to that, not a substitute for it.
 
 The experiments this closes out are the ones scored on top-k relevance metrics (nDCG@10, R@50, AP) through
@@ -47,14 +47,16 @@ still counts.
 | Chunk-coverage signal, Phase 2 | **NO β QUALIFIES** — all five arms negative and monotone on nDCG@10; the top three are Holm-significant (p_adj 0.0010), not a null | nothing | `2026-09-GATE-chunk-coverage-phase2.md` |
 | Aspect-coverage oracle ceiling (α-nDCG@10, FreshStack-2048) | **GO** — G − R = **+0.0609** α-nDCG@10, 95 % CI [+0.0541, +0.0678], Holm p_adj 0.0006; clears the pre-registered 0.02 bar by ~3×. A − R = +0.0570 (93.5 % of the ceiling, derived: 0.056955 / 0.060947) is reported and does not gate; R − B = +0.3364 is context. A ceiling, not a realised gain — it licenses designing a term, not shipping one | harness only (`aspect_oracle.py`); no server change | `2026-09-GATE-aspect-coverage-oracle.md` |
 | Family 2 vector-aspect screen (chunk-vector spread vs aspect count, FreshStack-2048) | **FAIL** — no candidate beats the `n_chunks` null (ρ = +0.0714) on the pre-registered 2,733-pair / 610-query primary: `residual_spread` +0.0578 (diff **−0.0136**), `greedy_cover`(τ=0.90) +0.0732 (+0.0017), `effective_rank` +0.0727 (+0.0012); all three CIs on the difference contain zero and all three Holm p_adj = 1.0000. The strong candidate failed, not just the two count-bounded ones. Reconstruction clean at 9,184/9,184 rows, 0 unmatched / 0 ambiguous / 0 duplicate | harness only (`aspect_vectors.py`), plus `queryPrefixes` / `defaultQueryPrefix` in the ingest contract and `ingest.query_prefix_for()`; no server behaviour change | `2026-09-GATE-family2-vector-aspect-screen.md` |
+| Relation-popularity signal (citation count as a query-independent prior, SciFact-2048 `SearchSimilar`) | **NO-GO, closed 2026-09-15.** Four scorings — lifetime count, document-age normalisation (`count / age`), the shipped decay (`count + RecencyBoost·D`, full validator-legal grid), and the two combined — measured offline over the full W range. Age normalisation separates significantly better than the lifetime count (paired AUC +0.0181, p 0.0014); **none improves nDCG@10 at any W** (largest +0.0068, CI [−0.0022, +0.0157]); the pre-registered W costs −0.1500 | nothing new; the signal shipped earlier (`b32f870`) stays off by default. Harness only: `fetch_citations.py`, `fetch_citation_dates.py`, `popularity_triage.py`, `popularity_rerank.py`, `popularity_decay.py`, `popularity_combined.py` | `2026-09-GATE-relation-popularity.md` |
 
 The rows above finalized before 2026-09-07 — prefixes, the chunk-window ablation itself, centroid weight,
 request-scaled centroid, MMR λ, reranker Phase 1, embedding migration Phases 1 and 2, and the multivector
 layout — were all measured at the **512/448-character window on SciFact**, with NFCorpus and FreshStack as
-secondary corpora. That was the evidence gap item 1 closed. The six rows added since were measured at the
+secondary corpora. That was the evidence gap item 1 closed. The seven rows added since were measured at the
 shipped window instead: Tier 1 retrieval defaults ran `sci-2048`, `fs-2048` and `fs-512`; `SearchSimilar`
 centroid retrieval ran the two FreshStack arms (`fs-2048`, `fs-512`); both chunk-coverage phases, the
-aspect-coverage oracle and the family 2 vector-aspect screen ran `fs2048` only.
+aspect-coverage oracle and the family 2 vector-aspect screen ran `fs2048` only; the relation-popularity
+measurement ran `sci-2048`'s `SearchSimilar` run only.
 
 ---
 
@@ -205,6 +207,25 @@ unauthorised properties), and a second uncalibrated fusion stacked on the first.
 authorization fork, and the second uncalibrated fusion. The previously stated blocker, item 2's diversity
 measurement, was met on 2026-09-07 (α-nDCG@10 swept on both FreshStack arms); when this item is picked up
 it needs its own spec.
+
+
+### 17. Relation-popularity signal — CLOSED 2026-09-15
+
+NO-GO on SciFact. Record: `docs/plans/2026-09-GATE-relation-popularity.md` (Phase 0, the smoke cell, the decayed arm,
+the combined screen, and the close-out). No scoring of citation popularity improves nDCG@10 at any fusion weight;
+document-age normalisation is the only one that even separates significantly better than the lifetime count, and
+recency adds nothing on top of it.
+
+**Choice:** keep the shipped signal (`b32f870`) off by default rather than remove it. The evidence is off-domain for
+the feature's purpose — SciFact relevance is evidential, which a query-independent prior cannot predict, and the
+baseline is near its ceiling — and removal would be manual surgery through nine files later hardened by the CSR
+remediation, since a revert conflicts. Its cost while off is near zero. Before it is ever enabled, the sweep fault abort
+must be on main and `RecencyBoost` must be bounded; both are recorded in the gate doc's close-out.
+
+Do not re-propose citation-count scorings on SciFact: lifetime, per-year, decayed, or combinations. A new question
+needs a corpus where relevance plausibly tracks engagement. Document-age normalisation is not expressible by the
+server (`PopularityFor` never divides by document age, and `WDecay` is inert without a date property), so trying it
+anywhere would need new server work.
 
 ---
 

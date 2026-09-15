@@ -389,3 +389,171 @@ either direction.
 Phase 1's ceiling measurement, null-arm measurement, and the `(W, S)` grid itself are all still
 outstanding. This single cell does not stand in for any of them, and the arm-structure choice
 remains the reader's, undecided here.
+
+## Phase 1 — decayed arm (per-citation dates)
+
+Recorded 2026-09-15 on branch `popularity-measurement-phase0`. Run after the smoke test showed the lifetime
+count losing −0.1500 nDCG@10, to test whether the **shipped** decay term — not a new transform — rescues it.
+
+### The fetch
+
+`fetch_citation_dates.py` pulled the publication date of every citing paper for all 4,181 in-pool documents
+with a resolved count, resumable per page, anonymous:
+
+| | |
+|---|---|
+| Papers | 4,181 of 4,181 — 0 failed, 0 left mid-pagination |
+| Citation rows | 2,283,484 |
+| Truncated | **41** — every one stopped at exactly **9,000 rows**: the endpoint refuses offset 9,000, so the ceiling is 9,000, not the 10,000 its documentation implies. The set is exactly the 41 in-pool papers with citationCount > 9,000 |
+| `citation-dates.json` md5 | `e067542fcbb00180a509376175ea9f4a` |
+
+A truncated paper's citations arrive in no date order, so its D is computed from an arbitrary 9,000-row
+slice and is not a recency statistic. Truncated papers are **excluded** from the headline numbers and the
+result is reported with them included as well.
+
+### Method
+
+`popularity_decay.py` reproduces `PopularityFor` exactly: `effective = count + RecencyBoost × D`,
+`pop = effective / (effective + SaturationPoint)`, with D from `DecayFieldResolver.ComputeRecencySum` over the
+`TakeLast(60)` monthly bucket series, bucket age measured from the first of the month, weight
+`min(1, 0.5^(age/halfLife))`, clock fixed at the run's recorded date 2026-09-07. The grid stays inside what the
+server's validator accepts: `RecencyHalfLifeDays` ∈ {30, 90, 180, 300} (validated to (0, 300]),
+`RecencyBoost` ∈ {0, 1, 2, 5, 10, 25, 100}. `SaturationPoint = 182` (Phase 0's executed rule), not the shipped
+default 50, so the numbers compare with everything above.
+
+```bash
+python3 Iverson.Server/Iverson.LoadTest/scripts/fetch_citation_dates.py \
+    --run    /home/ben/repositories/iverson-benchmark-corpora/scifact-2048-2026-09-06/runs/sci-2048.similar.trec \
+    --counts scratchpad/popularity/citations.json \
+    --cache  scratchpad/popularity/citation-dates.json
+
+python3 Iverson.Server/Iverson.LoadTest/scripts/popularity_decay.py \
+    --dates  scratchpad/popularity/citation-dates.json \
+    --counts scratchpad/popularity/citations.json \
+    --run    /home/ben/repositories/iverson-benchmark-corpora/scifact-2048-2026-09-06/runs/sci-2048.similar.trec \
+    --qrels  /home/ben/iverson-benchmark-data/scifact-full/qrels/test.tsv \
+    --saturation 182 --out-dir scratchpad/popularity/decay-excl        # add --include-truncated for the second pass
+```
+
+Built-in control: at `RecencyBoost = 0` the AUC reproduces the lifetime count exactly at every half-life, and
+the included pass's lifetime AUC is **0.5890** — byte-for-byte measurement 1(ii) above.
+
+### Result
+
+Pool-matched AUC, best cell per half-life (truncated excluded, 259 queries; lifetime **0.5930**):
+
+| Half-life | Best boost | AUC |
+|---|---|---|
+| 30 d | 100 | 0.6002 |
+| 90 d | 100 | **0.6022** |
+| 180 d | 25 | 0.6020 |
+| 300 d | 10 | 0.6008 |
+
+AUC plateaus near 0.602 from boost 25 upward, so the grid edge is not hiding a better cell.
+
+| Paired per-query AUC, best cell vs lifetime | Δ | 95% CI | t | better / worse / tied |
+|---|---|---|---|---|
+| truncated excluded | +0.0093 | [−0.0049, +0.0234] | 1.28 | 111 / 127 / 21 |
+| truncated included | +0.0095 | [−0.0045, +0.0235] | 1.33 | 111 / 127 / 21 |
+
+Not significant, and it is the maximum over 28 cells, so it is biased upward.
+
+nDCG@10 against control, at the best cell (boost 100, half-life 90), 300 queries:
+
+| W | Δ nDCG@10 | 95% CI |
+|---|---|---|
+| 0.001 | +0.0017 | [−0.0007, +0.0042] |
+| 0.01 | +0.0034 | [−0.0013, +0.0081] |
+| **0.02** | **+0.0036** | [−0.0024, +0.0096] |
+| 0.05 | +0.0009 | [−0.0105, +0.0123] |
+| 0.1 | −0.0117 | [−0.0284, +0.0050] |
+| 0.2 | −0.0852 | [−0.1127, −0.0576] |
+| 0.4 | −0.2711 | [−0.3129, −0.2294] |
+
+Sidecars: `decay-excl/popularity-decay.json` md5 `7b6238b6be9e7175fdb86770d7d44108`,
+`decay-incl/popularity-decay.json` md5 `08a85248f6cbcec75515a3221b71bb04`.
+
+## Combined corrections — exploratory screen with a pre-declared primary
+
+Recorded 2026-09-15. Two corrections exist and they target different things. **Document-age normalisation**,
+`per_year = count / max(age_years, 0.5)`, corrects for how long a paper has had to accumulate citations.
+**Recency decay** measures current attention, expressed as a rate so it is unit-coherent with `per_year`:
+`recent_rate = D × ln2 × 365.25 / halfLife`. Neither combination is expressible by the shipped server.
+
+Fixed **before any result was seen**: primary `C1@180 = log1p(per_year) + log1p(recent_rate)` at the shipped
+180-day half-life, tested against `per_year` (the best single correction). Exploratory, Holm-adjusted across three
+families with the best cell per family selected: C1 at 90/300 d; blend `per_year + β·recent_rate`; and recent rate
+relative to its 5-year publication stratum's median. All scores are evaluated on identical observations — 4,123
+admissible documents (counted, dated, fetched, not truncated), 258 queries — so every comparison is exactly paired.
+
+```bash
+python3 Iverson.Server/Iverson.LoadTest/scripts/popularity_combined.py \
+    --run    /home/ben/repositories/iverson-benchmark-corpora/scifact-2048-2026-09-06/runs/sci-2048.similar.trec \
+    --qrels  /home/ben/iverson-benchmark-data/scifact-full/qrels/test.tsv \
+    --counts scratchpad/popularity/citations.json \
+    --dates  scratchpad/popularity/citation-dates.json \
+    --out-dir scratchpad/popularity/combined
+```
+
+Built-in checks, both hard exits: the blend at β = 0 reproduces `per_year` exactly, and control nDCG@10 is 0.7450.
+Sidecar `combined/popularity-combined.json` md5 `3364179031d99f0f0eff547c1c1366f7`.
+
+| Transform | Paired AUC vs `per_year` | Paired AUC vs lifetime |
+|---|---|---|
+| `per_year` | — | **+0.0181 [+0.0070, +0.0292], p = 0.0014** |
+| `recent_rate` alone (180 d) | — | +0.0017 [−0.0238, +0.0273], p = 0.90 |
+| **C1@180 (primary)** | **−0.0032 [−0.0144, +0.0079], p = 0.57** | +0.0149 [−0.0032, +0.0330], p = 0.11 |
+| blend, best β = 0.25 (180 d) | +0.0021 [−0.0010, +0.0052], Holm p = 0.37 | — |
+| rate ÷ stratum median, best 300 d | **−0.0233 [−0.0397, −0.0069], Holm p = 0.016 — worse** | — |
+
+Document-age normalisation separates significantly better than the lifetime count. Recency adds nothing on top of
+it: the primary combination is slightly below `per_year` alone, recency alone is indistinguishable from the lifetime
+count, and recency controlled for publication era is significantly worse.
+
+nDCG@10 against control, best W per transform (W grid 0.001 … 0.4; S = the transform's median over the admissible
+set; non-admissible documents take the absent branch, so these rows are not identical to the smoke-test cell):
+
+| Transform | Best W | Δ nDCG@10 | 95% CI |
+|---|---|---|---|
+| lifetime | 0.01 | +0.0024 | [−0.0018, +0.0066] |
+| `per_year` | 0.01 | +0.0021 | [−0.0020, +0.0063] |
+| `recent_rate` (180 d) | 0.02 | +0.0028 | [−0.0048, +0.0104] |
+| **C1@180** | 0.05 | **+0.0068** | [−0.0022, +0.0157] |
+| rate ÷ stratum median (300 d) | 0.02 | +0.0038 | [−0.0027, +0.0104] |
+
+Every interval contains zero. **Do not compare transforms at a fixed W:** `log1p` compresses the popularity
+values, so the same W reorders fewer documents — C1@180 loses only −0.0218 at W = 0.2 where the lifetime count loses
+−0.1399, purely because its effective weight is smaller. Compare best W, or scale W by σ_pop as the spec's rule does.
+
+## Close-out — 2026-09-15
+
+**Verdict: NO-GO on this corpus.** Four scorings of citation popularity were measured — lifetime count,
+document-age normalisation, the shipped decay, and the two combined. Age normalisation separates relevant documents
+significantly better than the lifetime count. **None improves nDCG@10 at any fusion weight:** the largest point
+estimate is +0.0068 with an interval containing zero, and every scoring becomes a significant loss by W = 0.2.
+
+**Why Phase 1's remaining measurements and Phase 2 were not run.** Measurements 2, 3, 4c and 4d and the live gate
+were designed to confirm a positive offline screen. This screen's pool already holds 311 of 339 relevant judgements,
+so offline re-ranking *overstates* the achievable gain and only a NO-GO transfers to live (spec A40). An offline
+null across the full W range, for every scoring, is the direction that transfers; a live run cannot recover a gain
+the optimistic bound shows is absent.
+
+**What this does not show.** SciFact relevance is evidential — whether an abstract supports or refutes a
+claim — which a query-independent prior cannot predict, and the baseline is near its ceiling. This is strong
+evidence that citation popularity does not help this kind of relevance, and weak evidence about engagement
+popularity in search where many results are comparably relevant.
+
+**Disposition.** The shipped relation-popularity signal (`b32f870`) stays, **off by default** (`WPopularity = 0`,
+`RecencyBoost = 0`); it is not removed. Two prerequisites must be on `main` before anyone enables it:
+
+- **The reconciliation sweep's fault abort** — branch `popularity-sweep-fault-abort`, complete and reviewed. Held on
+  2026-09-15 behind the projection tenant-resolution work, whose plan edits the same `PopularitySignalConsumer`; to be
+  merged on top of it once that lands.
+- **An upper bound on `RecencyBoost`** — open; fix in progress. The validator checks only finite and non-negative, and a
+  configured value past ~10³⁰⁷ overflows `count + RecencyBoost × D` to a NaN popularity. That NaN poisons fusion even at
+  `WPopularity = 0` (`0 × NaN = NaN`) and sorts below every real score, silently burying the most recently cited
+  documents — the ones recency exists to promote. Reproduced end-to-end through `SearchSimilar`; 10⁹ and 10³⁰⁶ rank
+  correctly.
+
+**Do not re-propose** citation-count scorings on SciFact — lifetime, per-year, decayed, or combinations of
+these. A new question needs a corpus where relevance plausibly correlates with engagement.
