@@ -8,7 +8,7 @@ Source: `docs/criticalreviews/2026-09-15-iverson-critical-security-review-7.md` 
 
 File: `Iverson.Clients/Python/iverson_client/auth.py`
 
-`_CachedTokenProvider.get_token` is the only place in the Python SDK that constructs the token-fetch request (`iverson_client/core.py` only imports the class and checks the endpoint's URL scheme — it never builds its own request). It currently calls `urllib.request.urlopen(request)` using Python's default global opener, which follows 307/308 redirects and resends the original POST body (including `client_secret`) to whatever `Location` a compromised or malicious token endpoint names — the same vulnerability class already fixed for the DotNet/Java/Go/TypeScript SDKs.
+`_CachedTokenProvider.get_token` is the only place in the Python SDK that constructs the token-fetch request (`iverson_client/core.py` only imports the class and checks the endpoint's URL scheme — it never builds its own request). Every one of the other four language SDKs explicitly disables automatic redirect-following on the OAuth2 client-credentials token-fetch HTTP call. The Python SDK currently relies on `urllib`'s default behavior, which happens not to leak `client_secret` via redirect (CPython's `HTTPRedirectHandler` raises on POST+307/308, and drops the request body entirely on POST+301/302/303) — but this makes its safety an accident of the standard library's own implementation choices rather than an explicit guarantee, and leaves it the only SDK of the five without one. The fix brings it in line with the other four explicitly.
 
 **Fix:** install a custom opener with a redirect handler that refuses every redirect, and use it in place of the default:
 
@@ -30,15 +30,21 @@ One file, no new dependency. No existing Python SDK test exercises redirect-foll
 
 ## 2. Branch protection + CI build/test jobs (F2)
 
-**Branch protection on `main`:** require these 15 status-check contexts before merge (enumerated by reading the actual job structure, not assumed), no required review (solo-maintained repo):
+**Branch protection on `main`:** `enforce_admins: false` — the repo's actual workflow is local merge commits pushed straight to `main` (not PRs; 54 commits are queued this way as of this design), and this setting keeps that workflow intact while still binding Dependabot's PRs and any non-admin actor, which covers both incidents this finding cites. No required review (solo-maintained repo).
+
+Before applying, verify empirically which candidate status-check contexts can currently pass: once the 2 new jobs below exist, open a throwaway PR against `main`, let every candidate context report, and require only the ones observed green. The candidate list (subject to that verification):
 
 - From `dependency-scan.yml` (7 jobs, each its own check context — no per-job `name:` override, so the context is the job id): `nuget-audit`, `npm-audit-adminui`, `npm-audit-ts-sdk`, `govulncheck`, `owasp-dependency-check-java`, `pip-audit-python-sdk`, `pip-audit-agents`
 - From `codeql.yml` (one job, matrixed across 6 languages, each its own context named `Analyze (<language>)`): `Analyze (actions)`, `Analyze (csharp)`, `Analyze (go)`, `Analyze (java-kotlin)`, `Analyze (javascript-typescript)`, `Analyze (python)`
 - The 2 new jobs this design adds (below)
 
+`owasp-dependency-check-java` is expected to observe red during this verification pass (its NVD API key is not yet provisioned — see F8 in §9) and therefore won't be added to the required list by this process; add it once the key exists and it's independently observed passing. This is a natural consequence of the verify-first approach above, not a special case.
+
 Configured via `gh api repos/counsellorben/Iverson/branches/main/protection` (confirmed the authenticated account has `admin: true` on this repo).
 
-**New CI job — .NET build/test:** a new workflow `.github/workflows/dotnet-build.yml` (kept independent of `dependency-scan.yml`'s manifest-only scope) running `dotnet build Iverson.slnx` then `dotnet test --filter "Category!=Integration"` (the same filter already confirmed working earlier this session). Mirrored as a new job in `.gitlab-ci.yml` under a new `build-test` stage (the existing `stages:` list only has `validate`/`dependency-scan` — neither fits an application build/test job semantically).
+**New CI job — .NET build/test:** a new workflow `.github/workflows/dotnet-build.yml` (kept independent of `dependency-scan.yml`'s manifest-only scope) running `dotnet build Iverson.slnx` then `dotnet test --filter "Category!=Integration"`. Mirrored as a new job in `.gitlab-ci.yml` under a new `build-test` stage (the existing `stages:` list only has `validate`/`dependency-scan` — neither fits an application build/test job semantically).
+
+**Prerequisite — the filter currently excludes only 4 of 23 container-referencing test files, not all container-dependent tests.** Only `PipelineIntegrationTests`, `TenantIsolationIntegrationTests`, `ObjectSearchVectorIntegrationTests`, and `RegisterSchemaAuthorizationIntegrationTests` carry `[Trait("Category", "Integration")]` today. A full sweep of every `IClassFixture<...ContainerFixture>`/`ICollectionFixture<...ContainerFixture>` consumer across `Iverson.Server` (cross-referenced against which fixtures genuinely start containers, vs. in-memory-only `WebApplicationFactory`-based fixtures, vs. static-method-only usage that starts nothing) found **13 additional test classes** that start real containers and need the same trait added: `EngagementStoreConsumerKafkaOrderingTests`, `DocumentRerenderQueuePostgresIntegrationTests`, `ReconciliationQueuePostgresIntegrationTests`, `StarRocksReadinessIntegrationTests`, `AuthentikRecoveryFlowIntegrationTests`, `DlqRepositoryPostgresIntegrationTests`, `PostgresIntegrationTests`, `TenantRepositoryPostgresIntegrationTests`, `StarRocksIntegrationTests`, `QdrantIntegrationTests`, `QdrantTenantIsolationIntegrationTests`, `QdrantVectorServiceTests`, `TenantScopedAccessIntegrationTests`. Tag all 13 with `[Trait("Category", "Integration")]` as a prerequisite step of this task — once done, the filter genuinely excludes every container-starting test everywhere it runs, so neither GitHub's nor GitLab's runner needs a Docker daemon for this job.
 
 **New CI job — TypeScript SDK build/test:** `npm ci && npm test` in `Iverson.Clients/TypeScript` (typecheck + vitest, confirmed working after this session's earlier vitest/vite pin fix). Same placement pattern: new GitHub workflow job, new GitLab `build-test`-stage job.
 
@@ -52,11 +58,11 @@ Two mechanisms, matched to each transport per this codebase's own existing conve
 
 Limit: **50,000 requests/minute per principal**, sliding window. Sized generously above `Iverson.LoadTest`'s realistic ceiling — LoadTest defaults to 16 concurrent workers sharing **one** service credential with no self-throttling anywhere in its worker loop (confirmed by reading `Iverson.LoadTest/Program.cs`), and no live stack was available this session to measure its actual throughput, so this is an analytical estimate (roughly 15,000-30,000 req/min at a realistic 20-50ms per-call round-trip) with generous headroom above it, not a tuned number. Still bounds a truly pathological runaway to a real ceiling instead of unlimited.
 
-**`/v1/traces`**: ASP.NET Core's built-in `AddRateLimiter`/`.RequireRateLimiting("traces")` middleware (confirmed the route's `app.MapPost("/v1/traces", ...)` builder supports this extension). Limit: **60 requests/minute per principal** — this endpoint is not a hot path for any legitimate caller (LoadTest doesn't call it; it's a browser/SDK trace-export relay).
+**`/v1/traces`**: ASP.NET Core's `Microsoft.AspNetCore.RateLimiting` middleware. Two things the design must get right, both confirmed by direct testing (an in-process `TestServer` probe, not just reading the API): (1) `builder.Services.AddRateLimiter(...)` alone does nothing — `app.UseRateLimiter()` must also be added to the request pipeline, after `UseAuthentication()`/`UseAuthorization()` so the limiter can read `HttpContext.User` — without it, `.RequireRateLimiting("traces")` on the endpoint is silently inert (verified: 4/4 requests passed with it absent, 2 of 4 rejected once added); (2) a plain named limiter (`AddFixedWindowLimiter`/`AddSlidingWindowLimiter`) is a single limiter **shared across every caller**, not per-principal — the partitioned form is required for the "per principal" limit this design states: `options.AddPolicy("traces", ctx => RateLimitPartition.GetSlidingWindowLimiter(ctx.User.FindFirst("sub")?.Value ?? "anon", _ => new SlidingWindowRateLimiterOptions { ... }))`. Limit: **60 requests/minute per principal** — this endpoint is not a hot path for any legitimate caller (LoadTest doesn't call it; it's a browser/SDK trace-export relay).
 
 ---
 
-## 4. DLQ `/admin/reconcile/{typeName}` hardening (F4, optional)
+## 4. DLQ `/admin/reconcile/{typeName}` hardening (F4, optional; F4's primary fix is tracked in §9)
 
 File: `Iverson.Server/Iverson.Api/Program.cs:400-412`
 
@@ -120,31 +126,46 @@ with the same "data, not instructions" framing already used for `<passage>`/`<an
 
 File: `scripts/generate-compose-secrets.sh`
 
-The script currently generates 7 *different* secrets (`IVERSON_LOADTEST_CLIENT_SECRET` and 6 siblings) — it does not yet cover the 6 keys this finding targets. Extend it with 6 more `rand()`-generated lines:
+The script currently generates 7 *different* secrets (`IVERSON_LOADTEST_CLIENT_SECRET` and 6 siblings) — it does not yet cover the keys this finding targets. Extend it with 5 more `rand()`-generated lines (`AUTHENTIK_POSTGRESQL__PASSWORD` is excluded — see below, its compose site stays hardcoded):
 
 ```bash
-cat > "$ENV_FILE" <<EOF
-IVERSON_LOADTEST_CLIENT_SECRET=$(rand)
-IVERSON_WEBTEST_CLIENT_SECRET=$(rand)
-IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET=$(rand)
-IVERSON_SMOKE_TEST_PASSWORD=$(rand)
-IVERSON_BYPASS_PASSWORD=$(rand)
-IVERSON_ADMIN_ORCHESTRATOR_PASSWORD=$(rand)
-IVERSON_ADMIN_ORCHESTRATOR_TOKEN=$(rand)
-POSTGRES_PASSWORD=$(rand)
-QDRANT__SERVICE__API_KEY=$(rand)
-AUTHENTIK_SECRET_KEY=$(rand)
-AUTHENTIK_POSTGRESQL__PASSWORD=$(rand)
-AUTHENTIK_BOOTSTRAP_PASSWORD=$(rand)
-AUTHENTIK_BOOTSTRAP_TOKEN=$(rand)
-EOF
+NAMES=(
+    IVERSON_LOADTEST_CLIENT_SECRET
+    IVERSON_WEBTEST_CLIENT_SECRET
+    IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET
+    IVERSON_SMOKE_TEST_PASSWORD
+    IVERSON_BYPASS_PASSWORD
+    IVERSON_ADMIN_ORCHESTRATOR_PASSWORD
+    IVERSON_ADMIN_ORCHESTRATOR_TOKEN
+    POSTGRES_PASSWORD
+    QDRANT__SERVICE__API_KEY
+    AUTHENTIK_SECRET_KEY
+    AUTHENTIK_BOOTSTRAP_PASSWORD
+    AUTHENTIK_BOOTSTRAP_TOKEN
+)
+
+touch "$ENV_FILE"
+for name in "${NAMES[@]}"; do
+    if ! grep -q "^${name}=" "$ENV_FILE"; then
+        echo "${name}=$(rand)" >> "$ENV_FILE"
+    fi
+done
 ```
-Variable names on the `.env` side are kept identical to the compose YAML key names (double underscores preserved for `QDRANT__SERVICE__API_KEY`/`AUTHENTIK_POSTGRESQL__PASSWORD`), matching the existing convention exactly — e.g. `IVERSON_LOADTEST_CLIENT_SECRET` is the same string on both sides today, and the new ones follow suit. Convert all 6 occurrence-groups in `Iverson.Server/docker-compose.yml` (11 total line occurrences across `POSTGRES_PASSWORD` ×1, `QDRANT__SERVICE__API_KEY` ×1, `AUTHENTIK_SECRET_KEY` ×3, `AUTHENTIK_POSTGRESQL__PASSWORD` ×3, `AUTHENTIK_BOOTSTRAP_PASSWORD` ×2, `AUTHENTIK_BOOTSTRAP_TOKEN` ×2) to the `${VAR:?message}` required-with-no-default pattern already used for the other 7, e.g. `QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}`.
+This replaces the script's previous behavior of exiting early and refusing to touch an existing `.env`. That guard meant a developer who had already run the script before this change would never receive the new variables, and `docker compose up` would then hard-fail on `${VAR:?...}` for all of them. The append-if-missing form generates the whole file on a first run (exactly as before) and adds only what's missing on a later run, leaving every already-provisioned value — including the original 7, which Authentik has already used to provision itself — untouched.
+Variable names on the `.env` side are kept identical to the compose YAML key names (double underscores preserved for `QDRANT__SERVICE__API_KEY`/`AUTHENTIK_POSTGRESQL__PASSWORD`), matching the existing convention exactly — e.g. `IVERSON_LOADTEST_CLIENT_SECRET` is the same string on both sides today, and the new ones follow suit. Convert 5 of these 6 occurrence-groups in `Iverson.Server/docker-compose.yml` (**9** total line occurrences: lines 35, 114, 334, 352, 359, 360, 395, 402, 403 — across `POSTGRES_PASSWORD` ×1, `QDRANT__SERVICE__API_KEY` ×1, `AUTHENTIK_SECRET_KEY` ×3, `AUTHENTIK_BOOTSTRAP_PASSWORD` ×2, `AUTHENTIK_BOOTSTRAP_TOKEN` ×2 — `AUTHENTIK_POSTGRESQL__PASSWORD`'s 3 occurrences at lines 339, 357, 400 are excluded, see below) to the `${VAR:?message}` required-with-no-default pattern already used for the other 7, e.g. `QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}`.
+
+**Three of these six secrets are also read as literal copies elsewhere, not just at the declaration sites above** — converting only the declarations desynchronizes the producer (now random) from the consumer (still the old literal), breaking authentication between services:
+- `POSTGRES_PASSWORD` is also embedded in `Password=iverson` at `docker-compose.yml:456,554` (`ConnectionStrings__Postgres`) — rewrite both to `Password=${POSTGRES_PASSWORD:?...}`.
+- `QDRANT__SERVICE__API_KEY` is also embedded as `Qdrant__ApiKey=dev-only-...` at `docker-compose.yml:478,565`, and as `QDRANT_API_KEY = "dev-only-..."` in `Iverson.LoadTest/scripts/ingest.py:155` — rewrite the two compose sites to `Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?...}` and update `ingest.py:155` to read the same env var instead of a hardcoded literal.
+- `AUTHENTIK_POSTGRESQL__PASSWORD` is additionally baked into `deploy/postgres/init-authentik-db.sql:1` (`CREATE USER authentik WITH PASSWORD 'authentik';`), a static file mounted into the Postgres init directory (`docker-compose.yml:41`). **Excluded from this task**: parameterizing it would mean replacing that static SQL file with an entrypoint script that interpolates the env var at container start — a materially bigger change than a compose-value swap. Leave `AUTHENTIK_POSTGRESQL__PASSWORD` hardcoded for now; revisit as a separate, dedicated task if this secret needs to move off a static default.
+
+The remaining two secrets (`AUTHENTIK_BOOTSTRAP_PASSWORD`, `AUTHENTIK_BOOTSTRAP_TOKEN`) have only documentation copies (`docker-compose.yml:8`'s header comment, `Iverson.AdminUI/README.md:28`) — no process reads them, so the stack still starts correctly after conversion, but both will state a password that's no longer accurate. Update both as a follow-on doc-drift edit, not a functional requirement of this task.
 
 ---
 
-## 9. Non-code notes (F3, F8, F11)
+## 9. Non-code notes (F3, F4's primary fix, F8, F11)
 
+- **F4's primary fix (correct `docs/security/tma.md`'s stale F1):** already applied to the file on disk earlier this session, but never committed — `docs/security/tma.md` is entirely untracked (`git log --oneline -- docs/security/tma.md` returns nothing; `git status --porcelain docs/security/` shows `?? docs/security/`). The remaining task is `git add -f docs/security/tma.md && git commit`, not re-doing the edit.
 - **F3 (Authentik `add_user` global scope):** no fix available — Authentik 2026.5.3 cannot object-scope this permission. Recommend alerting on `add_user` API calls against the orchestrator credential via Authentik's own audit log, as a manual ops task; not something this repo's code can implement.
 - **F8 (`NVD_API_KEY`):** a repository administrator must register an NVD API key and add it as a secret in both GitHub and GitLab settings. No code change.
 - **F11 (`/v1/traces` payload validation):** no action — the CSR report's own remediation states existing caps (content-type allowlist + 1 MiB size cap) are accepted as sufficient absent an observed abuse pattern.
@@ -174,7 +195,9 @@ Variable names on the `.env` side are kept identical to the compose YAML key nam
 | `render_schema`'s output has no consumer expecting raw/unescaped text | `grep -rn "render_schema"` — only caller is `session.py:137`, feeding directly into `plan(...)` |
 | GCS/Azure state-backend resource names and provider versions | `Iverson.Server/deploy/terraform/bootstrap/{gcp,azure}/main.tf` — `google_storage_bucket.state` (provider `~> 5.30`), `azurerm_storage_account.state` (provider `~> 3.90`); both target arguments are long-stable in these provider lines |
 | `scripts/generate-compose-secrets.sh` already covers the 6 secrets F10 targets | Read the script directly — it generates 7 *different* secrets (`IVERSON_*` client/test credentials), none of which overlap with `POSTGRES_PASSWORD`/`AUTHENTIK_*`/`QDRANT__SERVICE__API_KEY`; the script needs extending, not just reusing |
-| Exact current line numbers/format of all 6 docker-compose secret keys (11 occurrences) | `grep -n` against `docker-compose.yml` for each key name — confirmed exact lines |
+| Exact current line numbers/format of all 6 docker-compose secret keys (12 occurrences) | `grep -n` against `docker-compose.yml` for each key name — confirmed exact lines: 35, 114, 334, 339, 352, 357, 359, 360, 395, 400, 402, 403 |
+| The 6 docker-compose secrets have no second consumer reading the same literal value elsewhere in the repo | `grep -rn` for each of the 6 literal values across the whole main checkout — 3 have real second consumers (`POSTGRES_PASSWORD`: `docker-compose.yml:456,554`; `QDRANT__SERVICE__API_KEY`: `:478,565` and `Iverson.LoadTest/scripts/ingest.py:155`; `AUTHENTIK_POSTGRESQL__PASSWORD`: `deploy/postgres/init-authentik-db.sql:1`), 3 do not (documentation copies only) |
+| The complete population of test classes that start real containers, not just the ones with an obvious name | Full sweep: `grep -rn "IClassFixture<\|ICollectionFixture<"` across `Iverson.Server`'s test tree (34 hits), cross-referenced against which fixture classes are `IAsyncLifetime` (real containers) vs. `WebApplicationFactory<Program>`-based (in-memory only, 9 files confirmed safe) vs. static-method-only usage (2 files confirmed safe) — 13 classes confirmed to start real containers with no existing trait |
 
 ## Known issues / accepted as out of scope
 
