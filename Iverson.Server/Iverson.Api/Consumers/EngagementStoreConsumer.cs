@@ -58,7 +58,7 @@ public sealed class EngagementStoreConsumer(
         var row = await ProjectionTenantResolution.FetchAuthoritativeRowAsync(entities, schema, ev.Key, "[Engagement]");
         if (row is null)
         {
-            logger.LogWarning("[Engagement] Dropped upsert — no authoritative tenant value for type={Type} key={Key}", ev.TypeName.SanitizeForLog(), key);
+            logger.LogWarning("[Engagement] Dropped upsert — no authoritative row for type={Type} key={Key}", ev.TypeName.SanitizeForLog(), key);
             return;
         }
 

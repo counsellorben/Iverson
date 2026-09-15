@@ -195,8 +195,15 @@ internal sealed class PopularitySignalConsumer(
         if (childSchema is null) return;
 
         var tenantId = await ResolveTenantIdAsync(ev, childSchema, ct);
-        if (tenantId is null) return; // mirrors DocumentRerenderConsumer.cs:68 — an unresolvable
-                                       // tenant must never reach a StarRocks-bound call downstream
+        if (tenantId is null)
+        {
+            // mirrors DocumentRerenderConsumer.cs:68 — an unresolvable tenant must never reach a
+            // StarRocks-bound call downstream
+            logger.LogWarning(
+                "[PopularitySignal] Dropped event — no authoritative row for type={Type} key={Key}",
+                ev.TypeName.SanitizeForLog(), ev.Key.SanitizeForLog());
+            return;
+        }
 
         JsonElement payload;
         try

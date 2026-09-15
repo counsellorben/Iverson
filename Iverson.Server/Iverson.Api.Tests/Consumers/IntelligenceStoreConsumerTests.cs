@@ -9,7 +9,6 @@ using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
 using Iverson.Vector;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NSubstitute;
@@ -2383,22 +2382,5 @@ public class IntelligenceStoreConsumerTests
         indexes.Should().Equal("0", "2");
         _ = _embedding.DidNotReceive().EmbedDocumentAsync(
             Arg.Is<string>(s => string.IsNullOrWhiteSpace(s)), Arg.Any<CancellationToken>());
-    }
-
-    // A test logger that records level + formatted message, mirroring
-    // DocumentRerenderQueueWorkerTests.RecordingLogger, so a specific warning's content (not
-    // merely its presence) can be asserted.
-    private sealed class RecordingLogger<T> : ILogger<T>
-    {
-        public List<(LogLevel Level, string Message)> Entries { get; } = [];
-
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-        public bool IsEnabled(LogLevel logLevel) => true;
-
-        public void Log<TState>(
-            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
-            Func<TState, Exception?, string> formatter) =>
-            Entries.Add((logLevel, formatter(state, exception)));
     }
 }

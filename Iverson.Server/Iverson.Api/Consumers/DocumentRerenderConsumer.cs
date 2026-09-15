@@ -59,7 +59,13 @@ public sealed class DocumentRerenderConsumer(
         // and the entity's Deleted event follows. A row or delete snapshot that is present but
         // carries no tenant value throws PoisonMessageException inside the helper instead.
         var tenantId = await ResolveTenantIdAsync(ev, changedSchema, ct);
-        if (tenantId is null) return;
+        if (tenantId is null)
+        {
+            logger.LogWarning(
+                "[DocumentRerender] Dropped event — no authoritative row for type={Type} key={Key}",
+                ev.TypeName.SanitizeForLog(), ev.Key.SanitizeForLog());
+            return;
+        }
 
         using var payloadDoc = JsonDocument.Parse(ev.PayloadJson);
         var payload = payloadDoc.RootElement;
