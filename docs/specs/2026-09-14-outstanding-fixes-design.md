@@ -23,11 +23,13 @@ Close all 3 items. Each is independently small and touches a disjoint set of fil
 
    Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>
    ```
-4. `git cherry-pick b485b8e 1b9c806 018f061 08b838c` in order — each applies cleanly since no file content changes, only the ancestor's hash does.
-5. Verify `git diff main-backup-before-reword temp-reword` is empty (identical trees) and `git log --format=%B temp-reword~4..temp-reword` shows all 6 commits with correctly-formatted messages.
+4. Derive the current descendant list dynamically rather than using a fixed snapshot — `git rev-list --reverse 40e2203..main` — and cherry-pick every commit it returns, in order. (At spec-write time this returned 4 commits; a CDR round found that by the time the spec itself was committed, a 5th had already landed — the live-derived form is what makes step 5's check meaningful regardless of how many land between writing this design and executing it.)
+5. Verify `git diff main-backup-before-reword temp-reword` is empty (identical trees) and `git log --format=%B temp-reword~<N>..temp-reword` (where `<N>` is the number of commits cherry-picked in step 4) shows every commit with correctly-formatted messages.
 6. `git branch -f main temp-reword`, `git checkout main`, delete `temp-reword`. Keep `main-backup-before-reword` until the user confirms, then delete it.
 
-All 5 rewritten commits get new SHAs; this is expected and disclosed.
+**Execution order:** perform this reword before creating any new commits for items 2 or 3 below — otherwise the descendant list step 4 derives grows again before the reword is done, and the same staleness this note exists to prevent recurs.
+
+All rewritten commits get new SHAs; this is expected and disclosed.
 
 ---
 
@@ -120,7 +122,7 @@ done
 
 | Assumption | Evidence |
 |---|---|
-| `40e2203` and its 4 descendants are unpushed and untouched by any ref but `main` | `git branch -r --contains <sha>` empty for all 5; `git for-each-ref --contains <sha>` shows only `refs/heads/main` for all 5 |
+| `40e2203` and its descendants are unpushed and untouched by any ref but `main` (the descendant count is derived dynamically at execution time, not fixed — see item 1's fix) | `git branch -r --contains <sha>` empty; `git for-each-ref --contains <sha>` shows only `refs/heads/main` — reconfirmed as of this fix: `git rev-list --reverse 40e2203..main` currently returns 5 commits (`b485b8e 1b9c806 018f061 08b838c c9c7085`, the last being this spec's own commit, which post-dated the original 4-commit count) |
 | `40e2203`'s raw message has a bare newline (not a blank line) before the trailer, which is why `%s` folds it and `interpret-trailers` won't parse it | `git log -1 --format='%B' 40e2203` shows two lines with no blank line between; `git log -1 --format='%s' 40e2203` shows both folded into one string — reproduced directly, not inferred |
 | `answer_text` is always a plain `str` at `judge_grounding`'s only call site | `__main__.py:90`: `lambda text, passages: judge_grounding(client, cfg.model, text, passages)` — `text` originates from `AgentAnswer.text`, a plain `str` field |
 | No existing test asserts the old unescaped "Answer:" format | `tests/test_evaluate.py:39-42`'s only `judge_grounding` test asserts solely on the mocked return value, never on prompt content |
