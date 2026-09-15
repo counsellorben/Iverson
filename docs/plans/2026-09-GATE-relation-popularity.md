@@ -549,11 +549,13 @@ popularity in search where many results are comparably relevant.
 - **The reconciliation sweep's fault abort** — branch `popularity-sweep-fault-abort`, complete and reviewed. Held on
   2026-09-15 behind the projection tenant-resolution work, whose plan edits the same `PopularitySignalConsumer`; to be
   merged on top of it once that lands.
-- **An upper bound on `RecencyBoost`** — open; fix in progress. The validator checks only finite and non-negative, and a
-  configured value past ~10³⁰⁷ overflows `count + RecencyBoost × D` to a NaN popularity. That NaN poisons fusion even at
-  `WPopularity = 0` (`0 × NaN = NaN`) and sorts below every real score, silently burying the most recently cited
-  documents — the ones recency exists to promote. Reproduced end-to-end through `SearchSimilar`; 10⁹ and 10³⁰⁶ rank
-  correctly.
+- **An upper bound on `RecencyBoost`** — done: merged to local `main` as `f37bdf0` on 2026-09-15 (not pushed). The
+  validator checked only finite and non-negative, and a configured value past ~10³⁰⁷ overflowed
+  `count + RecencyBoost × D` to a NaN popularity. That NaN poisoned fusion even at `WPopularity = 0` (`0 × NaN = NaN`)
+  and sorted below every real score, silently burying the most recently cited documents — the ones recency exists to
+  promote (reproduced end-to-end through `SearchSimilar`; 10⁹ and 10³⁰⁶ ranked correctly). `RecencyBoost` is now
+  bounded to [0, 1000000]; the same fix caps each `VectorRanking` weight at 1000000 and requires `WBase > 0`, closing
+  the weight-overflow and zero-divisor NaN paths (`docs/specs/2026-09-15-finite-fused-score-bounds-design.md`).
 
 **Do not re-propose** citation-count scorings on SciFact — lifetime, per-year, decayed, or combinations of
 these. A new question needs a corpus where relevance plausibly correlates with engagement.
