@@ -4691,19 +4691,20 @@ public class ObjectSearchGrpcServiceTests
     // with recent citations, ∞ / (∞ + SaturationPoint) is NaN, and that NaN poisons the fused score
     // even at WPopularity = 0 (0 × NaN = NaN) and sorts below every real score. The validator now
     // bounds RecencyBoost to [0, 1000000]: a value past the bound must be REJECTED at startup (the
-    // throw must name RecencyBoost, so an unrelated bind failure cannot pass the test), and the
-    // largest admitted value must bind and never yield a non-finite score through either RPC.
+    // catch matches the validator's own message, not the key path a binder failure also names, so an
+    // unrelated bind failure cannot pass the test), and the largest admitted value must bind, reach
+    // the recency term, and never yield a non-finite score through either RPC.
     private static PopularitySignalOptions? BindRecencyBoostOrRejected(double recencyBoost)
     {
         var config = Microsoft.Extensions.Configuration.MemoryConfigurationBuilderExtensions.AddInMemoryCollection(
             new Microsoft.Extensions.Configuration.ConfigurationBuilder(),
-            new Dictionary<string, string?> { ["PopularitySignal:RecencyBoost"] = recencyBoost.ToString("R") }).Build();
+            new Dictionary<string, string?> { ["PopularitySignal:RecencyBoost"] = recencyBoost.ToString("R", System.Globalization.CultureInfo.InvariantCulture) }).Build();
         var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
         try
         {
             services.AddPopularitySignalOptions(config);
         }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("RecencyBoost"))
+        catch (InvalidOperationException ex) when (ex.Message.Contains("RecencyBoost must be finite"))
         {
             return null;
         }
@@ -4762,6 +4763,10 @@ public class ObjectSearchGrpcServiceTests
 
         written.Should().HaveCount(2);
         written.Should().OnlyContain(r => float.IsFinite(r.Score));
+        // The recency term was actually computed: popularity ≈ 1 lifts the recently-cited document's
+        // fused score to ≈ 0.99, against ≈ 0.12 from its lifetime count of 5 alone.
+        written[0].Data.Fields["Title"].StringValue.Should().Be("recently-cited");
+        written[0].Score.Should().BeGreaterThan(0.9f);
     }
 
     [Theory]
@@ -4821,5 +4826,8 @@ public class ObjectSearchGrpcServiceTests
 
         written.Should().HaveCount(1);
         written.Should().OnlyContain(r => float.IsFinite(r.Score));
+        // The recency term was actually computed: popularity ≈ 1 lifts the fused score far above what
+        // the parent's lifetime count of 5 alone would give.
+        written[0].Score.Should().BeGreaterThan(0.9f);
     }
 }
