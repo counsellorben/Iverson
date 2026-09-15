@@ -4,7 +4,7 @@ namespace Iverson.Client.Core;
 
 internal sealed class CachedClientCredentialsTokenProvider(IversonClientCredentials credentials) : IDisposable
 {
-    private readonly HttpClient _httpClient = new();
+    private readonly HttpClient _httpClient = new(new SocketsHttpHandler { AllowAutoRedirect = false });
     private readonly SemaphoreSlim _lock = new(1, 1);
     private string? _token;
     private DateTimeOffset _expiresAt = DateTimeOffset.MinValue;
