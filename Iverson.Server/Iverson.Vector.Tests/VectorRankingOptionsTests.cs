@@ -140,6 +140,47 @@ public sealed class VectorRankingOptionsTests
         act.Should().Throw<InvalidOperationException>();
     }
 
+    [Theory]
+    [InlineData("WBase")]
+    [InlineData("WCentroid")]
+    [InlineData("WDecay")]
+    [InlineData("WPopularity")]
+    public void AddVectorRanking_WeightAtMax_Succeeds(string weight)
+    {
+        var config = BuildConfig((weight, "1000000"));
+
+        var act = () => new ServiceCollection().AddVectorRanking(config);
+
+        act.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("WBase")]
+    [InlineData("WCentroid")]
+    [InlineData("WDecay")]
+    [InlineData("WPopularity")]
+    public void AddVectorRanking_WeightExceedsMax_Throws(string weight)
+    {
+        var config = BuildConfig((weight, "1000001"));
+
+        var act = () => new ServiceCollection().AddVectorRanking(config);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage($"*at most 1000000*{weight}=1000001*");
+    }
+
+    [Theory]
+    [InlineData("WCentroid")]
+    [InlineData("WDecay")]
+    [InlineData("WPopularity")]
+    public void AddVectorRanking_WBaseZero_WithAnotherWeightPositive_Throws(string otherWeight)
+    {
+        var config = BuildConfig(("WBase", "0"), (otherWeight, "0.45"));
+
+        var act = () => new ServiceCollection().AddVectorRanking(config);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*WBase*greater than zero*");
+    }
+
     [Fact]
     public void AddVectorRanking_LambdaSimilarOutOfRange_Throws()
     {

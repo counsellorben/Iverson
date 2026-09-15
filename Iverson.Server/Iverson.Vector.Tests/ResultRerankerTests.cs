@@ -195,6 +195,44 @@ public sealed class ResultRerankerTests
         results.Single().FusedScore.Should().BeApproximately(expected, 1e-9);
     }
 
+    // The validator bounds every weight to at most 1000000 and requires WBase > 0, so the base
+    // score's weight always keeps the divisor positive and no weighted sum can overflow. Pins that
+    // the extremes of that admitted domain — WBase at its smallest and largest, every other weight
+    // at 0 or 1000000 — fuse to a finite score for every signal-presence combination, with each
+    // signal at the ends of its range.
+    [Theory]
+    [InlineData(double.Epsilon)]
+    [InlineData(1000000.0)]
+    public void Rerank_ExtremeAdmittedWeights_EveryPresenceCombination_FusesToAFiniteScore(double wBase)
+    {
+        var candidates = new List<RerankCandidate>();
+        ulong id = 0;
+        foreach (var baseScore in new[] { -1.0, 1.0 })
+        foreach (var centroid in new[] { null, CentroidCos1, new[] { -1f, 0f } })
+        foreach (var decay in new double?[] { null, 0.0, 1.0 })
+        foreach (var popularity in new double?[] { null, 0.0, 1.0 })
+            candidates.Add(new RerankCandidate(++id, baseScore, centroid, decay, popularity));
+
+        foreach (var wCentroid in new[] { 0.0, 1000000.0 })
+        foreach (var wDecay in new[] { 0.0, 1000000.0 })
+        foreach (var wPopularity in new[] { 0.0, 1000000.0 })
+        {
+            var reranker = new ResultReranker(Options.Create(new VectorRankingOptions
+            {
+                WBase = wBase,
+                WCentroid = wCentroid,
+                WDecay = wDecay,
+                WPopularity = wPopularity
+            }));
+
+            var results = reranker.Rerank(Query, candidates);
+
+            results.Should().HaveCount(candidates.Count);
+            results.Should().OnlyContain(r => double.IsFinite(r.FusedScore),
+                $"weights {wBase}/{wCentroid}/{wDecay}/{wPopularity} are admitted");
+        }
+    }
+
     [Fact]
     public void Rerank_AllSignalsPresent_WithPopularityWeight_ComputesWeightedMean()
     {

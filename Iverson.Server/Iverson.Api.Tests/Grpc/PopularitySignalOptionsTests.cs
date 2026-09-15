@@ -340,7 +340,7 @@ public class PopularitySignalOptionsTests
         var act = () => services.AddPopularitySignalOptions(config);
 
         act.Should().Throw<InvalidOperationException>()
-           .WithMessage("*RecencyBoost*finite and non-negative*");
+           .WithMessage("*RecencyBoost*finite and in [0, 1000000]*");
     }
 
     [Fact]
@@ -357,7 +357,40 @@ public class PopularitySignalOptionsTests
         var act = () => services.AddPopularitySignalOptions(config);
 
         act.Should().Throw<InvalidOperationException>()
-           .WithMessage("*RecencyBoost*finite and non-negative*");
+           .WithMessage("*RecencyBoost*finite and in [0, 1000000]*");
+    }
+
+    [Fact]
+    public void AddPopularitySignalOptions_RecencyBoost_AtMax_Succeeds()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "PopularitySignal:RecencyBoost", "1000000" }
+            })
+            .Build();
+
+        var act = () => services.AddPopularitySignalOptions(config);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void AddPopularitySignalOptions_RecencyBoost_ExceedsMax_Throws()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "PopularitySignal:RecencyBoost", "1000001" }
+            })
+            .Build();
+
+        var act = () => services.AddPopularitySignalOptions(config);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*RecencyBoost*finite and in [0, 1000000]*");
     }
 
     [Fact]

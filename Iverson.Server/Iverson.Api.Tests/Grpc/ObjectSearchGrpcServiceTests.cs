@@ -4689,10 +4689,10 @@ public class ObjectSearchGrpcServiceTests
     // RecencyBoost overflow. The validator checks only finite and non-negative, so a value near
     // double.MaxValue binds cleanly; count + RecencyBoost × D then overflows to +∞ for any document
     // with recent citations, ∞ / (∞ + SaturationPoint) is NaN, and that NaN poisons the fused score
-    // even at WPopularity = 0 (0 × NaN = NaN) and sorts below every real score. These two tests are
-    // deliberately fix-agnostic: a misconfiguration must either be REJECTED at startup (the throw
-    // must name RecencyBoost, so an unrelated bind failure cannot pass the test) or, when the
-    // validator admits it, the options it actually produced must never yield a non-finite score.
+    // even at WPopularity = 0 (0 × NaN = NaN) and sorts below every real score. The validator now
+    // bounds RecencyBoost to [0, 1000000]: a value past the bound must be REJECTED at startup (the
+    // throw must name RecencyBoost, so an unrelated bind failure cannot pass the test), and the
+    // largest admitted value must bind and never yield a non-finite score through either RPC.
     private static PopularitySignalOptions? BindRecencyBoostOrRejected(double recencyBoost)
     {
         var config = Microsoft.Extensions.Configuration.MemoryConfigurationBuilderExtensions.AddInMemoryCollection(
@@ -4712,13 +4712,21 @@ public class ObjectSearchGrpcServiceTests
             .GetRequiredService<IOptions<PopularitySignalOptions>>(provider).Value;
     }
 
-    [Fact]
-    public async Task SearchSimilar_RecencyBoostTheValidatorAdmits_NeverEmitsANonFiniteScore()
+    [Theory]
+    [InlineData(double.MaxValue, true)]
+    [InlineData(1000000.0, false)]
+    public async Task SearchSimilar_RecencyBoost_IsRejectedAtStartupOrEmitsOnlyFiniteScores(
+        double recencyBoost, bool expectRejected)
     {
-        var popularity = BindRecencyBoostOrRejected(double.MaxValue);
-        if (popularity is null) return; // rejected at startup: the misconfiguration fails loudly
+        var popularity = BindRecencyBoostOrRejected(recencyBoost);
+        if (expectRejected)
+        {
+            popularity.Should().BeNull("a RecencyBoost past the bound must fail loudly at startup");
+            return;
+        }
+        popularity.Should().NotBeNull();
 
-        popularity.Signals = [new PopularitySignalEntry("Article", "Author")];
+        popularity!.Signals = [new PopularitySignalEntry("Article", "Author")];
         popularity.SaturationPoint = 100.0;
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
         var sut = new ObjectSearchGrpcService(
@@ -4756,13 +4764,21 @@ public class ObjectSearchGrpcServiceTests
         written.Should().OnlyContain(r => float.IsFinite(r.Score));
     }
 
-    [Fact]
-    public async Task SearchChunks_RecencyBoostTheValidatorAdmits_NeverEmitsANonFiniteScore()
+    [Theory]
+    [InlineData(double.MaxValue, true)]
+    [InlineData(1000000.0, false)]
+    public async Task SearchChunks_RecencyBoost_IsRejectedAtStartupOrEmitsOnlyFiniteScores(
+        double recencyBoost, bool expectRejected)
     {
-        var popularity = BindRecencyBoostOrRejected(double.MaxValue);
-        if (popularity is null) return; // rejected at startup: the misconfiguration fails loudly
+        var popularity = BindRecencyBoostOrRejected(recencyBoost);
+        if (expectRejected)
+        {
+            popularity.Should().BeNull("a RecencyBoost past the bound must fail loudly at startup");
+            return;
+        }
+        popularity.Should().NotBeNull();
 
-        popularity.Signals = [new PopularitySignalEntry("Article", "Author")];
+        popularity!.Signals = [new PopularitySignalEntry("Article", "Author")];
         popularity.SaturationPoint = 100.0;
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
         var sut = new ObjectSearchGrpcService(
