@@ -4,6 +4,7 @@ using Iverson.Api.Tenancy;
 using Iverson.Client.Contracts;
 using Iverson.Sql;
 using Iverson.StarRocks;
+using Iverson.Vector;
 
 namespace Iverson.Api.Grpc;
 
@@ -14,7 +15,11 @@ public sealed class TenantLifecycleGrpcService(
 {
     public override async Task<Tenant> CreateTenant(CreateTenantRequest request, ServerCallContext context)
     {
-        if (!TenantIdentifier.IsValid(request.TenantId))
+        // The no-tenant sentinel passes IsValid, but a tenant under it would own the Qdrant sentinel
+        // collection that null-tenant reads and writes rely on never existing. Ordinal: only a
+        // byte-identical id fingerprints to the sentinel collection name.
+        if (!TenantIdentifier.IsValid(request.TenantId)
+            || string.Equals(request.TenantId, IntelligenceTenantScope.NoTenantSentinel, StringComparison.Ordinal))
             throw new RpcException(
                 new Status(
                     StatusCode.InvalidArgument,

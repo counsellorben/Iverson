@@ -5,6 +5,7 @@ using Iverson.Api.Tenancy;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
 using Iverson.Sql;
+using Iverson.Vector;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Xunit;
@@ -76,6 +77,38 @@ public class TenantLifecycleGrpcServiceTests
             DisplayName = "Bad Tenant",
             AdminUsername = "bad-admin",
             AdminEmail = "admin@bad.example"
+        };
+
+        var act = () => _sut.CreateTenant(request, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+
+        await _tenantRepository.DidNotReceive()
+            .InsertAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>());
+        await _authentikAdminClient.DidNotReceive()
+            .CreateUserAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<IReadOnlyList<string>>());
+    }
+
+    [Fact]
+    public async Task CreateTenant_NoTenantSentinelId_ThrowsInvalidArgumentAndTouchesNoDependency()
+    {
+        // The literal passes TenantIdentifier.IsValid, but a tenant provisioned under it would own
+        // the Qdrant no-tenant sentinel collection that null-tenant reads and writes rely on never
+        // existing.
+        var request = new CreateTenantRequest
+        {
+            TenantId = IntelligenceTenantScope.NoTenantSentinel,
+            DisplayName = "Sentinel",
+            AdminUsername = "sentinel-admin",
+            AdminEmail = "admin@sentinel.example"
         };
 
         var act = () => _sut.CreateTenant(request, TestServerCallContext.Create());

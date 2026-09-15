@@ -7,7 +7,7 @@ namespace Iverson.Vector;
 
 public sealed class IntelligenceTenantScope(string apiKey)
 {
-    private const string NoTenantSentinel = "__no-tenant-claim__";
+    public const string NoTenantSentinel = "__no-tenant-claim__";
 
     /// <summary>Base-36 digits needed for 128 bits: ceil(128 / log2(36)) = 25 — the same constant,
     /// for the same reason, as <c>Iverson.StarRocks.TenantIdentifier.HashDigits</c>.</summary>
