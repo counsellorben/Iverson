@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Google.Protobuf.WellKnownTypes;
+using Value = Google.Protobuf.WellKnownTypes.Value;
 using Grpc.Core;
 using Iverson.Client.Attributes;
 using Iverson.Client.Contracts;

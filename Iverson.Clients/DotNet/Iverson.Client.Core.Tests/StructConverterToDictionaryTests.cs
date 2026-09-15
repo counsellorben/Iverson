@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Google.Protobuf.WellKnownTypes;
+using Value = Google.Protobuf.WellKnownTypes.Value;
 using Iverson.Client.Core;
 using Xunit;
 

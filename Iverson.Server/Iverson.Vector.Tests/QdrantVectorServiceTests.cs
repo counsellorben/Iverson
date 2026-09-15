@@ -2,6 +2,7 @@ using System.Globalization;
 using FluentAssertions;
 using NSubstitute;
 using Qdrant.Client.Grpc;
+using Value = Qdrant.Client.Grpc.Value;
 using Xunit;
 
 namespace Iverson.Vector.Tests;
