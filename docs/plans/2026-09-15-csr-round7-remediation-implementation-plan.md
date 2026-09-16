@@ -37,7 +37,7 @@ The following were verified by the spec (and, for the redirect and container-pop
 - `RejectForbiddenCharacters` (`StarRocksPipelineBuilder.cs:374`) is the single choke point for all 4 raw-expression entry points; no test fixture uses an expression near 1000 characters.
 - `render_schema`'s only caller is `session.py:137`; `_escape` is defined in `retrieval.py:168` and already imported the same way by `evaluate.py`.
 - Both Terraform state-backend resources and their pinned provider versions; both target arguments are genuinely absent today.
-- Of the 6 named docker-compose secrets, 4 are converted by this plan (`QDRANT__SERVICE__API_KEY`, `AUTHENTIK_SECRET_KEY`, `AUTHENTIK_BOOTSTRAP_PASSWORD`, `AUTHENTIK_BOOTSTRAP_TOKEN`); `AUTHENTIK_POSTGRESQL__PASSWORD` and `POSTGRES_PASSWORD` are both excluded — the former because its second consumer is a static-mounted SQL file (a bigger change than a compose-value swap), the latter because Postgres only honors it at first initdb against an already-provisioned persistent volume (design review forced decision §3.2). `QDRANT__SERVICE__API_KEY` has real second consumers beyond its declaration site (2 compose lines plus `ingest.py`, which requires — not falls back to — the env var). The generator script must append missing keys rather than skip whole-file generation when `.env` already exists.
+- Of the 6 named docker-compose secrets, 4 are converted by this plan (`QDRANT__SERVICE__API_KEY`, `AUTHENTIK_SECRET_KEY`, `AUTHENTIK_BOOTSTRAP_PASSWORD`, `AUTHENTIK_BOOTSTRAP_TOKEN`); `AUTHENTIK_POSTGRESQL__PASSWORD` and `POSTGRES_PASSWORD` are both excluded — the former because its second consumer is a static-mounted SQL file (a bigger change than a compose-value swap), the latter because Postgres only honors it at first initdb against an already-provisioned persistent volume (design review forced decision §3.2). `QDRANT__SERVICE__API_KEY` has real second consumers beyond its declaration site (2 compose lines plus `ingest.py` and its three importers `multivector.py`/`similar_arms.py`/`aspect_vectors.py`, all of which require — not fall back to — the env var). The generator script must append missing keys rather than skip whole-file generation when `.env` already exists.
 - `enforce_admins: false` and "verify status-check pass-state via a throwaway PR before finalizing the required list" (both forced decisions, resolved by the user during design review).
 - `owasp-dependency-check-java` is expected red during that verification (NVD key unprovisioned) and is excluded from the initial required list by that process, not as a special case.
 - `docs/security/tma.md`'s F1 correction is already applied to the file on disk, only uncommitted.
@@ -66,7 +66,7 @@ The following were verified by the spec (and, for the redirect and container-pop
 | 18 | File path / consumer impact | `planner.py`'s exact current line 36 content, and that `_escape` is not yet imported there | Read the file in full — line 36 matches the spec's cited fix target exactly; no `iverson_agent` import present yet, so the fix must add one |
 | 19 | Convention | Both Terraform files' existing indentation/alignment style, to insert the new argument consistently | Read both `resource` blocks directly — 2-space indent, `=` columns aligned within each block |
 | 20 | File path | `generate-compose-secrets.sh`'s exact current 29-line structure | Read the file in full — matches the design's citations exactly |
-| 21 | Consumer impact | **CORRECTED (CIR round 1 failed this row):** `ingest.py`'s `QDRANT_API_KEY` constant and how the script is invoked | The factual half holds — this is a standalone script invoked directly with CLI flags, not run inside docker-compose. But the row's fallback-to-literal fix was wrong: after Task 9 Step 2's own conversion, that literal is stale everywhere (every compose site fails loudly if the key is missing instead). The fix is a hard `os.environ["QDRANT__SERVICE__API_KEY"]` requirement, matching the rest of the stack; `import os` is already present at `ingest.py:136`, so no import change is needed |
+| 21 | Consumer impact | **CORRECTED (CIR round 2 failed this row):** `ingest.py`'s `QDRANT_API_KEY` constant, how the script is invoked, and every consumer of that module-scope constant | `ingest.py` itself is a standalone script invoked directly with CLI flags, not run inside docker-compose — a hard `os.environ["QDRANT__SERVICE__API_KEY"]` requirement is correct for it (CIR round 1's fallback-to-literal alternative was rejected: after Task 9 Step 2's conversion, that literal is stale everywhere). But the read is at module scope, so it also breaks `ingest.py`'s 3 importers (`multivector.py`, `similar_arms.py`, `aspect_vectors.py`, each `import ingest`) at import time, including for `--help` — round 1's consumer check grepped the literal secret string, which the importers never contain (they reference it via `ingest.QDRANT_API_KEY`). All 4 invocations need the same `set -a; . Iverson.Server/.env; set +a` prefix |
 | 22 | File path | `docker-compose.yml`'s exact current text at the 4 extra consumer-site lines (456, 554, 478, 565) | Read directly — `Password=iverson` ×2, `Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789` ×2, byte-identical to the design's citations |
 | 23 | Consumer impact | `docs/security/tma.md`'s working-tree state is unchanged since the design's own verification | `git status --porcelain docs/security/` → still just `?? docs/security/`, nothing else touched |
 | 24 | Command | Exact `gh api` PUT payload shape for branch protection | Fetched GitHub's REST API reference directly: `required_status_checks` (`{"strict": bool, "contexts": [...]}`), `enforce_admins`, `required_pull_request_reviews`, and `restrictions` are all required top-level fields even when `null`. `strict` defaults to `false` here (no "must be up to date with base branch" requirement was decided) |
@@ -258,6 +258,7 @@ The following were verified by the spec (and, for the redirect and container-pop
     rules:
       - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+      - if: '$CI_PIPELINE_SOURCE == "schedule"'
 
   stages:
     - validate
@@ -285,7 +286,7 @@ The following were verified by the spec (and, for the redirect and container-pop
       - npm ci
       - npm test
   ```
-  The `workflow:` block is a new top-level key affecting every existing job's pipeline-creation eligibility, not just these two — it does not change which jobs run inside a pipeline once created (job-level `rules:`/`extends:` still governs that), only whether a pipeline is created at all for a given push. Existing jobs are unaffected in practice: every current push/MR pattern that creates a pipeline today still does under these two conditions.
+  The `workflow:` block is a new top-level key affecting every existing job's pipeline-creation eligibility, not just these two — it does not change which jobs run inside a pipeline once created (job-level `rules:`/`extends:` still governs that), only whether a pipeline is created at all for a given push. The three clauses cover every source any current job's rules name: `merge_request_event` (all 11 existing jobs) and `schedule` (the 7 `.rules-dependency-scan` jobs at `:23` — the file's own documented dormant trigger, which a `merge_request_event`-and-push-only block would have silently disabled), plus the push-to-`main` source the two new jobs add.
 
 - [ ] **Step 3: Verify both commands locally one more time (already confirmed working earlier this session, re-run for this exact task's diff)**
   ```bash
@@ -619,14 +620,15 @@ The following were verified by the spec (and, for the redirect and container-pop
   In `resource "google_storage_bucket" "state"`, add `public_access_prevention = "enforced"` on its own line, matching the block's existing alignment.
 
 - [ ] **Step 2: Add the Azure flag**
-  In `resource "azurerm_storage_account" "state"`, add `allow_nested_items_to_be_public = false` on its own line, matching the block's existing alignment.
+  In `resource "azurerm_storage_account" "state"`, add `allow_nested_items_to_be_public = false` on its own line. Do **not** hand-align it: this attribute name (31 chars) is longer than every existing key in the block (longest: `account_replication_type`, 24 chars), so `terraform fmt` re-aligns the whole block's `=` column once the new line is added — run `terraform fmt` on the file after adding the line, rather than matching the current alignment by hand. (GCP's new key, `public_access_prevention`, is shorter than that block's longest existing key, so Step 1's alignment is unaffected — no `fmt` run needed there.)
 
 - [ ] **Step 3: Validate**
   ```bash
+  terraform fmt -check -recursive Iverson.Server/deploy/terraform
   cd Iverson.Server/deploy/terraform/bootstrap/gcp && terraform init -backend=false && terraform validate
   cd Iverson.Server/deploy/terraform/bootstrap/azure && terraform init -backend=false && terraform validate
   ```
-  (Read-only check with respect to cloud credentials — `init -backend=false` only installs the providers from the committed lockfile, no state backend is touched. `terraform validate` alone fails without this: neither directory has `.terraform/providers` populated, and the providers must be installed before validation can run. This matches `.gitlab-ci.yml`'s own `terraform-validate` job convention.)
+  (`fmt -check` first: this repo's own CI — `.github/workflows/deploy-validate.yml:160` and `.gitlab-ci.yml:118` — runs this exact check on every PR touching `Iverson.Server/deploy/**`, which Task 11's throwaway PR does; `terraform validate` alone cannot detect a formatting-only defect. `init -backend=false` only installs the providers from the committed lockfile, no state backend is touched; `terraform validate` alone fails without it since neither directory has `.terraform/providers` populated. This matches `.gitlab-ci.yml`'s own `terraform-validate` job convention.)
 
 - [ ] **Step 4: Commit**
   ```bash
@@ -676,7 +678,7 @@ The following were verified by the spec (and, for the redirect and container-pop
   Update the header comment to describe the new append-if-missing behavior instead of "refuses to overwrite an existing .env."
 
 - [ ] **Step 2: Convert 4 of the 6 target secrets in `docker-compose.yml` to `${VAR:?message}`**
-  At lines 114, 334, 352, 395, 402, 403 (8 occurrences — `AUTHENTIK_POSTGRESQL__PASSWORD` at 339/357/400 and `POSTGRES_PASSWORD` at 35 are both excluded, see below), replace the literal value with `${NAME:?run scripts/generate-compose-secrets.sh first}`, e.g. line 114 becomes:
+  At lines 114, 334, 352, 359, 360, 395, 402, 403 (8 occurrences — `AUTHENTIK_POSTGRESQL__PASSWORD` at 339/357/400 and `POSTGRES_PASSWORD` at 35 are both excluded, see below), replace the literal value with `${NAME:?run scripts/generate-compose-secrets.sh first}`, e.g. line 114 becomes:
   ```yaml
   QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
   ```
@@ -690,6 +692,8 @@ The following were verified by the spec (and, for the redirect and container-pop
   QDRANT_API_KEY = os.environ["QDRANT__SERVICE__API_KEY"]
   ```
   (`import os` is already present at `ingest.py:136` — no import change needed.) A fallback-to-the-old-literal form was considered and rejected: after Step 2's conversion, that literal is stale everywhere — every compose site now fails loudly if the key is missing, and a silent fallback here would mean this script alone could run a 4-6 hour unattended ingest against the wrong credential instead of failing at startup like the rest of the stack. Invoke the script with the variable in the environment, e.g. `set -a; . Iverson.Server/.env; set +a; python3 Iverson.Server/Iverson.LoadTest/scripts/ingest.py ...`.
+
+  This read is at module scope, so it also affects `ingest.py`'s 3 importers — `multivector.py:33`, `similar_arms.py:16`, `aspect_vectors.py:46` (each `import ingest` and call `ingest.qdrant_request`) — which now fail at import (before argument parsing, including for `--help`) without the same variable set. Apply the same `set -a; . Iverson.Server/.env; set +a` prefix to their documented invocations too.
 
 - [ ] **Step 4: Verify the compose stack still resolves after generating fresh secrets**
   ```bash
