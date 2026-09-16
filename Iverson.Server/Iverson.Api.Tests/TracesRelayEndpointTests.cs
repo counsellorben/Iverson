@@ -36,7 +36,7 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
         }
     }
 
-    private (HttpClient Client, FakeJaegerHandler JaegerHandler) CreateAuthenticatedClient()
+    private (HttpClient Client, FakeJaegerHandler JaegerHandler) CreateAuthenticatedClient(string subject = "trace-relay-test-user")
     {
         var jaegerHandler = new FakeJaegerHandler();
         var factory = _baseFactory.WithWebHostBuilder(builder =>
@@ -54,7 +54,7 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
 
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", TestJwtFactory.CreateToken("test-service-audience", "trace-relay-test-user"));
+            new AuthenticationHeaderValue("Bearer", TestJwtFactory.CreateToken("test-service-audience", subject));
         return (client, jaegerHandler);
     }
 
@@ -132,5 +132,24 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
 
         response.StatusCode.Should().Be(HttpStatusCode.Accepted, "the cap must reject bodies OVER the limit, not bodies AT it");
         jaegerHandler.CallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task The_61st_request_within_a_minute_is_rejected()
+    {
+        // Distinct "sub" from every other test in this file: this test deliberately exhausts
+        // its subject's 60/min "traces" rate-limit quota. If it shared the default
+        // "trace-relay-test-user" subject with the other tests here, a sibling test that runs
+        // afterward within the same minute and expects a non-503 result could get a spurious
+        // 503 instead — xunit does not guarantee method execution order within a class.
+        var (client, jaegerHandler) = CreateAuthenticatedClient(subject: "rate-limit-exhaustion-test-user");
+        HttpResponseMessage? last = null;
+        for (var i = 0; i < 61; i++)
+        {
+            using var content = new ByteArrayContent(Encoding.UTF8.GetBytes("""{"resourceSpans":[]}"""));
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            last = await client.PostAsync("/v1/traces", content);
+        }
+        last!.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
     }
 }

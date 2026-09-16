@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
 using Iverson.Api;
 using Iverson.Api.Authorization;
@@ -86,7 +87,26 @@ builder.Logging.AddOpenTelemetry(o =>
 
 // ── Application services ───────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
-builder.Services.AddGrpc(options => options.Interceptors.Add<ActingUserInterceptor>());
+builder.Services.AddSingleton<RateLimitInterceptor>();
+builder.Services.AddGrpc(options =>
+{
+    options.Interceptors.Add<ActingUserInterceptor>();
+    options.Interceptors.Add<RateLimitInterceptor>();
+});
+
+// CSR finding #7 (round 7): per-principal rate limit for the /v1/traces relay — 60/min per
+// "sub" claim, sliding window. The gRPC entity API's own per-principal limit is enforced by
+// RateLimitInterceptor (registered above); this policy covers the one HTTP (non-gRPC) endpoint.
+builder.Services.AddRateLimiter(options => options.AddPolicy("traces", ctx =>
+    RateLimitPartition.GetSlidingWindowLimiter(
+        ctx.User.FindFirst("sub")?.Value ?? "anon",
+        _ => new SlidingWindowRateLimiterOptions
+        {
+            PermitLimit = 60,
+            Window = TimeSpan.FromMinutes(1),
+            SegmentsPerWindow = 6,
+            QueueLimit = 0
+        })));
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -335,6 +355,7 @@ app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 app.UseGrpcWeb();
 
 // Expose the W3C trace-id on every response so callers can correlate logs
@@ -572,7 +593,7 @@ if (workloadRole == "api")
         using var response = await client.PostAsync("/v1/traces", content);
         ctx.Response.StatusCode = (int)response.StatusCode;
         await response.Content.CopyToAsync(ctx.Response.Body);
-    }).RequireAuthorization();
+    }).RequireAuthorization().RequireRateLimiting("traces");
 }
 
 app.Lifetime.ApplicationStarted.Register(() =>
