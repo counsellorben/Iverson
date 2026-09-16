@@ -517,6 +517,17 @@ public class SchemaRegistrationOrchestratorTests
     }
 
     [Fact]
+    public async Task RegisterAsync_WithATrailingNewlineTypeName_ThrowsInvalidArgument()
+    {
+        var td = SimpleType("Widget\n", "Name");
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
     public async Task RegisterAsync_WithNormalAlphanumericNames_DoesNotThrow()
     {
         var request = new SchemaRequest { RootType = SimpleType("Widget2", "Name2") };

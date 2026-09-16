@@ -77,6 +77,12 @@ public class TenantIdentifierTests
         TenantIdentifier.IsValid("tenant--id").Should().BeFalse();
     }
 
+    [Fact]
+    public void IsValid_RejectsTrailingNewline()
+    {
+        TenantIdentifier.IsValid("ab\n").Should().BeFalse();
+    }
+
     [Theory]
     [InlineData("!")]
     [InlineData("@")]

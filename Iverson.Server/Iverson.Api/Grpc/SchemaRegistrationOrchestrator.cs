@@ -26,7 +26,7 @@ public sealed class SchemaRegistrationOrchestrator(
     // the source — every descriptor that reaches SchemaBuilder.BuildDescriptor must already be
     // a safe DDL identifier. No underscores are permitted in the input because ToSnakeCase
     // inserts its own; this pattern also naturally rejects an empty string.
-    internal static readonly Regex IdentifierPattern = new("^[A-Za-z][A-Za-z0-9]*$", RegexOptions.Compiled);
+    internal static readonly Regex IdentifierPattern = new(@"\A[A-Za-z][A-Za-z0-9]*\z", RegexOptions.Compiled);
 
     // The declaration is class-level in every client, so every embedding/chunk property of a type
     // is expected to carry the same value — reading both flag-halves (ModelId AND ChunkModelId) so
