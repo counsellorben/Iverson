@@ -27,7 +27,9 @@ NAMES=(
     AUTHENTIK_BOOTSTRAP_TOKEN
 )
 
+umask 077
 touch "$ENV_FILE"
+chmod 600 "$ENV_FILE"
 for name in "${NAMES[@]}"; do
     if ! grep -q "^${name}=" "$ENV_FILE"; then
         echo "${name}=$(rand)" >> "$ENV_FILE"
