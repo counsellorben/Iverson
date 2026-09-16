@@ -1,0 +1,32 @@
+name: Dotnet Build
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dotnet-build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "10.0.x"
+      - run: dotnet build Iverson.slnx
+      - run: dotnet test Iverson.slnx --filter "Category!=Integration"
+
+  typescript-sdk-build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - working-directory: Iverson.Clients/TypeScript
+        run: npm ci
+      - working-directory: Iverson.Clients/TypeScript
+        run: npm test

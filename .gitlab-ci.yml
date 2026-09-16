@@ -1,6 +1,13 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+
 stages:
   - validate
   - dependency-scan
+  - build-test
 
 .rules-deploy-changes:
   rules:
@@ -189,3 +196,24 @@ pip-audit-agents:
     - cd Iverson.Agents/Python
     - pip install .[dev] pip-audit
     - pip-audit
+
+dotnet-build-test:
+  stage: build-test
+  image: mcr.microsoft.com/dotnet/sdk:10.0
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+  script:
+    - dotnet build Iverson.slnx
+    - dotnet test Iverson.slnx --filter "Category!=Integration"
+
+typescript-sdk-build-test:
+  stage: build-test
+  image: node:22
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+  script:
+    - cd Iverson.Clients/TypeScript
+    - npm ci
+    - npm test
