@@ -23,7 +23,7 @@
 ## File Structure
 
 - **Modify:** `Iverson.Server/Iverson.Api/Program.cs`, `Iverson.Server/Iverson.Api/Reconciliation/ReconciliationService.cs`, `docs/runbooks/chunk-collection-cleanup-2026-07.md`, `Iverson.Server/Iverson.Api/Schema/SchemaDescriptor.cs`, `Iverson.Server/Iverson.Api/Grpc/SchemaRegistrationOrchestrator.cs`, `Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs`, `Iverson.Server/Iverson.Api/Grpc/RateLimitInterceptor.cs`, `Iverson.Server/Iverson.StarRocks/TenantIdentifier.cs`, `scripts/generate-compose-secrets.sh`, `Iverson.Clients/Python/pyproject.toml`, `Iverson.Server/Iverson.Vector/ServiceCollectionExtensions.cs`
-- **Test:** `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs`, `Iverson.Server/Iverson.Api.Tests/Grpc/SchemaRegistrationOrchestratorTests.cs`, a new `RequireListenerPort` test in `Iverson.Server/Iverson.Api.Tests/AuthenticationPipelineTests.cs`, a new `/health`-caching test, `Iverson.Server/Iverson.StarRocks.Tests/TenantIdentifierTests.cs`, `Iverson.Server/Iverson.Api.Tests/Reconciliation/ReconciliationServiceTests.cs`, `Iverson.Server/Iverson.Vector.Tests/ServiceCollectionExtensionsTests.cs`
+- **Test:** `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs`, `Iverson.Server/Iverson.Api.Tests/Grpc/SchemaRegistrationOrchestratorTests.cs`, new `RequireListenerPort` and `/health`-caching tests in `Iverson.Server/Iverson.Api.Tests/AuthenticationPipelineTests.cs` (the latter backed by an unsealed `Iverson.Server/Iverson.Api.Tests/Helpers/AuthTestWebApplicationFactory.cs`), `Iverson.Server/Iverson.StarRocks.Tests/TenantIdentifierTests.cs`, `Iverson.Server/Iverson.Api.Tests/Reconciliation/ReconciliationServiceTests.cs`, `Iverson.Server/Iverson.Vector.Tests/ServiceCollectionExtensionsTests.cs`
 
 ## Inherited from spec
 
@@ -72,23 +72,25 @@ Newly introduced by this plan and verified at plan-write time:
 - Test: `Iverson.Server/Iverson.Api.Tests/AuthenticationPipelineTests.cs`
 
 - [ ] **Step 1: Add the marker type and the port-check middleware**
-  In `Program.cs`, add near the top of the file (e.g., directly above `var builder = WebApplication.CreateBuilder(args);`, or any top-level location — it's a plain internal class, not tied to any other declaration):
+  In `Program.cs`, add as the last declarations in the file, after `app.Run();` — this is a top-level-statements file, and C# requires every type/method declaration to come after the statements, never before or among them (`CS8803` otherwise — verified empirically: placing them above `var builder = ...` fails with `error CS8803: Top-level statements must precede namespace and type declarations`; placing them after `app.Run();` builds with 0 errors). The gate is a named static method, not an inline lambda, so Step 6 can unit-test it directly:
   ```csharp
   internal sealed class RequireListenerPort(int port) { public int Port => port; }
-  ```
-  Then, locate `var app = builder.Build();` and insert the following middleware immediately before the existing `app.UseHttpsRedirection();` line (currently the first `Use*` call in the file — verify this is still true before inserting, per this task's own Global Constraints note):
-  ```csharp
-  app.Use(async (HttpContext context, Func<Task> next) =>
+
+  internal static Task ListenerPortGateAsync(HttpContext context, Func<Task> next)
   {
       var required = context.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>();
       if (required is not null && context.Connection.LocalPort is not 0 &&
           context.Connection.LocalPort != required.Port)
       {
           context.Response.StatusCode = StatusCodes.Status404NotFound;
-          return;
+          return Task.CompletedTask;
       }
-      await next();
-  });
+      return next();
+  }
+  ```
+  Then, locate `var app = builder.Build();` and insert the following immediately before the existing `app.UseHttpsRedirection();` line (currently the first `Use*` call in the file — verify this is still true before inserting, per this task's own Global Constraints note):
+  ```csharp
+  app.Use(ListenerPortGateAsync);
   ```
 
 - [ ] **Step 2: Mark the four anonymous/observability endpoints for the health listener**
@@ -134,8 +136,15 @@ Newly introduced by this plan and verified at plan-write time:
   "Last error: {Error}",
   ```
 
-- [ ] **Step 6: Add a regression test proving the marker actually partitions**
-  `AuthenticationPipelineTests`'s existing `IClassFixture<AuthTestWebApplicationFactory>` shares one in-memory (`LocalPort == 0`) fixture across the whole class — inadequate for this test, which needs two *real* bound ports to prove the marker discriminates by listener, not just that it exists. Add the new test to `AuthenticationPipelineTests.cs` (same file, matching this endpoint's existing test neighbors) but have it construct and dispose its own separate `WebApplicationFactory<Program>`, configured via `ConfigureWebHost(builder => builder.UseKestrel(k => { k.ListenLocalhost(0, o => o.Protocols = HttpProtocols.Http1); k.ListenLocalhost(0, o => o.Protocols = Http2); }))` (or equivalent — two real loopback ports, distinct from the shared fixture, torn down at the end of the test) — do not modify the shared class fixture, which every other test in the file depends on. Assert: a request to the real `/admin/dlq` route (already marked `RequireListenerPort(8080)` by Step 3) succeeds on the Http2-bound port and 404s on the Http1-bound port.
+- [ ] **Step 6: Add regression tests proving the marker actually partitions**
+  `WebApplicationFactory<Program>` always resolves `IServer` as `Microsoft.AspNetCore.TestHost.TestServer` with zero bound addresses — there is no way to get real bound listener ports out of it (verified: a probe against `factory.Services.GetRequiredService<IServer>()` printed `Microsoft.AspNetCore.TestHost.TestServer` with an empty `IServerAddressesFeature.Addresses`), so a test that stands up two real loopback ports is not achievable through this factory. Split the proof into two in-process checks instead, both added to `AuthenticationPipelineTests.cs` (same file, matching this endpoint's existing test neighbors), neither touching the shared class fixture's construction:
+  1. **Marker placement** — assert the metadata from the existing shared fixture, no new host:
+     ```csharp
+     var ds = factory.Services.GetRequiredService<EndpointDataSource>();
+     var dlq = ds.Endpoints.Single(e => e.DisplayName!.Contains("/admin/dlq") && !e.DisplayName.Contains("replay"));
+     dlq.Metadata.GetMetadata<RequireListenerPort>()!.Port.Should().Be(8080);
+     ```
+  2. **Gate behaviour** — unit-test the named `ListenerPortGateAsync` method (introduced in Step 1) directly against a `DefaultHttpContext`, covering all four directions: wrong port → 404 and `next` not invoked; matching port → `next` invoked; `Connection.LocalPort == 0` → `next` invoked (the `TestServer` carve-out); unmarked endpoint → `next` invoked. Build each context with `context.Connection.LocalPort = <port>;` and `context.SetEndpoint(new Endpoint(_ => Task.CompletedTask, new EndpointMetadataCollection(new RequireListenerPort(8080)), "test"))` (omit the metadata for the unmarked-endpoint case), pass a `next` that sets a `bool` flag, and assert both the flag and `context.Response.StatusCode`.
 
 - [ ] **Step 7: Run the tests**
   ```bash
@@ -184,10 +193,18 @@ Newly introduced by this plan and verified at plan-write time:
   // after
   Task<IReadOnlyList<string>> RegisterAsync(SchemaRequest request, string? ownerTenantId, CancellationToken ct);
   ```
-  and the implementation's signature identically. In phase 3's registration loop, immediately before `await registry.RegisterAsync(descriptor);`, add:
+  and the implementation's signature identically. In phase 3's registration loop (`foreach (var descriptor in descriptors)`), `descriptor` is the loop's iteration variable and cannot be reassigned (`CS1656` — verified empirically: a `with`-reassignment onto a `foreach` variable fails with `error CS1656: Cannot assign to 'descriptor' because it is a 'foreach iteration variable'`). Introduce a local instead, and use it for both statements that currently consume `descriptor` after this point in the loop body:
   ```csharp
-  descriptor = descriptor with { OwnerTenantId = ownerTenantId };
+  // before
+  await registry.RegisterAsync(descriptor);
+  registered.Add(descriptor.TypeName);
+
+  // after
+  var stamped = descriptor with { OwnerTenantId = ownerTenantId };
+  await registry.RegisterAsync(stamped);
+  registered.Add(stamped.TypeName);
   ```
+  The preceding `schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor), ...)` call in the same loop body needs no change — `OwnerTenantId` is not a column and `ToTableSchema` never reads it.
 
 - [ ] **Step 3: Resolve and pass `ownerTenantId` at the one production call site**
   In `ObjectMappingGrpcService.RegisterSchema`, change:
@@ -254,6 +271,8 @@ Newly introduced by this plan and verified at plan-write time:
 **Files:**
 - Modify: `Iverson.Server/Iverson.Api/Program.cs`
 - Modify: `Iverson.Server/Iverson.Api/Grpc/RateLimitInterceptor.cs`
+- Modify: `Iverson.Server/Iverson.Api.Tests/Helpers/AuthTestWebApplicationFactory.cs`
+- Test: `Iverson.Server/Iverson.Api.Tests/AuthenticationPipelineTests.cs`
 
 **Interfaces:**
 - Consumes: Task 1's `RequireListenerPort` marker exists on the same endpoints this task's `GetNoLimiter` branch must exclude by identity, not by re-deriving the port list — reuse the same metadata check (`context.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()`), not a hardcoded path list, so the two tasks' endpoint enumeration can never drift apart.
@@ -351,7 +370,7 @@ Newly introduced by this plan and verified at plan-write time:
   ```
 
 - [ ] **Step 5: Add a test for `/health` caching**
-  The shared `AuthTestWebApplicationFactory` does not substitute `/health`'s 4 dependencies (`IRecordStoreQueryExecutor`, `IEngagementStoreHealthCheck`, `IVectorSchemaManager`, `IEventBrokerHealthCheck`) with test doubles — verify this against the file directly before writing the test. Add the new test to `AuthenticationPipelineTests.cs`, constructing its own separate `WebApplicationFactory<Program>` (same pattern as Task 1 Step 6's test) whose `ConfigureWebHost` calls `services.RemoveAll<T>(); services.AddSingleton(Substitute.For<T>());` for each of the 4 interfaces (mirroring `AuthTestWebApplicationFactory`'s own established `RemoveAll`/`AddSingleton` substitution pattern for its other startup-blocking services), each stubbed to return a healthy/successful result. Issue 2 sequential `GET /health` calls against this factory's client within the 2-second cache window and assert each of the 4 substituted dependencies was invoked exactly once (e.g. `await fakeDb.Received(1).QuerySingleOrDefaultAsync<int>(Arg.Any<string>())`), not twice.
+  The shared `AuthTestWebApplicationFactory` does not substitute `/health`'s 4 dependencies (`IRecordStoreQueryExecutor`, `IEngagementStoreHealthCheck`, `IVectorSchemaManager`, `IEventBrokerHealthCheck`) with test doubles — verify this against the file directly before writing the test. A bare `WebApplicationFactory<Program>` cannot be used instead: `Program.cs`'s post-`Build()` block runs several unconditional `await`s against real Postgres/schema infra before `app.Run()`, and only `AuthTestWebApplicationFactory` substitutes the 7 startup-blocking interfaces that let the host reach that point. First unseal `AuthTestWebApplicationFactory` (`Iverson.Server/Iverson.Api.Tests/Helpers/AuthTestWebApplicationFactory.cs:18`, drop `sealed` — this changes no behaviour for the tests already using it, only permits inheritance). Then add the new test to `AuthenticationPipelineTests.cs`, constructing its own factory that derives from `AuthTestWebApplicationFactory` (not `WebApplicationFactory<Program>` directly), overriding `ConfigureWebHost` to call `base.ConfigureWebHost(builder)` first and then `services.RemoveAll<T>(); services.AddSingleton(Substitute.For<T>());` for each of the 4 `/health`-specific interfaces (mirroring `AuthTestWebApplicationFactory`'s own established `RemoveAll`/`AddSingleton` substitution pattern for its other startup-blocking services), each stubbed to return a healthy/successful result. Issue 2 sequential `GET /health` calls against this factory's client within the 2-second cache window and assert each of the 4 substituted dependencies was invoked exactly once (e.g. `await fakeDb.Received(1).QuerySingleOrDefaultAsync<int>(Arg.Any<string>())`), not twice.
 
 - [ ] **Step 6: Run the tests**
   ```bash
@@ -360,7 +379,7 @@ Newly introduced by this plan and verified at plan-write time:
 
 - [ ] **Step 7: Commit**
   ```bash
-  git add Iverson.Server/Iverson.Api/Program.cs Iverson.Server/Iverson.Api/Grpc/RateLimitInterceptor.cs
+  git add Iverson.Server/Iverson.Api/Program.cs Iverson.Server/Iverson.Api/Grpc/RateLimitInterceptor.cs Iverson.Server/Iverson.Api.Tests/Helpers/AuthTestWebApplicationFactory.cs Iverson.Server/Iverson.Api.Tests/AuthenticationPipelineTests.cs
   git commit -m "add a global rate limiter for /admin/* and /health, with rejection telemetry and a health-check cache"
   ```
 
