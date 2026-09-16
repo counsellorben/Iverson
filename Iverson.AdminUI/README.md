@@ -25,7 +25,8 @@ manage tenants, view storage, and inspect performance data via Iverson.Api.
 - At least one human user in the `operators` Authentik group to log in with —
   see [Creating a human user and granting operator access](../docs/user-management-and-security.md#creating-a-human-user-and-granting-operator-access)
   if you don't have one yet. (Bootstrap admin login for compose:
-  `admin@iverson.local` / `dev-admin-password`.)
+  `admin@iverson.local` / the `AUTHENTIK_BOOTSTRAP_PASSWORD` value generated
+  into `.env` by `scripts/generate-compose-secrets.sh`.)
 
 ## Running locally
 

@@ -97,16 +97,24 @@ builder.Services.AddGrpc(options =>
 // CSR finding #7 (round 7): per-principal rate limit for the /v1/traces relay — 60/min per
 // "sub" claim, sliding window. The gRPC entity API's own per-principal limit is enforced by
 // RateLimitInterceptor (registered above); this policy covers the one HTTP (non-gRPC) endpoint.
-builder.Services.AddRateLimiter(options => options.AddPolicy("traces", ctx =>
-    RateLimitPartition.GetSlidingWindowLimiter(
-        ctx.User.FindFirst("sub")?.Value ?? "anon",
-        _ => new SlidingWindowRateLimiterOptions
-        {
-            PermitLimit = 60,
-            Window = TimeSpan.FromMinutes(1),
-            SegmentsPerWindow = 6,
-            QueueLimit = 0
-        })));
+builder.Services.AddRateLimiter(options =>
+{
+    // 429 Too Many Requests is the semantically correct rejection status for a rate limit
+    // (503 means "I'm down", not "you're too fast"); the gRPC side of this same remediation
+    // uses the equivalent ResourceExhausted status. RateLimiterOptions defaults to 503 —
+    // override it explicitly rather than relying on that default.
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("traces", ctx =>
+        RateLimitPartition.GetSlidingWindowLimiter(
+            ctx.User.FindFirst("sub")?.Value ?? "anon",
+            _ => new SlidingWindowRateLimiterOptions
+            {
+                PermitLimit = 60,
+                Window = TimeSpan.FromMinutes(1),
+                SegmentsPerWindow = 6,
+                QueueLimit = 0
+            }));
+});
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -427,6 +435,12 @@ app.MapPost("/admin/reconcile/{typeName}", async (
     var actingUserResult = await httpContext.AuthenticateAsync("ActingUser");
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
         return Results.Unauthorized();
+
+    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(
+        actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
+        actingUserResult.Principal.FindFirst("scope")?.Value);
+    if (!isOperator)
+        return Results.Forbid();
 
     var count = await reconciliation.ReconcileTypeAsync(typeName);
     if (count is null)

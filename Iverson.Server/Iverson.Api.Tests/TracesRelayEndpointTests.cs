@@ -140,8 +140,8 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
         // Distinct "sub" from every other test in this file: this test deliberately exhausts
         // its subject's 60/min "traces" rate-limit quota. If it shared the default
         // "trace-relay-test-user" subject with the other tests here, a sibling test that runs
-        // afterward within the same minute and expects a non-503 result could get a spurious
-        // 503 instead — xunit does not guarantee method execution order within a class.
+        // afterward within the same minute and expects a non-429 result could get a spurious
+        // 429 instead — xunit does not guarantee method execution order within a class.
         var (client, jaegerHandler) = CreateAuthenticatedClient(subject: "rate-limit-exhaustion-test-user");
         HttpResponseMessage? last = null;
         for (var i = 0; i < 61; i++)
@@ -150,6 +150,6 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
             last = await client.PostAsync("/v1/traces", content);
         }
-        last!.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        last!.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
     }
 }

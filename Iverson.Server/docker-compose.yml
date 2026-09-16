@@ -5,10 +5,12 @@
 # This file defines a complete Iverson stack for local development, including
 # several services with intentionally static, hardcoded default credentials:
 #   - PostgreSQL: user/password = iverson/iverson
-#   - Authentik: admin password = dev-admin-password, bootstrap token = dev-bootstrap-token-0123456789
+#   - Authentik: admin password and bootstrap token are generated per-checkout, required via
+#     ${AUTHENTIK_BOOTSTRAP_PASSWORD:?...} / ${AUTHENTIK_BOOTSTRAP_TOKEN:?...} — run
+#     scripts/generate-compose-secrets.sh first
 #   - Service OAuth2 client secrets (see deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml)
-#   - Qdrant: API key = dev-only-not-for-production-qdrant-key-0123456789 (shared by the qdrant
-#     and iverson-api services below)
+#   - Qdrant: API key is generated per-checkout, required via ${QDRANT__SERVICE__API_KEY:?...}
+#     (shared by the qdrant and iverson-api services below) — run scripts/generate-compose-secrets.sh first
 #   - And other dev-convenience values marked dev-only-not-for-production
 #
 # THIS DOCKER-COMPOSE STACK MUST NEVER BE EXPOSED BEYOND LOCALHOST OR USED IN:

@@ -109,6 +109,30 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
     }
 
     [Fact]
+    public async Task ServiceTokenAndActingUserToken_PostAdminReconcile_Succeeds()
+    {
+        // Positive-case sibling to ServiceTokenOnly_PostAdminReconcile_Returns401: proves a
+        // valid operator acting-user token is NOT rejected by the auth/authz gate (the Finding-1
+        // fix added the isOperator check on the ActingUser principal, mirroring /admin/dlq). A
+        // 404 for the unregistered "SomeType" schema is the expected outcome past that gate —
+        // asserting it (rather than 200) is enough to prove the gate let the request through
+        // without exercising the full reconciliation pipeline.
+        var serviceToken = TestJwtFactory.CreateToken(
+            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
+        var actingUserToken = TestJwtFactory.CreateToken(
+            "test-actinguser-audience", "test-user",
+            extraClaims: [new Claim("tenant_id", "tenant-a"), new Claim("groups", "operators")]);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/admin/reconcile/SomeType");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", serviceToken);
+        request.Headers.Add("x-acting-user-authorization", $"Bearer {actingUserToken}");
+
+        var response = await _client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
     public async Task ActingUserWithNoTenantClaimAndNotOperator_GetAdminDlq_ReturnsForbidden()
     {
         // Round-4 whole-branch review finding: `r.TenantId == actingTenantId` is `null == null`
