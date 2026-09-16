@@ -13,7 +13,7 @@ public class ServiceCollectionExtensionsTests
     public void AddQdrant_WithApiKey_RegistersResolvableQdrantClient()
     {
         var services = new ServiceCollection();
-        services.AddQdrant("localhost", 6334, apiKey: "test-api-key");
+        services.AddQdrant("localhost", 6334, apiKey: "test-signing-key-0123456789abcdef");
 
         using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<QdrantClient>();
@@ -25,7 +25,7 @@ public class ServiceCollectionExtensionsTests
     public void AddQdrant_WithNullCertPath_RegistersPlaintextConstructedClient()
     {
         var services = new ServiceCollection();
-        services.AddQdrant("localhost", 6334, apiKey: "test-api-key", certPath: null);
+        services.AddQdrant("localhost", 6334, apiKey: "test-signing-key-0123456789abcdef", certPath: null);
 
         using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<QdrantClient>();
@@ -43,7 +43,7 @@ public class ServiceCollectionExtensionsTests
         try
         {
             var services = new ServiceCollection();
-            services.AddQdrant("localhost", 6334, apiKey: "test-api-key", certPath: certPath);
+            services.AddQdrant("localhost", 6334, apiKey: "test-signing-key-0123456789abcdef", certPath: certPath);
 
             using var provider = services.BuildServiceProvider();
 

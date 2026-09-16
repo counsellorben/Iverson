@@ -18,10 +18,16 @@ public static class ServiceCollectionExtensions
         string? apiKey = null,
         string? certPath = null)
     {
-        if (apiKey is null)
+        if (string.IsNullOrWhiteSpace(apiKey))
         {
             throw new ArgumentException(
                 "Qdrant:ApiKey is required (used both as the admin API key and the JWT signing secret)",
+                nameof(apiKey));
+        }
+        if (System.Text.Encoding.UTF8.GetByteCount(apiKey) < 32)
+        {
+            throw new ArgumentException(
+                "Qdrant:ApiKey must be at least 32 bytes (used as an HMAC-SHA256 signing key)",
                 nameof(apiKey));
         }
 
