@@ -18,6 +18,7 @@ namespace Iverson.Sql.Tests;
 /// BYPASSRLS off iverson_maintenance mid-run, which would race these tests on a shared cluster.
 /// The fixture runs <c>EnsureRolesAsync</c> on init.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class TenantScopedAccessIntegrationTests(PostgresContainerFixture fixture)
     : IClassFixture<PostgresContainerFixture>
 {

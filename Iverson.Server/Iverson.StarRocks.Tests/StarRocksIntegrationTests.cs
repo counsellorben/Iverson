@@ -206,6 +206,7 @@ public sealed class StarRocksCollection : ICollectionFixture<StarRocksContainerF
     public const string Name = "starrocks";
 }
 
+[Trait("Category", "Integration")]
 [Collection(StarRocksCollection.Name)]
 public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
 {

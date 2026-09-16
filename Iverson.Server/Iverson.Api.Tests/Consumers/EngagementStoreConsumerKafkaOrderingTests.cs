@@ -41,6 +41,7 @@ public sealed class KafkaOrderingContainerFixture : IAsyncLifetime
 /// against a real broker — not achievable meaningfully against the old 3-topic layout, which is
 /// itself evidence of the gap this closes.
 /// </summary>
+[Trait("Category", "Integration")]
 [Collection(ContainerCollection.Name)]
 public sealed class EngagementStoreConsumerKafkaOrderingTests(KafkaOrderingContainerFixture fixture)
     : IClassFixture<KafkaOrderingContainerFixture>

@@ -46,6 +46,7 @@ public sealed class ReconciliationQueuePostgresContainerFixture : IAsyncLifetime
     public async Task DisposeAsync() => await _container.DisposeAsync();
 }
 
+[Trait("Category", "Integration")]
 [Collection(ContainerCollection.Name)]
 public sealed class ReconciliationQueuePostgresIntegrationTests(ReconciliationQueuePostgresContainerFixture fixture)
     : IClassFixture<ReconciliationQueuePostgresContainerFixture>

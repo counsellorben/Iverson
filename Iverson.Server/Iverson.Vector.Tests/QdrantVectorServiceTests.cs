@@ -7,6 +7,7 @@ using Xunit;
 
 namespace Iverson.Vector.Tests;
 
+[Trait("Category", "Integration")]
 [Collection(ContainerCollection.Name)]
 public sealed class QdrantVectorServiceTests(QdrantContainerFixture fixture) : IClassFixture<QdrantContainerFixture>
 {

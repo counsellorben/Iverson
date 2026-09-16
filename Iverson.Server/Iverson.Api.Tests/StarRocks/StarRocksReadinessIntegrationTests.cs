@@ -13,6 +13,7 @@ namespace Iverson.Api.Tests.StarRocks;
 // out a Repository, which would defeat the point of this test: proving the *production*
 // StarRocksReadinessGate (inside EngagementRepository itself) absorbs the FE-ready-but-
 // BE-not-ready race with no external help.
+[Trait("Category", "Integration")]
 [Collection(ContainerCollection.Name)]
 public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
 {

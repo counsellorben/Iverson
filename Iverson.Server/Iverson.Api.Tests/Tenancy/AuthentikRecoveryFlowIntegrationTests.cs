@@ -38,6 +38,7 @@ namespace Iverson.Api.Tests.Tenancy;
 /// also why the round-3 findings' facts live in THIS class rather than a new one: a second class
 /// would get its own IClassFixture instance and therefore its own 5-container Authentik stack.
 /// </summary>
+[Trait("Category", "Integration")]
 [Collection(ContainerCollection.Name)]
 public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<AuthentikContainerFixture>
 {
