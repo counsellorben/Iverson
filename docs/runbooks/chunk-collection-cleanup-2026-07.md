@@ -25,11 +25,11 @@ chunk from an orphaned duplicate after the fact.
    same host) — reach it in-cluster instead, via a port-forward:
    ```
    kubectl -n <ns> port-forward svc/<release>-api 8080:8080 &
-   curl -X POST http://localhost:8080/admin/reconcile/{TypeName}
+   curl --http2-prior-knowledge -X POST http://localhost:8080/admin/reconcile/{TypeName}
    ```
    or by exec'ing into a running API pod:
    ```
-   kubectl -n <ns> exec deploy/<release>-api -- curl -X POST http://localhost:8080/admin/reconcile/{TypeName}
+   kubectl -n <ns> exec deploy/<release>-api -- curl --http2-prior-knowledge -X POST http://localhost:8080/admin/reconcile/{TypeName}
    ```
 4. Verify: `SearchChunks` results for a known article should return exactly the expected number
    of passages (no duplicates) — spot-check 2-3 articles per type.

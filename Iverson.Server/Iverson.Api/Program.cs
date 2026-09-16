@@ -354,10 +354,12 @@ builder.Services.AddHostedService<Iverson.Api.Schema.SchemaRefreshWorker>();
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
-app.MapPrometheusScrapingEndpoint().AllowAnonymous();
+app.MapPrometheusScrapingEndpoint().AllowAnonymous().WithMetadata(new RequireListenerPort(8081));
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
+
+app.Use(ListenerPortGateAsync);
 
 app.UseHttpsRedirection();
 
@@ -379,13 +381,13 @@ app.Use(async (context, next) =>
 });
 
 // ── Endpoints ──────────────────────────────────────────────────────────────────
-app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive").AllowAnonymous();
+app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive").AllowAnonymous().WithMetadata(new RequireListenerPort(8081));
 
 app.MapGet("/build", () =>
 {
     var (composite, assemblies) = BuildIdentity.Compute();
     return Results.Ok(new { composite, assemblies });
-}).WithName("BuildIdentity").AllowAnonymous();
+}).WithName("BuildIdentity").AllowAnonymous().WithMetadata(new RequireListenerPort(8081));
 
 app.MapGet("/health", async (
     IRecordStoreQueryExecutor db,
@@ -424,7 +426,8 @@ app.MapGet("/health", async (
         : Results.Json(new { status = "degraded", checks }, statusCode: 503);
 })
 .WithName("Health")
-.AllowAnonymous();
+.AllowAnonymous()
+.WithMetadata(new RequireListenerPort(8081));
 
 app.MapPost("/admin/reconcile/{typeName}", async (
     string typeName,
@@ -448,7 +451,7 @@ app.MapPost("/admin/reconcile/{typeName}", async (
 
     audit.AdminOperation(httpContext.User, "Reconcile", typeName);
     return Results.Ok(new { reconciledCount = count, typeName });
-}).WithName("Reconcile").RequireAuthorization("Operator");
+}).WithName("Reconcile").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 app.MapGet("/admin/dlq", async (IDlqRepository dlq, AuditLog audit, HttpContext httpContext) =>
 {
@@ -471,7 +474,7 @@ app.MapGet("/admin/dlq", async (IDlqRepository dlq, AuditLog audit, HttpContext 
     var visible = rows.Where(r => r.TenantId == actingTenantId || (r.TenantId is null && isOperator));
     audit.AdminOperation(httpContext.User, "ListDlq", null);
     return Results.Ok(visible);
-}).WithName("ListDlq").RequireAuthorization("Operator");
+}).WithName("ListDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEventProducer events, AuditLog audit, HttpContext httpContext) =>
 {
@@ -501,7 +504,7 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
     audit.AdminOperation(httpContext.User, "ReplayDlq", id.ToString());
 
     return Results.Ok(new { replayed = true, id, topic = row.SourceTopic });
-}).WithName("ReplayDlq").RequireAuthorization("Operator");
+}).WithName("ReplayDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 // ── Schema hydration ───────────────────────────────────────────────────────────
 try
@@ -563,8 +566,8 @@ if (workloadRole == "api")
     app.MapGrpcService<ObjectPersistenceGrpcService>();
     app.MapGrpcService<ObjectRetrievalGrpcService>();
     app.MapGrpcService<ObjectSearchGrpcService>();
-    app.MapGrpcService<TenantLifecycleGrpcService>().RequireAuthorization("Operator").EnableGrpcWeb();
-    app.MapGrpcService<TenantAdminGrpcService>().RequireAuthorization("TenantAdmin").EnableGrpcWeb();
+    app.MapGrpcService<TenantLifecycleGrpcService>().RequireAuthorization("Operator").EnableGrpcWeb().WithMetadata(new RequireListenerPort(8080));
+    app.MapGrpcService<TenantAdminGrpcService>().RequireAuthorization("TenantAdmin").EnableGrpcWeb().WithMetadata(new RequireListenerPort(8080));
 
     // Relays the admin-ui browser's OTel Web SDK spans to Jaeger's OTLP/HTTP endpoint.
     // Same-origin so the browser never needs Jaeger's own network address, and
@@ -611,7 +614,7 @@ if (workloadRole == "api")
         using var response = await client.PostAsync("/v1/traces", content);
         ctx.Response.StatusCode = (int)response.StatusCode;
         await response.Content.CopyToAsync(ctx.Response.Body);
-    }).RequireAuthorization().RequireRateLimiting("traces");
+    }).RequireAuthorization().RequireRateLimiting("traces").WithMetadata(new RequireListenerPort(8080));
 }
 
 app.Lifetime.ApplicationStarted.Register(() =>
@@ -622,3 +625,28 @@ app.Lifetime.ApplicationStarted.Register(() =>
 });
 
 app.Run();
+
+// Extends the compiler-generated top-level-statements Program class. A bare method/local-
+// function declaration can't carry an accessibility modifier and can't be called from
+// another assembly — it must be a real member of a type for Step 6's tests to invoke it
+// directly. This partial declaration must be `public`: merging an unmarked (implicitly
+// internal) partial part with the compiler-synthesized entry-point class defeats the
+// compiler's usual special-case suppression of CS0060 for that hidden class, so
+// AuthTestWebApplicationFactory's `public sealed class ... : WebApplicationFactory<Program>`
+// fails accessibility consistency checking (verified empirically) unless Program is public.
+public partial class Program
+{
+    internal sealed class RequireListenerPort(int port) { public int Port => port; }
+
+    internal static Task ListenerPortGateAsync(HttpContext context, Func<Task> next)
+    {
+        var required = context.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>();
+        if (required is not null && context.Connection.LocalPort is not 0 &&
+            context.Connection.LocalPort != required.Port)
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return Task.CompletedTask;
+        }
+        return next();
+    }
+}

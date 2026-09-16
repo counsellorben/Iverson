@@ -1,8 +1,12 @@
+using System.Linq;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Claims;
 using FluentAssertions;
 using Iverson.Api.Tests.Helpers;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Iverson.Api.Tests;
@@ -17,10 +21,12 @@ namespace Iverson.Api.Tests;
 // AllowAnonymous assertions or the 401-rejection assertion.
 public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationFactory>
 {
+    private readonly AuthTestWebApplicationFactory _factory;
     private readonly HttpClient _client;
 
     public AuthenticationPipelineTests(AuthTestWebApplicationFactory factory)
     {
+        _factory = factory;
         _client = factory.CreateClient();
     }
 
@@ -154,5 +160,88 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         var response = await _client.SendAsync(request);
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public void AdminDlqEndpoint_IsMarkedForDataPlaneListenerPort()
+    {
+        // Regression test for the RequireHost→listener-port repartitioning (CSR round-8,
+        // Finding 1): /admin/dlq must carry the data-plane (8080) marker, not the health
+        // listener's. Excludes the replay sibling ("/admin/dlq/{id}/replay") so this asserts
+        // against the GET list endpoint specifically.
+        var dataSource = _factory.Services.GetRequiredService<EndpointDataSource>();
+        var dlq = dataSource.Endpoints.Single(e => e.DisplayName!.Contains("/admin/dlq") && !e.DisplayName.Contains("replay"));
+
+        dlq.Metadata.GetMetadata<Program.RequireListenerPort>()!.Port.Should().Be(8080);
+    }
+
+    [Fact]
+    public async Task ListenerPortGate_WrongPort_Returns404AndDoesNotInvokeNext()
+    {
+        var context = new DefaultHttpContext { Connection = { LocalPort = 8081 } };
+        context.SetEndpoint(new Endpoint(
+            _ => Task.CompletedTask,
+            new EndpointMetadataCollection(new Program.RequireListenerPort(8080)),
+            "test"));
+        var nextInvoked = false;
+        Task Next() { nextInvoked = true; return Task.CompletedTask; }
+
+        await Program.ListenerPortGateAsync(context, Next);
+
+        nextInvoked.Should().BeFalse();
+        context.Response.StatusCode.Should().Be(StatusCodes.Status404NotFound);
+    }
+
+    [Fact]
+    public async Task ListenerPortGate_MatchingPort_InvokesNext()
+    {
+        var context = new DefaultHttpContext { Connection = { LocalPort = 8080 } };
+        context.SetEndpoint(new Endpoint(
+            _ => Task.CompletedTask,
+            new EndpointMetadataCollection(new Program.RequireListenerPort(8080)),
+            "test"));
+        var nextInvoked = false;
+        Task Next() { nextInvoked = true; return Task.CompletedTask; }
+
+        await Program.ListenerPortGateAsync(context, Next);
+
+        nextInvoked.Should().BeTrue();
+        context.Response.StatusCode.Should().Be(StatusCodes.Status200OK);
+    }
+
+    [Fact]
+    public async Task ListenerPortGate_LocalPortZero_InvokesNext()
+    {
+        // TestServer carve-out: WebApplicationFactory's in-memory TestServer reports
+        // Connection.LocalPort == 0 (no real bound socket), so the gate must not 404 it.
+        var context = new DefaultHttpContext { Connection = { LocalPort = 0 } };
+        context.SetEndpoint(new Endpoint(
+            _ => Task.CompletedTask,
+            new EndpointMetadataCollection(new Program.RequireListenerPort(8080)),
+            "test"));
+        var nextInvoked = false;
+        Task Next() { nextInvoked = true; return Task.CompletedTask; }
+
+        await Program.ListenerPortGateAsync(context, Next);
+
+        nextInvoked.Should().BeTrue();
+        context.Response.StatusCode.Should().Be(StatusCodes.Status200OK);
+    }
+
+    [Fact]
+    public async Task ListenerPortGate_UnmarkedEndpoint_InvokesNext()
+    {
+        var context = new DefaultHttpContext { Connection = { LocalPort = 8081 } };
+        context.SetEndpoint(new Endpoint(
+            _ => Task.CompletedTask,
+            new EndpointMetadataCollection(),
+            "test"));
+        var nextInvoked = false;
+        Task Next() { nextInvoked = true; return Task.CompletedTask; }
+
+        await Program.ListenerPortGateAsync(context, Next);
+
+        nextInvoked.Should().BeTrue();
+        context.Response.StatusCode.Should().Be(StatusCodes.Status200OK);
     }
 }
