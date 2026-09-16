@@ -4,9 +4,16 @@ using System.Net.Http.Headers;
 using System.Security.Claims;
 using FluentAssertions;
 using Iverson.Api.Tests.Helpers;
+using Iverson.Events;
+using Iverson.Sql;
+using Iverson.StarRocks;
+using Iverson.Vector;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using NSubstitute;
 using Xunit;
 
 namespace Iverson.Api.Tests;
@@ -243,5 +250,71 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
 
         nextInvoked.Should().BeTrue();
         context.Response.StatusCode.Should().Be(StatusCodes.Status200OK);
+    }
+
+    // AuthTestWebApplicationFactory's own ConfigureWebHost substitutes the 7 startup-blocking
+    // interfaces (embedding init, schema registry, etc.) but leaves the 4 dependencies /health
+    // reads (IRecordStoreQueryExecutor, IEngagementStoreHealthCheck, IVectorSchemaManager,
+    // IEventBrokerHealthCheck) wired to their real registrations — verified directly against
+    // that file before writing this test. A bare WebApplicationFactory<Program> can't be used
+    // here instead: Program.cs's post-Build() block runs several unconditional awaits against
+    // real Postgres/schema infra before app.Run(), and only AuthTestWebApplicationFactory's own
+    // substitutions let the host reach that point at all. So this factory derives from
+    // AuthTestWebApplicationFactory (calling its ConfigureWebHost first) and layers the 4
+    // /health-specific substitutions on top, mirroring that base class's own RemoveAll/
+    // AddSingleton pattern.
+    private sealed class HealthCacheTestFactory : AuthTestWebApplicationFactory
+    {
+        public readonly IRecordStoreQueryExecutor Db = Substitute.For<IRecordStoreQueryExecutor>();
+        public readonly IEngagementStoreHealthCheck StarRocks = Substitute.For<IEngagementStoreHealthCheck>();
+        public readonly IVectorSchemaManager Vector = Substitute.For<IVectorSchemaManager>();
+        public readonly IEventBrokerHealthCheck Kafka = Substitute.For<IEventBrokerHealthCheck>();
+
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IRecordStoreQueryExecutor>();
+                services.AddSingleton(Db);
+
+                services.RemoveAll<IEngagementStoreHealthCheck>();
+                services.AddSingleton(StarRocks);
+
+                services.RemoveAll<IVectorSchemaManager>();
+                services.AddSingleton(Vector);
+
+                services.RemoveAll<IEventBrokerHealthCheck>();
+                services.AddSingleton(Kafka);
+            });
+        }
+    }
+
+    [Fact]
+    public async Task GetHealth_TwoRequestsWithinCacheWindow_OnlyInvokesDependenciesOnce()
+    {
+        // CSR remediation task 3: /health's composite result is cached for 2 seconds so an
+        // anonymous, unauthenticated endpoint reachable by anything on the health-listener port
+        // can't be used to force a check storm against Postgres/StarRocks/Qdrant/Kafka on every
+        // request. Two sequential calls inside the cache window must hit each dependency once.
+        using var factory = new HealthCacheTestFactory();
+        factory.Db.QuerySingleOrDefaultAsync<int>(Arg.Any<string>()).Returns(1);
+        factory.StarRocks.CheckHealthAsync().Returns(EngagementHealthStatus.Healthy);
+        factory.Vector.PingAsync().Returns(true);
+        factory.Kafka.PingAsync().Returns(true);
+
+        var client = factory.CreateClient();
+
+        var first = await client.GetAsync("/health");
+        var second = await client.GetAsync("/health");
+
+        first.StatusCode.Should().Be(HttpStatusCode.OK);
+        second.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await factory.Db.Received(1).QuerySingleOrDefaultAsync<int>(Arg.Any<string>());
+        await factory.StarRocks.Received(1).CheckHealthAsync();
+        await factory.Vector.Received(1).PingAsync();
+        await factory.Kafka.Received(1).PingAsync();
     }
 }

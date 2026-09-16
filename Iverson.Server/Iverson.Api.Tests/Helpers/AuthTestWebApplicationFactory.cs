@@ -15,7 +15,7 @@ namespace Iverson.Api.Tests.Helpers;
 // none of them connect eagerly at construction time, so they're inert for these tests, which
 // only exercise the authentication/authorization middleware pipeline, not real request handling
 // against those stores.
-public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
+public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 {
     static AuthTestWebApplicationFactory()
     {

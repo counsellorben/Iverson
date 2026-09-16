@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Caching.Memory;
 using Iverson.Api;
 using Iverson.Api.Authorization;
 using Iverson.Api.Consumers;
@@ -90,8 +91,8 @@ builder.Services.AddOpenApi();
 builder.Services.AddSingleton<RateLimitInterceptor>();
 builder.Services.AddGrpc(options =>
 {
-    options.Interceptors.Add<ActingUserInterceptor>();
     options.Interceptors.Add<RateLimitInterceptor>();
+    options.Interceptors.Add<ActingUserInterceptor>();
 });
 
 // CSR finding #7 (round 7): per-principal rate limit for the /v1/traces relay — 60/min per
@@ -104,6 +105,34 @@ builder.Services.AddRateLimiter(options =>
     // uses the equivalent ResourceExhausted status. RateLimiterOptions defaults to 503 —
     // override it explicitly rather than relying on that default.
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+    {
+        // Exclude the gRPC data plane (already governed by RateLimitInterceptor's own 50,000/min
+        // budget) and the anonymous probe/observability endpoints (kubelet, Prometheus — a 429
+        // there pulls the pod out of service). Both are marked RequireListenerPort(8081) or are
+        // gRPC methods, identified the same way Task 1's middleware identifies them, so this
+        // list can never silently diverge from Task 1's own endpoint enumeration.
+        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
+        var isGrpcCall = ctx.Request.ContentType?.StartsWith("application/grpc") == true;
+        if (isHealthListenerEndpoint || isGrpcCall)
+            return RateLimitPartition.GetNoLimiter(ctx.Request.Path.ToString());
+
+        return RateLimitPartition.GetSlidingWindowLimiter(
+            ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
+            _ => new SlidingWindowRateLimiterOptions
+            {
+                PermitLimit = 6_000,
+                Window = TimeSpan.FromMinutes(1),
+                SegmentsPerWindow = 6,
+                QueueLimit = 0
+            });
+    });
+    options.OnRejected = (ctx, _) =>
+    {
+        ctx.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>()
+            .LogWarning("[RateLimit] Rejected {Path}", ctx.HttpContext.Request.Path);
+        return ValueTask.CompletedTask;
+    };
     options.AddPolicy("traces", ctx =>
         RateLimitPartition.GetSlidingWindowLimiter(
             ctx.User.FindFirst("sub")?.Value ?? "anon",
@@ -394,8 +423,12 @@ app.MapGet("/health", async (
     IEngagementStoreHealthCheck sr,
     IVectorSchemaManager vector,
     IEventBrokerHealthCheck kafka,
-    IOptions<EngagementStoreOptions> engagementOptions) =>
+    IOptions<EngagementStoreOptions> engagementOptions,
+    IMemoryCache cache) =>
 {
+    if (cache.TryGetValue("health-composite", out IResult? cached))
+        return cached!;
+
     // CSR finding #7: this endpoint is AllowAnonymous, reachable by anything that can reach the
     // port — so every check here must be passive. Postgres reads (never writes), StarRocks'
     // CheckHealthAsync is SELECT 1 + a backend-status read, Qdrant's PingAsync lists collections
@@ -421,9 +454,12 @@ app.MapGet("/health", async (
     var readiness = ReadinessPolicy.Evaluate(
         pgTask.Result, srStatus, vectorTask.Result, kafkaTask.Result, engagementEnabled);
 
-    return readiness.Ready
+    var result = readiness.Ready
         ? Results.Ok(new { status = readiness.FullyHealthy ? "healthy" : "degraded", checks })
         : Results.Json(new { status = "degraded", checks }, statusCode: 503);
+
+    cache.Set("health-composite", result, TimeSpan.FromSeconds(2));
+    return result;
 })
 .WithName("Health")
 .AllowAnonymous()

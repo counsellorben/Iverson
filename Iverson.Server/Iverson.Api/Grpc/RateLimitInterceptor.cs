@@ -4,7 +4,7 @@ using Grpc.Core.Interceptors;
 
 namespace Iverson.Api.Grpc;
 
-public sealed class RateLimitInterceptor : Interceptor
+public sealed class RateLimitInterceptor(ILogger<RateLimitInterceptor> logger) : Interceptor
 {
     private readonly PartitionedRateLimiter<string> _limiter =
         PartitionedRateLimiter.Create<string, string>(key =>
@@ -40,6 +40,9 @@ public sealed class RateLimitInterceptor : Interceptor
         var subject = context.GetHttpContext().User.FindFirst("sub")?.Value ?? "unknown";
         using var lease = _limiter.AttemptAcquire(subject);
         if (!lease.IsAcquired)
+        {
+            logger.LogWarning("[RateLimit] Rejected gRPC call for subject {Subject}", subject);
             throw new RpcException(new Status(StatusCode.ResourceExhausted, "Rate limit exceeded."));
+        }
     }
 }
