@@ -591,6 +591,39 @@ public class ObjectMappingGrpcServiceTests
             new[] { SchemaEnrichmentKind.EnrichmentSummary, SchemaEnrichmentKind.EnrichmentKeywords });
     }
 
+    [Fact]
+    public async Task GetSchema_OwnerTenantIdSet_ExcludesOtherTenantsCatalog_ButIncludesUnscopedTypes()
+    {
+        // Task 2: OwnerTenantId scopes the catalog itself, not just row data — a schema
+        // registered under one tenant must not even be ENUMERABLE by a caller from a different
+        // tenant, closing the cross-tenant metadata leak GetSchema previously had (any tenant
+        // could see every other tenant's registered type/field metadata). A null OwnerTenantId —
+        // the property's documented "no recorded tenant, visible platform-wide" conservative
+        // default, covering legacy rows and service-token-only registrations — remains visible
+        // regardless of the caller's tenant.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema() with
+        {
+            TypeName = "TenantAWidget", OwnerTenantId = "tenant-a"
+        });
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema() with
+        {
+            TypeName = "TenantBWidget", OwnerTenantId = "tenant-b"
+        });
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema() with
+        {
+            TypeName = "UnscopedWidget", OwnerTenantId = null
+        });
+        _actingUserAccessor.ActingUser =
+            ActingUserFixtures.PrincipalWithTenant("test-user", "tenant-a", "test-bypass");
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var names = response.Types_.Select(t => t.Name).ToList();
+        names.Should().Contain("TenantAWidget");
+        names.Should().Contain("UnscopedWidget");
+        names.Should().NotContain("TenantBWidget");
+    }
+
     // ── Post ──────────────────────────────────────────────────────────────────
 
     [Fact]
