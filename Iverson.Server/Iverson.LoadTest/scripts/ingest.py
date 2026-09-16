@@ -51,6 +51,11 @@ run --drop against those two collection names outside of the plan's Task 5 (whic
 deliberately, after the reference points have already been used to verify this script).
 Point --object-collection/--chunks-collection at throwaway names to exercise --drop.
 
+QDRANT_API_KEY is read from the QDRANT__SERVICE__API_KEY environment variable at import time
+(CSR round-7 finding F10 -- it used to be a hardcoded dev literal); every invocation below needs
+it sourced first, e.g.:
+    set -a; . Iverson.Server/.env; set +a
+
 Usage:
     python3 Iverson.Server/Iverson.LoadTest/scripts/ingest.py \\
         --corpus /path/to/corpus-dir/beir/corpus.jsonl \\
@@ -152,7 +157,7 @@ with open(os.path.join(_SCRIPT_DIR, "ingest-contract.json"), encoding="utf-8") a
     CONTRACT = json.load(_contract_f)
 
 QDRANT_URL = "http://localhost:6333"
-QDRANT_API_KEY = "dev-only-not-for-production-qdrant-key-0123456789"
+QDRANT_API_KEY = os.environ["QDRANT__SERVICE__API_KEY"]
 DEFAULT_EMBED_URL = "http://localhost:8091"
 
 # Generous rather than tight: per-embed latency runs 5-14s under load (see the plan's own
