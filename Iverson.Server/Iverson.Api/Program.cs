@@ -481,7 +481,7 @@ app.MapPost("/admin/reconcile/{typeName}", async (
     if (!isOperator)
         return Results.Forbid();
 
-    var count = await reconciliation.ReconcileTypeAsync(typeName);
+    var count = await reconciliation.ReconcileTypeAsync(typeName, httpContext.RequestAborted);
     if (count is null)
         return Results.NotFound(new { error = $"No schema registered for '{typeName}'" });
 

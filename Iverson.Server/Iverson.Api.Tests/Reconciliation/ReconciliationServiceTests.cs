@@ -51,24 +51,33 @@ public class ReconciliationServiceTests
         // read is cross-tenant by design — but it must SAY so (iverson_maintenance, BYPASSRLS)
         // rather than get there by silently running as the table owner.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _entities.FetchAllAsync(Arg.Any<TableSchema>(), Arg.Any<EntityAccess>())
-            .Returns(Array.Empty<string>());
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), Arg.Any<string?>(), Arg.Any<int>(), Arg.Any<EntityAccess>())
+            .Returns(Array.Empty<KeyedTenantRow>());
 
         await _sut.ReconcileTypeAsync("Author");
 
-        await _entities.Received(1).FetchAllAsync(
-            Arg.Any<TableSchema>(), EntityAccess.CrossTenantMaintenance);
+        await _entities.Received(1).FetchKeysAndTenantsPagedAsync(
+            Arg.Any<TableSchema>(), Arg.Any<string?>(), Arg.Any<int>(), EntityAccess.CrossTenantMaintenance);
     }
 
     [Fact]
     public async Task ReconcileTypeAsync_RepublishesEveryRow_ReturnsCount()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _entities.FetchAllAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<EntityAccess>())
+        var page = new[]
+        {
+            new KeyedTenantRow("11111111-1111-1111-1111-111111111111", "tenant-a"),
+            new KeyedTenantRow("22222222-2222-2222-2222-222222222222", "tenant-b")
+        };
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), null, Arg.Any<int>(), Arg.Any<EntityAccess>())
+            .Returns(page);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Is<string?>(k => k == "22222222-2222-2222-2222-222222222222"), Arg.Any<int>(), Arg.Any<EntityAccess>())
+            .Returns(Array.Empty<KeyedTenantRow>());
+        _entities.FetchManyByKeysAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
             .Returns(new[]
             {
-                """{"Id":"11111111-1111-1111-1111-111111111111","Name":"Alice"}""",
-                """{"Id":"22222222-2222-2222-2222-222222222222","Name":"Bob"}"""
+                new KeyedRow("11111111-1111-1111-1111-111111111111", """{"Id":"11111111-1111-1111-1111-111111111111","Name":"Alice"}"""),
+                new KeyedRow("22222222-2222-2222-2222-222222222222", """{"Id":"22222222-2222-2222-2222-222222222222","Name":"Bob"}""")
             });
 
         var count = await _sut.ReconcileTypeAsync("Author");
