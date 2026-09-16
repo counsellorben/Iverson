@@ -175,11 +175,38 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         // Regression test for the RequireHost→listener-port repartitioning (CSR round-8,
         // Finding 1): /admin/dlq must carry the data-plane (8080) marker, not the health
         // listener's. Excludes the replay sibling ("/admin/dlq/{id}/replay") so this asserts
-        // against the GET list endpoint specifically.
+        // against the GET list endpoint specifically. Port == 8080 (not 8081) also doubles as
+        // this branch's negative case for the final-review Finding 3 seam test below: it proves
+        // an admin endpoint would NOT be excluded by the GlobalLimiter's isHealthListenerEndpoint
+        // check, which only matches Port == 8081.
         var dataSource = _factory.Services.GetRequiredService<EndpointDataSource>();
         var dlq = dataSource.Endpoints.Single(e => e.DisplayName!.Contains("/admin/dlq") && !e.DisplayName.Contains("replay"));
 
         dlq.Metadata.GetMetadata<Program.RequireListenerPort>()!.Port.Should().Be(8080);
+    }
+
+    [Theory]
+    // Final-review Finding 3 (CSR round-8 whole-branch review): the GlobalLimiter added in
+    // Task 3 reads the exact same RequireListenerPort metadata that Task 1's
+    // ListenerPortGateAsync gate attaches — the one genuine cross-task dependency between the
+    // two tasks. Nothing asserted that every current health-listener-only endpoint still
+    // carries the Port == 8081 marker; if a future endpoint silently lost it, the GlobalLimiter
+    // would start rate-limiting kubelet's health probe / Prometheus scraping instead of
+    // excluding it, and the pod would get pulled out of service under load. This locks down
+    // marker-completeness: a future endpoint added without the marker fails this assertion in
+    // CI rather than surfacing as a 429 in production.
+    [InlineData("/health/live")]
+    [InlineData("/build")]
+    [InlineData("/health")]
+    [InlineData("/metrics")]
+    public void HealthListenerEndpoint_IsMarkedForHealthListenerPort(string routePattern)
+    {
+        var dataSource = _factory.Services.GetRequiredService<EndpointDataSource>();
+        var endpoint = dataSource.Endpoints
+            .OfType<RouteEndpoint>()
+            .Single(e => e.RoutePattern.RawText == routePattern);
+
+        endpoint.Metadata.GetMetadata<Program.RequireListenerPort>()!.Port.Should().Be(8081);
     }
 
     [Fact]

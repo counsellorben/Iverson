@@ -1,6 +1,7 @@
 using System.Threading.RateLimiting;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
+using Iverson.Api;
 
 namespace Iverson.Api.Grpc;
 
@@ -41,7 +42,7 @@ public sealed class RateLimitInterceptor(ILogger<RateLimitInterceptor> logger) :
         using var lease = _limiter.AttemptAcquire(subject);
         if (!lease.IsAcquired)
         {
-            logger.LogWarning("[RateLimit] Rejected gRPC call for subject {Subject}", subject);
+            logger.LogWarning("[RateLimit] Rejected gRPC call for subject {Subject}", subject.SanitizeForLog());
             throw new RpcException(new Status(StatusCode.ResourceExhausted, "Rate limit exceeded."));
         }
     }

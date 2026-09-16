@@ -115,7 +115,13 @@ builder.Services.AddRateLimiter(options =>
         var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
         var isGrpcCall = ctx.Request.ContentType?.StartsWith("application/grpc") == true;
         if (isHealthListenerEndpoint || isGrpcCall)
-            return RateLimitPartition.GetNoLimiter(ctx.Request.Path.ToString());
+            // A constant key, not the request path: PartitionedRateLimiter.Create caches one
+            // dictionary entry per distinct partition key returned by this factory — including
+            // no-op (GetNoLimiter) partitions, which are never swept. Keying by path let any
+            // authenticated caller (every SDK client holds a service token) grow this dictionary
+            // without bound by varying the path on gRPC-content-typed requests. The key carries
+            // no meaning for a no-op partition, so collapse every excluded request onto one entry.
+            return RateLimitPartition.GetNoLimiter("unlimited");
 
         return RateLimitPartition.GetSlidingWindowLimiter(
             ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
@@ -130,7 +136,7 @@ builder.Services.AddRateLimiter(options =>
     options.OnRejected = (ctx, _) =>
     {
         ctx.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>()
-            .LogWarning("[RateLimit] Rejected {Path}", ctx.HttpContext.Request.Path);
+            .LogWarning("[RateLimit] Rejected {Path}", ctx.HttpContext.Request.Path.ToString().SanitizeForLog());
         return ValueTask.CompletedTask;
     };
     options.AddPolicy("traces", ctx =>
