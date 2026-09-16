@@ -72,6 +72,7 @@ jobs:
         with:
           java-version: "21"
           distribution: "temurin"
+      - run: mvn install -DskipTests
       - run: mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
