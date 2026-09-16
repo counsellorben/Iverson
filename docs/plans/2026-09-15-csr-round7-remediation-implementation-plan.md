@@ -37,7 +37,7 @@ The following were verified by the spec (and, for the redirect and container-pop
 - `RejectForbiddenCharacters` (`StarRocksPipelineBuilder.cs:374`) is the single choke point for all 4 raw-expression entry points; no test fixture uses an expression near 1000 characters.
 - `render_schema`'s only caller is `session.py:137`; `_escape` is defined in `retrieval.py:168` and already imported the same way by `evaluate.py`.
 - Both Terraform state-backend resources and their pinned provider versions; both target arguments are genuinely absent today.
-- 6 of the docker-compose secrets need conversion (`AUTHENTIK_POSTGRESQL__PASSWORD` excluded — its second consumer is a static-mounted SQL file, a bigger change); 3 have real second consumers beyond their declaration sites (`POSTGRES_PASSWORD`, `QDRANT__SERVICE__API_KEY` ×2 sites each plus `ingest.py`); the generator script must append missing keys rather than skip whole-file generation when `.env` already exists.
+- Of the 6 named docker-compose secrets, 4 are converted by this plan (`QDRANT__SERVICE__API_KEY`, `AUTHENTIK_SECRET_KEY`, `AUTHENTIK_BOOTSTRAP_PASSWORD`, `AUTHENTIK_BOOTSTRAP_TOKEN`); `AUTHENTIK_POSTGRESQL__PASSWORD` and `POSTGRES_PASSWORD` are both excluded — the former because its second consumer is a static-mounted SQL file (a bigger change than a compose-value swap), the latter because Postgres only honors it at first initdb against an already-provisioned persistent volume (design review forced decision §3.2). `QDRANT__SERVICE__API_KEY` has real second consumers beyond its declaration site (2 compose lines plus `ingest.py`, which requires — not falls back to — the env var). The generator script must append missing keys rather than skip whole-file generation when `.env` already exists.
 - `enforce_admins: false` and "verify status-check pass-state via a throwaway PR before finalizing the required list" (both forced decisions, resolved by the user during design review).
 - `owasp-dependency-check-java` is expected red during that verification (NVD key unprovisioned) and is excluded from the initial required list by that process, not as a special case.
 - `docs/security/tma.md`'s F1 correction is already applied to the file on disk, only uncommitted.
@@ -52,7 +52,7 @@ The following were verified by the spec (and, for the redirect and container-pop
 | 4 | Symbol/convention | `[Trait("Category", "Integration")]` syntax, placement (directly above the class declaration), and `using Xunit;` presence | Read `PipelineIntegrationTests.cs` (existing traited file) for the pattern; confirmed `using Xunit;` already present in all 13 target files via direct grep |
 | 5 | File path | Exact current class-declaration line for each of the 13 target files | Read each file directly: `EngagementStoreConsumerKafkaOrderingTests.cs:45`, `DocumentRerenderQueuePostgresIntegrationTests.cs:47`, `ReconciliationQueuePostgresIntegrationTests.cs:50`, `StarRocksReadinessIntegrationTests.cs:17`, `AuthentikRecoveryFlowIntegrationTests.cs:42`, `DlqRepositoryPostgresIntegrationTests.cs:55`, `PostgresIntegrationTests.cs:38`, `TenantRepositoryPostgresIntegrationTests.cs:52`, `StarRocksIntegrationTests.cs:210`, `QdrantIntegrationTests.cs:49`, `QdrantTenantIsolationIntegrationTests.cs:66`, `QdrantVectorServiceTests.cs:11`, `TenantScopedAccessIntegrationTests.cs:21` |
 | 6 | Command / convention | GitHub Actions style to match: SHA-pinned actions with version comment, `runs-on: ubuntu-latest`, dotnet-version string | Read `dependency-scan.yml:14-19`: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0`, `actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0`, `dotnet-version: "10.0.x"` |
-| 7 | Command / convention | GitLab CI style for a non-dependency-scan job: no `extends:`/`rules:` needed (default MR/push trigger applies; `.rules-dependency-scan`'s schedule-trigger workaround is irrelevant here) | Read `.gitlab-ci.yml`'s `helm-lint` (uses `.rules-deploy-changes`, a different, path-filtered concern) and the header comment explaining why `.rules-dependency-scan` exists specifically for the schedule trigger — a build-test job needs neither |
+| 7 | Command / convention | **CORRECTED (CIR round 1 failed this row):** a rules-free GitLab job does NOT get a "default MR/push trigger" — GitLab's documented default for a rules-free job is `except: merge_requests`, meaning it runs on branch/tag pipelines but is excluded from merge-request pipelines. All 11 existing jobs in this file carry `extends:`/`rules:`; there is no rules-free precedent. Resolved as forced decision §3.1 (design review): add an explicit top-level `workflow:` block plus matching job-level `rules:` on both new jobs, so they run on both `merge_request_event` and `push` to `main` without creating duplicate pipelines. | Read `.gitlab-ci.yml` in full: `:28,:45,:72,:110` extend `.rules-deploy-changes`; `:132,:141,:150,:159,:168,:178,:187` extend `.rules-dependency-scan` — 11 of 11 jobs, no rules-free job anywhere. GitLab's own docs (`docs.gitlab.com/ci/jobs/job_rules/`): "jobs with no rules default to `except: merge_requests`" |
 | 8 | Command | `dotnet build Iverson.slnx` / `dotnet test --filter "Category!=Integration"` need no working-directory adjustment in a CI job checked out at repo root | Both ran successfully from repo root earlier this session |
 | 9 | Command / convention | `npm ci && npm test` working directory and Node image version to match `dependency-scan.yml`'s existing JS jobs | `.gitlab-ci.yml:138-147`: `image: node:22`, `cd Iverson.Clients/TypeScript` / `cd Iverson.AdminUI` then `npm ci` |
 | 10 | File path / ordering | Exact insertion points in `Program.cs`: `AddRateLimiter` beside `AddGrpc` (line 89), `UseRateLimiter()` after `UseAuthorization()` (line 337) and before `UseGrpcWeb()` (line 338) | Read `Program.cs`'s full middleware-registration block directly |
@@ -66,7 +66,7 @@ The following were verified by the spec (and, for the redirect and container-pop
 | 18 | File path / consumer impact | `planner.py`'s exact current line 36 content, and that `_escape` is not yet imported there | Read the file in full — line 36 matches the spec's cited fix target exactly; no `iverson_agent` import present yet, so the fix must add one |
 | 19 | Convention | Both Terraform files' existing indentation/alignment style, to insert the new argument consistently | Read both `resource` blocks directly — 2-space indent, `=` columns aligned within each block |
 | 20 | File path | `generate-compose-secrets.sh`'s exact current 29-line structure | Read the file in full — matches the design's citations exactly |
-| 21 | Consumer impact | `ingest.py`'s `QDRANT_API_KEY` constant and how the script is invoked | Read the file's header docstring: this is a standalone script invoked directly with CLI flags (`--embed-url` etc.), **not** run inside docker-compose or with its `.env` auto-loaded — a hard `os.environ["..."]` requirement would break standalone invocation. Fix uses `os.environ.get("QDRANT__SERVICE__API_KEY", "dev-only-not-for-production-qdrant-key-0123456789")` (fallback to the current literal) instead of the design's plain "read the same env var," preserving today's out-of-the-box behavior while picking up the real value when the caller has sourced `.env` |
+| 21 | Consumer impact | **CORRECTED (CIR round 1 failed this row):** `ingest.py`'s `QDRANT_API_KEY` constant and how the script is invoked | The factual half holds — this is a standalone script invoked directly with CLI flags, not run inside docker-compose. But the row's fallback-to-literal fix was wrong: after Task 9 Step 2's own conversion, that literal is stale everywhere (every compose site fails loudly if the key is missing instead). The fix is a hard `os.environ["QDRANT__SERVICE__API_KEY"]` requirement, matching the rest of the stack; `import os` is already present at `ingest.py:136`, so no import change is needed |
 | 22 | File path | `docker-compose.yml`'s exact current text at the 4 extra consumer-site lines (456, 554, 478, 565) | Read directly — `Password=iverson` ×2, `Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789` ×2, byte-identical to the design's citations |
 | 23 | Consumer impact | `docs/security/tma.md`'s working-tree state is unchanged since the design's own verification | `git status --porcelain docs/security/` → still just `?? docs/security/`, nothing else touched |
 | 24 | Command | Exact `gh api` PUT payload shape for branch protection | Fetched GitHub's REST API reference directly: `required_status_checks` (`{"strict": bool, "contexts": [...]}`), `enforce_admins`, `required_pull_request_reviews`, and `restrictions` are all required top-level fields even when `null`. `strict` defaults to `false` here (no "must be up to date with base branch" requirement was decided) |
@@ -109,7 +109,7 @@ The following were verified by the spec (and, for the redirect and container-pop
   def test_get_token_does_not_follow_a_redirect():
       class RedirectingHandler(http.server.BaseHTTPRequestHandler):
           def do_POST(self):
-              self.send_response(307)
+              self.send_response(302)
               self.send_header("Location", "http://evil.invalid/steal")
               self.end_headers()
 
@@ -124,11 +124,12 @@ The following were verified by the spec (and, for the redirect and container-pop
           provider = _CachedTokenProvider(
               IversonClientCredentials("id", "secret", f"http://127.0.0.1:{port}/token")
           )
-          with pytest.raises(RuntimeError, match="HTTP 307"):
+          with pytest.raises(RuntimeError, match="HTTP 302"):
               provider.get_token()
       finally:
           server.shutdown()
   ```
+  Uses 302, not 307/308: CPython's *default* `HTTPRedirectHandler` already refuses to follow a POST+307/308 (it raises `HTTPError` itself), so a test using either of those codes would pass identically with or without Step 1's fix. 301/302/303 are the codes the unpatched default actually follows (as a bodiless GET) — 302 is the discriminating choice.
 
 - [ ] **Step 3: Run the test**
   ```bash
@@ -241,6 +242,9 @@ The following were verified by the spec (and, for the redirect and container-pop
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+          with:
+            node-version: "22"
         - working-directory: Iverson.Clients/TypeScript
           run: npm ci
         - working-directory: Iverson.Clients/TypeScript
@@ -248,8 +252,13 @@ The following were verified by the spec (and, for the redirect and container-pop
   ```
 
 - [ ] **Step 2: Add matching jobs to `.gitlab-ci.yml`**
-  Add a new stage and two jobs (no `extends:`/`rules:` needed — GitLab's default MR/push trigger applies):
+  A rules-free job does NOT get a "default MR/push trigger" — GitLab's documented default for a rules-free job is `except: merge_requests` (runs on branch/tag pipelines, excluded from merge-request pipelines), and all 11 existing jobs in this file carry `extends:`/`rules:` already. Per the design review's forced decision (§3.1), add an explicit top-level `workflow:` block (preventing duplicate pipelines for a branch with an open MR) plus matching job-level `rules:` on both new jobs, so they run on both `merge_request_event` and `push` to `main`:
   ```yaml
+  workflow:
+    rules:
+      - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+
   stages:
     - validate
     - dependency-scan
@@ -258,6 +267,9 @@ The following were verified by the spec (and, for the redirect and container-pop
   dotnet-build-test:
     stage: build-test
     image: mcr.microsoft.com/dotnet/sdk:10.0
+    rules:
+      - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
     script:
       - dotnet build Iverson.slnx
       - dotnet test Iverson.slnx --filter "Category!=Integration"
@@ -265,11 +277,15 @@ The following were verified by the spec (and, for the redirect and container-pop
   typescript-sdk-build-test:
     stage: build-test
     image: node:22
+    rules:
+      - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
     script:
       - cd Iverson.Clients/TypeScript
       - npm ci
       - npm test
   ```
+  The `workflow:` block is a new top-level key affecting every existing job's pipeline-creation eligibility, not just these two — it does not change which jobs run inside a pipeline once created (job-level `rules:`/`extends:` still governs that), only whether a pipeline is created at all for a given push. Existing jobs are unaffected in practice: every current push/MR pattern that creates a pipeline today still does under these two conditions.
 
 - [ ] **Step 3: Verify both commands locally one more time (already confirmed working earlier this session, re-run for this exact task's diff)**
   ```bash
@@ -349,12 +365,14 @@ The following were verified by the spec (and, for the redirect and container-pop
   ```
   to:
   ```csharp
+  builder.Services.AddSingleton<RateLimitInterceptor>();
   builder.Services.AddGrpc(options =>
   {
       options.Interceptors.Add<ActingUserInterceptor>();
       options.Interceptors.Add<RateLimitInterceptor>();
   });
   ```
+  The `AddSingleton` registration is required, not optional: `options.Interceptors.Add<T>()` alone resolves the interceptor from the request's service provider, and with no DI registration gRPC constructs a fresh instance — and a fresh `_limiter` with an empty window — for every single call, making the rate limit inert at any threshold. Also add `using System.Threading.RateLimiting;` to `Program.cs`'s using block (placed with the other `System.*` usings) — `RateLimitPartition`/`SlidingWindowRateLimiterOptions` in Step 3 below don't resolve without it; `AddRateLimiter`/`UseRateLimiter`/`RequireRateLimiting` don't need it.
 
 - [ ] **Step 3: Register and wire the `/v1/traces` rate limiter**
   Add near the other `builder.Services.Add...` calls (alongside the line touched in Step 2):
@@ -405,14 +423,18 @@ The following were verified by the spec (and, for the redirect and container-pop
       };
 
       [Fact]
-      public async Task A_single_call_within_the_limit_succeeds()
+      public async Task A_single_call_within_the_limit_is_not_rate_limited()
       {
-          var act = () => _client.AggregateAsync(new AggregateRequest(), ServiceOnlyHeaders()).ResponseAsync;
-          await act.Should().NotThrowAsync<RpcException>();
+          RpcException? ex = null;
+          try { await _client.AggregateAsync(new AggregateRequest(), ServiceOnlyHeaders()); }
+          catch (RpcException e) { ex = e; }
+
+          ex.Should().NotBeNull();
+          ex!.StatusCode.Should().NotBe(StatusCode.ResourceExhausted);
       }
   }
   ```
-  (A test asserting the *rejection* path would need 50,000 real calls given this task's chosen limit — infeasible to run in CI. This test instead proves the interceptor is wired in and does not block ordinary traffic; the partitioning mechanism itself was already verified empirically during plan-writing, see "Verified plan-level assumptions" #14.)
+  This call always throws `RpcException(FailedPrecondition)` in `AuthTestWebApplicationFactory` (no schema registered in the test host) — asserting no exception at all would fail regardless of whether the interceptor is present, proving nothing. Asserting the status code is *not* `ResourceExhausted` (the value `RateLimitInterceptor.Enforce` throws) is the assertion the interceptor actually governs. A test asserting the *rejection* path would need 50,000 real calls given this task's chosen limit — infeasible to run in CI; the partitioning mechanism itself was already verified empirically during plan-writing, see "Verified plan-level assumptions" #14 and #25.
 
 - [ ] **Step 5: Add a test for `/v1/traces`'s rate limit, which IS feasible to fully exercise (60/min)**
   In `TracesRelayEndpointTests.cs`, add (matching `CreateAuthenticatedClient()`'s confirmed `(HttpClient Client, FakeJaegerHandler JaegerHandler)` return shape, same as every other test in this file):
@@ -428,9 +450,10 @@ The following were verified by the spec (and, for the redirect and container-pop
           content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
           last = await client.PostAsync("/v1/traces", content);
       }
-      last!.StatusCode.Should().Be((HttpStatusCode)429);
+      last!.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
   }
   ```
+  `RateLimiterOptions.RejectionStatusCode` defaults to 503, and Step 3's `AddRateLimiter` block never overrides it — matching what "Verified plan-level assumptions" #14 already recorded (`200 200 503 503`), asserted here rather than the more conventional-but-incorrect-for-this-code 429.
 
 - [ ] **Step 6: Run the tests**
   ```bash
@@ -542,8 +565,9 @@ The following were verified by the spec (and, for the redirect and container-pop
 
 - [ ] **Step 3: Run the test**
   ```bash
-  cd Iverson.Server && dotnet test --filter "Category!=Integration" --filter "FullyQualifiedName~StarRocks"
+  cd Iverson.Server && dotnet test --filter "Category!=Integration&FullyQualifiedName~StarRocks"
   ```
+  (One `--filter` with a `&` conjunction — `dotnet test` accepts `--filter` exactly once; passing it twice is a CLI parse error and the command never runs.)
 
 - [ ] **Step 4: Commit**
   ```bash
@@ -599,10 +623,10 @@ The following were verified by the spec (and, for the redirect and container-pop
 
 - [ ] **Step 3: Validate**
   ```bash
-  cd Iverson.Server/deploy/terraform/bootstrap/gcp && terraform validate
-  cd Iverson.Server/deploy/terraform/bootstrap/azure && terraform validate
+  cd Iverson.Server/deploy/terraform/bootstrap/gcp && terraform init -backend=false && terraform validate
+  cd Iverson.Server/deploy/terraform/bootstrap/azure && terraform init -backend=false && terraform validate
   ```
-  (Read-only check; does not require cloud credentials since no plan/apply is run.)
+  (Read-only check with respect to cloud credentials — `init -backend=false` only installs the providers from the committed lockfile, no state backend is touched. `terraform validate` alone fails without this: neither directory has `.terraform/providers` populated, and the providers must be installed before validation can run. This matches `.gitlab-ci.yml`'s own `terraform-validate` job convention.)
 
 - [ ] **Step 4: Commit**
   ```bash
@@ -634,7 +658,6 @@ The following were verified by the spec (and, for the redirect and container-pop
       IVERSON_BYPASS_PASSWORD
       IVERSON_ADMIN_ORCHESTRATOR_PASSWORD
       IVERSON_ADMIN_ORCHESTRATOR_TOKEN
-      POSTGRES_PASSWORD
       QDRANT__SERVICE__API_KEY
       AUTHENTIK_SECRET_KEY
       AUTHENTIK_BOOTSTRAP_PASSWORD
@@ -652,21 +675,21 @@ The following were verified by the spec (and, for the redirect and container-pop
   ```
   Update the header comment to describe the new append-if-missing behavior instead of "refuses to overwrite an existing .env."
 
-- [ ] **Step 2: Convert 5 of the 6 target secrets in `docker-compose.yml` to `${VAR:?message}`**
-  At lines 35, 114, 334, 352, 359, 360, 395, 402, 403 (9 occurrences — `AUTHENTIK_POSTGRESQL__PASSWORD` at 339, 357, 400 is excluded, see Global Constraints/spec), replace the literal value with `${NAME:?run scripts/generate-compose-secrets.sh first}`, e.g. line 35 becomes:
+- [ ] **Step 2: Convert 4 of the 6 target secrets in `docker-compose.yml` to `${VAR:?message}`**
+  At lines 114, 334, 352, 395, 402, 403 (8 occurrences — `AUTHENTIK_POSTGRESQL__PASSWORD` at 339/357/400 and `POSTGRES_PASSWORD` at 35 are both excluded, see below), replace the literal value with `${NAME:?run scripts/generate-compose-secrets.sh first}`, e.g. line 114 becomes:
   ```yaml
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/generate-compose-secrets.sh first}
+  QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
   ```
-  Also convert the 4 extra consumer sites at lines 456, 554 (`Password=iverson` → `Password=${POSTGRES_PASSWORD:?run scripts/generate-compose-secrets.sh first}`) and 478, 565 (`Qdrant__ApiKey=dev-only-...` → `Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}`).
+  Also convert the 2 extra consumer sites at lines 478, 565 (`Qdrant__ApiKey=dev-only-...` → `Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}`).
 
-- [ ] **Step 3: Update `ingest.py` to prefer the real env var, falling back to today's literal**
-  Replace line 154's `QDRANT_API_KEY = "dev-only-not-for-production-qdrant-key-0123456789"` with:
+  **`POSTGRES_PASSWORD` (line 35, plus its consumer sites at 456/554) is excluded from this task**, per the design review's forced decision (§3.2): Postgres honors `POSTGRES_PASSWORD` only at first initialization of an empty data directory, and this compose file binds a persistent named volume (`postgres_data`). Converting it would leave any already-provisioned local stack's actual database password at the old hardcoded value while the compose file's `POSTGRES_PASSWORD`/`ConnectionStrings__Postgres` both become a fresh random value — the stack starts and then fails authentication, with no way for `docker compose config` to detect it (interpolation resolves fine either way). This is the same initdb-only mechanism the spec already excluded `AUTHENTIK_POSTGRESQL__PASSWORD` for; `POSTGRES_PASSWORD` stays hardcoded pending a dedicated task.
+
+- [ ] **Step 3: Update `ingest.py` to require the real env var**
+  Replace line 155's `QDRANT_API_KEY = "dev-only-not-for-production-qdrant-key-0123456789"` with:
   ```python
-  QDRANT_API_KEY = os.environ.get(
-      "QDRANT__SERVICE__API_KEY", "dev-only-not-for-production-qdrant-key-0123456789"
-  )
+  QDRANT_API_KEY = os.environ["QDRANT__SERVICE__API_KEY"]
   ```
-  Add `import os` near the file's other imports if not already present (confirm at execution time; not found in the header read during plan-writing).
+  (`import os` is already present at `ingest.py:136` — no import change needed.) A fallback-to-the-old-literal form was considered and rejected: after Step 2's conversion, that literal is stale everywhere — every compose site now fails loudly if the key is missing, and a silent fallback here would mean this script alone could run a 4-6 hour unattended ingest against the wrong credential instead of failing at startup like the rest of the stack. Invoke the script with the variable in the environment, e.g. `set -a; . Iverson.Server/.env; set +a; python3 Iverson.Server/Iverson.LoadTest/scripts/ingest.py ...`.
 
 - [ ] **Step 4: Verify the compose stack still resolves after generating fresh secrets**
   ```bash
@@ -678,7 +701,7 @@ The following were verified by the spec (and, for the redirect and container-pop
 - [ ] **Step 5: Commit**
   ```bash
   git add scripts/generate-compose-secrets.sh Iverson.Server/docker-compose.yml Iverson.Server/Iverson.LoadTest/scripts/ingest.py
-  git commit -m "generate and require POSTGRES_PASSWORD/QDRANT__SERVICE__API_KEY/AUTHENTIK_SECRET_KEY/AUTHENTIK_BOOTSTRAP_* instead of hardcoding them"
+  git commit -m "generate and require QDRANT__SERVICE__API_KEY/AUTHENTIK_SECRET_KEY/AUTHENTIK_BOOTSTRAP_* instead of hardcoding them"
   ```
 
 ---
