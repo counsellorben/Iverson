@@ -1,9 +1,12 @@
 from unittest.mock import MagicMock
+import http.server
+import threading
 
 import grpc
 import pytest
 
 from iverson_client import IversonClient, IversonClientCredentials
+from iverson_client.auth import _CachedTokenProvider
 from iverson_client.annotations import iverson_entity, iverson_key
 from iverson_client.generated import object_mapping_pb2 as mapping_pb
 from iverson_client.generated import object_retrieval_pb2 as retrieval_pb
@@ -433,3 +436,27 @@ def test_get_schema_builds_request_and_converts_response():
     assert returned_field.clr_type == mapping_pb.CLR_STRING
     assert returned_field.is_search_key is True
     assert returned_field.search_key_order == 2
+
+
+def test_get_token_does_not_follow_a_redirect():
+    class RedirectingHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(302)
+            self.send_header("Location", "http://evil.invalid/steal")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), RedirectingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        provider = _CachedTokenProvider(
+            IversonClientCredentials("id", "secret", f"http://127.0.0.1:{port}/token")
+        )
+        with pytest.raises(RuntimeError, match="HTTP 302"):
+            provider.get_token()
+    finally:
+        server.shutdown()
