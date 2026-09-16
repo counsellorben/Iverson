@@ -424,6 +424,10 @@ app.MapPost("/admin/reconcile/{typeName}", async (
     AuditLog audit,
     HttpContext httpContext) =>
 {
+    var actingUserResult = await httpContext.AuthenticateAsync("ActingUser");
+    if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
+        return Results.Unauthorized();
+
     var count = await reconciliation.ReconcileTypeAsync(typeName);
     if (count is null)
         return Results.NotFound(new { error = $"No schema registered for '{typeName}'" });

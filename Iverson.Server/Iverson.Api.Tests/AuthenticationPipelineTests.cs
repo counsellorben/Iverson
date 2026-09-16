@@ -77,6 +77,20 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
     }
 
     [Fact]
+    public async Task ServiceTokenOnly_PostAdminReconcile_Returns401()
+    {
+        var token = TestJwtFactory.CreateToken(
+            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/admin/reconcile/SomeType");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await _client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
     public async Task ServiceTokenAndActingUserToken_GetAdminDlq_Succeeds()
     {
         var serviceToken = TestJwtFactory.CreateToken(
