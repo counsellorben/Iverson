@@ -72,7 +72,7 @@ public class DocumentTemplateValidationTests
     {
         var td = WidgetType("{Bio}"); // Bio is not a declared property
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -85,7 +85,7 @@ public class DocumentTemplateValidationTests
     {
         var td = WidgetType("{Owner.Name}"); // no relation named "Owner" declared
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -106,7 +106,7 @@ public class DocumentTemplateValidationTests
         var dependent = SimpleType("User", "Name"); // no Bio
 
         var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -126,7 +126,7 @@ public class DocumentTemplateValidationTests
         var dependent = SimpleType("Gadget", "Name");
 
         var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -147,7 +147,7 @@ public class DocumentTemplateValidationTests
         var dependent = SimpleType("User", "Name");
 
         var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -166,7 +166,7 @@ public class DocumentTemplateValidationTests
             Name = "document", ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -186,7 +186,7 @@ public class DocumentTemplateValidationTests
             }
         };
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -214,7 +214,7 @@ public class DocumentTemplateValidationTests
         };
 
         var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -239,7 +239,7 @@ public class DocumentTemplateValidationTests
         };
 
         var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -265,7 +265,7 @@ public class DocumentTemplateValidationTests
         };
 
         var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -287,7 +287,7 @@ public class DocumentTemplateValidationTests
         };
 
         var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -312,7 +312,7 @@ public class DocumentTemplateValidationTests
         };
 
         var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -332,7 +332,7 @@ public class DocumentTemplateValidationTests
             }
         };
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -356,14 +356,14 @@ public class DocumentTemplateValidationTests
         });
 
         await _sut.RegisterAsync(
-            new SchemaRequest { RootType = article, Dependents = { user } }, CancellationToken.None);
+            new SchemaRequest { RootType = article, Dependents = { user } }, null, CancellationToken.None);
 
         // Now: re-register User alone, without Bio. Article (already registered, not part of
         // this request) still references {Author.Bio} — this must be rejected, distinctly, as
         // FailedPrecondition rather than InvalidArgument.
         var userWithoutBio = SimpleType("User", "Name");
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = userWithoutBio }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = userWithoutBio }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
@@ -384,7 +384,7 @@ public class DocumentTemplateValidationTests
         var dependent = SimpleType("User", "Name");
 
         var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, CancellationToken.None);
+            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }
@@ -455,7 +455,7 @@ public class DocumentTemplateValidationTests
     {
         var td = WidgetType("{Bio}"); // Bio is undeclared -> InvalidArgument
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().ThrowAsync<RpcException>();
 
@@ -467,12 +467,12 @@ public class DocumentTemplateValidationTests
     public async Task RegisterAsync_TemplateValidationFailure_DoesNotOverwritePriorDescriptor()
     {
         // Register Widget successfully first...
-        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, null, CancellationToken.None);
         var priorDescriptor = _registry.Get("Widget");
         priorDescriptor.Should().NotBeNull();
 
         // ...then attempt to re-register it with a broken template.
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Bio}") }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Bio}") }, null, CancellationToken.None);
 
         await act.Should().ThrowAsync<RpcException>();
 
@@ -486,7 +486,7 @@ public class DocumentTemplateValidationTests
     {
         var td = WidgetType("{Not a valid identifier}");
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -502,7 +502,7 @@ public class DocumentTemplateValidationTests
             PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -513,12 +513,12 @@ public class DocumentTemplateValidationTests
     [Fact]
     public async Task RegisterAsync_UnchangedTemplate_EnqueuesNoBackfill()
     {
-        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, null, CancellationToken.None);
         _rerenderQueue.ClearReceivedCalls();
 
         // Re-registering with the exact same template text is routine (e.g. every service
         // restart re-running registration) and must not enqueue a type-level backfill row.
-        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, null, CancellationToken.None);
 
         await _rerenderQueue.DidNotReceive().EnqueueTypeAsync(Arg.Any<string>());
     }
@@ -530,11 +530,11 @@ public class DocumentTemplateValidationTests
         // unset, which protobuf defaults to "" — SchemaBuilder maps that to a null
         // DocumentTemplateSource)...
         var td = SimpleType("Widget", "Name");
-        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
         _rerenderQueue.ClearReceivedCalls();
 
         // ...then re-register it with a template for the first time.
-        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, null, CancellationToken.None);
 
         await _rerenderQueue.Received(1).EnqueueTypeAsync("Widget");
     }
@@ -542,13 +542,13 @@ public class DocumentTemplateValidationTests
     [Fact]
     public async Task RegisterAsync_EditedTemplate_EnqueuesTypeLevelBackfill()
     {
-        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, null, CancellationToken.None);
         _rerenderQueue.ClearReceivedCalls();
 
         var widget = SimpleType("Widget", "Name");
         widget.DocumentTemplate = "{Name} updated";
 
-        await _sut.RegisterAsync(new SchemaRequest { RootType = widget }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = widget }, null, CancellationToken.None);
 
         await _rerenderQueue.Received(1).EnqueueTypeAsync("Widget");
     }
@@ -560,12 +560,12 @@ public class DocumentTemplateValidationTests
         // synthetic "Document" chunk field, so nothing in ChunkFields can ever be used to clean
         // up the old chunk points — a type-level backfill here would just re-ingest the whole
         // type for nothing.
-        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, null, CancellationToken.None);
         _rerenderQueue.ClearReceivedCalls();
 
         var widget = SimpleType("Widget", "Name"); // DocumentTemplate unset -> null source
 
-        await _sut.RegisterAsync(new SchemaRequest { RootType = widget }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = widget }, null, CancellationToken.None);
 
         await _rerenderQueue.DidNotReceive().EnqueueTypeAsync(Arg.Any<string>());
     }
@@ -581,7 +581,7 @@ public class DocumentTemplateValidationTests
         // distinguishable from a typo.
         var td = WidgetType("{" + SchemaDescriptor.TenantColumnName + "}");
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);

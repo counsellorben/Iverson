@@ -49,7 +49,8 @@ public sealed class ObjectMappingGrpcService(
         if (request.RootType is null)
             throw new RpcException(new Status(StatusCode.InvalidArgument, "root_type is required."));
 
-        var registered = await _schemaRegistration.RegisterAsync(request, context.CancellationToken);
+        var ownerTenantId = _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value;
+        var registered = await _schemaRegistration.RegisterAsync(request, ownerTenantId, context.CancellationToken);
 
         _auditLog.AdminOperation(context.GetHttpContext().User, "RegisterSchema", request.RootType.TypeName);
 
@@ -77,8 +78,13 @@ public sealed class ObjectMappingGrpcService(
         // declaring a differently-cased related type is not silently dropped from the catalog.
         var survivingNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        var callerTenant = _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value;
+
         foreach (var schema in _registry.All.Values)
         {
+            if (schema.OwnerTenantId is not null && schema.OwnerTenantId != callerTenant)
+                continue;
+
             var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
             if (decision.Denied)
                 continue;

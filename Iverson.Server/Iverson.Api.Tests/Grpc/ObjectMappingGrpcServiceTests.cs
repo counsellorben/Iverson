@@ -198,7 +198,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task RegisterSchema_ReturnsOrchestratorResult()
     {
         var mockOrchestrator = Substitute.For<ISchemaRegistrationOrchestrator>();
-        mockOrchestrator.RegisterAsync(Arg.Any<SchemaRequest>(), Arg.Any<CancellationToken>())
+        mockOrchestrator.RegisterAsync(Arg.Any<SchemaRequest>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<string> { "Widget" });
         var sut = new ObjectMappingGrpcService(
             _entities,
@@ -230,7 +230,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task RegisterSchema_Succeeds_LogsAdminOperation()
     {
         var mockOrchestrator = Substitute.For<ISchemaRegistrationOrchestrator>();
-        mockOrchestrator.RegisterAsync(Arg.Any<SchemaRequest>(), Arg.Any<CancellationToken>())
+        mockOrchestrator.RegisterAsync(Arg.Any<SchemaRequest>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<string> { "Widget" });
         var sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,

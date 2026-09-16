@@ -9,7 +9,7 @@ namespace Iverson.Api.Grpc;
 
 public interface ISchemaRegistrationOrchestrator
 {
-    Task<IReadOnlyList<string>> RegisterAsync(SchemaRequest request, CancellationToken ct);
+    Task<IReadOnlyList<string>> RegisterAsync(SchemaRequest request, string? ownerTenantId, CancellationToken ct);
 }
 
 public sealed class SchemaRegistrationOrchestrator(
@@ -53,7 +53,7 @@ public sealed class SchemaRegistrationOrchestrator(
         return declared.SingleOrDefault();
     }
 
-    public async Task<IReadOnlyList<string>> RegisterAsync(SchemaRequest request, CancellationToken ct)
+    public async Task<IReadOnlyList<string>> RegisterAsync(SchemaRequest request, string? ownerTenantId, CancellationToken ct)
     {
         // Phase 1: build + per-type validate. No DDL, no registry writes — a root's document
         // template can reference a dependent that hasn't been built yet if this were a single
@@ -343,8 +343,9 @@ public sealed class SchemaRegistrationOrchestrator(
                 throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
             }
 
-            await registry.RegisterAsync(descriptor);
-            registered.Add(descriptor.TypeName);
+            var stamped = descriptor with { OwnerTenantId = ownerTenantId };
+            await registry.RegisterAsync(stamped);
+            registered.Add(stamped.TypeName);
         }
 
         // A changed template invalidates every document of that type, because the rendered

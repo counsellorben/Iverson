@@ -86,6 +86,12 @@ public sealed record SchemaDescriptor
     // path handles by writing an empty series.
     public string? PopularitySignalColumn { get; init; }
 
+    // Defaulted, not required: legacy _iverson_schema rows predate this marker and carry no such
+    // key — deserializes to null, meaning "no recorded tenant, visible platform-wide" (the
+    // conservative default). Populated at registration time from the acting user's tenant_id
+    // claim; null when a service-token-only caller registers with no acting-user header.
+    public string? OwnerTenantId { get; init; }
+
     public string?                    Description       { get; init; }
     public Dictionary<string, string> FieldDescriptions { get; init; } = [];
 

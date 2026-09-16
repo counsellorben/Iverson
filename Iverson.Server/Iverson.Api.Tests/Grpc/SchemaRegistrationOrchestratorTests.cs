@@ -57,7 +57,7 @@ public class SchemaRegistrationOrchestratorTests
         var td = SimpleType("Widget", "Name");
         td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "DoesNotExist" };
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -83,7 +83,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "Name", ClrType = ClrType.ClrString });
 
-        var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         registered.Should().Contain("Widget");
         _registry.Get("Widget")!.TenantColumn.Should().Be(SchemaDescriptor.TenantColumnName);
@@ -97,7 +97,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -120,7 +120,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "Name", ClrType = ClrType.ClrString });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -136,7 +136,7 @@ public class SchemaRegistrationOrchestratorTests
         // simply not the tenant boundary.
         var td = SimpleType("Widget", "Name");
 
-        var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         registered.Should().Contain("Widget");
         var descriptor = _registry.Get("Widget")!;
@@ -155,7 +155,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = SchemaDescriptor.TenantColumnName, ClrType = ClrType.ClrString });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -178,7 +178,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "__tenantid", ClrType = ClrType.ClrString });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
@@ -191,7 +191,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor
             { Name = SchemaDescriptor.TenantColumnName, ClrType = ClrType.ClrGuid, IsKey = true });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -216,7 +216,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey = SchemaDescriptor.TenantColumnName,
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -242,7 +242,7 @@ public class SchemaRegistrationOrchestratorTests
             OwnerField = SchemaDescriptor.TenantColumnName
         };
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -281,7 +281,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey = "AuthorId",
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -323,7 +323,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey = "AuthorIds",
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -357,7 +357,7 @@ public class SchemaRegistrationOrchestratorTests
             },
         };
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -382,7 +382,7 @@ public class SchemaRegistrationOrchestratorTests
             Dependents = { dependent }
         };
 
-        var act = () => _sut.RegisterAsync(request, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(request, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -406,7 +406,7 @@ public class SchemaRegistrationOrchestratorTests
             Dependents = { dependent }
         };
 
-        var act = () => _sut.RegisterAsync(request, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(request, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -424,7 +424,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor { Name = "Count", ClrType = ClrType.ClrInt32 });
         td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "Count" };
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -440,7 +440,7 @@ public class SchemaRegistrationOrchestratorTests
             { Name = "Body", ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
         td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "Text" }; // "Text".ToCamelCase() == "text"
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -455,7 +455,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
         td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "OwnerId" };
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }
@@ -465,7 +465,7 @@ public class SchemaRegistrationOrchestratorTests
     {
         var request = new SchemaRequest { RootType = SimpleType("Tag", "Label") };
 
-        var registered = await _sut.RegisterAsync(request, CancellationToken.None);
+        var registered = await _sut.RegisterAsync(request, null, CancellationToken.None);
 
         registered.Should().Contain("Tag");
         _registry.Get("Tag").Should().NotBeNull();
@@ -479,7 +479,7 @@ public class SchemaRegistrationOrchestratorTests
             RootType = SimpleType("Foo\"; DROP TABLE x; --", "Name")
         };
 
-        var act = () => _sut.RegisterAsync(request, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(request, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -493,7 +493,7 @@ public class SchemaRegistrationOrchestratorTests
             RootType = SimpleType("Widget", "Name\"; DROP TABLE x; --")
         };
 
-        var act = () => _sut.RegisterAsync(request, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(request, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -510,7 +510,7 @@ public class SchemaRegistrationOrchestratorTests
             RootType = SimpleType("Foo_Bar", "Name")
         };
 
-        var act = () => _sut.RegisterAsync(request, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(request, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -521,7 +521,7 @@ public class SchemaRegistrationOrchestratorTests
     {
         var request = new SchemaRequest { RootType = SimpleType("Widget2", "Name2") };
 
-        var registered = await _sut.RegisterAsync(request, CancellationToken.None);
+        var registered = await _sut.RegisterAsync(request, null, CancellationToken.None);
 
         registered.Should().Contain("Widget2");
     }
@@ -539,7 +539,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey   = "ArticleId"
         });
 
-        var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         registered.Should().Contain("Comment");
     }
@@ -566,7 +566,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey   = SchemaDescriptor.TenantColumnName
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -590,7 +590,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey   = "TagIds"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }
@@ -604,7 +604,7 @@ public class SchemaRegistrationOrchestratorTests
             Dependents = { SimpleType("Author", "Name") }
         };
 
-        var registered = await _sut.RegisterAsync(request, CancellationToken.None);
+        var registered = await _sut.RegisterAsync(request, null, CancellationToken.None);
 
         registered.Should().Contain("Article").And.Contain("Author");
     }
@@ -631,7 +631,7 @@ public class SchemaRegistrationOrchestratorTests
         });
 
         var request  = new SchemaRequest { RootType = typeDesc };
-        await _sut.RegisterAsync(request, CancellationToken.None);
+        await _sut.RegisterAsync(request, null, CancellationToken.None);
 
         var schema = _registry.Get("EmbeddableDoc")!;
         schema.VectorFields.Should().ContainSingle();
@@ -656,7 +656,7 @@ public class SchemaRegistrationOrchestratorTests
             ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = string.Empty
         });
 
-        await _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, null, CancellationToken.None);
 
         _resolver.Received(1).Get(null);
     }
@@ -671,7 +671,7 @@ public class SchemaRegistrationOrchestratorTests
             ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
         });
 
-        await _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, null, CancellationToken.None);
 
         _resolver.Received(1).Get("snowflake-arctic-embed:s");
     }
@@ -690,7 +690,7 @@ public class SchemaRegistrationOrchestratorTests
             ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -710,7 +710,7 @@ public class SchemaRegistrationOrchestratorTests
             IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -733,7 +733,7 @@ public class SchemaRegistrationOrchestratorTests
             ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
         _resolver.Received(1).Get("snowflake-arctic-embed:s");
@@ -755,7 +755,7 @@ public class SchemaRegistrationOrchestratorTests
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
             { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
-        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var td2 = SimpleType("Doc", "Name");
         td2.Properties.Add(new PropertyDescriptor
@@ -764,7 +764,7 @@ public class SchemaRegistrationOrchestratorTests
             ModelId = "snowflake-arctic-embed:s"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
@@ -781,13 +781,13 @@ public class SchemaRegistrationOrchestratorTests
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
             { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
-        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var td2 = SimpleType("Doc", "Name");
         td2.Properties.Add(new PropertyDescriptor
             { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }
@@ -805,7 +805,7 @@ public class SchemaRegistrationOrchestratorTests
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
             { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
-        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var td2 = SimpleType("Doc", "Name");
         td2.Properties.Add(new PropertyDescriptor
@@ -814,7 +814,7 @@ public class SchemaRegistrationOrchestratorTests
             ModelId = "snowflake-arctic-embed:s"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
@@ -846,7 +846,7 @@ public class SchemaRegistrationOrchestratorTests
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
             { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
-        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var unreachable = Substitute.For<IEmbeddingService>();
         unreachable.Dimension.Returns(768);
@@ -862,7 +862,7 @@ public class SchemaRegistrationOrchestratorTests
             ModelId = "snowflake-arctic-embed:s"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
@@ -891,7 +891,7 @@ public class SchemaRegistrationOrchestratorTests
             ModelId = "snowflake-arctic-embed:s"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.Unavailable);
@@ -910,13 +910,13 @@ public class SchemaRegistrationOrchestratorTests
         // three-way AND is false regardless of what this registration resolves to. This is the
         // missingVectors -> MigrateCollectionAsync path the write side already supports.
         var td = SimpleType("Doc", "Name");
-        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var td2 = SimpleType("Doc", "Name");
         td2.Properties.Add(new PropertyDescriptor
             { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
         _registry.Get("Doc")!.VectorFields.Should().ContainSingle();
@@ -930,11 +930,11 @@ public class SchemaRegistrationOrchestratorTests
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
             { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
-        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var td2 = SimpleType("Doc", "Name");
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
         _registry.Get("Doc")!.VectorFields.Should().BeEmpty();
@@ -950,7 +950,7 @@ public class SchemaRegistrationOrchestratorTests
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
             { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
-        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var newDefault = Substitute.For<IEmbeddingService>();
         newDefault.Dimension.Returns(1024);
@@ -963,7 +963,7 @@ public class SchemaRegistrationOrchestratorTests
         td2.Properties.Add(new PropertyDescriptor
             { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
@@ -982,7 +982,7 @@ public class SchemaRegistrationOrchestratorTests
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
             { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
-        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var newDefault = Substitute.For<IEmbeddingService>();
         newDefault.Dimension.Returns(1024);
@@ -992,7 +992,7 @@ public class SchemaRegistrationOrchestratorTests
         // This registration drops the embedding property entirely.
         var td2 = SimpleType("Doc", "Name");
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
         _registry.Get("Doc")!.VectorFields.Should().BeEmpty();
@@ -1028,7 +1028,7 @@ public class SchemaRegistrationOrchestratorTests
 
         var request = new SchemaRequest { RootType = root, Dependents = { dependent } };
 
-        var act = () => _sut.RegisterAsync(request, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(request, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
@@ -1048,7 +1048,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor
             { Name = "Count", ClrType = ClrType.ClrInt32, IsSummaryTarget = true });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.StatusCode == StatusCode.InvalidArgument);
@@ -1063,7 +1063,7 @@ public class SchemaRegistrationOrchestratorTests
             { Name = "TenantId", ClrType = ClrType.ClrString, IsSummaryTarget = true });
         td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.StatusCode == StatusCode.InvalidArgument);
@@ -1082,7 +1082,7 @@ public class SchemaRegistrationOrchestratorTests
             IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.StatusCode == StatusCode.InvalidArgument);
@@ -1100,7 +1100,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor
             { Name = "Summary", ClrType = ClrType.ClrString, IsSummaryTarget = true });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.StatusCode == StatusCode.InvalidArgument);
@@ -1117,7 +1117,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor
             { Name = "Summary", ClrType = ClrType.ClrString, IsSummaryTarget = true });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }
@@ -1132,7 +1132,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor
             { Name = "Extracted", ClrType = ClrType.ClrString, ExtractHint = "   " });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.StatusCode == StatusCode.InvalidArgument);
@@ -1150,7 +1150,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey = "OwnerId"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -1170,7 +1170,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey = "WidgetId" // lives on Gadget's row, not Widget's
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }
@@ -1189,7 +1189,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey = "TagIds"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }
@@ -1207,7 +1207,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey = "UserId"
         });
 
-        var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         registered.Should().Contain("Widget");
     }
@@ -1219,7 +1219,7 @@ public class SchemaRegistrationOrchestratorTests
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrString, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -1238,7 +1238,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey   = "UserId"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -1259,7 +1259,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey   = "TagIds"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -1279,7 +1279,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey   = "WidgetId"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }
@@ -1299,7 +1299,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey   = "OwnerId"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -1321,7 +1321,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey   = "LabelIds" // required: "TagIds"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -1343,7 +1343,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey   = "WidgetId"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }
@@ -1361,7 +1361,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey   = "AuthorId"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
@@ -1382,7 +1382,7 @@ public class SchemaRegistrationOrchestratorTests
             ForeignKey   = "WidgetId"
         });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
