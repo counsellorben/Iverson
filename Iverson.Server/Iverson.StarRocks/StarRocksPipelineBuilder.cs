@@ -373,6 +373,10 @@ internal static class StarRocksPipelineBuilder
     /// </summary>
     internal static void RejectForbiddenCharacters(string expr, string errorContext)
     {
+        const int MaxExpressionLength = 1000;
+        if (expr.Length > MaxExpressionLength)
+            throw Invalid($"{errorContext}: expression exceeds {MaxExpressionLength} characters.");
+
         // CSR finding #9: '#' is a third SQL line-comment introducer alongside "--" and "/* */"
         // in StarRocks' MySQL-derived dialect — omitting it left the same comment-injection class
         // this denylist otherwise closes reachable via a single character.
