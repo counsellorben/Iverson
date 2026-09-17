@@ -24,7 +24,7 @@
     <PackageReference Include="Testcontainers" Version="4.15.0" />
     <PackageReference Include="Testcontainers.Kafka" Version="4.15.0" />
     <PackageReference Include="Confluent.Kafka" Version="2.15.1" />
-    <PackageReference Include="Grpc.Net.Client" Version="2.80.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Google.Protobuf.WellKnownTypes.Value" Alias="Value" />
