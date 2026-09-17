@@ -121,7 +121,14 @@ uses is `InvalidArgument`. `subsets` names must not collide with pattern variabl
 entries must name distinct variables, and `subsets` names must be distinct. `measures` names must
 be distinct, must differ (ordinal comparison) from every output column of the chosen shape (see
 Output shapes above), and must not be the reserved tenant column (compared case-insensitively).
-Otherwise the request is `InvalidArgument`. Exclusion
+Otherwise the request is `InvalidArgument`. Distinctness of `measures`, `define` and `subsets`
+names, the reserved-tenant-column check, and — for `CHUNKS` — the comparison against
+`parent_key`/`chunk_index`/`text` are enforced by `PatternQuery.Compile` (§3.4 step 2). For
+`TYPE_ROWS` the output-column comparison is enforced by `MatchRowsAsync` (§3.2), which holds the
+validated column set: it rejects a `measures` name equal (ordinal) to a canonical name in that set
+for `ALL_ROWS_*`, or to the canonical name of a `partition_by` column for `ONE_ROW`, throwing
+`EngagementQueryTranslationException` before the query runs. `ONE_ROW` emits partition columns
+under those canonical names. Exclusion
 combined with `ALL_ROWS_WITH_UNMATCHED` is `InvalidArgument`, as the standard requires.
 
 ### 2. Expression language
@@ -163,8 +170,11 @@ evaluated in C#. **No expression, pattern, or subset string is ever spliced into
 
 Evaluation uses SQL three-valued logic for `NULL`. `NaN` is not `NULL`; it follows .NET `double`
 semantics:
-- every comparison (`= < <= > >=`, `IN`, `BETWEEN`) with `NaN` is `FALSE` and `<>` is `TRUE`, so
-  `NOT` over such a comparison, `NOT IN` and `NOT BETWEEN` are `TRUE`;
+- every comparison (`= < <= > >=`, `IN`, `BETWEEN`) between `NaN` and a non-`NULL` value is
+  `FALSE` and `<>` is `TRUE`, so `NOT` over such a comparison, `NOT IN` and `NOT BETWEEN` are
+  `TRUE`; a comparison with a `NULL` operand stays `UNKNOWN`, as for any other value, and
+  `IN`/`BETWEEN` are evaluated as their `=` / `>= AND <=` expansions under three-valued logic (so
+  `NaN IN (0.5, NULL)` is `UNKNOWN`, while `NaN BETWEEN 0 AND NULL` is `FALSE`);
 - `IS NULL` is `FALSE`;
 - arithmetic, `ROUND`, `ABS`, `SUM` and `AVG` propagate `NaN`;
 - `COUNT(expr)` counts it, and `COALESCE` and `NULLIF` return it;
@@ -207,7 +217,8 @@ Public entry point: `PatternQuery.Compile(request parts) → CompiledPattern` (t
   minus `excludedColumns`. This is a membership check performed before `BuildWhere` runs, the same
   way `Pipeline` checks `base_where` with `RequireColumn`. `ColumnsFor` already excludes the tenant
   column and fields the caller is not allowed. An unknown, hidden or excluded column throws
-  `EngagementQueryTranslationException`.
+  `EngagementQueryTranslationException`. It also receives the `measures` names and applies the §1
+  output-column comparison for the requested rows-per-match shape.
 - Bytes columns are excluded. `ObjectSearchGrpcService` passes, as an `excludedColumns` argument,
   the names of `schema.ScalarColumns` whose `SqlType` is `BYTEA` (ordinal-ignore-case; `BYTEA[]`
   arrays are stored as `STRING` and are unaffected). `MatchRowsAsync` removes them from the
@@ -253,7 +264,10 @@ A chunks collection that does not exist (Qdrant `NotFound`) yields an empty sequ
 `ObjectSearchGrpcService` builds the CHUNKS filter (`BuildChunksFilter` + `ApplyOwnership`), the
 canonical `field` value and the vector name, and passes them to `IChunkRowSource`.
 `IChunkRowSource` stays in `Iverson.Vector`; its inputs are the resolved chunks collection name,
-the `Filter`, the `field` value, the optional vector name and the `BatchRows` bound.
+the `Filter`, the `field` value, the optional vector name, the `BatchRows` bound and the
+`MaxRowsScanned` bound. When phase 1 counts more chunks than `MaxRowsScanned`, the source throws
+`PatternBudgetExceededException`; `Iverson.Vector` therefore gains a project reference to
+`Iverson.Patterns`, which has no store dependencies and so introduces no cycle.
 
 #### 3.3 `SimilarityResolver` (`Iverson.Api`)
 
@@ -287,11 +301,13 @@ vector (`NULL`):
    require a Qdrant collection (`FailedPrecondition` if absent, as `SearchChunks` does).
 4. Authorization. `TYPE_ROWS` uses `EvaluateAuthorization(schema, [])`, as `Pipeline` does.
    `CHUNKS` uses `authEvaluator.Evaluate(..., Read)`, as `SearchChunks` does, and requires
-   `chunk_property` to be in `AllowedFields`. A denied caller gets an **empty stream**. For
+   `chunkDesc.PropertyName` (the canonical spelling resolved in step 3) to be in `AllowedFields`.
+   A denied caller gets an **empty stream**. For
    `TYPE_ROWS`, each `SIMILARITY` column is first resolved to its `VectorFields` descriptor (§2),
    and `descriptor.PropertyName` must be in `AllowedFields` when that set is non-null
    (`InvalidArgument` otherwise). For `CHUNKS`, `SIMILARITY(text, …)` needs no further check: the
-   chunk vector belongs to `chunk_property`, which is already required to be in `AllowedFields`.
+   chunk vector belongs to `chunk_property`, whose `chunkDesc.PropertyName` is already required to
+   be in `AllowedFields`.
 5. Log `[MatchPattern] type=… source=… defines=… measures=…` with sanitized values, as the other
    RPCs do.
 6. Stream rows from the source into batches of whole partitions (§4). Resolve similarity for each
@@ -386,10 +402,11 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
    - Parser and compiler golden programs for every §1 construct, including the `PERMUTE` expansion
      order, reluctant quantifiers, exclusion, anchors and the empty pattern.
    - Every §1/§2 validation rule, including distinct `define` variables, distinct `subsets`
-     names, and `measures` names (distinct; not an output column of the chosen shape; not the
-     tenant column in any case).
-   - Evaluator: three-valued logic, the §2 `NaN` semantics (one test per construct), every
-     navigation form including out-of-range, running versus
+     names, and `measures` names (distinct; not the tenant column in any case; for `CHUNKS`, not
+     `parent_key`/`chunk_index`/`text`). The `TYPE_ROWS` output-column comparison is tested in
+     §9.3, where its operand exists.
+   - Evaluator: three-valued logic, the §2 `NaN` semantics (one test per construct, including a
+     `NULL` other operand), every navigation form including out-of-range, running versus
      final, aggregates over subsets, `TIMESTAMPDIFF`, and integer division.
    - Matcher: preference order; thread pruning (asserted through step counts on a pattern that is
      exponential without pruning); every `AFTER MATCH SKIP` mode, including the illegal skips;
@@ -406,16 +423,19 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
 3. **Store integration** (existing StarRocks and Qdrant container fixtures).
    - `MatchRowsAsync`: ordering including the key tie-breaker; column projection per rows-per-match
      mode; authz row filter; hidden-field, tenant-column and bytes-column rejection in every slot,
-     including `where`; bytes columns omitted from `ALL_ROWS_*`; overflow at
+     including `where`; bytes columns omitted from `ALL_ROWS_*`; a measure colliding with a
+     projected or partition column is rejected, in both rows-per-match shapes; overflow at
      `MaxRowsScanned + 1`; reading more rows than one batch without buffering.
    - `IChunkRowSource`: both phases; `chunk_index` sorted numerically (`10` after `2`); a missing
      collection returns empty; the ownership filter is applied; OR-filter rejection; a collection
-     lacking the vector re-issues the phase-2 scroll without it.
+     lacking the vector re-issues the phase-2 scroll without it; phase 1 over `MaxRowsScanned`
+     chunks raises the budget exception.
    - `SimilarityResolver`: scores for every present vector; an absent point gives `NULL`; a
      missing object collection and an unconfigured vector give `NULL`; any other retrieve failure
      propagates (it is not treated as `NULL`).
 4. **gRPC service tests:** every §6 row; a budget hit after output was written ends the stream
-   with an error; a denied caller gets an empty stream; tenant isolation.
+   with an error; a denied caller gets an empty stream; a re-cased `chunk_property` is accepted
+   for a field-restricted caller that is allowed the property; tenant isolation.
 5. **Client conformance:** one scalar-pattern case and one `SIMILARITY` case, across all five SDKs.
 6. **Manual mutation checks** in every task review (no mutation tool is installed): delete or
    invert the named production branch, confirm the covering test fails, restore, and confirm
@@ -437,8 +457,8 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
   bounded by `MaxActiveThreads`, `MaxSteps` and the timeout, not prevented.
 - The `CHUNKS` source scans the filtered chunk set twice (the phase-1 parent list, then the batched
   phase-2 reads) to keep memory bounded.
-- `NaN` from a zero-magnitude vector is kept (§2): `NOT`/`<>` predicates over it qualify the row,
-  and how each SDK decodes a `NaN` `number_value` is unverified.
+- `NaN` from a zero-magnitude vector is kept (§2): `NOT`/`<>` predicates over it with a non-`NULL`
+  operand qualify the row, and how each SDK decodes a `NaN` `number_value` is unverified.
 - The unconfigured-vector case (§3.3) is detected by Qdrant message text, which may change across
   Qdrant versions, and it would also mask a wrong-vector-name bug.
 
@@ -456,7 +476,12 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
 | Qdrant `order_by` requires a range-capable (integer/float/datetime) index | Qdrant indexing docs and issue #1763 (web search 2026-09-17) |
 | Match-any on keywords and `HasId` exist | `Qdrant.Client` 1.18.1 XML: `Conditions.Match(string, IReadOnlyList<string>)`, `Conditions.HasId(IReadOnlyList<ulong>)` |
 | Key → point ID; vector naming is `PropertyName.ToSnakeCase() + "_vector"`, with the property resolved case-insensitively from `VectorFields`/`ChunkFields`; chunk `field` holds the canonical property name | `IntelligenceStoreConsumer.cs:650` `KeyToUlong`; `ObjectSearchGrpcService.cs:162-163,253,506-507,638`; CDR-1 probes P2/P7 (Qdrant stores `title_vector`; the unconverted name fails) |
-| Project references: `Iverson.Vector` → Contracts only; `Iverson.Api` → Embeddings, Sql, StarRocks, Vector, Events, Contracts; `ModelOf`, `KeyToUlong`, `ToSnakeCase` are `internal` to Api and `BuildChunksFilter` is `private` | `Iverson.Vector.csproj:26`; `Iverson.Api.csproj:42-47`; `SchemaDescriptor.cs:27`; `IntelligenceStoreConsumer.cs:650`; `NamingExtensions.cs:5`; `ObjectSearchGrpcService.cs:1130` |
+| Project references: `Iverson.Vector` → Contracts today, and `Iverson.Patterns` under this design (Contracts itself references no project, so no cycle); `Iverson.Api` → Embeddings, Sql, StarRocks, Vector, Events, Contracts; `ModelOf`, `KeyToUlong`, `ToSnakeCase` are `internal` to Api and `BuildChunksFilter` is `private` | `Iverson.Vector.csproj:26`; `Iverson.Client.Contracts.csproj` (no `ProjectReference`); `Iverson.Api.csproj:42-47`; `SchemaDescriptor.cs:27`; `IntelligenceStoreConsumer.cs:650`; `NamingExtensions.cs:5`; `ObjectSearchGrpcService.cs:1130` |
+| `ColumnsFor` is `private` to `Iverson.StarRocks` and its values are canonical column spellings; the authorization constraint it needs is built at §3.4 step 4; `EngagementQueryTranslationException` is public | `StarRocksPipelineBuilder.cs:39-58`; `ObjectSearchGrpcService.cs:1070-1080`; `EngagementQueryTranslationException.cs:9`; CDR-2 probe P3 (StarRocks returns the stored case) |
+| `AllowedFields` holds canonical property names in an ordinal `HashSet` (only the excluded set is case-insensitive), and includes every `ChunkFields.PropertyName` | `RowFieldAuthorizationEvaluator.cs:80-116`; CDR-2 probe P26; CDR-1 probes P5, P8b |
+| `System.Numerics.Tensors` is compile-visible to `Iverson.Api` after the §3.3 relocation: a transitive `PackageReference` from `Iverson.Vector`, with no `PrivateAssets` | `Iverson.Vector.csproj:22,26`; `Iverson.Api.csproj:45`; CDR-2 probe P25 |
+| The `Not existing vector name` message covers every collection shape the codebase can hold, including legacy unnamed-vector configs, and the re-issued no-vector scroll succeeds | CDR-2 probe P23 (Qdrant 1.18.2, real `IntelligenceCollectionManager`/`IntelligenceVectorService`) |
+| Every `[IversonEmbedding]` property is also a `ColumnsFor` column, so a `SIMILARITY` column passes the §3.2 membership check | `SchemaBuilder.cs:60-64` (every non-key property becomes a `ScalarColumn`, before the `IsEmbedding` branch); the only removals are the tenant column, disallowed fields and bytes columns, each already a stated rejection |
 | `BuildWhere` silently drops an unresolvable property; `Pipeline` pre-validates with `RequireColumn` | `StarRocksQueryBuilder.cs:636-637`; `StarRocksPipelineBuilder.cs:100-101,408-413`; CDR-1 probe P1 |
 | The field-authorization set holds canonical property names, compared case-sensitively | `ObjectSearchGrpcService.cs:173,517`; CDR-1 probes P5, P8b |
 | Qdrant 1.18.2 error shapes: missing collection → `NotFound`; missing named vector (retrieve or vector-selecting scroll) → `InvalidArgument "Wrong input: Not existing vector name error: <name>"`; `RetrieveNamedVectorAsync` catches neither; collections are created/migrated only by the consumer on write | `ObjectSearchGrpcService.cs:281-287` (`NotFound` precedent); `IntelligenceVectorService.cs:156-187`; CDR-1 probes P2, P7 |
