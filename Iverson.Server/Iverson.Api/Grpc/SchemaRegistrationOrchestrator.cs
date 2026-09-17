@@ -75,6 +75,11 @@ public sealed class SchemaRegistrationOrchestrator(
             foreach (var property in typeDesc.Properties)
                 ValidateIdentifier(property.Name, $"property name on type '{typeDesc.TypeName}'");
 
+            var priorRegistered = registry.Get(typeDesc.TypeName);
+            if (priorRegistered is not null && priorRegistered.OwnerTenantId != ownerTenantId)
+                throw new RpcException(new Status(StatusCode.PermissionDenied,
+                    $"Type '{typeDesc.TypeName}' is registered to another tenant and cannot be re-registered here."));
+
             var declared = DeclaredModel(typeDesc);
 
             // Resolved once, and bound rather than re-derived. On the undeclared arm this is the loop's only
