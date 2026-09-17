@@ -324,10 +324,11 @@ export function describeEntity(cls: Function): TypeDescriptor {
                     '@IversonGuid() is scalar-only. Use @IversonArray(ClrType.CLR_GUID) to declare a UUID array column.',
                 );
             }
-            // design:type is only populated when the consumer's build emits decorator metadata
-            // (tsc with emitDecoratorMetadata); under esbuild-based test tooling it is undefined,
-            // so fall back to the runtime type of the field's own initializer, mirroring the
-            // Array.isArray(...) fallback `looksArray` already uses above for the same reason.
+            // design:type is populated whenever the build emits decorator metadata: tsc with
+            // emitDecoratorMetadata, or Oxc-based builds (like this repo's vitest) with
+            // oxc.decorator.emitDecoratorMetadata enabled. The fallback below exists for builds
+            // that don't emit metadata (e.g. esbuild-based consumer builds, or Oxc with
+            // emitDecoratorMetadata off), which remain supported.
             const runtimeType = typeof instance[fieldName];
             // When design:type is unavailable and the field has no initializer (runtimeType
             // 'undefined'), the underlying type is genuinely unknown at this point — accept
