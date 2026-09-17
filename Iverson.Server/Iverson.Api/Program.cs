@@ -22,6 +22,7 @@ using OpenTelemetry.Trace;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -394,13 +395,40 @@ app.MapPrometheusScrapingEndpoint().AllowAnonymous().WithMetadata(new RequireLis
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 
+var preAuthOptions = new RateLimiterOptions
+{
+    RejectionStatusCode = StatusCodes.Status429TooManyRequests
+};
+preAuthOptions.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+{
+    var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
+    if (isHealthListenerEndpoint)
+        return RateLimitPartition.GetNoLimiter("unlimited");
+
+    return RateLimitPartition.GetSlidingWindowLimiter(
+        ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
+        _ => new SlidingWindowRateLimiterOptions
+        {
+            PermitLimit = 6_000,
+            Window = TimeSpan.FromMinutes(1),
+            SegmentsPerWindow = 6,
+            QueueLimit = 0
+        });
+});
+// The existing "traces" named policy (registered only on the DI-configured post-auth options
+// below) must also exist on this instance — RateLimiterOptions' policy map is per-instance, and
+// /v1/traces carries .RequireRateLimiting("traces"); without this, every request to that endpoint
+// throws InvalidOperationException before ever reaching the endpoint. No-op here (not a clone of
+// the real per-sub policy, which has no "sub" claim to key on this early): the real 60/min budget
+// stays enforced by the unchanged post-auth limiter below.
+preAuthOptions.AddPolicy("traces", _ => RateLimitPartition.GetNoLimiter<string>("unlimited"));
+
 app.Use(ListenerPortGateAsync);
-
+app.UseRateLimiter(preAuthOptions);
 app.UseHttpsRedirection();
-
 app.UseAuthentication();
 app.UseAuthorization();
-app.UseRateLimiter();
+app.UseRateLimiter();   // existing DI-configured GlobalLimiter, unchanged
 app.UseGrpcWeb();
 
 // Expose the W3C trace-id on every response so callers can correlate logs
