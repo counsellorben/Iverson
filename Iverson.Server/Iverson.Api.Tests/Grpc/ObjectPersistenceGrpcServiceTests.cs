@@ -13,6 +13,7 @@ using Iverson.Sql;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using Npgsql;
 using Xunit;
 
 namespace Iverson.Api.Tests.Grpc;
@@ -859,14 +860,15 @@ public class ObjectPersistenceGrpcServiceTests
     }
 
     [Fact]
-    public async Task Update_TenantMismatch_LogsAuditDeniedWithTenantMismatch()
+    public async Task Update_CrossTenantKeyCollidesOnUpsert_SwallowsAsSuccessAndLogsBlockedCrossTenantWrite()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var authorId = Guid.NewGuid().ToString();
-        var crossTenantJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"other-tenant"}""";
-        _entities
-            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
-            .Returns(crossTenantJson);
+        _txRunner
+            .ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+            .Returns<Task>(_ => throw new PostgresException(
+                "new row violates row-level security policy for table \"authors\"",
+                "ERROR", "ERROR", "42501"));
 
         var payload = MakePayload(new()
         {
@@ -876,10 +878,11 @@ public class ObjectPersistenceGrpcServiceTests
         });
         var request = new PersistRequest { TypeName = "Author", Payload = payload };
 
-        var act = async () => await _sut.Update(request, TestServerCallContext.Create());
+        var response = await _sut.Update(request, TestServerCallContext.Create());
 
-        await act.Should().ThrowAsync<RpcException>();
-        AssertAuditLogged("TenantMismatch");
+        response.Success.Should().BeTrue();
+        response.Key.Should().Be(authorId);
+        AssertAuditLogged("BlockedCrossTenantWrite");
     }
 
     [Fact]

@@ -8,6 +8,7 @@ using Iverson.Events;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Microsoft.AspNetCore.Authorization;
+using Npgsql;
 using ContractsRelationKind = Iverson.Client.Contracts.RelationKind;
 using SchemaRelationKind    = Iverson.Api.Schema.RelationKind;
 
@@ -364,10 +365,11 @@ public sealed class ObjectMappingGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Update requires a non-empty '{schema.KeyColumn.Name}' in the payload."));
 
-        // Cross-tenant, preserving this path's pre-existing behaviour — see the identical read
-        // in ObjectPersistenceGrpcService.Update for why narrowing it would convert an
-        // authorization denial into a silent "no existing row".
-        var existingRowJson = await FetchByKeyAsync(schema, key, EntityAccess.CrossTenantMaintenance);
+        // Narrowed to the acting tenant (CSR round 9 Finding #5) — see the identical read in
+        // ObjectPersistenceGrpcService.Update for why a cross-tenant read here was an
+        // information-disclosure oracle, and how the RLS collision below replaces it.
+        var existingRowJson = await FetchByKeyAsync(schema, key,
+            EntityAccess.ForTenant(_actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             _authEvaluator,
             _actingUserAccessor.ActingUser,
@@ -384,9 +386,19 @@ public sealed class ObjectMappingGrpcService(
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
-        var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
-            SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
-            tenantId: decision.TenantValue);
+        Guid outboxRowId;
+        try
+        {
+            outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
+                SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
+                tenantId: decision.TenantValue);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText.Contains("row-level security policy"))
+        {
+            _auditLog.Denied(_actingUserAccessor.ActingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
+            AuthorizationFieldMasking.RemoveTenantColumn(request.Payload);
+            return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
+        }
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
