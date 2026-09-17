@@ -2145,6 +2145,8 @@ public class ObjectMappingGrpcServiceTests
 
         response.Success.Should().BeTrue();
         AssertAuditLogged("BlockedCrossTenantWrite");
+        await _entities.Received(1).FetchByKeyAsync(
+            Arg.Any<TableSchema>(), Arg.Any<string>(), EntityAccess.ForTenant("test-tenant"));
     }
 
     [Fact]

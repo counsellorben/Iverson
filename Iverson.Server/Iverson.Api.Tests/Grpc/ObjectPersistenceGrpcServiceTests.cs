@@ -883,6 +883,8 @@ public class ObjectPersistenceGrpcServiceTests
         response.Success.Should().BeTrue();
         response.Key.Should().Be(authorId);
         AssertAuditLogged("BlockedCrossTenantWrite");
+        await _entities.Received(1).FetchByKeyAsync(
+            Arg.Any<TableSchema>(), Arg.Any<string>(), EntityAccess.ForTenant("test-tenant"));
     }
 
     [Fact]

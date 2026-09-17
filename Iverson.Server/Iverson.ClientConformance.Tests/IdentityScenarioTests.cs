@@ -369,7 +369,7 @@ public class IdentityScenarioTests
     }
 
     [Fact]
-    public void Judge_WrongActingUsersUpdateWasDenied_Idn003EnforcementPasses()
+    public void Judge_WrongActingUsersUpdateWasRefused_Idn007Fails()
     {
         var assertions = JudgeHappy(denied: DeniedStep(7));
 
@@ -378,10 +378,21 @@ public class IdentityScenarioTests
     }
 
     [Fact]
-    public void Judge_WrongActingUsersUpdateSucceeded_Idn003EnforcementFails()
+    public void Judge_WrongActingUsersUpdateWasAccepted_Idn007Passes()
     {
         Named(JudgeHappy(denied: DeniedStep(null)), "answered without a gRPC error status").Passed.Should().BeTrue(
             "a wrong-tenant acting user whose write was silently accepted is exactly the new post-mitigation shape");
+    }
+
+    [Fact]
+    public void Judge_DeniedStepReportsAMalformedStatusCode_Idn007FailsRatherThanPassingVacuously()
+    {
+        var denied = new StepResult(IdentityScenario.DeniedStepName, true,
+            Entity: JsonSerializer.SerializeToElement(new { statusCode = "not-a-number" }));
+
+        Named(JudgeHappy(denied: denied), "answered without a gRPC error status").Passed.Should().BeFalse(
+            "a status code that is present but unparseable is a malformed report, not the no-code " +
+            "acceptance shape this assertion is meant to recognize");
     }
 
     [Fact]
@@ -500,6 +511,21 @@ public class IdentityScenarioTests
         IdentityScenario.ReadStatusCode(JsonSerializer.SerializeToElement(new { statusCode = "7" })).Should().BeNull(
             "a status code reported as a string is not a numeric code, and coercing it would invent agreement");
         IdentityScenario.ReadStatusCode(JsonSerializer.SerializeToElement(new { statusCode = 7 })).Should().Be(7);
+    }
+
+    [Fact]
+    public void IsStatusCodeMalformed_DistinguishesAbsenceFromAnUnparseableValue()
+    {
+        IdentityScenario.IsStatusCodeMalformed(null).Should().BeFalse(
+            "no entity at all is a genuine absence, not a malformed report");
+        IdentityScenario.IsStatusCodeMalformed(JsonSerializer.SerializeToElement(new { })).Should().BeFalse(
+            "no 'statusCode' property at all is a genuine absence");
+        IdentityScenario.IsStatusCodeMalformed(JsonSerializer.SerializeToElement(new { statusCode = (int?)null }))
+            .Should().BeFalse("a JSON null is the same acceptance signal as the property being absent");
+        IdentityScenario.IsStatusCodeMalformed(JsonSerializer.SerializeToElement(new { statusCode = 7 }))
+            .Should().BeFalse("a parseable number is not malformed");
+        IdentityScenario.IsStatusCodeMalformed(JsonSerializer.SerializeToElement(new { statusCode = "7" }))
+            .Should().BeTrue("a string where a number was expected is a malformed report, not an acceptance");
     }
 
     // ── the negative leg's own precondition ───────────────────────────────────────────────────

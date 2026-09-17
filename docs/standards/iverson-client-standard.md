@@ -512,7 +512,8 @@ registering its types fresh: CSR round 9's Finding #5 mitigation narrows the exi
 the acting tenant unconditionally, for every schema, legacy or fresh. A wrong-tenant caller's update
 therefore finds no visible row and takes the no-existing-row branch whatever the target schema's
 registration history — so neither the tenant MISMATCH nor the immutability refusal fires on this leg
-any more, and the refusal it used to observe is gone. See the paragraph below.
+any more, and the refusal it used to observe is gone. See the IDN coverage ledger's "Cross-tenant
+write denial signaled on the wire" row.
 
 The status code is reported and compared as the numeric gRPC code, never as a name: the five
 languages spell the same code five ways (`PermissionDenied`, `PERMISSION_DENIED`, `7`), so a

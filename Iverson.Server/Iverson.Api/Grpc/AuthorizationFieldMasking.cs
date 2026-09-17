@@ -106,6 +106,10 @@ internal static class AuthorizationFieldMasking
             // callers, unlike the ownership check below.
             if (decision.TenantColumn is not null)
             {
+                // Unreachable today (CSR round 9 Finding #5): both Update call sites now narrow
+                // their existing-row read to the acting tenant, so existingRowJson never carries a
+                // foreign tenant's value here. Kept as a fail-closed backstop for any future or
+                // out-of-band caller that passes a foreign-tenant existingRowJson — do not delete.
                 if (StructFieldAccess.GetFieldString(existingStruct, decision.TenantColumn) != decision.TenantValue)
                 {
                     auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "TenantMismatch");

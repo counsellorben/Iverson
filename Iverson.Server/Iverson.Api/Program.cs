@@ -416,7 +416,10 @@ preAuthOptions.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string
         ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
         _ => new SlidingWindowRateLimiterOptions
         {
-            PermitLimit = 6_000,
+            // Matches RateLimitInterceptor's 50,000/min-per-subject budget for authenticated gRPC
+            // traffic: this limiter uniquely also covers gRPC pre-auth (see above), so it must not
+            // sit below that dedicated budget or it becomes the accidental ceiling instead of it.
+            PermitLimit = 50_000,
             Window = TimeSpan.FromMinutes(1),
             SegmentsPerWindow = 6,
             QueueLimit = 0

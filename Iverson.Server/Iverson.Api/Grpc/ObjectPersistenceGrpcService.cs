@@ -146,6 +146,9 @@ public sealed class ObjectPersistenceGrpcService(
         }
         catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText.Contains("row-level security policy"))
         {
+            logger.LogWarning(
+                "[Persistence.Update] RLS collision swallowed as success: type={Type} key={Key} traceId={TraceId} message={Message}",
+                schema.TypeName.SanitizeForLog(), key.SanitizeForLog(), request.TraceId, ex.MessageText);
             auditLog.Denied(actingUserAccessor.ActingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
             return new PersistResponse { Success = true, Key = key, TraceId = request.TraceId };
         }

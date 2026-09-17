@@ -395,6 +395,9 @@ public sealed class ObjectMappingGrpcService(
         }
         catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText.Contains("row-level security policy"))
         {
+            _logger.LogWarning(
+                "[Mapping.Update] RLS collision swallowed as success: type={Type} key={Key} traceId={TraceId} message={Message}",
+                schema.TypeName.SanitizeForLog(), key.SanitizeForLog(), request.TraceId, ex.MessageText);
             _auditLog.Denied(_actingUserAccessor.ActingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
             AuthorizationFieldMasking.RemoveTenantColumn(request.Payload);
             return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };

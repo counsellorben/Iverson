@@ -123,7 +123,7 @@ namespace Iverson.ClientConformance.Scenarios;
 /// error status" assertion PASSES in the no-seeded-row state exactly as it does for a genuine
 /// swallowed cross-tenant write: it cannot tell the two apart. That is signal this leg has LOST —
 /// before the mitigation the same assertion demanded status 7 and therefore reddened when there was
-/// nothing to deny.
+/// nothing to deny.</para>
 ///
 /// <para>What the backstop is worth, stated no higher than it is. It is NOT the only assertion that
 /// reddens in that state: with no seeded row,
@@ -413,8 +413,8 @@ public sealed class IdentityScenario(
             seededKey is not null,
             seededKey is not null
                 ? $"row '{seededKey}' is what the read-back and the denied update both target"
-                : "with no seeded row, the wrong acting user's update would be treated as a create and " +
-                  "SUCCEED, rendering a denial assertion green that had nothing to deny"));
+                : "with no seeded row, every read-dependent assertion fails and the cross-tenant " +
+                  "enforcement assertion passes vacuously — this backstop is what still catches it"));
 
         // ── IVC-IDN-002: the acting user's own row reads back, carrying its owner ─────────────
         var readStep = document.Steps.FirstOrDefault(s => s.Name == ReadStepName);
@@ -466,15 +466,20 @@ public sealed class IdentityScenario(
         var reportedStatus = ReadString(deniedStep?.Entity, "status");
         var reportedDetail = ReadString(deniedStep?.Entity, "detail");
 
+        var malformedCode = deniedStep is { Ok: true } && IsStatusCodeMalformed(deniedStep.Entity);
+
         assertions.Add(Assertion.From(
             $"{language}: an acting user of another tenant is answered without a gRPC error status",
-            deniedStep is { Ok: true } && code is null,
+            deniedStep is { Ok: true } && code is null && !malformedCode,
             deniedStep is null
                 ? $"the driver reported no '{DeniedStepName}' step"
                 : !deniedStep.Ok
                     ? $"the attempt itself broke, so no answer was observed: {deniedStep.Error ?? "no error text"}"
                     : code is null
-                        ? "the driver reported no gRPC status code, as expected for an accepted write"
+                        ? malformedCode
+                            ? "the driver reported a 'statusCode' that could not be parsed as a number, " +
+                              "which is a malformed report rather than evidence of an accepted write"
+                            : "the driver reported no gRPC status code, as expected for an accepted write"
                         : $"the driver reported gRPC status {code}, expected no gRPC error status",
             Requirements.IdnCrossTenantUpdateAnsweredWithoutError));
 
@@ -643,6 +648,19 @@ public sealed class IdentityScenario(
         && value.TryGetInt32(out var code)
             ? code
             : null;
+
+    /// <summary>
+    /// True when a driver's step entity carries a "statusCode" property that IS present and is not
+    /// JSON null, but cannot be read as a number — a malformed report. <see cref="ReadStatusCode"/>
+    /// collapses this case and genuine absence (no property, or a JSON null) to the same null, which
+    /// is correct for most callers; the IVC-IDN-007 assertion needs to tell them apart, because a
+    /// malformed report must still fail rather than being graded as an accepted write.
+    /// </summary>
+    internal static bool IsStatusCodeMalformed(JsonElement? entity) =>
+        entity is { ValueKind: JsonValueKind.Object } document
+        && document.TryGetProperty("statusCode", out var value)
+        && value.ValueKind != JsonValueKind.Null
+        && !(value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out _));
 
     // ── register-phase descriptor capture ────────────────────────────────────────────────────
 
