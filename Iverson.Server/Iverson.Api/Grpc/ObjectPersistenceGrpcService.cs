@@ -148,7 +148,7 @@ public sealed class ObjectPersistenceGrpcService(
         {
             logger.LogWarning(
                 "[Persistence.Update] RLS collision swallowed as success: type={Type} key={Key} traceId={TraceId} message={Message}",
-                schema.TypeName.SanitizeForLog(), key.SanitizeForLog(), request.TraceId, ex.MessageText);
+                schema.TypeName.SanitizeForLog(), key.SanitizeForLog(), request.TraceId.SanitizeForLog(), ex.MessageText.SanitizeForLog());
             auditLog.Denied(actingUserAccessor.ActingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
             return new PersistResponse { Success = true, Key = key, TraceId = request.TraceId };
         }
