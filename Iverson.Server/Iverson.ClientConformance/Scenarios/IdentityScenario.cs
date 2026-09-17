@@ -60,10 +60,10 @@ namespace Iverson.ClientConformance.Scenarios;
 /// different active tenant (<c>TokenBroker.GetOtherTenantActingTokenAsync</c>), and passes it to
 /// every driver as <c>--wrong-acting-token</c>. Each driver attempts a mapped UPDATE of the row it
 /// just created, carrying that token in place of its own, and reports the gRPC status code it
-/// received. Drivers report; they never judge. The code is reported and compared NUMERICALLY
-/// (<see cref="DeniedStatusCode"/>), because the five languages spell the same code five ways
-/// (<c>PermissionDenied</c>, <c>PERMISSION_DENIED</c>, <c>7</c>) and a name comparison would report
-/// a spelling difference as a conformance failure.</para>
+/// received. Drivers report; they never judge. The code is reported and compared NUMERICALLY,
+/// because the five languages spell the same code five ways (<c>PermissionDenied</c>,
+/// <c>PERMISSION_DENIED</c>, <c>7</c>) and a name comparison would report a spelling difference as
+/// a conformance failure.</para>
 ///
 /// <para><b>The update payload's tenant no longer affects this leg, and that is a CHANGE.</b> It
 /// used to: the server once rejected an existing row's payload tenant that differed from the
@@ -124,14 +124,20 @@ namespace Iverson.ClientConformance.Scenarios;
 ///
 /// <para><b>Backstop assertion.</b> <see cref="Judge"/>'s "the write phase reported a row key for
 /// this language" assertion is this axis's backstop, in the sense
-/// <c>docs/standards/iverson-client-standard.md</c>'s REL authoring notes require. Without a
-/// seeded row the negative leg's update would take the create branch described above and SUCCEED,
-/// and a scenario whose denial never had anything to deny would render green. The backstop fires
-/// unconditionally, on every language, before and outside both the read-back and the denial
-/// assertions. It carries no requirement ID: no <c>IVC-IDN-*</c> statement owns "this language
-/// seeded a row" as such — that is a property of the harness's fixture, not of a client — and it is
-/// strictly weaker than <see cref="Requirements.IdnActingUserPropagatedToRow"/> and
-/// <see cref="Requirements.IdnTenancyDerivedAndEnforced"/> wherever either can fail.</para>
+/// <c>docs/standards/iverson-client-standard.md</c>'s REL authoring notes require. Since CSR
+/// round 9's Finding #5 mitigation, EVERY cross-tenant update takes the create branch described
+/// above and SUCCEEDS — there is no longer a denial assertion for a missing row to defeat, which
+/// makes this backstop MORE load-bearing than before, not less: with no seeded row,
+/// <see cref="Requirements.IdnCrossTenantUpdateAnsweredWithoutError"/>'s "answered without a gRPC
+/// error status" assertion is satisfied vacuously, so "the write phase reported a row key for this
+/// language" is the only assertion left that separates a genuine swallowed cross-tenant write from
+/// a scenario that had nothing to update. The backstop fires unconditionally, on every language,
+/// before and outside both the read-back and the enforcement assertions. It carries no requirement
+/// ID: no <c>IVC-IDN-*</c> statement owns "this language seeded a row" as such — that is a
+/// property of the harness's fixture, not of a client — and it stays strictly weaker than
+/// <see cref="Requirements.IdnActingUserPropagatedToRow"/> alone (it is NOT weaker than
+/// <see cref="Requirements.IdnCrossTenantUpdateAnsweredWithoutError"/>: in the no-seeded-row state
+/// the backstop fails while that assertion passes).</para>
 /// </summary>
 public sealed class IdentityScenario(
     IDriverRunner runner,
@@ -176,12 +182,6 @@ public sealed class IdentityScenario(
     /// force-sets the acting user's own tenant instead.
     /// </summary>
     internal const string WrongTenantValue = "tenant_not_the_acting_user";
-
-    /// <summary>
-    /// The numeric gRPC status code the negative leg must produce: <c>PERMISSION_DENIED</c>.
-    /// Numeric because the five languages spell the same code five ways.
-    /// </summary>
-    internal const int DeniedStatusCode = 7;
 
     internal const string RegisterStepName = "register_identity_doc";
     internal const string WriteStepName = "write_identity_doc";
@@ -443,7 +443,7 @@ public sealed class IdentityScenario(
             $"'{expectedOwnerId}'",
             Requirements.IdnActingUserPropagatedToRow));
 
-        // ── IVC-IDN-003, derivation: observed where only the orchestrator can see it ──────────
+        // ── IVC-IDN-006, derivation: observed where only the orchestrator can see it ──────────
         //
         // This REPLACED a driver-side read-back assertion that compared the driver's own reported
         // `tenant` against the acting tenant. That assertion is unfalsifiable now: the value it
@@ -453,31 +453,27 @@ public sealed class IdentityScenario(
         // graded an ECHO, not a derivation.
         assertions.AddRange(JudgeTenantDerivation(language, expectedTenant, observation));
 
-        // ── IVC-IDN-003, enforcement: another tenant's acting user is denied ──────────────────
+        // ── IVC-IDN-007, response shape: a cross-tenant update is answered without an error ────
         var deniedStep = document.Steps.FirstOrDefault(s => s.Name == DeniedStepName);
         var code = deniedStep is { Ok: true } ? ReadStatusCode(deniedStep.Entity) : null;
 
         // The status NAME and MESSAGE are reported alongside the code purely as diagnostics — no
-        // assertion grades them, because the server's message is byte-identical across the
-        // refusals this axis can provoke (see the class doc comment's "What the status code cannot
-        // distinguish"). Carrying them in the detail is what let that be established empirically
-        // rather than only read off the server source.
+        // assertion grades them; carrying them in the detail is what let the prior denial-shaped
+        // behavior be established empirically rather than only read off the server source.
         var reportedStatus = ReadString(deniedStep?.Entity, "status");
         var reportedDetail = ReadString(deniedStep?.Entity, "detail");
 
         assertions.Add(Assertion.From(
-            $"{language}: an acting user of another tenant is denied a write to this row",
-            code == DeniedStatusCode,
+            $"{language}: an acting user of another tenant is answered without a gRPC error status",
+            deniedStep is { Ok: true } && code is null,
             deniedStep is null
                 ? $"the driver reported no '{DeniedStepName}' step"
                 : !deniedStep.Ok
-                    ? $"the attempt itself broke, so no denial was observed: {deniedStep.Error ?? "no error text"}"
+                    ? $"the attempt itself broke, so no answer was observed: {deniedStep.Error ?? "no error text"}"
                     : code is null
-                        ? "the driver reported no gRPC status code, which is what it reports when the " +
-                          "wrong acting user's write was ACCEPTED"
-                        : $"the driver reported gRPC status {code}, expected {DeniedStatusCode} " +
-                          "(PERMISSION_DENIED)",
-            Requirements.IdnTenancyDerivedAndEnforced));
+                        ? "the driver reported no gRPC status code, as expected for an accepted write"
+                        : $"the driver reported gRPC status {code}, expected no gRPC error status",
+            Requirements.IdnCrossTenantUpdateAnsweredWithoutError));
 
         assertions[^1] = assertions[^1] with
         {
@@ -514,7 +510,7 @@ public sealed class IdentityScenario(
     }
 
     /// <summary>
-    /// <c>IVC-IDN-003</c>'s derivation half, plus the control that makes it mean anything. Pure
+    /// <c>IVC-IDN-006</c>'s derivation Statement, plus the control that makes it mean anything. Pure
     /// over <see cref="TenantObservation"/>, so both failure directions are exercisable from a unit
     /// test.
     ///
@@ -534,8 +530,8 @@ public sealed class IdentityScenario(
     /// <item><description>ABSENT from the wire — the orchestrator's own gRPC read of the SAME row
     /// does not carry the column at all. Cited, but to
     /// <see cref="Requirements.IdnServerTenantColumnAbsentFromPointRead"/> (<c>IVC-IDN-005</c>) and
-    /// NOT to <c>IVC-IDN-003</c>. It grades the server's outbound STRIP — an EMISSION claim — which
-    /// is a different rule from IVC-IDN-003's DERIVATION Statement; citing it there would silently
+    /// NOT to <c>IVC-IDN-006</c>. It grades the server's outbound STRIP — an EMISSION claim — which
+    /// is a different rule from IVC-IDN-006's DERIVATION Statement; citing it there would silently
     /// widen that requirement to own a rule it does not make. Two requirements graded from one
     /// observation, in one cell, so the cell goes red if either regresses — and this leg is also
     /// what proves the probe above is reading something gRPC genuinely cannot
@@ -564,7 +560,7 @@ public sealed class IdentityScenario(
                     ? whyNoRow
                     : $"{PostgresProbe.TableName(TypeName)}.{PostgresProbe.ServerOwnedTenantColumn} is " +
                       $"'{storedTenant ?? "<absent>"}'; the acting-user token claims '{expectedTenant}'",
-                Requirements.IdnTenancyDerivedAndEnforced),
+                Requirements.IdnTenancyDerivedFromActingUser),
 
             Assertion.From(
                 $"{language}: the tenant the client sent stayed in the client's own column and did not " +
@@ -577,10 +573,10 @@ public sealed class IdentityScenario(
                     : $"{DriverDeclaredTenantColumn}='{storedUserColumn ?? "<absent>"}' (the driver sent " +
                       $"'{WrongTenantValue}'), {PostgresProbe.ServerOwnedTenantColumn}=" +
                       $"'{storedTenant ?? "<absent>"}'",
-                Requirements.IdnTenancyDerivedAndEnforced),
+                Requirements.IdnTenancyDerivedFromActingUser),
 
-            // Cites IVC-IDN-005, NOT IVC-IDN-003 — see this method's doc comment. It grades the
-            // server's outbound STRIP (an emission claim), not IVC-IDN-003's DERIVATION Statement.
+            // Cites IVC-IDN-005, NOT IVC-IDN-006 — see this method's doc comment. It grades the
+            // server's outbound STRIP (an emission claim), not IVC-IDN-006's DERIVATION Statement.
             Assertion.From(
                 $"{language}: the orchestrator's own gRPC read of the same row does not carry the " +
                 "server-owned tenant column",

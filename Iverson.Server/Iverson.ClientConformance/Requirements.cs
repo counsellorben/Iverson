@@ -491,7 +491,7 @@ public static class Requirements
     /// column. Both sides therefore originate from the same <c>--owner-id</c> flag. What the
     /// assertion still catches is a client that mangles, drops or re-cases the owner on its own
     /// write or read path. What defends the DERIVATION claim is
-    /// <see cref="IdnTenancyDerivedAndEnforced"/>'s tenant assertion beside it, whose expected
+    /// <see cref="IdnTenancyDerivedFromActingUser"/>'s tenant assertion beside it, whose expected
     /// value the driver deliberately does not send. Observing owner derivation would need an
     /// acting user without a bypass role — a stack-provisioning change, recorded as a Deferred
     /// area in the standard's IDN coverage ledger.</para>
@@ -500,48 +500,41 @@ public static class Requirements
 
     /// <summary>
     /// The server derives a row's tenant from the acting-user identity rather than from the write
-    /// payload, and denies an acting user of another tenant who attempts to write that row. Both
-    /// halves are discharged, and neither is gradeable from a value the client controls:
-    /// <list type="bullet">
-    /// <item><description>Derivation: <c>IdentityScenario.JudgeTenantDerivation</c>'s two
-    /// assertions, graded ORCHESTRATOR-side because the row's real tenant lives in the server-owned
-    /// <c>__TenantId</c> column, which is stripped from every outbound path and is therefore
-    /// unreachable from any client library by design. A <c>PostgresProbe</c> read of the row each
-    /// driver seeded must show <c>__TenantId</c> carrying the acting user's own tenant; and the
-    /// deliberately wrong value the driver stamped
-    /// (<see cref="Scenarios.IdentityScenario.WrongTenantValue"/>) must still be sitting in the
-    /// ORDINARY user column the driver declared for it, having not become the row's tenant — a
-    /// negative control against the server taking a client's word for it from a column that merely
-    /// looks like a tenant field. This REPLACED a driver-side read-back assertion that became
-    /// unfalsifiable once the server took ownership of the column: it compared the driver's own
-    /// echoed <c>TenantId</c> against the acting tenant, which live FAILS, and which even forced to
-    /// pass would grade an echo rather than a derivation.</description></item>
-    /// <item><description>Enforcement: <c>IdentityScenario.Judge</c>'s "an acting user of another
-    /// tenant is denied a write to this row" assertion, over the numeric gRPC status code the
-    /// driver reported from its <c>denied_update_wrong_acting_user</c> step. Numeric, because the
-    /// five languages spell the same code five ways.</description></item>
-    /// </list>
+    /// payload — never from the payload itself. Discharged by <c>IdentityScenario.JudgeTenantDerivation</c>'s
+    /// two assertions, graded ORCHESTRATOR-side because the row's real tenant lives in the
+    /// server-owned <c>__TenantId</c> column, stripped from every outbound path and therefore
+    /// unreachable from any client library by design: a <c>PostgresProbe</c> read of the row each
+    /// driver seeded must show <c>__TenantId</c> carrying the acting user's own tenant, and the
+    /// deliberately wrong value the driver stamped (<see cref="Scenarios.IdentityScenario.WrongTenantValue"/>)
+    /// must still be sitting in the ORDINARY user column the driver declared for it, having not
+    /// become the row's tenant.
     ///
-    /// <para><b>The conjoined control, and why it cites a DIFFERENT requirement.</b> Beside the two
-    /// derivation assertions, <c>JudgeTenantDerivation</c> also asserts that the orchestrator's own
-    /// gRPC read of the SAME row does not carry <c>__TenantId</c> at all. That is what proves the
-    /// Postgres probe is reading something gRPC genuinely cannot see — a Postgres-only assertion
-    /// could not otherwise distinguish "the server derived it" from "the client sent it". It does
-    /// NOT cite this requirement: it grades the server's outbound strip, which is a different claim
-    /// from this Statement, and citing it here would quietly widen this requirement to cover a rule
-    /// it does not state. It cites <see cref="IdnServerTenantColumnAbsentFromPointRead"/> instead.
-    /// One observation, two claims graded from it, in one cell — which is why the cell goes red if
-    /// either the derivation or the strip regresses.</para>
-    ///
-    /// <para><b>What the enforcement half cannot distinguish.</b> The server answers several
-    /// distinct refusals on this path with the SAME status (7) and the SAME message, and sets no
-    /// trailers — so a driver that attaches no acting user at all is denied identically to one that
-    /// attaches the wrong-tenant user, and this assertion passes for both. Verified live; the
-    /// difference exists only in the server's own audit log, which no client can read. See
-    /// <c>IdentityScenario</c>'s "What the status code cannot distinguish" doc section and the
-    /// Deferred row in the standard's IDN coverage ledger.</para>
+    /// <para><b>Supersedes the retired IVC-IDN-003.</b> That Statement conjoined this derivation
+    /// claim with an ENFORCEMENT claim ("...and denies an acting user of another tenant who attempts
+    /// to write that row") that a later fix (mitigating CSR round 9's Finding #5) made false: the
+    /// server no longer denies a cross-tenant write on the wire at all, by design, so no assertion
+    /// discharges the enforcement half any more. Global Constraint 3 makes Statement cells immutable,
+    /// so the correction is a retirement plus two successors, not an edit — this one restates only
+    /// the still-true derivation half.</para>
     /// </summary>
-    public const string IdnTenancyDerivedAndEnforced = "IVC-IDN-003";
+    public const string IdnTenancyDerivedFromActingUser = "IVC-IDN-006";
+
+    /// <summary>
+    /// A mapped update attempted by an acting user of another tenant is answered without a gRPC
+    /// error status, the same as an accepted one. Discharged by <c>IdentityScenario.Judge</c>'s
+    /// enforcement assertion, over the numeric gRPC status code the driver reported from its
+    /// <c>denied_update_wrong_acting_user</c> step — the harness observes only the numeric status
+    /// code, never the response body, so this Statement is written at exactly that altitude and no
+    /// wider.
+    ///
+    /// <para><b>Supersedes the retired IVC-IDN-003.</b> After CSR round 9's Finding #5 mitigation,
+    /// the cross-tenant write is silently swallowed as a success rather than denied — this
+    /// requirement states what the assertion that used to grade a DENIAL now actually observes: an
+    /// acceptance-shaped response. The genuine enforcement gap this leaves (no client-observable
+    /// assertion discharges cross-tenant write denial any more) is recorded as a Deferred area in the
+    /// standard's IDN coverage ledger, not claimed here.</para>
+    /// </summary>
+    public const string IdnCrossTenantUpdateAnsweredWithoutError = "IVC-IDN-007";
 
     /// <summary>
     /// A mapped point read of a row returns no field whose name matches the server-owned tenant
@@ -560,12 +553,12 @@ public static class Requirements
     /// correction had to be a retirement plus a successor, not an edit.</para>
     ///
     /// <para><b>Why this is its own ID and not a clause of
-    /// <see cref="IdnTenancyDerivedAndEnforced"/>.</b> That requirement states a DERIVATION —
+    /// <see cref="IdnTenancyDerivedFromActingUser"/>.</b> That requirement states a DERIVATION —
     /// where a row's tenant comes from. This one states an EMISSION — what the server may put on
     /// the wire. They are graded from one observation and share a cell, but they fail for different
     /// reasons and have different remedies: a server that derived the tenant correctly and then
-    /// leaked the column satisfies IVC-IDN-003 and violates this. Citing the strip assertion from
-    /// IVC-IDN-003 would have widened that requirement to own a rule its Statement does not make;
+    /// leaked the column satisfies IVC-IDN-006 and violates this. Citing the strip assertion from
+    /// IVC-IDN-006 would have widened that requirement to own a rule its Statement does not make;
     /// the alternative actually taken before this ID existed — leaving the assertion UNCITED and
     /// the area <c>Deferred</c> — was worse still, because <c>Deferred</c> in this standard means
     /// "no assertion observes it", and one does, on every run.</para>
@@ -579,7 +572,7 @@ public static class Requirements
     /// not reword this.</para>
     ///
     /// <para><b>No client can affect this one.</b> It is a server-emission claim on an axis whose
-    /// other server-side claim (IVC-IDN-003's derivation half) set the precedent. It is authored
+    /// other server-side claim (IVC-IDN-006's derivation Statement) set the precedent. It is authored
     /// anyway because every client-facing tenancy claim rests on the strip holding: were it to
     /// regress, every driver in every language would start receiving a column it must never
     /// see.</para>
