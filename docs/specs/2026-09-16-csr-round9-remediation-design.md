@@ -2,7 +2,7 @@
 
 **Source review:** `docs/criticalreviews/2026-09-16-iverson-critical-security-review-9.md` (commit SHA: `f1382e1330ce734440f4d65dec4752f1a058c699`)
 
-**Goal:** Fix Findings #1, #2, #4, #5 from CSR round 9, and the "quick win" (Postgres) half of Finding #3. Findings #6 and #7 get no code change — both are documented as accepted-open/monitor. The Authentik/OIDC/service-mesh half of Finding #3, and the StarRocks-TLS half of the same finding, are deferred as separate future infrastructure work.
+**Goal:** Fix Findings #1, #2, #4 from CSR round 9, and the "quick win" (Postgres) half of Finding #3. Mitigate Finding #5 — closes its 1-RPC oracle; a 2-RPC oracle remains as an accepted residual (forced decision, resolved — see section 5). Findings #6 and #7 get no code change — both are documented as accepted-open/monitor. The Authentik/OIDC/service-mesh half of Finding #3, and the StarRocks-TLS half of the same finding, are deferred as separate future infrastructure work.
 
 ---
 
@@ -10,15 +10,16 @@
 
 **Problem:** `RegisterSchema` stamps `OwnerTenantId` from the caller's acting-user claim and unconditionally overwrites whatever descriptor already exists, with no comparison to the incumbent owner. Any holder of the `schema_admin` scope — which the platform's own service-client blueprint issues to tenant-bound clients, not just operators — can seize another tenant's type ownership (denying that tenant's own `GetSchema` visibility) or reset ownership to `null` by omitting the acting-user header (reopening the cross-tenant metadata leak Finding #1 of round 8 closed).
 
-**Fix:** in `SchemaRegistrationOrchestrator.RegisterAsync`'s phase-1 loop (`Iverson.Server/Iverson.Api/Grpc/SchemaRegistrationOrchestrator.cs`), reuse the `priorDescriptor` lookup already computed there (for the embedding-model-change check, immediately preceding it) and add:
+**Fix:** in `SchemaRegistrationOrchestrator.RegisterAsync`'s phase-1 loop (`Iverson.Server/Iverson.Api/Grpc/SchemaRegistrationOrchestrator.cs`), source the ownership comparison from the registry directly — not from the `priorDescriptor` lookup used a few lines later for the embedding-model-change check, which is `batchDescriptors`-first and always carries a `null` `OwnerTenantId` for a descriptor built earlier in this same request (stamped only in phase 3). Reusing that lookup would reject a caller's own same-request duplicate type name as "registered to another tenant." Add:
 
 ```csharp
-if (priorDescriptor is not null && priorDescriptor.OwnerTenantId != ownerTenantId)
+var priorRegistered = registry.Get(typeDesc.TypeName);
+if (priorRegistered is not null && priorRegistered.OwnerTenantId != ownerTenantId)
     throw new RpcException(new Status(StatusCode.PermissionDenied,
         $"Type '{typeDesc.TypeName}' is registered to another tenant and cannot be re-registered here."));
 ```
 
-placed immediately after the `priorDescriptor` assignment, before the `priorModel`/embedding-check block, so a rejected registration applies no DDL and writes nothing to the registry — consistent with the file's existing phase-1/phase-3 split.
+placed before the `priorDescriptor`/embedding-check block (which is unaffected and keeps its own separate lookup), so a rejected registration applies no DDL and writes nothing to the registry — consistent with the file's existing phase-1/phase-3 split.
 
 **Accepted, deliberate consequence (per your explicit choice):** this condition does not special-case `priorDescriptor.OwnerTenantId == null`. Round 8's own design spec states that pre-round-8 `_iverson_schema` rows "predate this marker and carry no such key — deserializes to null." Under this fix, **any type that currently has a null `OwnerTenantId` becomes permanently unclaimable by any acting-user-bearing caller** — the very next legitimate tenant-scoped re-registration of such a type is rejected (`priorDescriptor is not null` is true; `null != "tenant-A"` is true). Only a header-less call (itself only reachable by omitting the acting-user token, i.e. `ownerTenantId == null`) can still "re-register" a null-owner type. This also means round 8's own documented "different tenants routinely share a type name across restarts" pattern is no longer tolerated for any type once one tenant has claimed it — a second tenant's legitimate re-registration of that same shared type name is now rejected. Both consequences were explicitly presented and accepted; see Known Issues below.
 
@@ -51,6 +52,13 @@ preAuthOptions.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string
             QueueLimit = 0
         });
 });
+// The existing "traces" named policy (registered only on the DI-configured post-auth options
+// below) must also exist on this instance — RateLimiterOptions' policy map is per-instance, and
+// /v1/traces carries .RequireRateLimiting("traces"); without this, every request to that endpoint
+// throws InvalidOperationException before ever reaching the endpoint. No-op here (not a clone of
+// the real per-sub policy, which has no "sub" claim to key on this early): the real 60/min budget
+// stays enforced by the unchanged post-auth limiter below.
+preAuthOptions.AddPolicy("traces", _ => RateLimitPartition.GetNoLimiter<string>("unlimited"));
 
 app.Use(ListenerPortGateAsync);
 app.UseRateLimiter(preAuthOptions);
@@ -82,12 +90,23 @@ Unlike the existing post-auth `GlobalLimiter`, this new limiter does **not** exc
      - name: postgres-tls
        secret:
          secretName: {{ .Release.Name }}-postgres-ca
+         items:
+           - key: ca.crt
+             path: ca.crt
    ```
+   The `items:` projection is required, not optional — without it every key in the secret is mounted, including the CA's private key (`ca.key`). This exposes only the public `ca.crt`, matching the projection the existing `qdrant-tls` volume already uses for the same reason (`deployment.yaml:213-218`) — `kafka-ca`'s own lack of a projection is not a counterexample, since that secret is Strimzi's public cert secret, not a CA-key secret.
    (CNPG auto-generates this CA secret, named `<cluster-name>-ca`, by default — this chart's `cluster.yaml` already states "CNPG always enables and manages TLS ... unconditionally," and no custom `certificates:` override changes the default secret naming.)
 2. Change the connection string:
    ```
    Host={{ .Release.Name }}-postgres-rw;Port=5432;Database=iverson;Username=iverson;Password=$(POSTGRES_APP_PASSWORD);SSL Mode=VerifyFull;Root Certificate=/etc/postgres-tls/ca.crt
    ```
+
+**Pre-merge verification gate (forced decision, resolved — verify before merging):** this fix must not merge until confirmed against a real cluster. `SSL Mode=VerifyFull` fails the whole connection, not partially, if any of the following don't hold: the secret `{{ .Release.Name }}-postgres-ca` exists, it contains a key named `ca.crt`, and that CA is the one that actually signed the server certificate presented by `{{ .Release.Name }}-postgres-rw`. Before merging, on a real cluster:
+```bash
+kubectl get secret <release>-postgres-ca -o jsonpath='{.data}'          # confirm the key set includes ca.crt
+openssl verify -CAfile ca.crt server.crt                                # confirm the CA actually signed the server cert
+```
+The `items:` projection above converts a wrong-key-name mistake into a deploy-time pod-startup failure with a clear error, rather than a silent runtime connection failure — but it does not by itself confirm the signing chain, which is why the live check above is still required.
 
 **Out of scope (deferred, per your earlier answer):** StarRocks gets no TLS change — verified the chart has no TLS infrastructure on that store at all today (no cert issuance, no `ssl`/`tls` config anywhere in `charts/starrocks/`), so `SslMode=VerifyCA` would simply fail to connect; standing up TLS there is new infrastructure work, not a quick win. The Authentik admin-token hop, OIDC discovery, Jaeger, and the ingress→api h2c leg are likewise deferred (need real architectural work: TLS termination point decisions or a service mesh).
 
@@ -110,14 +129,15 @@ No behavior change today (verified: `:8081` is configured `Protocols: Http1` in 
 
 ---
 
-## 5. Make cross-tenant `Update` collisions structurally impossible (closes Finding #5)
+## 5. Narrow the cross-tenant `Update` collision to a 2-RPC oracle (mitigates Finding #5)
 
 **Problem:** Both `Update` paths (`ObjectPersistenceGrpcService.cs`, `ObjectMappingGrpcService.cs`) deliberately read the existing row via `EntityAccess.CrossTenantMaintenance` so `EnforceWriteAuthorization` can compare tenant values and deny on mismatch. This makes the two outcomes ("key exists, another tenant's" vs. "key doesn't exist anywhere") observably different — an authenticated caller can probe whether an arbitrary key exists in another tenant's rows.
 
 **Fix (verified against a real Postgres+RLS container, not just read):** change the read from `EntityAccess.CrossTenantMaintenance` to `EntityAccess.ForTenant(...)`, matching how `Get` and `Delete` already work — this makes another tenant's row genuinely invisible, not just denied on comparison. Verified empirically that this is sufficient: reproducing this codebase's exact schema (`FORCE ROW LEVEL SECURITY`, a `USING`-only tenant policy) and exact upsert SQL (`INSERT ... ON CONFLICT ("Key") DO UPDATE SET ...`) against a real Postgres 16 container, an attempt to "update" a key that exists under a different tenant fails cleanly with `SQLSTATE 42501: new row violates row-level security policy` — not a raw duplicate-key violation, not a silent no-op — and the other tenant's row is left provably unmodified.
 
-Wrap the upsert call (`outboxWriter.UpsertAndEnqueueOutboxAsync`, both call sites) in a catch for this specific condition:
+Wrap the upsert call (`outboxWriter.UpsertAndEnqueueOutboxAsync`) in a catch for this specific condition, at both call sites — the catch body differs per site because the two `Update` methods return different response types:
 
+`ObjectPersistenceGrpcService.Update` (returns `PersistResponse`, which has a `Key` field):
 ```csharp
 try
 {
@@ -130,9 +150,28 @@ catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText.Cont
 }
 ```
 
+`ObjectMappingGrpcService.Update` (returns `MappingResponse`, which has no `Key` field but does have `Data` — a genuine success on this path returns `Data = request.Payload` after stripping the server-owned tenant column, so the swallowed path must match that shape exactly, not just the status):
+```csharp
+try
+{
+    outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(...);
+}
+catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText.Contains("row-level security policy"))
+{
+    auditLog.Denied(actingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
+    AuthorizationFieldMasking.RemoveTenantColumn(request.Payload);
+    return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
+}
+```
+The `RemoveTenantColumn` call is load-bearing, not cosmetic: on this path `EnforceWriteAuthorization` took the create branch, which force-sets the tenant column into `request.Payload` itself; omitting the strip would return that server-owned column to the caller only on this swallowed path — a second, subtler oracle.
+
 The `MessageText.Contains(...)` check is deliberate, not decorative: SQLSTATE `42501` (`insufficient_privilege`) is also raised for genuine permission/grant misconfigurations, which must **not** be silently reported as a fake success — only the RLS-specific message is safe to swallow this way.
 
 **Change from the read-side `EnforceWriteAuthorization` check:** the `TenantMismatch` branch inside `AuthorizationFieldMasking.EnforceWriteAuthorization` becomes unreachable for these two call sites (the row is never visible cross-tenant, so `existingRowJson` is always null for another tenant's key — the method takes the create branch, which is exactly what then fails at the database layer and gets caught above). No change needed inside `AuthorizationFieldMasking.cs` itself; the two call sites' `existingRowJson` source is what changes.
+
+**Residual (forced decision, resolved — accept a 2-RPC oracle):** this fix closes the single-RPC oracle — the `Update` response itself is now identical for both cases — but does not make the underlying visibility identical end-to-end. `Update` upserts: a genuinely-free key gets a real row created; an RLS-hidden foreign-tenant key does not (the insert collides and is caught). A follow-up `Get(key)` on the same key still distinguishes the two cases, at the cost of one extra RPC instead of zero. Making `Update` non-creating would close this fully, but was evaluated and rejected: `Update`'s upsert semantics are a deliberately designed, tested product feature (`ObjectPersistenceGrpcServiceTests.cs`'s `Update_ExecutesSqlUpsert_WithPayloadJson` and `Update_ForOrdinaryCaller_WhenRowDoesNotExistYet_ForceSetsOwnerFieldToActingUserSub`; `ObjectMappingGrpcServiceTests.cs`'s `Update_ExecutesUpsertSql_DirectlyToPostgres`, `Update_InsertsReconciliationQueueRowInSameTransactionAsUpsert`, and `Update_WithBypassRole_WhenRowDoesNotExistYet_LeavesOwnerFieldUntouched` all confirm and exercise it), not an accident — removing it is a platform-wide wire-contract change out of proportion to this finding. Finding #5 is recorded as **mitigated, not fully closed**: the 1-RPC oracle this fix targeted is closed; a 2-RPC oracle remains as an accepted residual.
+
+**Conformance matrix consequence:** the cross-language conformance matrix's `IdentityScenario` scenario (`Iverson.ClientConformance/Scenarios/IdentityScenario.cs`) asserts `DeniedStatusCode = 7` (`PERMISSION_DENIED`) for exactly this cross-tenant `Update` attempt, mirrored across all five language drivers (`Iverson.Client.Conformance.Driver` and its Java/Python/TypeScript/Go counterparts). This fix changes that outcome to a swallowed success. At implementation time, `IdentityScenario`'s constant and doc comment, and the driver-side status reporting (`Conformance.Driver/Program.cs`'s `deniedResult` construction), must be updated to expect success rather than a denial — this is a cross-language wire-contract change to the conformance suite's own expectations, not a test bug fix.
 
 ---
 
@@ -140,7 +179,7 @@ The `MessageText.Contains(...)` check is deliberate, not decorative: SQLSTATE `4
 
 | # | Assumption | Evidence |
 |---|---|---|
-| 1 | `priorDescriptor` is computed in `SchemaRegistrationOrchestrator.RegisterAsync`'s phase-1 loop before the point the new ownership check is inserted | Read `SchemaRegistrationOrchestrator.cs:100-103` directly |
+| 1 | The ownership comparison must source from `registry.Get(typeDesc.TypeName)` directly, not from the `priorDescriptor` lookup used later for the embedding-model-change check — that lookup is `batchDescriptors`-first, and an in-batch descriptor's `OwnerTenantId` is always `null` (stamped only in phase 3), which would falsely reject a same-request duplicate type name as belonging to another tenant | `SchemaRegistrationOrchestrator.cs:258` populates `batchDescriptors[descriptor.TypeName] = descriptor` from the freshly-built descriptor, before any `OwnerTenantId` stamp; `SchemaRegistry.cs:24-25` — `registry.Get(string)` returns the persisted descriptor from `_schemas`, the correct operand |
 | 2 | No existing test in `SchemaRegistrationOrchestratorTests.cs`/`DocumentTemplateValidationTests.cs` registers the same type under two different non-null owners expecting success | `grep` for any non-`null` `ownerTenantId` literal in either file — zero hits; every call uses `null` |
 | 3 | The conformance-driver matrix and loadtest both operate under a single, consistent tenant identity throughout a run, so the new ownership check doesn't break their normal `RegisterAllAsync` flows | `docs/runbooks/client-conformance-matrix.md`: one `IVERSON_CLIENT_SCOPE`/`IVERSON_CLIENT_ID` pair covers the whole matrix run across all 5 language drivers; `Iverson.Client.Conformance.Driver/Program.cs:103` reads `--acting-token` once per process, reused across all 9 `RegisterAllAsync()` call sites |
 | 4 | The one gRPC-level test scenario that uses a second, different tenant's token (`--wrong-acting-token`) exercises an `Update` denial, not `RegisterSchema` | Read `Program.cs:773-800` directly — the wrong-token invoker is used only for the negative-leg `Update` test |
@@ -149,13 +188,13 @@ The `MessageText.Contains(...)` check is deliberate, not decorative: SQLSTATE `4
 | 7 | `context.GetEndpoint()` resolves correctly even before `UseAuthentication()` runs | Same probe: pre-auth limiter callback printed `endpoint=HTTP: GET /probe` (not null) |
 | 8 | `ctx.Connection.RemoteIpAddress` is safely readable pre-auth | Same probe: printed `ip=127.0.0.1`, no exception |
 | 9 | Npgsql 10.0.3 accepts `SSL Mode=VerifyFull;Root Certificate=<path>` as valid connection-string keys | Built a real throwaway project referencing `Npgsql 10.0.3`; `NpgsqlConnectionStringBuilder` parsed the string and reported `SslMode=VerifyFull RootCertificate=/etc/postgres-tls/ca.crt` |
-| 10 | CNPG auto-generates a `<cluster-name>-ca` secret by default, with no override in this chart | Read `charts/postgres/templates/cluster.yaml` in full — no `certificates:` stanza; explicit comment states CNPG "always enables and manages TLS ... unconditionally" |
+| 10 | This chart sets no `certificates:` override, so CNPG's default CA-secret naming (`<cluster-name>-ca`) applies — this covers only that no override exists, not that the secret's actual key set or its signing chain match what the fix assumes; that half is unverified and is why section 3 gates the fix's merge on a live check | Read `charts/postgres/templates/cluster.yaml` in full — no `certificates:` stanza; explicit comment states CNPG "always enables and manages TLS ... unconditionally" |
 | 11 | No existing volume/volumeMount collision at `/etc/postgres-tls` in the api deployment template | Read `charts/api/templates/deployment.yaml`'s `volumeMounts`/`volumes` sections directly — only `kafka-ca`, `qdrant-tls`, `tmp` exist |
-| 12 | `:8081` cannot reach the 4 unmarked gRPC services today regardless of the new markers (no behavior change) | Read `appsettings.json:13,17` directly — `:8080`=`Http2`, `:8081`=`Http1`; gRPC requires HTTP/2 |
+| 12 | `:8081` cannot reach the 4 unmarked gRPC services today regardless of the new markers (no behavior change) — the "gRPC needs HTTP/2" reasoning alone is insufficient, since `app.UseGrpcWeb()` is global and gRPC-Web runs over HTTP/1.1; the conclusion holds only because `GrpcWebOptions.DefaultEnabled` is never set (default `false`) and none of the 4 services calls `.EnableGrpcWeb()` | Read `appsettings.json:13,17` directly — `:8080`=`Http2`, `:8081`=`Http1`; `command grep -rn "AddGrpcWeb\|GrpcWebOptions\|DefaultEnabled"` across non-worktree `.cs` — zero hits |
 | 13 | No existing test asserts the 4 core gRPC services are unmarked | `grep` for `ObjectMapping\|ObjectPersistence\|ObjectRetrieval\|ObjectSearch` in `AuthenticationPipelineTests.cs` — zero hits |
 | 14 | `EnforceWriteAuthorization`'s `TenantMismatch` branch is exercised by exactly 2 real call sites (the Update paths in `ObjectPersistenceGrpcService`/`ObjectMappingGrpcService`), not more | Read all 4 call sites directly: the other 2 (`ObjectMappingGrpcService.cs:310`, and `ObjectPersistenceGrpcService.cs:35`'s `Post`/Create paths) pass `existingRowJson: null` unconditionally, making the `TenantMismatch` branch unreachable there |
 | 15 | Existing `Update_TenantMismatch_LogsAuditDeniedWithTenantMismatch` tests don't assert the specific `PermissionDenied` status code (so changing the outcome doesn't break them, though the fix supersedes needing to check this — the test's mocked `_entities.FetchByKeyAsync` return would need updating regardless once the access level changes) | Read both tests directly (`ObjectMappingGrpcServiceTests.cs:2125`, `ObjectPersistenceGrpcServiceTests.cs:862`) — both assert only `ThrowAsync<RpcException>()`, no status-code check |
-| 16 | `Get` and `Delete` do not share Finding #5's oracle — neither needs the same fix | Read both methods directly: both already use `EntityAccess.ForTenant(...)`, never `CrossTenantMaintenance`, so both already return an identical "not found" response for a cross-tenant key and a genuinely-missing one |
+| 16 | `Get` and `Delete` do not share Finding #5's oracle — neither needs the same fix. (Correction: both actually use a guarded ternary with a `CrossTenantMaintenance` arm — `decision.TenantColumn is not null ? ForTenant(decision.TenantValue) : CrossTenantMaintenance` — not unconditional `ForTenant` as originally stated here. The no-oracle conclusion still holds: `decision.TenantColumn is null` co-occurs with `Denied = true`, and both sites deny before the cross-tenant arm's result would ever reach the caller.) | `ObjectRetrievalGrpcService.cs:115-117`, `ObjectMappingGrpcService.cs:481-483`; `RowFieldAuthorizationEvaluator.cs:29-30` for the `Denied`/`TenantColumn` co-occurrence |
 | 17 | The entity tables' key column is a plain (non-composite) `PRIMARY KEY`, globally unique across tenants sharing the table | Read `PostgresSchemaManager.cs:68` directly — `"{KeyColumn}" {SqlType} PRIMARY KEY`, no tenant column in the constraint |
 | 18 | The exact upsert SQL is `INSERT ... SELECT * FROM json_populate_record(...) ON CONFLICT ("Key") DO UPDATE SET ...` | Read `OutboxWriter.cs:26-31` directly |
 | 19 | Narrowing the read to `EntityAccess.ForTenant(...)` and then attempting the real upsert against a cross-tenant key produces a clean, catchable, specific error — not a silent no-op or an unrelated duplicate-key violation | Reproduced the exact schema (`FORCE ROW LEVEL SECURITY`, `USING`-only tenant policy) and exact upsert SQL against a real Postgres 16 container: the conflicting write failed with `SQLSTATE 42501: new row violates row-level security policy`; the other tenant's row was confirmed unmodified afterward |
