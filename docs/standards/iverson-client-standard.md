@@ -534,14 +534,14 @@ observations are added later, `IVC-IDN-005` is the row to extend by authoring si
 
 `IVC-IDN-005` is a WIRE claim, and it is the only requirement in this document that constrains what
 the server may EMIT rather than what a client must do. It is at home on `IDN` by the axis's own
-precedent — `IVC-IDN-003` already grades a SERVER derivation, not a client capability — and it needs
+precedent — `IVC-IDN-006` already grades a SERVER derivation, not a client capability — and it needs
 no tenth axis: the column it is about exists only because of the identity model this axis owns.
 
 It is graded by the third assertion in `IdentityScenario.JudgeTenantDerivation`: the orchestrator's
 own gRPC point read of the same row the Postgres probe found `__TenantId` in must come back with no
 field matching that name, compared case-INSENSITIVELY so a re-cased `__tenantid` cannot satisfy it —
 which is why the Statement names the comparison rather than leaving it to the assertion. That
-assertion is the same one that conjoins `IVC-IDN-003`'s Postgres probe — one observation, two claims
+assertion is the same one that conjoins `IVC-IDN-006`'s Postgres probe — one observation, two claims
 graded from it, which is why the two requirements live in one cell — but it cites `IVC-IDN-005`
 ALONE.
 
