@@ -376,6 +376,7 @@ describe('SchemaRegistrar', () => {
                 tenantId: string = '';
             }
 
+            Reflect.deleteMetadata('design:type', GuidKeyEntity.prototype, 'id');
             const stub = makeStub();
             const registrar = new SchemaRegistrar(stub, [GuidKeyEntity]);
             const req = registrar._buildRequest(GuidKeyEntity);
@@ -395,6 +396,7 @@ describe('SchemaRegistrar', () => {
                 tenantId: string = '';
             }
 
+            Reflect.deleteMetadata('design:type', GuidOnNumberEntity.prototype, 'wordCount');
             const stub = makeStub();
             const registrar = new SchemaRegistrar(stub, [GuidOnNumberEntity]);
             expect(() => registrar._buildRequest(GuidOnNumberEntity)).toThrow(/wordCount/);
@@ -461,6 +463,7 @@ describe('SchemaRegistrar', () => {
                 tenantId: string = '';
             }
 
+            Reflect.deleteMetadata('design:type', GuidNoInitializerEntity.prototype, 'id');
             const stub = makeStub();
             const registrar = new SchemaRegistrar(stub, [GuidNoInitializerEntity]);
             const req = registrar._buildRequest(GuidNoInitializerEntity);
@@ -805,5 +808,13 @@ describe('IversonClient.getSchema', () => {
         expect(capturedReq).toEqual({ traceId: 'trace-1' });
 
         client.close();
+    });
+
+    it('the test toolchain emits design:type (oxc.decorator.emitDecoratorMetadata)', () => {
+        @IversonEntity()
+        class MetadataProbe {
+            @IversonKey() id: string = '';
+        }
+        expect(Reflect.getMetadata('design:type', MetadataProbe.prototype, 'id')).toBe(String);
     });
 });
