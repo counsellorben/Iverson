@@ -376,6 +376,9 @@ describe('SchemaRegistrar', () => {
                 tenantId: string = '';
             }
 
+            // Delete design:type metadata to exercise the fallback branch when metadata is unavailable.
+            // Oxc now emits this metadata by default, so we delete it to verify the code path for
+            // builds that don't emit metadata (e.g. esbuild-based consumer builds).
             Reflect.deleteMetadata('design:type', GuidKeyEntity.prototype, 'id');
             const stub = makeStub();
             const registrar = new SchemaRegistrar(stub, [GuidKeyEntity]);
@@ -428,6 +431,8 @@ describe('SchemaRegistrar', () => {
                 tenantId: string = '';
             }
 
+            // Explicit defineMetadata is redundant with Oxc's own emission under the current toolchain,
+            // but is kept because it makes the "metadata says X" premise explicit and toolchain-independent.
             Reflect.defineMetadata('design:type', String, GuidMetadataStringEntity.prototype, 'id');
 
             const stub = makeStub();
@@ -447,6 +452,8 @@ describe('SchemaRegistrar', () => {
                 tenantId: string = '';
             }
 
+            // Explicit defineMetadata is redundant with Oxc's own emission under the current toolchain,
+            // but is kept because it makes the "metadata says X" premise explicit and toolchain-independent.
             Reflect.defineMetadata('design:type', Number, GuidMetadataNumberEntity.prototype, 'wordCount');
 
             const stub = makeStub();
@@ -809,7 +816,9 @@ describe('IversonClient.getSchema', () => {
 
         client.close();
     });
+});
 
+describe('toolchain configuration', () => {
     it('the test toolchain emits design:type (oxc.decorator.emitDecoratorMetadata)', () => {
         @IversonEntity()
         class MetadataProbe {
