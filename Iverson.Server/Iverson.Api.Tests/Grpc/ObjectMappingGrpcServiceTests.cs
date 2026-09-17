@@ -15,6 +15,7 @@ using Iverson.StarRocks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using Npgsql;
 using Xunit;
 
 namespace Iverson.Api.Tests.Grpc;
@@ -2122,13 +2123,14 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
-    public async Task Update_TenantMismatch_LogsAuditDeniedWithTenantMismatch()
+    public async Task Update_CrossTenantKeyCollidesOnUpsert_SwallowsAsSuccessAndLogsBlockedCrossTenantWrite()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
-        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"other-tenant"}""";
-        _entities
-            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
-            .Returns(crossTenantJson);
+        _txRunner
+            .ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+            .Returns<Task>(_ => throw new PostgresException(
+                "new row violates row-level security policy for table \"authors\"",
+                "ERROR", "ERROR", "42501"));
 
         var payload = MakePayload(new()
         {
@@ -2136,12 +2138,15 @@ public class ObjectMappingGrpcServiceTests
             ["Name"]    = Value.ForString("Alice Updated"),
             ["OwnerId"] = Value.ForString("test-user")
         });
-        var act = () => _sut.Update(
+
+        var response = await _sut.Update(
             new MappingWriteRequest { TypeName = "Author", Payload = payload },
             TestServerCallContext.Create());
 
-        await act.Should().ThrowAsync<RpcException>();
-        AssertAuditLogged("TenantMismatch");
+        response.Success.Should().BeTrue();
+        AssertAuditLogged("BlockedCrossTenantWrite");
+        await _entities.Received(1).FetchByKeyAsync(
+            Arg.Any<TableSchema>(), Arg.Any<string>(), EntityAccess.ForTenant("test-tenant"));
     }
 
     [Fact]

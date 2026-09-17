@@ -74,7 +74,7 @@ spec:
               # connection-string parser rejects outright (it only accepts ADO.NET
               # key=value syntax, not libpq-style URIs) — composing it here mirrors the
               # ConnectionStrings__StarRocks pattern below.
-              value: "Host={{ .Release.Name }}-postgres-rw;Port=5432;Database=iverson;Username=iverson;Password=$(POSTGRES_APP_PASSWORD)"
+              value: "Host={{ .Release.Name }}-postgres-rw;Port=5432;Database=iverson;Username=iverson;Password=$(POSTGRES_APP_PASSWORD);SSL Mode=VerifyFull;Root Certificate=/etc/postgres-tls/ca.crt"
             {{- if .Values.global.engagementEnabled }}
             - name: STARROCKS_APP_PASSWORD
               valueFrom:
@@ -154,6 +154,9 @@ spec:
             - name: qdrant-tls
               mountPath: /etc/qdrant-tls
               readOnly: true
+            - name: postgres-tls
+              mountPath: /etc/postgres-tls
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -166,5 +169,11 @@ spec:
             items:
               - key: cert.pem
                 path: cert.pem
+        - name: postgres-tls
+          secret:
+            secretName: {{ .Release.Name }}-postgres-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
         - name: tmp
           emptyDir: {}

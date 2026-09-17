@@ -59,7 +59,7 @@ public class IdentityScenarioTests
         Guid? seeded = null,
         IdentityScenario.TenantObservation? observation = null) =>
         IdentityScenario.Judge("dotnet", Tenant, Owner, seeded ?? Key,
-            ReadDocument(read ?? ReadStep(Key, Tenant, Owner), denied ?? DeniedStep(IdentityScenario.DeniedStatusCode)),
+            ReadDocument(read ?? ReadStep(Key, Tenant, Owner), denied ?? DeniedStep(null)),
             observation ?? Derived());
 
     private static IReadOnlyList<Assertion> Cited(IReadOnlyList<Assertion> assertions, string requirementId) =>
@@ -113,7 +113,7 @@ public class IdentityScenarioTests
     {
         var assertions = IdentityScenario.Judge(
             "dotnet", Tenant, Owner, seededKey: null,
-            ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(IdentityScenario.DeniedStatusCode)),
+            ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(null)),
             IdentityScenario.TenantObservation.NotAttempted);
 
         var backstop = Named(assertions, "reported a row key");
@@ -143,7 +143,7 @@ public class IdentityScenarioTests
     public void Judge_NoReadStepAtAll_Idn002FailsRatherThanBeingSkipped()
     {
         var assertions = IdentityScenario.Judge("dotnet", Tenant, Owner, Key,
-            ReadDocument(DeniedStep(IdentityScenario.DeniedStatusCode)), Derived());
+            ReadDocument(DeniedStep(null)), Derived());
 
         Cited(assertions, "IVC-IDN-002").Should().OnlyContain(a => !a.Passed);
     }
@@ -173,7 +173,7 @@ public class IdentityScenarioTests
         Named(JudgeHappy(read: read), "owner identity").Passed.Should().BeFalse();
     }
 
-    // ── IVC-IDN-003: tenancy derived from the acting user, and enforced ───────────────────────
+    // ── IVC-IDN-006/007: tenancy derivation, and the response shape of a cross-tenant write ───
 
     /// <summary>
     /// RE-POINTED, not deleted. This test used to drive the driver-side read-back — the assertion
@@ -189,10 +189,10 @@ public class IdentityScenarioTests
 
         Named(assertions, "acting user's own tenant").Passed.Should().BeFalse(
             "the server must force-set the tenant from the acting-user token, not take the client's word");
-        Named(assertions, "acting user's own tenant").RequirementId.Should().Be("IVC-IDN-003");
+        Named(assertions, "acting user's own tenant").RequirementId.Should().Be("IVC-IDN-006");
     }
 
-    // ── IVC-IDN-003's derivation half, and the control beside it ──────────────────────────────
+    // ── IVC-IDN-006's derivation Statement, and the control beside it ─────────────────────────
     //
     // Two-sidedness is the whole point of this block. Direction 1: the server stops injecting the
     // column (or injects the wrong value) and the PROBE half must redden. Direction 2: the server
@@ -206,7 +206,7 @@ public class IdentityScenarioTests
 
         Named(assertions, "acting user's own tenant").Passed.Should().BeFalse(
             "a row with no server-owned tenant column at all is the injection having silently stopped");
-        Named(assertions, "acting user's own tenant").RequirementId.Should().Be("IVC-IDN-003");
+        Named(assertions, "acting user's own tenant").RequirementId.Should().Be("IVC-IDN-006");
     }
 
     [Fact]
@@ -226,19 +226,21 @@ public class IdentityScenarioTests
         Named(JudgeHappy(), "does not carry the server-owned tenant column").RequirementId.Should()
             .Be(Requirements.IdnServerTenantColumnAbsentFromPointRead,
                 "the gRPC-absent half grades the server's OUTBOUND STRIP — an EMISSION claim, which " +
-                "is IVC-IDN-005 — and NOT IVC-IDN-003's DERIVATION statement; citing IVC-IDN-003 " +
+                "is IVC-IDN-005 — and NOT IVC-IDN-006's DERIVATION statement; citing IVC-IDN-006 " +
                 "here would silently widen that requirement to own a rule it does not make");
 
-        // The negative half, stated so that it can actually FAIL ON ITS OWN. The `NotBe(IDN-003)`
-        // this replaces could not: the `Be(...)` two lines above already implies it for as long as
+        // The negative half, stated so that it can actually FAIL ON ITS OWN. The `NotBe(...)` this
+        // replaces could not: the `Be(...)` two lines above already implies it for as long as
         // the two consts hold different values — so it was true by construction and pinned
         // nothing. WHAT GUARANTEES THEY HOLD DIFFERENT VALUES, stated correctly at the third
-        // attempt and verified by running both mutants:
-        //   - REPOINTING this const at IVC-IDN-003 is caught, and caught FIRST by Check1.
-        //     `ToHashSet()` collapses the duplicate on the REGISTRY side only; the standard still
-        //     declares the orphaned IVC-IDN-005 row, so `registryIds` loses a member the standard
-        //     keeps and Check1's `missingFromRegistry` is non-empty. Mutant DUP1 fails FIVE tests
-        //     in the tree it ships in — Check1_ActiveIdsInStandard_ExactlyMatchConstsInRegistry,
+        // attempt and verified by running both mutants (measured when the derivation Statement was
+        // still IVC-IDN-003; the analysis carries over UNCHANGED to each of its two successors,
+        // IVC-IDN-006 and IVC-IDN-007, independently):
+        //   - REPOINTING this const at the derivation Statement's value is caught, and caught
+        //     FIRST by Check1. `ToHashSet()` collapses the duplicate on the REGISTRY side only; the
+        //     standard still declares the orphaned IVC-IDN-005 row, so `registryIds` loses a member
+        //     the standard keeps and Check1's `missingFromRegistry` is non-empty. Mutant DUP1 fails
+        //     FIVE tests in the tree it ships in — Check1_ActiveIdsInStandard_ExactlyMatchConstsInRegistry,
         //     this test, Judge..._Idn004_IsCitedByExactlyOneAssertion,
         //     Judge..._ProbeThrew_BothCitedAssertionsFailNamingTheProbe, and
         //     RequirementsCoverageGateTests.RegistryConstValues_AreUniqueAcrossTheRegistry, which
@@ -251,20 +253,19 @@ public class IdentityScenarioTests
         //     DOCUMENT. Mutant DUP2 passed 442/442. That gap is now closed by
         //     RequirementsCoverageGateTests.RegistryConstValues_AreUniqueAcrossTheRegistry, which
         //     runs OnlyHaveUniqueItems over the reflected VALUES.
-        // Counting IDN-003's citations across the
+        // Counting each successor's citations across the
         // whole judgement is independently falsifiable in exactly the direction Ruling 14's caveat
-        // cares about: re-point the strip control at IDN-003 and the count goes to FOUR; author a
-        // fourth assertion that quietly takes IDN-003 and it goes to four as well. The baseline is
-        // three, which is what the assertion below pins. Neither widening is
+        // cares about: re-point the strip control at IDN-006 and its count goes to THREE; author a
+        // further assertion that quietly takes IDN-006 and it goes to three as well. The baselines
+        // are two and one, which is what the two assertions below pin. Neither widening is
         // visible to the assertion above, and neither is visible to the coverage gate, whose
         // exactly-one rule counts LEDGER areas rather than code citations (Ruling 35).
-        JudgeHappy().Count(a => a.RequirementId == Requirements.IdnTenancyDerivedAndEnforced)
-            .Should().Be(3,
-                "IVC-IDN-003's Statement has a DERIVATION half and an ENFORCEMENT half, and it is "
-                + "graded by exactly three assertions and no others: the stored tenant being the "
-                + "acting user's own, the client's value not having become it, and the wrong "
-                + "acting user's update being denied. A FOURTH means some further claim has been "
-                + "folded into that Statement");
+        JudgeHappy().Count(a => a.RequirementId == Requirements.IdnTenancyDerivedFromActingUser)
+            .Should().Be(2, "IVC-IDN-006 is graded by exactly two assertions: the stored tenant being " +
+                "the acting user's own, and the client's value not having become it");
+        JudgeHappy().Count(a => a.RequirementId == Requirements.IdnCrossTenantUpdateAnsweredWithoutError)
+            .Should().Be(1, "IVC-IDN-007 is graded by exactly one assertion: the wrong acting user's " +
+                "update being answered without a gRPC error status");
     }
 
     /// <summary>
@@ -297,7 +298,7 @@ public class IdentityScenarioTests
         Named(assertions, "stayed in the client's own column").Passed.Should().BeFalse(
             "the driver's TenantId property exists to prove a user column with that name does NOT feed " +
             "the tenant boundary; a server that overwrote it is exactly the leak it guards");
-        Named(assertions, "stayed in the client's own column").RequirementId.Should().Be("IVC-IDN-003");
+        Named(assertions, "stayed in the client's own column").RequirementId.Should().Be("IVC-IDN-006");
     }
 
     /// <summary>
@@ -342,7 +343,7 @@ public class IdentityScenarioTests
 
         var assertions = IdentityScenario.JudgeTenantDerivation("dotnet", Tenant, observation);
 
-        assertions.Where(a => a.RequirementId == "IVC-IDN-003").Should().HaveCount(2)
+        assertions.Where(a => a.RequirementId == "IVC-IDN-006").Should().HaveCount(2)
             .And.OnlyContain(a => !a.Passed);
         assertions.Should().Contain(a => a.Detail.Contains("connection refused", StringComparison.Ordinal),
             "a broken probe must be reported as a broken probe, never as a server defect");
@@ -368,25 +369,36 @@ public class IdentityScenarioTests
     }
 
     [Fact]
-    public void Judge_WrongActingUsersUpdateWasDenied_Idn003EnforcementPasses()
+    public void Judge_WrongActingUsersUpdateWasRefused_Idn007Fails()
     {
-        var assertions = JudgeHappy();
+        var assertions = JudgeHappy(denied: DeniedStep(7));
 
-        Named(assertions, "denied a write").Passed.Should().BeTrue();
-        Named(assertions, "denied a write").RequirementId.Should().Be("IVC-IDN-003");
+        Named(assertions, "answered without a gRPC error status").Passed.Should().BeFalse();
+        Named(assertions, "answered without a gRPC error status").RequirementId.Should().Be("IVC-IDN-007");
     }
 
     [Fact]
-    public void Judge_WrongActingUsersUpdateSucceeded_Idn003EnforcementFails()
+    public void Judge_WrongActingUsersUpdateWasAccepted_Idn007Passes()
     {
-        Named(JudgeHappy(denied: DeniedStep(null)), "denied a write").Passed.Should().BeFalse(
-            "a wrong-tenant acting user whose write was accepted is exactly the defect this requirement names");
+        Named(JudgeHappy(denied: DeniedStep(null)), "answered without a gRPC error status").Passed.Should().BeTrue(
+            "a wrong-tenant acting user whose write was silently accepted is exactly the new post-mitigation shape");
+    }
+
+    [Fact]
+    public void Judge_DeniedStepReportsAMalformedStatusCode_Idn007FailsRatherThanPassingVacuously()
+    {
+        var denied = new StepResult(IdentityScenario.DeniedStepName, true,
+            Entity: JsonSerializer.SerializeToElement(new { statusCode = "not-a-number" }));
+
+        Named(JudgeHappy(denied: denied), "answered without a gRPC error status").Passed.Should().BeFalse(
+            "a status code that is present but unparseable is a malformed report, not the no-code " +
+            "acceptance shape this assertion is meant to recognize");
     }
 
     [Fact]
     public void Judge_WrongActingUsersUpdateFailedWithSomeOtherCode_Idn003EnforcementFails()
     {
-        Named(JudgeHappy(denied: DeniedStep(16)), "denied a write").Passed.Should().BeFalse(
+        Named(JudgeHappy(denied: DeniedStep(16)), "answered without a gRPC error status").Passed.Should().BeFalse(
             "Unauthenticated (16) is a token problem, not the tenancy denial this requirement names");
     }
 
@@ -396,7 +408,7 @@ public class IdentityScenarioTests
         var assertions = IdentityScenario.Judge("dotnet", Tenant, Owner, Key,
             ReadDocument(ReadStep(Key, Tenant, Owner)), Derived());
 
-        Named(assertions, "denied a write").Passed.Should().BeFalse();
+        Named(assertions, "answered without a gRPC error status").Passed.Should().BeFalse();
     }
 
     [Fact]
@@ -404,7 +416,7 @@ public class IdentityScenarioTests
     {
         var denied = new StepResult(IdentityScenario.DeniedStepName, false, Error: "channel closed");
 
-        Named(JudgeHappy(denied: denied), "denied a write").Passed.Should().BeFalse(
+        Named(JudgeHappy(denied: denied), "answered without a gRPC error status").Passed.Should().BeFalse(
             "a driver whose attempt never reached the server observed no denial");
     }
 
@@ -421,12 +433,12 @@ public class IdentityScenarioTests
         var denied = new StepResult(IdentityScenario.DeniedStepName, true,
             Entity: JsonSerializer.SerializeToElement(new
             {
-                statusCode = IdentityScenario.DeniedStatusCode,
+                statusCode = 7,
                 status = "PermissionDenied",
                 detail = "Not authorized to update this entity.",
             }));
 
-        var detail = Named(JudgeHappy(denied: denied), "denied a write").Detail;
+        var detail = Named(JudgeHappy(denied: denied), "answered without a gRPC error status").Detail;
 
         detail.Should().Contain("PermissionDenied");
         detail.Should().Contain("Not authorized to update this entity.");
@@ -435,7 +447,7 @@ public class IdentityScenarioTests
     [Fact]
     public void Judge_DriverReportedNoStatusNameOrMessage_DetailSaysSoRatherThanThrowing()
     {
-        var detail = Named(JudgeHappy(denied: DeniedStep(null)), "denied a write").Detail;
+        var detail = Named(JudgeHappy(denied: DeniedStep(null)), "answered without a gRPC error status").Detail;
 
         detail.Should().Contain("<none>");
     }
@@ -450,7 +462,8 @@ public class IdentityScenarioTests
 
         assertions.Should().OnlyContain(a => !a.Passed);
         Cited(assertions, "IVC-IDN-002").Should().NotBeEmpty();
-        Cited(assertions, "IVC-IDN-003").Should().NotBeEmpty();
+        Cited(assertions, "IVC-IDN-006").Should().NotBeEmpty();
+        Cited(assertions, "IVC-IDN-007").Should().NotBeEmpty();
         assertions.Should().OnlyContain(a => a.Name.StartsWith("go: ", StringComparison.Ordinal));
     }
 
@@ -498,6 +511,21 @@ public class IdentityScenarioTests
         IdentityScenario.ReadStatusCode(JsonSerializer.SerializeToElement(new { statusCode = "7" })).Should().BeNull(
             "a status code reported as a string is not a numeric code, and coercing it would invent agreement");
         IdentityScenario.ReadStatusCode(JsonSerializer.SerializeToElement(new { statusCode = 7 })).Should().Be(7);
+    }
+
+    [Fact]
+    public void IsStatusCodeMalformed_DistinguishesAbsenceFromAnUnparseableValue()
+    {
+        IdentityScenario.IsStatusCodeMalformed(null).Should().BeFalse(
+            "no entity at all is a genuine absence, not a malformed report");
+        IdentityScenario.IsStatusCodeMalformed(JsonSerializer.SerializeToElement(new { })).Should().BeFalse(
+            "no 'statusCode' property at all is a genuine absence");
+        IdentityScenario.IsStatusCodeMalformed(JsonSerializer.SerializeToElement(new { statusCode = (int?)null }))
+            .Should().BeFalse("a JSON null is the same acceptance signal as the property being absent");
+        IdentityScenario.IsStatusCodeMalformed(JsonSerializer.SerializeToElement(new { statusCode = 7 }))
+            .Should().BeFalse("a parseable number is not malformed");
+        IdentityScenario.IsStatusCodeMalformed(JsonSerializer.SerializeToElement(new { statusCode = "7" }))
+            .Should().BeTrue("a string where a number was expected is a malformed report, not an acceptance");
     }
 
     // ── the negative leg's own precondition ───────────────────────────────────────────────────
@@ -611,22 +639,22 @@ public class IdentityScenarioTests
         ]));
 
         var cells = await BuildScenario(runner: runner).GradeReadsAsync(States("dotnet"),
-            [("dotnet", ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(IdentityScenario.DeniedStatusCode)))],
+            [("dotnet", ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(7)))],
             Tenant, Owner, "acting-token");
 
         var cell = cells.Should().ContainSingle().Subject;
         cell.Scenario.Should().Be(IdentityScenario.Name);
-        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.IdnTenancyDerivedAndEnforced);
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.IdnTenancyDerivedFromActingUser);
 
         // THE SECOND wiring mutation, one layer in: replacing the ObserveTenantAsync call with
-        // TenantObservation.NotAttempted. IVC-IDN-003's derivation half would then be graded
+        // TenantObservation.NotAttempted. IVC-IDN-006's derivation half would then be graded
         // against a value nothing observed, and — because it still fails and still cites the right
         // id — every assertion above stays green through it. What separates the two is the DETAIL:
         // a real observation against this test's dead endpoints reports the probe FAILING, while
         // NotAttempted reports that no key was seeded. The seeded key here is real, so "no row key"
         // is the one thing this cell must never say.
         cell.Assertions.Should().NotContain(
-            a => a.RequirementId == Requirements.IdnTenancyDerivedAndEnforced
+            a => a.RequirementId == Requirements.IdnTenancyDerivedFromActingUser
                  && a.Detail.Contains("reported no row key", StringComparison.Ordinal),
             "the orchestrator must actually ATTEMPT the observation for a row it seeded");
         cell.Assertions.Should().Contain(a => a.Detail.Contains("the Postgres probe failed", StringComparison.Ordinal),
@@ -649,7 +677,7 @@ public class IdentityScenarioTests
     public async Task GradeReads_ALanguageWhoseDriverReportedNoReadDocument_IsNotGreen()
     {
         var cells = await BuildScenario().GradeReadsAsync(States("dotnet", "go"),
-            [("dotnet", ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(IdentityScenario.DeniedStatusCode)))],
+            [("dotnet", ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(7)))],
             Tenant, Owner, "acting-token");
 
         cells.Single(c => c.Language == "go").Status.Should().NotBe(CellStatus.Ok);

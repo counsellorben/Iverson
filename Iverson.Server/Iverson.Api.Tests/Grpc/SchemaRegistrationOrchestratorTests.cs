@@ -1399,4 +1399,33 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
         ex.Which.Status.Detail.Should().Contain("WidgetId").And.Contain("identical to its foreign key");
     }
+
+    [Fact]
+    public async Task RegisterAsync_TypeAlreadyOwnedByAnotherTenant_ThrowsPermissionDenied()
+    {
+        await _sut.RegisterAsync(new SchemaRequest { RootType = SimpleType("Widget", "Name") },
+            "tenant-a", CancellationToken.None);
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = SimpleType("Widget", "Name") },
+            "tenant-b", CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+        ex.Which.Status.Detail.Should().Contain("'Widget'");
+        ex.Which.Status.Detail.Should().Contain("registered to another tenant");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_SameRequestNamesTheSameTypeTwiceUnderOneTenant_RegistersSuccessfully()
+    {
+        var request = new SchemaRequest
+        {
+            RootType = SimpleType("Widget", "Name"),
+            Dependents = { SimpleType("Widget", "Name") }
+        };
+
+        var act = () => _sut.RegisterAsync(request, "tenant-a", CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+    }
 }
