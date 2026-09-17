@@ -679,7 +679,25 @@ File order within this task matters: `Requirements.cs` first (defines the two ne
 
   Per Verified assumptions 15, 17, 18:
   - `:375,376,382,389,399,407,429,438` — change the `Named(..., "denied a write")` fragment to `Named(..., "answered without a gRPC error status")` in all 8 call sites (the assertion's `Name` changed in Step 2).
-  - `:371,380,387` (the three tests currently named `Judge_WrongActingUsersUpdateWasDenied_Idn003EnforcementPasses`, `Judge_WrongActingUsersUpdateSucceeded_Idn003EnforcementFails`, `Judge_WrongActingUsersUpdateFailedWithSomeOtherCode_Idn003EnforcementFails`) — invert polarity for the first two (accepted now passes, denied now fails) per the spec's item 2; the third stays `BeFalse()` (a code other than none still means the swallow didn't fire) but repoints its `RequirementId` check (`:376`) to `"IVC-IDN-007"`.
+  - `:371,380,387` (the three tests currently named `Judge_WrongActingUsersUpdateWasDenied_Idn003EnforcementPasses`, `Judge_WrongActingUsersUpdateSucceeded_Idn003EnforcementFails`, `Judge_WrongActingUsersUpdateFailedWithSomeOtherCode_Idn003EnforcementFails`) — the first two need explicit code, not a prose "invert polarity" instruction, since `:376`'s `RequirementId` citation sits inside the first test (not the third) and the first test's bare `JudgeHappy()` call no longer supplies a denied shape now that the shared default is `DeniedStep(null)`:
+    ```csharp
+    [Fact]
+    public void Judge_WrongActingUsersUpdateWasDenied_Idn003EnforcementPasses()
+    {
+        var assertions = JudgeHappy(denied: DeniedStep(7));
+
+        Named(assertions, "answered without a gRPC error status").Passed.Should().BeFalse();
+        Named(assertions, "answered without a gRPC error status").RequirementId.Should().Be("IVC-IDN-007");
+    }
+
+    [Fact]
+    public void Judge_WrongActingUsersUpdateSucceeded_Idn003EnforcementFails()
+    {
+        Named(JudgeHappy(denied: DeniedStep(null)), "answered without a gRPC error status").Passed.Should().BeTrue(
+            "a wrong-tenant acting user whose write was silently accepted is exactly the new post-mitigation shape");
+    }
+    ```
+    The third test (`Judge_WrongActingUsersUpdateFailedWithSomeOtherCode_Idn003EnforcementFails`) is unaffected by this bullet — its own `"denied a write"`→`"answered without a gRPC error status"` fragment rename is already covered by the 8-site `Named(...)` bullet above.
   - `:394,403,446` (`Judge_NoDeniedStepAtAll_…`, `Judge_DeniedStepItselfBroke_…`, `Judge_EmptyDocument_…`) — need no polarity change under the guarded predicate (verified fixture-by-fixture in the spec and re-confirmed in CDR round 7); only the `Named` fragment (already covered above) and, for `:453` (`Cited(assertions, "IVC-IDN-003")` inside the empty-document test), replace with **three** `Cited` checks, not two — `Judge`'s body (`:397-488`) unconditionally calls `JudgeTenantDerivation` at `:454` regardless of document content, so both new successors are cited on every call, not just the response-shape one:
     ```csharp
     Cited(assertions, "IVC-IDN-002").Should().NotBeEmpty();
