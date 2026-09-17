@@ -27,7 +27,7 @@
     "@opentelemetry/instrumentation-fetch": "^0.222.0",
     "@opentelemetry/instrumentation-document-load": "^0.67.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.220.0",
-    "@opentelemetry/instrumentation": "^0.220.0"
+    "@opentelemetry/instrumentation": "^0.222.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.0",
