@@ -79,8 +79,8 @@ Unlike the existing post-auth `GlobalLimiter`, this new limiter does **not** exc
 
 **Problem:** The Postgres connection string sets no `SSL Mode` or `Root Certificate`; Npgsql defaults to opportunistic (`Prefer`) TLS negotiation with no certificate verification — protected against a passive sniffer, not against an active on-path attacker.
 
-**Fix:**
-1. Add a new volume + volumeMount to `Iverson.Server/deploy/helm/iverson/charts/api/templates/deployment.yaml`, mirroring the existing `kafka-ca`/`qdrant-tls` pattern:
+**Fix — apply identically to BOTH `Iverson.Server/deploy/helm/iverson/charts/api/templates/deployment.yaml` and `Iverson.Server/deploy/helm/iverson/charts/worker/templates/deployment.yaml`:** the worker Deployment carries a byte-identical `ConnectionStrings__Postgres`, connecting as the same `iverson` role — under the `BYPASSRLS` `iverson_maintenance` role via `EntityAccess.CrossTenantMaintenance`, since the worker's reconciliation/consumer paths read and write every tenant's rows. Leaving it out would leave the fix's own closure claim false.
+1. Add a new volume + volumeMount to each deployment template, mirroring the existing `kafka-ca`/`qdrant-tls` pattern (already present in both charts in the same shape):
    ```yaml
    volumeMounts:
      - name: postgres-tls
@@ -94,21 +94,21 @@ Unlike the existing post-auth `GlobalLimiter`, this new limiter does **not** exc
            - key: ca.crt
              path: ca.crt
    ```
-   The `items:` projection is required, not optional — without it every key in the secret is mounted, including the CA's private key (`ca.key`). This exposes only the public `ca.crt`, matching the projection the existing `qdrant-tls` volume already uses for the same reason (`deployment.yaml:213-218`) — `kafka-ca`'s own lack of a projection is not a counterexample, since that secret is Strimzi's public cert secret, not a CA-key secret.
+   The `items:` projection is required, not optional — without it every key in the secret is mounted, including the CA's private key (`ca.key`). This exposes only the public `ca.crt`, matching the projection the existing `qdrant-tls` volume already uses for the same reason (`deployment.yaml:213-218` in the api chart; the worker chart's own `qdrant-tls` volume uses the identical shape) — `kafka-ca`'s own lack of a projection is not a counterexample, since that secret is Strimzi's public cert secret, not a CA-key secret. The CA secret name is release-scoped, not workload-scoped (`cluster.yaml:4`), so the same `{{ .Release.Name }}-postgres-ca` reference is correct in both charts.
    (CNPG auto-generates this CA secret, named `<cluster-name>-ca`, by default — this chart's `cluster.yaml` already states "CNPG always enables and manages TLS ... unconditionally," and no custom `certificates:` override changes the default secret naming.)
-2. Change the connection string:
+2. Change the connection string in both templates:
    ```
    Host={{ .Release.Name }}-postgres-rw;Port=5432;Database=iverson;Username=iverson;Password=$(POSTGRES_APP_PASSWORD);SSL Mode=VerifyFull;Root Certificate=/etc/postgres-tls/ca.crt
    ```
 
-**Pre-merge verification gate (forced decision, resolved — verify before merging):** this fix must not merge until confirmed against a real cluster. `SSL Mode=VerifyFull` fails the whole connection, not partially, if any of the following don't hold: the secret `{{ .Release.Name }}-postgres-ca` exists, it contains a key named `ca.crt`, and that CA is the one that actually signed the server certificate presented by `{{ .Release.Name }}-postgres-rw`. Before merging, on a real cluster:
+**Pre-merge verification gate (forced decision, resolved — verify before merging):** this fix must not merge until confirmed against a real cluster, and blocks BOTH the api and worker Deployments coming ready, not just one. `SSL Mode=VerifyFull` fails the whole connection, not partially, if any of the following don't hold: the secret `{{ .Release.Name }}-postgres-ca` exists, it contains a key named `ca.crt`, and that CA is the one that actually signed the server certificate presented by `{{ .Release.Name }}-postgres-rw`. Before merging, on a real cluster:
 ```bash
 kubectl get secret <release>-postgres-ca -o jsonpath='{.data}'          # confirm the key set includes ca.crt
 openssl verify -CAfile ca.crt server.crt                                # confirm the CA actually signed the server cert
 ```
 The `items:` projection above converts a wrong-key-name mistake into a deploy-time pod-startup failure with a clear error, rather than a silent runtime connection failure — but it does not by itself confirm the signing chain, which is why the live check above is still required.
 
-**Out of scope (deferred, per your earlier answer):** StarRocks gets no TLS change — verified the chart has no TLS infrastructure on that store at all today (no cert issuance, no `ssl`/`tls` config anywhere in `charts/starrocks/`), so `SslMode=VerifyCA` would simply fail to connect; standing up TLS there is new infrastructure work, not a quick win. The Authentik admin-token hop, OIDC discovery, Jaeger, and the ingress→api h2c leg are likewise deferred (need real architectural work: TLS termination point decisions or a service mesh).
+**Out of scope (deferred, per your earlier answer):** StarRocks gets no TLS change — verified the chart has no TLS infrastructure on that store at all today (no cert issuance, no `ssl`/`tls` config anywhere in `charts/starrocks/`), so `SslMode=VerifyCA` would simply fail to connect; standing up TLS there is new infrastructure work, not a quick win. The Authentik admin-token hop, OIDC discovery, Jaeger, and the ingress→api h2c leg are likewise deferred (need real architectural work: TLS termination point decisions or a service mesh). The `job-revoke-cross-db` bootstrap Job's `psql` step (per your explicit choice) also uses the same `iverson` credential with no `PGSSLMODE` set, but is deferred rather than fixed in this round — its exposure window is one Job run at install time rather than continuous Deployment traffic, and its entire SQL surface is two `REVOKE`/`GRANT` statements, never a read of tenant data; see Known Issues.
 
 ---
 
@@ -137,28 +137,30 @@ No behavior change today (verified: `:8081` is configured `Protocols: Http1` in 
 
 Wrap the upsert call (`outboxWriter.UpsertAndEnqueueOutboxAsync`) in a catch for this specific condition, at both call sites — the catch body differs per site because the two `Update` methods return different response types:
 
-`ObjectPersistenceGrpcService.Update` (returns `PersistResponse`, which has a `Key` field):
+`ObjectPersistenceGrpcService.Update` (returns `PersistResponse`, which has a `Key` field; this class's constructor parameters carry no leading underscore, and the acting user is reached via `actingUserAccessor.ActingUser`; the upsert call's result must be hoisted above the `try` since it's consumed after the catch on the non-exceptional path):
 ```csharp
+Guid outboxRowId;
 try
 {
     outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(...);
 }
 catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText.Contains("row-level security policy"))
 {
-    auditLog.Denied(actingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
+    auditLog.Denied(actingUserAccessor.ActingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
     return new PersistResponse { Success = true, Key = key, TraceId = request.TraceId };
 }
 ```
 
-`ObjectMappingGrpcService.Update` (returns `MappingResponse`, which has no `Key` field but does have `Data` — a genuine success on this path returns `Data = request.Payload` after stripping the server-owned tenant column, so the swallowed path must match that shape exactly, not just the status):
+`ObjectMappingGrpcService.Update` (returns `MappingResponse`, which has no `Key` field but does have `Data` — a genuine success on this path returns `Data = request.Payload` after stripping the server-owned tenant column, so the swallowed path must match that shape exactly, not just the status; this class's constructor parameters are all leading-underscore-prefixed, unlike `ObjectPersistenceGrpcService`'s):
 ```csharp
+Guid outboxRowId;
 try
 {
-    outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(...);
+    outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(...);
 }
 catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText.Contains("row-level security policy"))
 {
-    auditLog.Denied(actingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
+    _auditLog.Denied(_actingUserAccessor.ActingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
     AuthorizationFieldMasking.RemoveTenantColumn(request.Payload);
     return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
 }
@@ -171,7 +173,7 @@ The `MessageText.Contains(...)` check is deliberate, not decorative: SQLSTATE `4
 
 **Residual (forced decision, resolved — accept a 2-RPC oracle):** this fix closes the single-RPC oracle — the `Update` response itself is now identical for both cases — but does not make the underlying visibility identical end-to-end. `Update` upserts: a genuinely-free key gets a real row created; an RLS-hidden foreign-tenant key does not (the insert collides and is caught). A follow-up `Get(key)` on the same key still distinguishes the two cases, at the cost of one extra RPC instead of zero. Making `Update` non-creating would close this fully, but was evaluated and rejected: `Update`'s upsert semantics are a deliberately designed, tested product feature (`ObjectPersistenceGrpcServiceTests.cs`'s `Update_ExecutesSqlUpsert_WithPayloadJson` and `Update_ForOrdinaryCaller_WhenRowDoesNotExistYet_ForceSetsOwnerFieldToActingUserSub`; `ObjectMappingGrpcServiceTests.cs`'s `Update_ExecutesUpsertSql_DirectlyToPostgres`, `Update_InsertsReconciliationQueueRowInSameTransactionAsUpsert`, and `Update_WithBypassRole_WhenRowDoesNotExistYet_LeavesOwnerFieldUntouched` all confirm and exercise it), not an accident — removing it is a platform-wide wire-contract change out of proportion to this finding. Finding #5 is recorded as **mitigated, not fully closed**: the 1-RPC oracle this fix targeted is closed; a 2-RPC oracle remains as an accepted residual.
 
-**Conformance matrix consequence:** the cross-language conformance matrix's `IdentityScenario` scenario (`Iverson.ClientConformance/Scenarios/IdentityScenario.cs`) asserts `DeniedStatusCode = 7` (`PERMISSION_DENIED`) for exactly this cross-tenant `Update` attempt, mirrored across all five language drivers (`Iverson.Client.Conformance.Driver` and its Java/Python/TypeScript/Go counterparts). This fix changes that outcome to a swallowed success. At implementation time, `IdentityScenario`'s constant and doc comment, and the driver-side status reporting (`Conformance.Driver/Program.cs`'s `deniedResult` construction), must be updated to expect success rather than a denial — this is a cross-language wire-contract change to the conformance suite's own expectations, not a test bug fix.
+**Conformance matrix consequence:** the cross-language conformance matrix's `IdentityScenario` scenario (`Iverson.ClientConformance/Scenarios/IdentityScenario.cs`) asserts `DeniedStatusCode = 7` (`PERMISSION_DENIED`) for exactly this cross-tenant `Update` attempt. This fix changes that outcome to a swallowed success. At implementation time, `IdentityScenario.cs` needs its `DeniedStatusCode` constant and doc comment replaced with a success-shaped expectation, its assertion inverted, and its failure-detail strings (which currently name acceptance as the failure mode) rewritten accordingly — a single-file change. **No driver-side change is required in any of the five languages:** every driver already reports the acceptance path as inert data (`{statusCode: null, status: "succeeded"}`) with an explicit in-source comment that the outcome is "reported as a missing status code rather than judged here" — the drivers already emit exactly what this fix's outcome needs; only `IdentityScenario`'s grading of that data flips.
 
 ---
 
@@ -189,7 +191,7 @@ The `MessageText.Contains(...)` check is deliberate, not decorative: SQLSTATE `4
 | 8 | `ctx.Connection.RemoteIpAddress` is safely readable pre-auth | Same probe: printed `ip=127.0.0.1`, no exception |
 | 9 | Npgsql 10.0.3 accepts `SSL Mode=VerifyFull;Root Certificate=<path>` as valid connection-string keys | Built a real throwaway project referencing `Npgsql 10.0.3`; `NpgsqlConnectionStringBuilder` parsed the string and reported `SslMode=VerifyFull RootCertificate=/etc/postgres-tls/ca.crt` |
 | 10 | This chart sets no `certificates:` override, so CNPG's default CA-secret naming (`<cluster-name>-ca`) applies — this covers only that no override exists, not that the secret's actual key set or its signing chain match what the fix assumes; that half is unverified and is why section 3 gates the fix's merge on a live check | Read `charts/postgres/templates/cluster.yaml` in full — no `certificates:` stanza; explicit comment states CNPG "always enables and manages TLS ... unconditionally" |
-| 11 | No existing volume/volumeMount collision at `/etc/postgres-tls` in the api deployment template | Read `charts/api/templates/deployment.yaml`'s `volumeMounts`/`volumes` sections directly — only `kafka-ca`, `qdrant-tls`, `tmp` exist |
+| 11 | No existing volume/volumeMount collision at `/etc/postgres-tls` in either the api or worker deployment template | Read both `charts/api/templates/deployment.yaml`'s and `charts/worker/templates/deployment.yaml`'s `volumeMounts`/`volumes` sections directly — only `kafka-ca`, `qdrant-tls`, `tmp` exist in each |
 | 12 | `:8081` cannot reach the 4 unmarked gRPC services today regardless of the new markers (no behavior change) — the "gRPC needs HTTP/2" reasoning alone is insufficient, since `app.UseGrpcWeb()` is global and gRPC-Web runs over HTTP/1.1; the conclusion holds only because `GrpcWebOptions.DefaultEnabled` is never set (default `false`) and none of the 4 services calls `.EnableGrpcWeb()` | Read `appsettings.json:13,17` directly — `:8080`=`Http2`, `:8081`=`Http1`; `command grep -rn "AddGrpcWeb\|GrpcWebOptions\|DefaultEnabled"` across non-worktree `.cs` — zero hits |
 | 13 | No existing test asserts the 4 core gRPC services are unmarked | `grep` for `ObjectMapping\|ObjectPersistence\|ObjectRetrieval\|ObjectSearch` in `AuthenticationPipelineTests.cs` — zero hits |
 | 14 | `EnforceWriteAuthorization`'s `TenantMismatch` branch is exercised by exactly 2 real call sites (the Update paths in `ObjectPersistenceGrpcService`/`ObjectMappingGrpcService`), not more | Read all 4 call sites directly: the other 2 (`ObjectMappingGrpcService.cs:310`, and `ObjectPersistenceGrpcService.cs:35`'s `Post`/Create paths) pass `existingRowJson: null` unconditionally, making the `TenantMismatch` branch unreachable there |
@@ -204,6 +206,7 @@ The `MessageText.Contains(...)` check is deliberate, not decorative: SQLSTATE `4
 
 - **Finding #1's null-owner and cross-concrete-tenant consequences** (per your explicit choice, after being shown the concrete effect) — the write-side ownership check has no special case for a `null` incumbent owner. Every type registered before this fix (or by any header-less call) becomes permanently unclaimable by any acting-user-bearing caller going forward; and once a type has any concrete owner, a different tenant's routine, otherwise-legitimate re-registration of that same shared type name is now rejected, reversing round 8's own deliberate tolerance for that pattern. If this needs revisiting later, the `IsShared` opt-in flag (referenced in Finding #6's own remediation) is the identified path to reconciling ownership enforcement with legitimate type-name sharing.
 - **StarRocks TLS, the Authentik admin-token hop, OIDC discovery over TLS, and a service mesh** (per your choice) — all deferred; StarRocks has no TLS infrastructure today (would need new cert issuance and chart changes, not a quick win), and the Authentik/OIDC/mesh work needs real infrastructure decisions this spec doesn't make.
+- **The `job-revoke-cross-db` bootstrap Job's Postgres connection** (per your explicit choice) — this one-shot Helm Job connects with the same `iverson` credential as the api/worker Deployments, with no `PGSSLMODE` set, and so shares the same unverified-TLS condition Finding #3 targets. Deferred rather than fixed in this round: its exposure window is one Job run per `helm upgrade` rather than continuous traffic, and its entire SQL surface is two `REVOKE`/`GRANT` statements — it never reads or writes tenant data.
 - **Finding #4's startup assertion** (architectural improvement, not required for the primary fix) — deferred; would need to correctly enumerate every legitimate unmarked endpoint to avoid false positives.
 - **Finding #2's `UseForwardedHeaders`/trusted-proxy configuration** — deferred; needs the cluster's actual trusted-proxy CIDR. Without it, the new pre-auth limiter degrades to one shared bucket per ingress pod for external traffic, rather than true per-client throttling.
 - **Findings #6 and #7** (per your choice) — no code change. Finding #6 (type-name existence oracle) becomes safe to close later once ownership can no longer be silently reassigned by this round's Finding #1 fix, but is not closed by it alone — the `IsShared` flag is still the identified path if it's ever revisited. Finding #7 (residual prompt-injection surface in the reasoning agent) has mitigations already proportionate to its retrieval-only, tenant-bounded scope; re-assess only if the agent's tool surface grows beyond retrieval.
