@@ -9,7 +9,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// service identity in <c>authorization</c> and the acting-user identity in
 /// <c>x-acting-user-authorization</c> — that the server resolves a row's tenant and owner from the
 /// acting user rather than from the payload, and that an acting user belonging to a different
-/// tenant is denied a write to that row.
+/// tenant is answered without a gRPC error status when attempting a write to that row — the same
+/// as an accepted one, per CSR round 9's Finding #5 mitigation.
 ///
 /// The shape follows S6 query's and S7 vector-search's, for the same reasons: the subject is one
 /// shared type (<c>IdentityDoc</c>) that every language writes into and every language then reads
@@ -92,35 +93,21 @@ namespace Iverson.ClientConformance.Scenarios;
 /// requirement wants. The drivers still send the acting user's own tenant in their user column, so
 /// this leg keeps sending a payload a conforming client would send.</para>
 ///
-/// <para><b>What the status code cannot distinguish.</b> <c>PermissionDenied</c> (7) is the
-/// server's answer to several distinct refusals on this path, and it carries the SAME message for
-/// all of them — <c>"Not authorized to update this entity."</c>, the one <c>deniedMessage</c>
-/// <c>ObjectMappingGrpcService.Update</c> passes into
-/// <c>AuthorizationFieldMasking.EnforceWriteAuthorization</c> for every branch — and no trailers.
-/// Two consequences, both verified live and neither of them fixable from the client side:
-/// <list type="bullet">
-/// <item><description><b>A driver that attaches NO acting user at all still goes green.</b>
-/// <c>ActingUserInterceptor.ValidateActingUserAsync</c> returns early on an empty header, the
-/// acting-user principal is null, <c>RowFieldAuthorizationEvaluator.Evaluate</c> returns
-/// <c>Denied</c>, and the same status 7 with the same message comes back. The server's audit log
-/// tells the two apart (<c>reason=TenantMismatch</c> versus <c>reason=AccessDenied</c>, with
-/// <c>actor=unknown tenant=unknown</c>), but nothing a client can read does — so no assertion here
-/// can. This is recorded as a Deferred area in the IDN coverage ledger rather than papered over: a
-/// driver self-report ("I attached the header") would be worthless in exactly the case it exists
-/// for, since a library that silently DROPPED the header would still have its driver report
-/// success.</description></item>
-/// <item><description><b>Which tenancy check ran is not isolated either.</b> With the payload
-/// tenant set to the caller's own claim, the wrong caller trips the existing row's tenant check;
-/// were it set to anything else it would additionally trip the immutability check. Both compare
-/// against the CALLER's own <c>tenant_id</c> claim, so the denial stays identity-derived whichever
-/// fires — which is why the assertion does not try to tell them apart.</description></item>
-/// </list></para>
+/// <para><b>What used to be indistinguishable no longer is, by accident.</b> A caller with no
+/// acting-user token at all is still denied before this row is ever read
+/// (<c>RowFieldAuthorizationEvaluator.Evaluate</c> returns <c>Denied</c> on a null acting user,
+/// <c>reason=AccessDenied</c>) — unchanged by this fix. A wrong-tenant caller's write, by contrast,
+/// now reaches the narrowed read, finds no visible row, and is silently swallowed as a success. The
+/// two cases used to grade identically (both <c>PermissionDenied</c>, indistinguishable to a
+/// client); they now grade oppositely, but not by any designed signal — see the standard's IDN
+/// Deferred ledger.</para>
 ///
-/// <para><b>Why an update, and not a create.</b> A create by the wrong acting user is NOT denied:
-/// with no existing row, <c>EnforceWriteAuthorization</c> force-sets tenant and owner from the
-/// caller's own claims and lets the write through, into the caller's own tenant. The denial exists
-/// only against an EXISTING row whose tenant differs from the caller's — which is what makes the
-/// backstop below load-bearing rather than decorative.</para>
+/// <para><b>Why every cross-tenant update now takes the create branch.</b> With the read narrowed
+/// to the caller's own tenant, a foreign-tenant row is never visible to
+/// <c>EnforceWriteAuthorization</c> — so every wrong-tenant update takes the same no-existing-row
+/// branch a genuine create does, and the actual collision is caught later, at the database layer,
+/// per CSR round 9's Finding #5 mitigation. This is what makes the backstop below load-bearing
+/// rather than decorative.</para>
 ///
 /// <para><b>Backstop assertion.</b> <see cref="Judge"/>'s "the write phase reported a row key for
 /// this language" assertion is this axis's backstop, in the sense

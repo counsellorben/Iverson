@@ -107,7 +107,7 @@ client to declare one, and a requirement constraining the type of that declarati
 both unfalsifiable — there is nothing left for either to grade. Their `Statement` cells are
 unchanged: a row's Statement is the statement of record and must stay immutable across retirement;
 this prose is where the rationale belongs. What replaced them as the live defence of tenancy is
-`IVC-IDN-003`, which grades the server's DERIVATION of the tenant from identity rather than any
+`IVC-IDN-006`, which grades the server's DERIVATION of the tenant from identity rather than any
 client's declaration of it.
 
 #### Coverage
@@ -408,15 +408,15 @@ write with `actor=unknown`, a failure that surfaces phases away from its cause. 
 graded on the write actually being accepted, which is the only observation that requires both
 halves to have arrived and been read as different identities.
 
-`IVC-IDN-002` and `IVC-IDN-003` are the propagation half and the enforcement half of what the
-acting-user identity is FOR, split the way `QRY` splits `IVC-QRY-001` from `IVC-QRY-002`: a client
-that propagates an acting user the server can read, but under which the server's tenancy scoping
-does not actually hold, is non-conformant in a way a single conflated requirement would report only
-as one undifferentiated red cell.
+`IVC-IDN-002`, `IVC-IDN-006` and `IVC-IDN-007` are the propagation, derivation and response-shape
+thirds of what the acting-user identity is FOR: a client that propagates an acting user the server
+can read, but under which the server's tenancy scoping does not actually hold, or whose cross-tenant
+write the server does not visibly refuse, is non-conformant in a way a single conflated requirement
+would report only as one undifferentiated red cell.
 
 **`IVC-IDN-002`'s owner clause is a round-trip claim, not a server-derivation claim**, and its
 Statement is worded that way — "the owner identity that acting user PROPAGATED". The distinction
-matters because the tenant clause of `IVC-IDN-003` beside it IS a derivation claim, and the two are
+matters because the tenant clause of `IVC-IDN-006` beside it IS a derivation claim, and the two are
 observed very differently. The harness's acting user holds `iverson-loadtest-bypass`, which the
 orchestrator's re-registration grants `CanWriteAll`; `RowFieldAuthorizationEvaluator` therefore
 reports `ownershipRequired: false` and `AuthorizationFieldMasking.EnforceWriteAuthorization` never
@@ -431,22 +431,17 @@ this document's immutable-Statement convention (see `REL`'s authoring notes): th
 written is true of what is observed, and the correction belongs in this prose rather than in the
 Statement cell.
 
-**`IVC-IDN-003`'s enforcement clause cannot tell "denied because of WHO is calling" from "denied
-because NOBODY is calling".** `PermissionDenied` (7) is the server's answer to several distinct
-refusals on this path, and it carries the same message for all of them — `"Not authorized to update
-this entity."`, the single `deniedMessage` `ObjectMappingGrpcService.Update` passes into every branch
-of `AuthorizationFieldMasking.EnforceWriteAuthorization` — and no trailers. A driver that attaches no
-acting-user header at all is therefore graded green by this assertion: `ActingUserInterceptor`
-returns early on an empty header, the acting-user principal is null, and the evaluator denies. The
-difference exists only in the server's own audit log (`reason=TenantMismatch` versus
-`reason=AccessDenied`, with `actor=unknown tenant=unknown`), which no client can read. Both halves of
-that were verified live, byte for byte, from what the driver itself received. See the Coverage table
-below; the gap is not closed by having drivers self-report that they attached the header, since a
-library that silently DROPPED the header would still have its driver report success — the assertion
-would be worthless in exactly the case it exists for.
+**A header-less caller and a wrong-tenant caller are no longer indistinguishable — but not because
+either is now more observable.** `RowFieldAuthorizationEvaluator.Evaluate` denies a caller with no
+acting-user token at all (`PermissionDenied`, `reason=AccessDenied`) before the row this axis
+targets is ever read — unchanged by the narrowed-read fix `IVC-IDN-007` grades. A wrong-tenant
+caller's write, by contrast, now reaches the narrowed read, finds no visible row, and is silently
+swallowed as a success — so the two cases now grade oppositely (red versus green) where they used to
+grade identically. Neither distinction is a designed signal a client can rely on: see the Coverage
+table below.
 
-`IVC-IDN-003` is verified in both directions, and neither direction is gradeable from a payload the
-client controls:
+`IVC-IDN-006` and `IVC-IDN-007` are each verified from what they observe, and neither is gradeable
+from a payload the client controls:
 
 - **Derivation, observed where no client can see it.** The row's real tenant lives in the
   server-owned `__TenantId` column, which the server injects into every schema and strips from every
@@ -464,19 +459,22 @@ client controls:
   ABSENT — proof that the probe is reading something gRPC genuinely cannot see, without which a
   Postgres-only assertion could not distinguish "the server derived it" from "the client sent it".
   That gRPC-absent half does NOT grade this Statement — it grades the outbound strip, a separate
-  claim — so it cites `IVC-IDN-005` and not `IVC-IDN-003`. Letting `IVC-IDN-003` cite it would
+  claim — so it cites `IVC-IDN-005` and not `IVC-IDN-006`. Letting `IVC-IDN-006` cite it would
   quietly widen this requirement to cover a rule it does not state. A server that took the client's
   word for it, a server that stopped injecting the column, or a client that propagated no acting
   user at all each fail here rather than agreeing by construction with what the driver sent.
-- **Enforcement.** The orchestrator mints a SECOND acting-user token, for a different, active
-  tenant (`TokenBroker.GetOtherTenantActingTokenAsync`), and passes it to every driver as
-  `--wrong-acting-token`. Each driver attempts a mapped update of the row it just created while
-  carrying that token in place of its own, and reports the gRPC status code it received as data —
-  it judges nothing. The orchestrator asserts the code is `PermissionDenied` (7). All five drivers
-  attempt the same operation against the same server and are graded against the same numeric
-  constant, so the requirement is simultaneously a per-client correctness claim and a cross-client
-  agreement claim: a language that propagates the wrong-user token incorrectly (or not at all)
-  disagrees with the other four and its cell alone goes red.
+- **Response shape, graded as `IVC-IDN-007`.** The orchestrator mints a SECOND acting-user token,
+  for a different, active tenant (`TokenBroker.GetOtherTenantActingTokenAsync`), and passes it to
+  every driver as `--wrong-acting-token`. Each driver attempts a mapped update of the row it just
+  created while carrying that token in place of its own, and reports the gRPC status code it
+  received as data — it judges nothing. The orchestrator asserts the driver reported no gRPC error
+  status, the same shape a genuinely accepted write produces: the server no longer denies this write
+  at all (CSR round 9's Finding #5 mitigation swallows it as a success at the database layer), so
+  the assertion observes the response envelope rather than a denial. All five drivers attempt the
+  same operation against the same server and are graded against the same expectation, so the
+  requirement is simultaneously a per-client correctness claim and a cross-client agreement claim: a
+  language that propagates the wrong-user token incorrectly (or not at all) disagrees with the other
+  four and its cell alone goes red.
 
 The update the negative leg sends still carries the ACTING user's own tenant in its ordinary
 `TenantId` user column, even though the create carries a deliberately wrong one. That WAS
