@@ -122,8 +122,10 @@ entries must name distinct variables, and `subsets` names must be distinct. `mea
 be distinct, must differ (ordinal comparison) from every output column of the chosen shape (see
 Output shapes above), and must not be the reserved tenant column (compared case-insensitively).
 Otherwise the request is `InvalidArgument`. Distinctness of `measures`, `define` and `subsets`
-names, the reserved-tenant-column check, and — for `CHUNKS` — the comparison against
-`parent_key`/`chunk_index`/`text` are enforced by `PatternQuery.Compile` (§3.4 step 2). For
+names, the reserved-tenant-column check, and — for `CHUNKS` — the comparison against the chosen
+shape's output columns (`parent_key` for `ONE_ROW`; `parent_key`, `chunk_index` and `text` for
+`ALL_ROWS_*`) are enforced by `PatternQuery.Compile` (§3.4 step 2), which receives
+`rows_per_match` among its request parts. For
 `TYPE_ROWS` the output-column comparison is enforced by `MatchRowsAsync` (§3.2), which holds the
 validated column set: it rejects a `measures` name equal (ordinal) to a canonical name in that set
 for `ALL_ROWS_*`, or to the canonical name of a `partition_by` column for `ONE_ROW`, throwing
@@ -151,10 +153,12 @@ evaluated in C#. **No expression, pattern, or subset string is ever spliced into
 - Aggregates over bound rows: `COUNT(*)`, `COUNT(expr)`, `SUM`, `AVG`, `MIN`, `MAX`, each over
   a variable- or subset-qualified argument (`COUNT(A.*)`, `SUM(B.price)`). Navigation functions
   nested inside aggregates are `InvalidArgument`, as the standard requires.
-- Match functions: `CLASSIFIER([var])` and `MATCH_NUMBER()`. `MATCH_NUMBER()` is
-  `InvalidArgument` inside `define`, as the standard requires.
-- `RUNNING` / `FINAL` prefixes in `measures` only. The default is `RUNNING`. `FINAL` is
-  `InvalidArgument` inside `define`. For `ONE_ROW` they are equivalent.
+- Match functions: `CLASSIFIER([var])` and `MATCH_NUMBER()`, both permitted in `define` and
+  `measures`. Inside `define`, `MATCH_NUMBER()` is the number the match attempt in progress will
+  receive.
+- `FINAL` is permitted in `measures` only and is `InvalidArgument` inside `define`, as the
+  standard requires. `RUNNING` is permitted in both and is the default; for `ONE_ROW`, `RUNNING`
+  and `FINAL` are equivalent.
 - Scalar functions: `COALESCE`, `NULLIF`, `ROUND`, `ABS` (the functions `Pipeline` already allows)
   and `TIMESTAMPDIFF(unit, a, b)`, where unit is `SECOND|MINUTE|HOUR|DAY`. It returns the whole
   number of units from `a` to `b`, truncated toward zero.
@@ -403,10 +407,12 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
      order, reluctant quantifiers, exclusion, anchors and the empty pattern.
    - Every §1/§2 validation rule, including distinct `define` variables, distinct `subsets`
      names, and `measures` names (distinct; not the tenant column in any case; for `CHUNKS`, not
-     `parent_key`/`chunk_index`/`text`). The `TYPE_ROWS` output-column comparison is tested in
-     §9.3, where its operand exists.
+     an output column of the chosen shape — `parent_key` in `ONE_ROW`, all three in
+     `ALL_ROWS_*`), plus the `FINAL`-in-`define` rejection. The `TYPE_ROWS` output-column
+     comparison is tested in §9.3, where its operand exists.
    - Evaluator: three-valued logic, the §2 `NaN` semantics (one test per construct, including a
-     `NULL` other operand), every navigation form including out-of-range, running versus
+     `NULL` other operand), `MATCH_NUMBER()` and an explicit `RUNNING` prefix inside `define` as
+     well as `measures`, every navigation form including out-of-range, running versus
      final, aggregates over subsets, `TIMESTAMPDIFF`, and integer division.
    - Matcher: preference order; thread pruning (asserted through step counts on a pattern that is
      exponential without pruning); every `AFTER MATCH SKIP` mode, including the illegal skips;
@@ -490,6 +496,12 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
 | Output rows are name-keyed `Struct`s: colliding names overwrite or vanish; the tenant-name strip is case-insensitive; names differing only by case survive at the server and in every SDK's untyped map | `SchemaDescriptor.cs:20-21`; `AuthorizationFieldMasking.cs:213-214`; CDR-1 probes P21, P21b, P21c |
 | Bytes columns are identifiable from the schema: scalar `ClrBytes` → `SqlType` `BYTEA` (StarRocks `VARBINARY`); `BYTEA[]` → `STRING`; `EngagementQuerySchema` carries no column types | `SchemaBuilder.cs:60-64,398,419`; `SchemaDescriptor.cs:117` (`ColumnDescriptor(Name, SqlType, IsNullable)`); `EngagementQuerySchema.cs:39-54` |
 | Bytes columns break output (`"System.Byte[]"`), default-equality partitioning, expression comparison, and `where` filtering | CDR-1 probes P8e, P13, P14, P16c |
+| Trino 483 accepts `MATCH_NUMBER()` and a `RUNNING` prefix inside `DEFINE`, and rejects `FINAL` there ("FINAL semantics is not supported in DEFINE clause") | CDR-3 probe P27 D/E/F, re-run through `/v1/statement` when this fix was applied |
+| No ported Trino case exercises `MATCH_NUMBER()` or `RUNNING` inside `DEFINE` | CDR-3 probe P28 (141 `assertions.query(` sites in `TestRowPatternMatching.java`; zero hits) |
+| The new proto enum values and message names do not collide inside `package iverson` | CDR-3 §0 S3 greps (both exit 1) |
+| `Qdrant.Client` 1.18.1 exposes a scroll taking filter, page size, cursor, payload selector and vector selector | CDR-3 probe P29 (`Qdrant.Client.xml` member signature) |
+| The new `Iverson.Vector` → `Iverson.Patterns` edge is acyclic | CDR-3 probe P29: `Iverson.Client.Contracts.csproj` declares no `ProjectReference`, and §3.1 gives `Iverson.Patterns` no store dependencies |
+| `MatchRowsAsync` can hold the measure-name comparison's second operand: `ColumnsFor` is in the same assembly and the constraint arrives as a method argument, as it does for `PipelineAsync` | `StarRocksPipelineBuilder.cs:39-55`; `IEngagementStoreRoles.cs:51-55` |
 | Retrieve-by-ID and local cosine exist; the collection metric is Cosine | `IVectorRoles.cs:17`, `IntelligenceVectorService.cs:156-187`; `ResultReranker.cs:42` `TensorPrimitives.CosineSimilarity`; `IntelligenceCollectionManager.cs:17` |
 | `SearchNamedAsync` exposes no exact/threshold parameter | `IntelligenceVectorService.cs:124-148` |
 | Embedding call and its failure mapping | `ObjectSearchGrpcService.cs:549-567` |
