@@ -639,10 +639,10 @@ foreach (var descriptor in schemaRegistry.All.Values)
 // ── gRPC endpoints ─────────────────────────────────────────────────────────────
 if (workloadRole == "api")
 {
-    app.MapGrpcService<ObjectMappingGrpcService>();
-    app.MapGrpcService<ObjectPersistenceGrpcService>();
-    app.MapGrpcService<ObjectRetrievalGrpcService>();
-    app.MapGrpcService<ObjectSearchGrpcService>();
+    app.MapGrpcService<ObjectMappingGrpcService>().WithMetadata(new RequireListenerPort(8080));
+    app.MapGrpcService<ObjectPersistenceGrpcService>().WithMetadata(new RequireListenerPort(8080));
+    app.MapGrpcService<ObjectRetrievalGrpcService>().WithMetadata(new RequireListenerPort(8080));
+    app.MapGrpcService<ObjectSearchGrpcService>().WithMetadata(new RequireListenerPort(8080));
     app.MapGrpcService<TenantLifecycleGrpcService>().RequireAuthorization("Operator").EnableGrpcWeb().WithMetadata(new RequireListenerPort(8080));
     app.MapGrpcService<TenantAdminGrpcService>().RequireAuthorization("TenantAdmin").EnableGrpcWeb().WithMetadata(new RequireListenerPort(8080));
 
