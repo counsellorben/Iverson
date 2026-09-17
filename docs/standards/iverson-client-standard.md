@@ -506,11 +506,13 @@ its audit record into a successful update.
 reason: null there means "this decision established no tenant boundary", which every denied path
 produces against a perfectly current schema.)
 
-What is true HERE is narrower: the conformance harness registers its types fresh against the build
-under test, so its `TenantColumn` is always `__TenantId` and this leg is insensitive to what the
-payload's `TenantId` user column says. The only refusal left on this leg is therefore the tenant
-MISMATCH between the existing row's `__TenantId` and the wrong acting user's own claim — which is
-the refusal this requirement wants.
+That branch still exists and still matters for the deployment just described. What it is no longer
+is the thing THIS harness's negative leg exercises, and for a broader reason than the harness
+registering its types fresh: CSR round 9's Finding #5 mitigation narrows the existing-row read to
+the acting tenant unconditionally, for every schema, legacy or fresh. A wrong-tenant caller's update
+therefore finds no visible row and takes the no-existing-row branch whatever the target schema's
+registration history — so neither the tenant MISMATCH nor the immutability refusal fires on this leg
+any more, and the refusal it used to observe is gone. See the paragraph below.
 
 The status code is reported and compared as the numeric gRPC code, never as a name: the five
 languages spell the same code five ways (`PermissionDenied`, `PERMISSION_DENIED`, `7`), so a
@@ -573,19 +575,28 @@ role are deliberately not authored here; see the Coverage table below.
 
 #### Backstop assertion (non-normative)
 
-`IDN`'s negative leg used to be a denial only while the row it targets existed; since CSR round
-9's Finding #5 mitigation, EVERY cross-tenant update takes `EnforceWriteAuthorization`'s
-no-existing-row branch and succeeds, so there is no longer a denial assertion for a missing row
-to defeat. This makes the backstop MORE load-bearing than before, not less: with no seeded row,
-`IVC-IDN-007`'s "answered without a gRPC error status" assertion is satisfied vacuously, so
-`IdentityScenario.Judge`'s "the write phase reported a row key for this language" assertion is the
-only thing left that separates a genuine swallowed cross-tenant write from a scenario that had
-nothing to update. It fires unconditionally, on every language, before and outside both the
-read-back and the enforcement assertions. Like `REL`'s, `QRY`'s, `SCH`'s and `VEC`'s it carries no
-requirement ID: no `IVC-IDN-*` statement owns "this language seeded a row" as such — it is a
-property of the harness's own fixture, not of a client — and it stays strictly weaker than
-`IVC-IDN-002` alone (it is NOT weaker than `IVC-IDN-007`: in the no-seeded-row state the backstop
-fails while `IVC-IDN-007` passes).
+`IDN`'s negative leg used to be a denial only while the row it targets existed; since CSR round 9's
+Finding #5 mitigation, EVERY cross-tenant update takes `EnforceWriteAuthorization`'s
+no-existing-row branch and succeeds, so there is no denial left for a missing row to defeat. With no
+seeded row, every driver still derives a well-formed key for a row that was never created, that
+update is accepted as an ordinary create, and the driver reports no gRPC status code — so
+`IVC-IDN-007`'s "answered without a gRPC error status" assertion PASSES in that state exactly as it
+does for a genuine swallowed cross-tenant write, and cannot tell the two apart. That is signal this
+leg has LOST: before the mitigation the same assertion demanded `PermissionDenied` (7) and therefore
+reddened when there was nothing to deny.
+
+`IdentityScenario.Judge`'s "the write phase reported a row key for this language" assertion is
+`IDN`'s backstop, and it is worth exactly this much, no more. It is NOT the only assertion that
+reddens with no seeded row — `IVC-IDN-002`'s two assertions, `IVC-IDN-006`'s two and `IVC-IDN-005`'s
+one all fail there too, so the cell goes red with or without it. What it uniquely supplies is the
+DIAGNOSIS: it is the only assertion whose subject is the fixture precondition itself, so it
+attributes that red cell to the harness having seeded nothing rather than to five clients having
+broken at once. It fires unconditionally, on every language, before and outside both the read-back
+and the enforcement assertions. Like `REL`'s, `QRY`'s, `SCH`'s and `VEC`'s it carries no requirement
+ID: no `IVC-IDN-*` statement owns "this language seeded a row" as such — it is a property of the
+harness's own fixture, not of a client — and it stays strictly weaker than `IVC-IDN-002` (wherever
+the backstop fails, the read-back fails too). Against `IVC-IDN-007` the relation does not merely
+fail to hold, it inverts: in the no-seeded-row state the backstop fails while `IVC-IDN-007` passes.
 
 
 ### LIFE — Lifecycle
@@ -963,7 +974,7 @@ deliberately not authored here; see the Coverage table below.
 | Absent-row read reported as absence | Covered | IVC-ERR-004 |
 | Write against a type with no registered schema | Covered | IVC-ERR-005 |
 | Telling an absent row from a denied one | Deferred | `ObjectMappingGrpcService.Get` answers a row that does not exist and a row the caller is denied with the byte-identical envelope — `Success = false`, `Error = "'{type}:{key}' not found."` — and audits the denial only in the server's own log. A client therefore cannot distinguish the two, and `IVC-ERR-004` does not claim it can. This is a deliberate server-side non-enumeration (a distinguishable answer would confirm the row's existence to a caller not allowed to read it), so closing it is not a client change and may not be desirable at all. |
-| The refusal reason behind `PermissionDenied` | Deferred | `PermissionDenied` (7) is the server's answer to several distinct refusals on the mapped write path, carrying one literal `deniedMessage` into every branch of `AuthorizationFieldMasking.EnforceWriteAuthorization` and setting no trailers — though a cross-tenant `Update`'s `TenantMismatch` branch specifically is now unreachable (CSR round 9's Finding #5 mitigation narrows the read so `existingRowJson` is always null for a foreign key, so the create branch fires instead and the actual denial, when it happens, is caught and swallowed at the database layer rather than thrown here), so this now applies only to the remaining branches (access denial, owner mismatch, tenant-immutability). No `ERR` assertion observes the distinction either, and closing it needs the server to distinguish refusals on the wire. |
+| The refusal reason behind `PermissionDenied` | Deferred | `PermissionDenied` (7) is the server's answer to several distinct refusals on the mapped write path, and `AuthorizationFieldMasking.EnforceWriteAuthorization` sets no trailers on any of them: `AccessDenied`, `TenantMismatch` and `OwnerMismatch` share one literal `deniedMessage`, while `TenantImmutable` and `OwnerImmutable` carry their own fixed literals (`"Tenant field is immutable."`, `"Owner field is immutable after creation."`) and `RejectDisallowedFields` throws `InvalidArgument` rather than `PermissionDenied`. A cross-tenant `Update`'s `TenantMismatch` branch specifically is now unreachable (CSR round 9's Finding #5 mitigation narrows the read so `existingRowJson` is always null for a foreign key, so the create branch fires instead and the actual denial, when it happens, is caught and swallowed at the database layer rather than thrown here), leaving `AccessDenied`, `TenantImmutable`, `OwnerMismatch` and `OwnerImmutable` as the reachable `PermissionDenied` branches. No `ERR` assertion observes the distinction either, and closing it needs the server to distinguish refusals on the wire. |
 | Structured error details and trailers | Deferred | No server path on the mapped CRUD or registration RPCs attaches `google.rpc.Status` details or response trailers — every rejection carries a status code and a human-readable detail string and nothing else — so no assertion observes a structured error payload and no requirement constrains one. Authoring one is a server change, not a wording change. |
 | Streaming-RPC error propagation | Deferred | `Search` and `SearchSimilar` are server-streaming RPCs, whose failures can arrive mid-stream rather than on the initial call, and the five languages surface a mid-stream status very differently. The `error-contract` scenario exercises only unary RPCs, so no assertion observes a mid-stream failure and no requirement constrains one. Authoring one needs a fixture that fails after the first message, which is a scenario change. |
 | Transport-level and retryable statuses | Deferred | `Unavailable`, `DeadlineExceeded` and `Unauthenticated` are produced by the transport, the interceptors and the identity provider rather than by Iverson's own request handling, and the harness's preflight refuses to run at all unless every one of them is healthy. No assertion observes them and no requirement constrains how a client classifies a status as retryable. |

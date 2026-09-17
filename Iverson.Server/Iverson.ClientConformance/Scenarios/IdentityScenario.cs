@@ -86,12 +86,15 @@ namespace Iverson.ClientConformance.Scenarios;
 /// for it. On an upgraded deployment carrying such a row for a type not yet re-registered, a
 /// payload carrying <c>TenantId</c> passes the <c>InvalidArgument</c> guard — which matches only the
 /// server-owned name — reaches the immutability check with a non-null attempted tenant, and is
-/// denied with <c>TenantImmutable</c> TODAY. What is true here is narrower: THIS
-/// harness registers its types fresh against the build under test, so this leg alone is insensitive
-/// to the payload tenant. The only refusal left on it is the tenant MISMATCH between the existing
-/// row's tenant and the wrong acting user's own claim — precisely the identity-derived denial this
-/// requirement wants. The drivers still send the acting user's own tenant in their user column, so
-/// this leg keeps sending a payload a conforming client would send.</para>
+/// denied with <c>TenantImmutable</c> TODAY. What that branch is no longer is the thing THIS
+/// harness's negative leg exercises, and for a broader reason than the harness registering its
+/// types fresh: CSR round 9's Finding #5 mitigation narrows the existing-row read to the acting
+/// tenant unconditionally, for every schema, legacy or fresh. A wrong-tenant caller's update
+/// therefore finds no visible row and takes the no-existing-row branch whatever the target schema's
+/// registration history — so neither the tenant MISMATCH nor the immutability refusal fires on this
+/// leg any more, and the refusal it used to observe is gone (see below). The drivers still send the
+/// acting user's own tenant in their user column, so this leg keeps sending a payload a conforming
+/// client would send.</para>
 ///
 /// <para><b>What used to be indistinguishable no longer is, by accident.</b> A caller with no
 /// acting-user token at all is still denied before this row is ever read
@@ -113,18 +116,31 @@ namespace Iverson.ClientConformance.Scenarios;
 /// this language" assertion is this axis's backstop, in the sense
 /// <c>docs/standards/iverson-client-standard.md</c>'s REL authoring notes require. Since CSR
 /// round 9's Finding #5 mitigation, EVERY cross-tenant update takes the create branch described
-/// above and SUCCEEDS — there is no longer a denial assertion for a missing row to defeat, which
-/// makes this backstop MORE load-bearing than before, not less: with no seeded row,
+/// above and SUCCEEDS, so there is no denial left for a missing row to defeat — and with no seeded
+/// row, every driver still derives a well-formed key for a row that was never created, that update
+/// is accepted as an ordinary create, and the driver reports NO gRPC status code. So
 /// <see cref="Requirements.IdnCrossTenantUpdateAnsweredWithoutError"/>'s "answered without a gRPC
-/// error status" assertion is satisfied vacuously, so "the write phase reported a row key for this
-/// language" is the only assertion left that separates a genuine swallowed cross-tenant write from
-/// a scenario that had nothing to update. The backstop fires unconditionally, on every language,
-/// before and outside both the read-back and the enforcement assertions. It carries no requirement
-/// ID: no <c>IVC-IDN-*</c> statement owns "this language seeded a row" as such — that is a
-/// property of the harness's fixture, not of a client — and it stays strictly weaker than
-/// <see cref="Requirements.IdnActingUserPropagatedToRow"/> alone (it is NOT weaker than
-/// <see cref="Requirements.IdnCrossTenantUpdateAnsweredWithoutError"/>: in the no-seeded-row state
-/// the backstop fails while that assertion passes).</para>
+/// error status" assertion PASSES in the no-seeded-row state exactly as it does for a genuine
+/// swallowed cross-tenant write: it cannot tell the two apart. That is signal this leg has LOST —
+/// before the mitigation the same assertion demanded status 7 and therefore reddened when there was
+/// nothing to deny.
+///
+/// <para>What the backstop is worth, stated no higher than it is. It is NOT the only assertion that
+/// reddens in that state: with no seeded row,
+/// <see cref="Requirements.IdnActingUserPropagatedToRow"/>'s two assertions,
+/// <see cref="Requirements.IdnTenancyDerivedFromActingUser"/>'s two and
+/// <see cref="Requirements.IdnServerTenantColumnAbsentFromPointRead"/>'s one all fail as well, so
+/// the cell goes red with or without it. What it uniquely supplies is the DIAGNOSIS — it is the
+/// only assertion whose subject is the fixture precondition itself, so it attributes that red cell
+/// to the harness having seeded nothing rather than to five clients having broken at once. The
+/// backstop fires unconditionally, on every language, before and outside both the read-back and the
+/// enforcement assertions. It carries no requirement ID: no <c>IVC-IDN-*</c> statement owns "this
+/// language seeded a row" as such — that is a property of the harness's fixture, not of a client —
+/// and it stays strictly weaker than <see cref="Requirements.IdnActingUserPropagatedToRow"/>
+/// (wherever the backstop fails, the read-back fails too). It is NOT weaker than
+/// <see cref="Requirements.IdnCrossTenantUpdateAnsweredWithoutError"/>, and the relation does not
+/// merely fail to hold — it inverts: in the no-seeded-row state the backstop fails while that
+/// assertion passes.</para>
 /// </summary>
 public sealed class IdentityScenario(
     IDriverRunner runner,
