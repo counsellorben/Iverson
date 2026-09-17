@@ -1,0 +1,190 @@
+# TypeScript SDK toolchain: vite 8 + vitest 5 on legacy decorators
+
+**Date:** 2026-09-16
+**Status:** design, approved by Ben
+**Scope:** `Iverson.Clients/TypeScript` only
+
+## Goal
+
+Move the TypeScript SDK to vite 8 + vitest 5, keeping `experimentalDecorators`, and configure Oxc
+so decorators and their metadata are transformed. Unblocks Dependabot PRs #54 (vite 8) and #57
+(vitest 5), which are individually unmergeable because each needs the other.
+
+## Non-goals
+
+No change to `src/annotations.ts`, `src/core.ts`, or any entity class. `tsconfig.json` keeps
+`experimentalDecorators` and `emitDecoratorMetadata`. Consumers are unaffected. The migration to
+standard TC39 decorators is deferred (see below).
+
+## The change
+
+Two files.
+
+**`package.json`** — `vite` → `^8.3.0`, `vitest` → `^5.0.0`.
+
+**`vitest.config.ts`** — replace the `esbuild` block, which Vite 8 deprecated in favour of `oxc`
+and which is what makes PR #54 fail typecheck (`'target' does not exist in type
+'ESBuildOptions'`):
+
+```ts
+oxc: {
+  target: 'es2022',
+  decorator: { legacy: true, emitDecoratorMetadata: true },
+},
+```
+
+The `decorator` block is load-bearing. Without it Oxc defaults to `legacy: false`, decorator
+syntax survives untransformed into the module Node loads, and every decorated test file dies with
+`SyntaxError: Invalid or unexpected token`. This is almost certainly what was seen on 2026-09-11
+and recorded as "Vite 8 breaks decorators" — that conclusion is wrong; the option moved when Oxc
+replaced esbuild.
+
+## What enabling metadata actually changes
+
+`emitDecoratorMetadata` emits `design:type` **only for members carrying at least one decorator**.
+Undecorated members get none, under `tsc` as well as Oxc.
+
+Registrar output for `sample/models/Article.ts`, measured under both configurations:
+
+```
+WITH metadata:    Id=CLR_GUID | Title=CLR_STRING | Body=CLR_STRING | Category=CLR_STRING |
+                  WordCount=CLR_STRING | PublishedAt=CLR_DATETIME | AuthorId=CLR_GUID
+WITHOUT metadata: Id=CLR_GUID | Title=CLR_STRING | Body=CLR_STRING | Category=CLR_STRING |
+                  WordCount=CLR_STRING | PublishedAt=CLR_STRING   | AuthorId=CLR_GUID
+```
+
+Decorated properties converge on production behaviour (`PublishedAt`: `CLR_STRING` →
+`CLR_DATETIME`), closing the split documented at `src/core.ts:327-330`, where the vitest suite has
+until now run only the runtime-inference fallback while `npm run build` typed from `design:type`.
+Undecorated properties are unchanged by this work.
+
+## Preserving the fallback branch
+
+With metadata on, `design:type` is defined for every decorated property in every test, retiring
+three branches the suite currently covers:
+
+- `src/core.ts:336-338` — the `designType === undefined` arm of the `@IversonGuid()` string check
+- `src/core.ts:312` — the `Array.isArray(instance[field])` disjunct in `looksArray`
+- `src/core.ts:353` — the `: ClrType.CLR_STRING` fallback when `designType` is absent
+
+These are not dead code: a consumer building with esbuild, or with Oxc's `legacy: true` and
+metadata off, gets no `design:type`. That is a supported configuration, and it is what the SDK's
+own tests have stood in for until now.
+
+The visible case is `tests/schema-registrar.test.ts:456`, titled *"accepts @IversonGuid() on an
+initializer-less string property (no design:type, undefined runtime value)"*. Its field carries
+`@IversonKey() @IversonGuid()`, so it will now receive `design:type: String`. The test keeps
+passing — through the metadata branch rather than the fallback it was written to pin. Nothing
+fails; the coverage evaporates.
+
+**Fix:** in tests that exist to cover the no-metadata path, delete the metadata rather than relying
+on its absence:
+
+```ts
+Reflect.deleteMetadata('design:type', GuidNoInitializerEntity.prototype, 'id');
+```
+
+This converts an invisible dependency on the toolchain into a stated one. The tests at `:421` and
+`:438` already `defineMetadata` explicitly to simulate the tsc path; this is the same discipline
+applied to the other side.
+
+Rejected alternatives: running the suite twice under both metadata settings (doubles runtime and
+config surface for one branch); dropping the fallback tests and declaring `design:type` mandatory
+(a consumer-facing contract change).
+
+## A test that pins the config
+
+If `emitDecoratorMetadata` silently stops applying — a typo, an Oxc default change, someone
+trimming the block — every test still passes, because `core.ts` falls back. The gain would
+disappear invisibly. One test makes the config falsifiable:
+
+```ts
+it('the test toolchain emits design:type (oxc.decorator.emitDecoratorMetadata)', () => {
+    expect(Reflect.getMetadata('design:type', MetadataProbe.prototype, 'id')).toBe(String);
+});
+```
+
+The probe property must be **decorated** — an undecorated one would assert `undefined` under every
+configuration and pin nothing.
+
+## Verification gates
+
+1. `npm run build` (tsc) — production path untouched, must stay green.
+2. `npm test` — typecheck plus vitest under vite 8 / vitest 5. Typecheck covers `src`, `tests`,
+   `sample`, `conformance` and `vitest.config.ts` per `tsconfig.test.json:15`, so the config
+   rewrite is itself typechecked.
+3. The metadata-probe test passes, and the fallback tests still exercise the fallback.
+
+The conformance suite is typechecked but not executed by `npm test` (running it needs a live
+stack). Out of scope here.
+
+## Dependabot PRs
+
+#54 and #57 are each unmergeable because each needs the other. The combined change supersedes
+both. They close automatically once the merge reaches `origin/main` and Dependabot sees the target
+versions satisfied — which requires a push: local `main` is 32 commits ahead and unpushed. No
+action on the PRs themselves.
+
+## Deferred: standard decorator migration
+
+Blocking condition: **Oxc implements TC39 decorators.** Evidence gathered 2026-09-16:
+
+- Standard decorators fail under vite 8.3.0 / vitest 5.0.1 in every configuration tried (default,
+  `legacy: false`, `target: 'es2022'`) with `SyntaxError: Invalid or unexpected token`. Plain TS
+  passes, so it is the decorators. Node 24.18.0 rejects them natively.
+- esbuild passes them through untransformed — no error at transform time, a runtime syntax error
+  afterwards.
+- Oxc's `DecoratorOptions` exposes only `legacy` and `emitDecoratorMetadata` (the latter documented
+  as working only when `legacy` is true). No standard-decorator option exists.
+- SWC with `decoratorVersion: '2022-03'` does transform them.
+- TS 7.0.2 compiles them, and `Symbol.metadata` preserves subclass inheritance through the
+  metadata prototype chain — so the `getEmbeddingModel` semantics at `annotations.ts:79-84` would
+  survive a migration.
+
+The SDK ships tsc-compiled `dist/`, but consumers write `@IversonEntity()` in their own source, so
+consumer build tooling must transform decorator syntax. Migrating today would break every consumer
+bundling with Vite or esbuild, and would surrender `design:type` at the moment Oxc began emitting
+it — TC39 metadata carries no type information. "Legacy" names the proposal's history, not its
+support: it is the better-supported dialect in this ecosystem today.
+
+## Known issue, accepted as out of scope (Ben, 2026-09-16)
+
+**Undecorated non-string scalars register as `CLR_STRING` in production.** Because
+`emitDecoratorMetadata` emits `design:type` only for decorated members, an undecorated
+`wordCount: number = 0` gets none under any toolchain, and `src/core.ts:353` falls through to
+`ClrType.CLR_STRING`. See `WordCount=CLR_STRING` in both rows of the measurement above;
+`sample/main.ts:61` writes `article.wordCount = 500` into that string column.
+
+It survived because `conformance/models.ts` contains **no** `number`, `boolean` or `Date` fields —
+every conformance property is a string, array, or relation, so the cross-SDK parity gate never
+exercises non-string scalar typing in TypeScript. The SDK suite does not cover it either:
+`PublishedAt` silently changed type when metadata was enabled and all 254 tests still passed.
+
+Not caused by this change and not required for it. The obvious fix — infer from the initializer's
+runtime value on the `designType === undefined` path, as `core.ts` already does for the
+`@IversonGuid()` check — alters the CLR type the SDK registers for existing consumer entities,
+which has server-side schema-migration implications nobody has investigated. Ben chose to ship the
+bump alone and track this as its own item rather than put an unverified migration question on the
+bump's critical path.
+
+## Verified assumptions
+
+Measured 2026-09-16 in a detached worktree at `HEAD` (`2b78969`), with the change applied.
+
+| # | Assumption | Evidence |
+|---|---|---|
+| 1 | vite ^8.3.0 + vitest ^5.0.0 resolve together | `npm install` clean, no peer conflict |
+| 2 | `oxc` accepted by `defineConfig` from `vitest/config` | typecheck passes; `tsconfig.test.json:15` includes `vitest.config.ts` |
+| 3 | `oxc.target` replaces `esbuild.target` | config typechecks and the suite runs |
+| 4 | `oxc.decorator` applies to the real repo, not just a scratch probe | 254/254 in the worktree |
+| 5 | `design:type` emission covers the shapes these entities use | **corrected**: emitted only for *decorated* members. Confirmed against tsc directly — decorated `number` → `Number`; undecorated `number`/`Date` → `undefined`; two `__metadata` calls emitted |
+| 6 | Enabling metadata breaks no currently-passing test | 254/254 green. Note: `PublishedAt` changed type and nothing caught it — no test covers that property's CLR type |
+| 7 | Tests depending on absent `design:type` are enumerable | `tests/schema-registrar.test.ts:456` identified; its field is decorated, so it will gain metadata |
+| 8 | `npm run build` (tsc) unaffected | clean build in the worktree |
+| 9 | vitest 5's `.d.ts` typechecks under TS 7 with no `skipLibCheck` | `tsc -p tsconfig.test.json` clean — this is exactly what failed PR #57 |
+| 10 | `Reflect.deleteMetadata` exists | `reflect-metadata/index.d.ts:458` |
+| 11 | No other package shares these versions | `Iverson.AdminUI` is independent, already on vite ^8.1.5 / vitest ^5.0.0 — but with `skipLibCheck: true`, so its green suite does **not** discharge #9 |
+| 12 | `sample/` and `conformance/` typecheck unchanged | covered by the same typecheck run |
+| 13 | `core.ts:310` is the only `design:type` reader | repo grep; other hits are comments |
+| 14 | Dependabot closes a PR once the target version is satisfied | **not independently verified**; nothing in this design depends on it |
+| 15 | `docs/specs/` is gitignored | `.gitignore:51` (`**/docs/specs/`) — this file needs `git add -f` |
