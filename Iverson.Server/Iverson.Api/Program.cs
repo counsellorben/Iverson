@@ -397,10 +397,17 @@ if (app.Environment.IsDevelopment())
 
 var preAuthOptions = new RateLimiterOptions
 {
+    // 429 Too Many Requests is the semantically correct rejection status for a rate limit
+    // (503 means "I'm down", not "you're too fast"); mirrors the post-auth limiter's choice.
     RejectionStatusCode = StatusCodes.Status429TooManyRequests
 };
 preAuthOptions.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
 {
+    // Unlike the post-auth limiter, this one deliberately does NOT exclude gRPC calls:
+    // gRPC requests with an invalid/expired token never reach RateLimitInterceptor (which
+    // runs post-auth), so they have no rate-limit coverage outside this pre-auth limiter.
+    // Excluding gRPC here would leave garbage-token gRPC calls with zero rate limiting,
+    // reopening the vulnerability this pre-auth limiter exists to close.
     var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
     if (isHealthListenerEndpoint)
         return RateLimitPartition.GetNoLimiter("unlimited");
