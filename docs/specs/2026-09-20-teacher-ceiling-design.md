@@ -75,8 +75,13 @@ was computed directly from the pool under test and is reproducible by the comman
   runs on one 80 GB GPU). The 128K context matters: the largest single query pool is 137,152
   characters ≈ 34K tokens (§10, A16).
 - **Fallback:** a 32B-class reasoning model in FP8 on a 48 GB box, if cost pressure demands it.
-- **Serving:** vLLM's OpenAI-compatible route, called with stdlib `urllib.request` exactly as
-  `enrich_bench.py:56-62` calls it (`temperature: 0`, `stream: false`). **No new dependency** — no
+- **Serving:** vLLM's OpenAI-compatible route, called with the same stdlib `urllib.request` POST to
+  `/v1/chat/completions` that `enrich_bench.py:56-62` uses, with `temperature: 0`, `stream: false`,
+  and **`max_tokens: 8192` set explicitly**. `enrich_bench.py`'s `MAX_TOKENS = 256`
+  (`enrich_bench.py:30`) is **not** carried over: it was sized for that script's 2–3-sentence
+  enrichment replies, whereas one listwise answer is 569–594 characters of doc ids alone, before the
+  reasoning trace that shares the same budget. A response that stops on length
+  (`finish_reason: "length"`) is a §6 row-1 failure and is never parsed. **No new dependency** — no
   `openai` package, no `requests`.
 - **Output constraint:** vLLM guided decoding to a JSON-array schema. The parameter is mid-rename
   (`guided_json` → `structured_outputs`); the executing session verifies the name against the
@@ -115,6 +120,7 @@ identity goes in a `"reranker"` block, exactly as `rerank-a1.meta.json` records 
   "reranker": {
     "baseUrl": "...", "modelId": "...", "quantisation": "...", "vllmVersion": "...",
     "temperature": 0, "seed": N, "shuffleSeed": N, "maxModelLen": 131072,
+    "maxCompletionTokens": 8192,
     "promptTemplateSha256": "...", "instanceType": "..."
   }
 }
@@ -217,7 +223,8 @@ python3 Iverson.Server/Iverson.LoadTest/scripts/report.py \
 ```
 
 The oracle (0.9196) is reproduced by ordering each query's own 50 candidates by qrel grade and
-scoring the result; the dry-run identity check (§11) must reproduce 0.6980 exactly.
+scoring the result; the dry-run check (§11 step 2) must reproduce 0.6980 exactly under plain
+`--run`/`--qrels` scoring, without `--pair`.
 
 ## 10. Verified assumptions
 
@@ -231,11 +238,11 @@ Verified 2026-09-20 against the repo and the preserved corpora.
 | A4 | qrels covers the 300 queries | **Confirmed** — 300/300 |
 | A5 | Pool oracle | **Measured: 0.9196**, not the spec §3 table's 0.8273 |
 | A6 | Doc-id formats match between corpus and run | **Confirmed** — bare numeric `_id` |
-| A7 | `--pair` enforces both halves and exits non-zero | **Confirmed** — exit 1 on pool violation *and* on 10% churn (`ARM INVALID`); exit 0 on a valid rescore |
+| A7 | `--pair` enforces both halves and exits non-zero | **Confirmed** — exit 1 on pool violation, on 10% churn, *and* on 0% churn (an unchanged ordering: `ARM INVALID … at least 25% is required`); exit 0 on a valid rescore |
 | A8 | `report.py` needs `PYTHONPATH=python-libs` | **Confirmed** — system python3 lacks ir_measures |
 | A9 | Sidecar schema is emittable | **Confirmed, and it changed the design** — must reuse A0′'s composite `31583db5aea49136`; `report.py:184-202` reads only `composite` |
 | A10 | ir_measures ranks by score, ties by doc id | **Confirmed** — 0.2672 vs 0.6980 tie probe |
-| A11 | Stdlib-only HTTP is the in-repo pattern | **Confirmed** — `enrich_bench.py:56-62` |
+| A11 | Stdlib-only HTTP is the in-repo pattern | **Confirmed for the transport only** — `enrich_bench.py:56-62`. Its body is **not** adopted wholesale: `MAX_TOKENS = 256` (`enrich_bench.py:30`) would truncate a 569–594-character answer, so §4 sets `max_tokens` explicitly |
 | A12 | pytest available | **Confirmed** — 9.1.1 |
 | A13 | vLLM exposes an OpenAI-compatible chat route | **Confirmed** (docs); `seed` support **unverified** — execution-time check |
 | A14 | vLLM guided decoding for a JSON array | **Confirmed**, parameter name mid-rename — execution-time check |
@@ -250,12 +257,21 @@ Verified 2026-09-20 against the repo and the preserved corpora.
 | A23 | Gate-doc naming convention | **Confirmed** — `docs/plans/2026-09-GATE-*.md`, 11 existing |
 | A24 | Nothing in code consumes the A0′ run file | **Confirmed** — docs-only references |
 | A25 | Scripts need no manifest registration | **Confirmed** — standalone scripts + `test_*.py` |
+| A26 | The sidecar is found by **run filename**, not `configLabel` | **Confirmed** — `report.py:167-182` (`sidecar_path_for`) strips `.trec`, then a trailing `.chunks`/`.similar`, then appends `.meta.json`. So `--out` must be `<label>.chunks.trec`; a mismatch degrades to `BUILD UNKNOWN`, which is loud, not silent |
+| A27 | `report.py`'s delta equals `teacher − 0.6980` | **Confirmed** — delta is a mean over the query-set intersection (`report.py:517-527`), and §6 row 2 forbids a partial run file, so the intersection is all 300. §8's two PASS conditions are therefore equivalent, not independent |
+| A28 | Doc ids survive a JSON round-trip losslessly | **Confirmed** — all 4,083 ids are pure digits, 4–9 chars, 0 leading zeros, max < 2^53; number-or-string decoding is lossless either way |
 
 ## 11. Execution outline
 
 1. Write `teacher_rerank.py` + `test_teacher_rerank.py`; tests pass on the dev box.
-2. **Dry run with a stub teacher returning the identity permutation** — must reproduce 0.6980
-   exactly. This proves the pipeline end to end with no GPU and no spend.
+2. **Dry run with a stub teacher that returns each query's candidate ids ordered by their rank in
+   the input run** — i.e. it ignores the shuffled presentation order and reconstructs fusion order.
+   The written run must score `nDCG@10 0.6980 / R@50 0.9193` exactly under
+   `report.py --run <dry-run>.chunks.trec --qrels <qrels>` — **without `--pair`**, because the
+   artifact is order-identical to A0′ and `check_pool`'s ≥25%-reordered floor
+   (`report.py:700,760-766`) correctly rejects an unchanged ordering as "the reranker did not run".
+   This proves prompt construction, permutation validation, the run writer and the scorer, with no
+   GPU and no spend; the `--pair` stage is exercised by the real run, whose ordering differs.
 3. Rent the instance, serve the model, record vLLM version and the structured-output parameter name.
 4. Run 300 queries. Verify the five structural checks.
 5. Run the 50-query repeat.
