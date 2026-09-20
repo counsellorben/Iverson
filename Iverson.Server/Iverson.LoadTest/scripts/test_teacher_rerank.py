@@ -16,7 +16,9 @@ monkeypatched out wherever score_query/main are driven).
 No non-stdlib imports beyond pytest -- nothing needs PYTHONPATH."""
 import json
 import os
+import re
 import sys
+from argparse import Namespace
 
 import pytest
 
@@ -106,6 +108,17 @@ def test_parse_json_array_accepts_a_json_array():
     ids, reason = tr.parse_json_array('["10", "20", "30"]')
     assert reason is None
     assert ids == ["10", "20", "30"]
+
+
+def test_parse_json_array_rejects_none_instead_of_raising_typeerror():
+    """json.loads(None) raises TypeError, not JSONDecodeError. A reasoning model can legitimately
+    return `content: null` on vLLM's OpenAI route (the answer landed in `reasoning_content`
+    instead) -- this must come back as an ordinary (None, reason) rejection, matching the
+    docstring's promise that this function "never raises", not propagate an uncaught traceback
+    that would abort the whole run without ever recording the offending response."""
+    ids, reason = tr.parse_json_array(None)
+    assert ids is None
+    assert "JSON" in reason
 
 
 # --------------------------------------------------------------------------------------------
@@ -218,6 +231,64 @@ def test_write_run_preserves_pool_query_order_not_dict_order(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------
+# write_sidecar -- spec gap 1 (subsample/subsampleSeed recorded) and spec gap 2 (serving-identity
+# flags recorded, null when omitted). Not among the brief's 8 enumerated cases, but the
+# controller's Task 1 fix round 1 named both as spec gaps to close, so covered here directly.
+# --------------------------------------------------------------------------------------------
+
+def sidecar_args(**overrides):
+    defaults = dict(
+        base_url="http://vllm.invalid", model="gpt-oss-120b",
+        seed=7, shuffle_seed=11,
+        subsample=None, subsample_seed=None,
+        vllm_version=None, quantisation=None, instance_type=None,
+    )
+    defaults.update(overrides)
+    return Namespace(**defaults)
+
+
+def test_write_sidecar_records_subsample_and_subsample_seed_when_given(tmp_path):
+    out_path = str(tmp_path / "teacher.chunks.trec")
+    tr.write_sidecar(out_path, sidecar_args(subsample=50, subsample_seed=123))
+    with open(tmp_path / "teacher.meta.json", encoding="utf-8") as f:
+        sidecar = json.load(f)
+    assert sidecar["reranker"]["subsample"] == 50
+    assert sidecar["reranker"]["subsampleSeed"] == 123
+
+
+def test_write_sidecar_records_null_subsample_when_not_given(tmp_path):
+    out_path = str(tmp_path / "teacher.chunks.trec")
+    tr.write_sidecar(out_path, sidecar_args())  # subsample=None, subsample_seed=None
+    with open(tmp_path / "teacher.meta.json", encoding="utf-8") as f:
+        sidecar = json.load(f)
+    assert sidecar["reranker"]["subsample"] is None
+    assert sidecar["reranker"]["subsampleSeed"] is None
+
+
+def test_write_sidecar_records_serving_identity_flags_when_given(tmp_path):
+    out_path = str(tmp_path / "teacher.chunks.trec")
+    tr.write_sidecar(out_path, sidecar_args(
+        vllm_version="0.9.1", quantisation="MXFP4", instance_type="A100-80GB",
+    ))
+    with open(tmp_path / "teacher.meta.json", encoding="utf-8") as f:
+        sidecar = json.load(f)
+    assert sidecar["reranker"]["vllmVersion"] == "0.9.1"
+    assert sidecar["reranker"]["quantisation"] == "MXFP4"
+    assert sidecar["reranker"]["instanceType"] == "A100-80GB"
+
+
+def test_write_sidecar_records_null_serving_identity_when_omitted(tmp_path):
+    """Controller ruling: 'Do not guess values; absent means null.'"""
+    out_path = str(tmp_path / "teacher.chunks.trec")
+    tr.write_sidecar(out_path, sidecar_args())
+    with open(tmp_path / "teacher.meta.json", encoding="utf-8") as f:
+        sidecar = json.load(f)
+    assert sidecar["reranker"]["vllmVersion"] is None
+    assert sidecar["reranker"]["quantisation"] is None
+    assert sidecar["reranker"]["instanceType"] is None
+
+
+# --------------------------------------------------------------------------------------------
 # Fixtures for the main()-level tests: refusal-to-write and resume
 # --------------------------------------------------------------------------------------------
 
@@ -225,14 +296,18 @@ class ScriptedTeacher:
     """Monkeypatches tr.call_teacher with a fixed queue of (content, finish_reason) replies,
     returned in call order. Records how many times it was invoked so a test can assert exactly
     which queries actually triggered a model call (e.g. that a resumed, already-accepted query
-    triggers none)."""
+    triggers none), and captures every prompt it was called with so a test can inspect what the
+    model actually saw (e.g. that documents arrived in the seeded shuffle order, not fusion
+    order)."""
 
     def __init__(self, replies):
         self.replies = list(replies)
         self.calls = 0
+        self.prompts = []
 
     def __call__(self, base_url, model, prompt, seed):
         self.calls += 1
+        self.prompts.append(prompt)
         return self.replies.pop(0)
 
 
@@ -272,6 +347,85 @@ def base_argv(run_path, corpus_path, queries_path, responses_path, out_path):
         "--responses", responses_path,
         "--out", out_path,
     ]
+
+
+# --------------------------------------------------------------------------------------------
+# The shuffled order must actually reach the prompt -- spec §3: "Presenting them in A0' order
+# anchors the teacher to the ranking under test; an anchored teacher measures the old ranking as
+# much as itself." Task 1 fix round 1, CRITICAL: this was the one silent failure mode in the
+# script -- build_prompt could be called with fusion order instead of shuffled order and every
+# other test would still pass, since none of them inspected what the model was actually shown.
+# --------------------------------------------------------------------------------------------
+
+DOC_ID_IN_PROMPT = re.compile(r"^\[(\S+)\]", re.M)
+
+
+def test_main_presents_documents_to_the_model_in_shuffled_not_fusion_order(tmp_path, monkeypatch):
+    """q1's fusion-order pool is d1, d2, d3 (spec/brief §5's --run column order). Under
+    shuffle_seed=0, tr.shuffled_doc_order(["d1","d2","d3"], 0, "q1") == ["d2","d3","d1"] -- a
+    different order, so this assertion is non-vacuous. The prompt's `[docId]` labels (in the
+    order build_prompt emits them, DOCUMENT_TEMPLATE = "[{doc_id}] ...") must appear in that
+    shuffled order, not fusion order.
+
+    Verified to catch the exact mutation the reviewer found: replacing build_prompt's `shuffled`
+    argument with `expected_ids` (fusion order) makes this assertion fail -- confirmed by hand
+    before this test was accepted (see the fix-round report)."""
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    scripted = ScriptedTeacher([
+        ('["d2", "d3", "d1"]', "stop"),
+        ('["e2", "e3", "e1"]', "stop"),
+    ])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    tr.main(argv)
+
+    assert scripted.calls == 2
+    q1_prompt, q2_prompt = scripted.prompts
+    assert DOC_ID_IN_PROMPT.findall(q1_prompt) == ["d2", "d3", "d1"]
+    assert DOC_ID_IN_PROMPT.findall(q2_prompt) == ["e2", "e3", "e1"]
+    # And explicitly NOT fusion order (d1, d2, d3 / e1, e2, e3), which is what a
+    # build_prompt(query_text, expected_ids, corpus) regression would produce instead.
+    assert DOC_ID_IN_PROMPT.findall(q1_prompt) != ["d1", "d2", "d3"]
+    assert DOC_ID_IN_PROMPT.findall(q2_prompt) != ["e1", "e2", "e3"]
+
+
+# --------------------------------------------------------------------------------------------
+# A `content: null` reply (reasoning model puts its answer in reasoning_content instead) must be
+# recorded to --responses, not lost to an uncaught TypeError. Task 1 fix round 1, IMPORTANT.
+# --------------------------------------------------------------------------------------------
+
+def test_main_records_a_null_content_reply_to_responses_instead_of_crashing(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    # q1: both attempts return content=None (as vLLM does for a reasoning model whose answer
+    # landed in reasoning_content) -- q1 is left unscored, but must not crash, and every attempt
+    # must still be durably logged.
+    scripted = ScriptedTeacher([
+        (None, "stop"),
+        (None, "stop"),
+        ('["e2", "e3", "e1"]', "stop"),
+    ])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    with pytest.raises(SystemExit) as exc_info:
+        tr.main(argv)  # refused -- q1 unscored -- but must reach here without a bare TypeError
+
+    assert "q1" in str(exc_info.value)
+    assert not os.path.exists(out_path)
+
+    with open(responses_path, encoding="utf-8") as f:
+        records = [json.loads(line) for line in f if line.strip()]
+    q1_records = [r for r in records if r["query_id"] == "q1"]
+    assert len(q1_records) == 2, "both null-content attempts must be recorded, not silently lost"
+    assert all(r["status"] == "rejected" for r in q1_records)
+    assert all(r["content"] is None for r in q1_records)
 
 
 # --------------------------------------------------------------------------------------------

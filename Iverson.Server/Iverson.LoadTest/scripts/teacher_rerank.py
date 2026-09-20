@@ -159,10 +159,17 @@ def select_subsample(run_query_ids, n, subsample_seed):
 def parse_json_array(text):
     """Parses `text` (a model reply's `message.content`) as JSON and requires a top-level array.
     Returns (ids, None) on success, (None, reason) on failure -- never raises, so a call site can
-    record a rejection without wrapping every parse in its own try/except."""
+    record a rejection without wrapping every parse in its own try/except.
+
+    Also catches TypeError: `json.loads(None)` raises one (`the JSON object must be str, bytes or
+    bytearray, not NoneType`), and a reasoning model can legitimately return `content: null` on
+    vLLM's OpenAI route when its answer landed in `reasoning_content` instead. Without this, that
+    reply would abort the whole run with an uncaught traceback -- and since the append to
+    --responses happens only after parse_json_array returns, the one response needed to diagnose
+    the failure would never be recorded either."""
     try:
         parsed = json.loads(text)
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, TypeError) as e:
         return None, f"invalid JSON: {e}"
     if not isinstance(parsed, list):
         return None, f"expected a JSON array, got {type(parsed).__name__}"
@@ -382,9 +389,16 @@ def sidecar_path_for(out_path):
 def write_sidecar(out_path, args):
     """Writes `<label>.meta.json` beside the run file, carrying A0's own composite (spec: "the
     retrieval build that produced the pool is the same one under comparison") and the teacher's
-    identity under `reranker`. report.py reads only `composite`; every other key is inert to it, so
-    the fields sourced only at execution time (vllmVersion, quantisation, instanceType) are left for
-    Task 3 to fill in once they're known, rather than guessed here."""
+    identity under `reranker`. report.py reads only `composite`; every other key is inert to it.
+
+    `subsample`/`subsampleSeed` are recorded whenever `--subsample` was given (both None
+    otherwise) -- without this, Task 3's two 50-query repeat passes would write a sidecar
+    indistinguishable from the 300-query main run's, leaving no on-disk record of which pass was
+    which (plan line 121 / this task's brief line 39: "records both values in the sidecar").
+
+    `vllmVersion`/`quantisation`/`instanceType` come from the optional `--vllm-version`,
+    `--quantisation`, `--instance-type` flags (controller ruling, Task 1 fix round 1) and are
+    `null` when the flag was omitted -- never guessed here."""
     sidecar = {
         "configLabel": "teacher-ceiling",
         "composite": SIDECAR_COMPOSITE,
@@ -392,6 +406,8 @@ def write_sidecar(out_path, args):
         "reranker": {
             "baseUrl": args.base_url,
             "modelId": args.model,
+            "quantisation": args.quantisation,
+            "vllmVersion": args.vllm_version,
             "temperature": 0,
             "seed": args.seed,
             "shuffleSeed": args.shuffle_seed,
@@ -399,6 +415,9 @@ def write_sidecar(out_path, args):
             "maxCompletionTokens": MAX_COMPLETION_TOKENS,
             "structuredOutputParam": STRUCTURED_OUTPUT_PARAM,
             "promptTemplateSha256": PROMPT_TEMPLATE_SHA256,
+            "instanceType": args.instance_type,
+            "subsample": args.subsample,
+            "subsampleSeed": args.subsample_seed,
         },
     }
     with open(sidecar_path_for(out_path), "w", encoding="utf-8") as f:
@@ -421,6 +440,9 @@ def build_arg_parser():
     ap.add_argument("--out", required=True, help="path the re-ranked TREC run is written to (must end <label>.chunks.trec, spec A26)")
     ap.add_argument("--subsample", type=int, default=None, help="if given (with --subsample-seed), re-rank only N query ids")
     ap.add_argument("--subsample-seed", type=int, default=None, help="seed for --subsample's selection")
+    ap.add_argument("--vllm-version", default=None, help="serving identity recorded verbatim in the sidecar's reranker block; omit to record null")
+    ap.add_argument("--quantisation", default=None, help="serving identity recorded verbatim in the sidecar's reranker block; omit to record null")
+    ap.add_argument("--instance-type", default=None, help="serving identity recorded verbatim in the sidecar's reranker block; omit to record null")
     return ap
 
 
