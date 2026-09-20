@@ -66,6 +66,8 @@ Verified by `thorough-brainstorming` at spec-write time and by `critical-design-
 | 17 | Consumer impact | `EngagementQueryTranslationException`, `EngagementStoreDisabledException`, `EngagementNotReadyException` are all plain `Iverson.StarRocks` exception types already imported into `ObjectSearchGrpcService.cs` via `using Iverson.StarRocks;`, so Task 5's shared catch block needs no new `using` | `ObjectSearchGrpcService.cs:8` `using Iverson.StarRocks;`; existing `Search` RPC already catches all three by these exact names (read at plan-drafting time) |
 | 18 | Consumer impact | `SearchOperator.In` and `SearchValue.KindOneofCase.StringList` are the exact generated C# names Task 5's empty-IN check needs | `Iverson.Vector/IntelligenceFilterBuilder.cs`: `SearchOperator.In => (...)` and `clause.Value.KindCase != SearchValue.KindOneofCase.StringList` (existing code, same enum) |
 | 19 | Code validity (run) | `IntelligenceStoreConsumer.KeyToUlong`'s Guid -&gt; ulong mapping, needed to construct Task 7's fixed-id test Guids | Live run (this session): `Guid.Parse("00000000-0000-0000-0100-000000000000").ToByteArray()` sliced at `[8..15]` and read little-endian -&gt; `1`; `...-0200-...` -&gt; `2`; `...-6300-...` -&gt; `99`. A first draft used `...-0000-0000000000NN`, which does NOT round-trip to `NN` (it round-trips to a number in the 10^16-10^19 range) — caught and corrected in this same verification pass before the test code above was finalized |
+| 20 | Code validity | `SchemaBuilder`'s synthesized `"Document"` `ChunkDescriptor` for a document-template type is added directly to `chunks` (`SchemaBuilder.cs:186-192`), never through the per-property loop's `scalars.Add` (`SchemaBuilder.cs:63`, unconditional, runs before the `IsChunk` check at line 73) — so `"Document"` has no `ScalarColumns` entry and therefore no `EngagementQuerySchema.ColumnNames` entry; `ResolveColumn(schema, "Document")` returns `null` for such a schema. This is a real, tested, coexisting configuration, and `SearchChunks(property: "Document", ...)` is an existing, already-supported RPC input today, independent of this plan | `SchemaBuilder.cs:63,73,186-192,294-300,322-326`; `SchemaBuilderTests.cs:163-174` (asserts `ChunkFields` legitimately holds both an ordinary chunk property and `"Document"` simultaneously), `:616` (asserts `"Document"` is absent from `LargeFieldColumns`); `StarRocksQueryBuilder.cs:763-772` (`ResolveColumn`'s case-insensitive lookup over `ColumnNames.Append(KeyColumnName)`) — found by `critical-implementation-review` round 1's span check, re-confirmed live while applying its fix |
+| 21 | File path / line | `RunAsync`'s two harness call sites for `RunSimilarAsync`/`RunChunksAsync` are at `BenchmarkQueryScenario.cs:277,278-279`; neither method takes `flags` — `RunSimilarAsync(CorpusQuery query, Metadata headers, CancellationToken ct)` at `:369-370`, `RunChunksAsync(..., int chunkBudgetMultiplier, CancellationToken ct)` at `:414-417` — so `HybridLexical` must be threaded as an explicit parameter, matching how `flags.ChunkBudgetMultiplier` is already threaded to `RunChunksAsync` at the same two call sites | `BenchmarkQueryScenario.cs:60` (`RunAsync(CommandFlags flags, ...)`, `flags` is `RunAsync`-local), `:277-279` (the two call sites), `:369-370`, `:414-417` (both signatures) — re-confirmed live while applying `critical-implementation-review` round 1's fix |
 
 ## File Structure
 
@@ -381,9 +383,12 @@ In `StarRocksQueryBuilder.cs`, add after `BuildOrder` (after the closing brace a
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz,
         string? tenantDatabase = null)
     {
-        var param     = new DynamicParameters();
-        var quotedCol = $"`{columnName}`";
-        var quotedKey = $"`{schema.KeyColumnName}`";
+        var param       = new DynamicParameters();
+        var resolvedCol = ResolveColumn(schema, columnName)
+            ?? throw new EngagementQueryTranslationException(
+                $"'{columnName}' does not resolve to a column on '{schema.TypeName}'.");
+        var quotedCol   = $"`{resolvedCol}`";
+        var quotedKey   = $"`{schema.KeyColumnName}`";
 
         var tfSelects  = new List<string>();
         var dfSelects  = new List<string>();
@@ -1698,6 +1703,15 @@ In `BenchmarkQueryScenario.cs`, add `flags.HybridLexical` to the sidecar `JsonOb
                 ["hybridLexical"] = flags.HybridLexical,
 ```
 
+`RunSimilarAsync`/`RunChunksAsync` don't currently take a hybrid flag, and `HybridLexical` is a per-*run* flag (`CommandFlags`), not a per-*deployment* setting (`LoadTestConfig`) — so it must be threaded through as an explicit parameter, not a field. Four edits:
+
+Add a `bool hybridLexical` parameter to `RunSimilarAsync`'s signature (`BenchmarkQueryScenario.cs:369-370`):
+
+```csharp
+    private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed)> RunSimilarAsync(
+        CorpusQuery query, Metadata headers, bool hybridLexical, CancellationToken ct)
+```
+
 In `RunSimilarAsync`, after building the request and before the `try`:
 
 ```csharp
@@ -1705,7 +1719,13 @@ In `RunSimilarAsync`, after building the request and before the `try`:
             .Text(query.Text)
             .TopK(DocumentBudget)
             .Build();
-        if (HybridLexical) request.Hybrid = new HybridRank { Lexical = true };
+        if (hybridLexical) request.Hybrid = new HybridRank { Lexical = true };
+```
+
+Add the same `bool hybridLexical` parameter to `RunChunksAsync`'s signature (`BenchmarkQueryScenario.cs:414-417`, after `chunkBudgetMultiplier`):
+
+```csharp
+        int chunkBudgetMultiplier, bool hybridLexical, CancellationToken ct)
 ```
 
 In `RunChunksAsync`, after building the request and before the `try`:
@@ -1715,10 +1735,17 @@ In `RunChunksAsync`, after building the request and before the `try`:
             .Text(query.Text)
             .TopK((uint)(DocumentBudget * chunkBudgetMultiplier))
             .Build();
-        if (HybridLexical) request.Hybrid = new HybridRank { Lexical = true };
+        if (hybridLexical) request.Hybrid = new HybridRank { Lexical = true };
 ```
 
-Since `RunSimilarAsync`/`RunChunksAsync` don't currently take `flags`, add a private field set from the constructor's existing `LoadTestConfig config` parameter... **no** — `HybridLexical` is a per-*run* flag (`CommandFlags`), not a per-*deployment* setting (`LoadTestConfig`). Thread it through explicitly instead: add a `bool hybridLexical` parameter to both `RunSimilarAsync` and `RunChunksAsync`, and pass `flags.HybridLexical` at their two call sites inside `RunAsync`'s query loop (`var similar = await RunSimilarAsync(query, headers, ct);` and `var chunks = await RunChunksAsync(query, headers, keyMap, reranker, rerankInput, corpusText, flags.ChunkBudgetMultiplier, ct);`), matching how `flags.ChunkBudgetMultiplier` is already threaded through to `RunChunksAsync` today.
+And thread it at the two call sites inside `RunAsync`'s query loop (`BenchmarkQueryScenario.cs:277-279`), matching how `flags.ChunkBudgetMultiplier` is already threaded to `RunChunksAsync` today:
+
+```csharp
+            var similar = await RunSimilarAsync(query, headers, flags.HybridLexical, ct);
+            var chunks  = await RunChunksAsync(
+                query, headers, keyMap, reranker, rerankInput, corpusText, flags.ChunkBudgetMultiplier,
+                flags.HybridLexical, ct);
+```
 
 - [ ] **Step 3: Document the run precondition**
 
