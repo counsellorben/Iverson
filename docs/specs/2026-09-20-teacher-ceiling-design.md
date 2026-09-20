@@ -145,7 +145,7 @@ a reranked one":
 | Response is not valid JSON, or not a permutation of the 50 input ids | One retry with the same prompt; on a second failure the query is recorded unscored |
 | Any query unscored at the end | **The run file is not written.** Exit non-zero, listing the failures. Never filled from fusion order |
 | Prompt exceeds the token budget | Same as above. No truncation |
-| Instance dies mid-run | Raw per-query responses are appended to `--responses` as they arrive; a rerun resumes from that file |
+| Instance dies mid-run | Raw per-query responses are appended to `--responses` as they arrive; **rerunning the same pass with the same `--responses` path resumes from that file and issues no call for a query already present in it.** Resume is for completing an interrupted pass only |
 
 ## 7. Why listwise, and what it avoids
 
@@ -205,14 +205,18 @@ qrels file, so against the full 300-query qrels a 50-query pairing computes its 
 denominators (`report.py:517,526`) and reports the true subsample delta divided by 6, with the
 `query sets differ` warning suppressed (`report.py:596`); and `check_pool`'s ≥25%-reordered floor
 (`report.py:700,760-766`) rejects a near-deterministic second pass outright — which is the outcome
-this check exists to observe. Phase 1 never needed this — retrieval is bit-deterministic (0 of 323 sequences
+this check exists to observe. **Each pass writes its own `--responses` file, and neither reads the
+main run's.** The resume rule (§6 row 4) would otherwise replay the recorded answers and report
+`delta +0.0000`, `queries changed 0 / 50`, exit 0 — a zero noise floor indistinguishable from a
+perfectly deterministic teacher, which no structural check rejects. Phase 1 never needed this — retrieval is bit-deterministic (0 of 323 sequences
 differed across independent invocations) — but a language model is not, and the size of that noise
 floor conditions how much any near-threshold result can be trusted.
 
 ## 9. Artifacts and verdict
 
 Preserved under `~/repositories/iverson-benchmark-corpora/teacher-ceiling-2026-09/`: raw per-query
-responses (JSONL), the run file, the `.meta.json` sidecar, full `report.py` output, and the run log.
+responses (one JSONL per pass: main, repeat 1, repeat 2), the run file, the `.meta.json` sidecar,
+full `report.py` output, and the run log.
 **md5s of the run file and the report output go in the verdict doc** — the convention that makes a
 surprising result provably measured.
 
@@ -271,6 +275,7 @@ Verified 2026-09-20 against the repo and the preserved corpora.
 | A30 | A realistic teacher ordering clears §8 check 2's 25% floor | **Confirmed** — the tightest real case, a perfect oracle over these pools, reorders 113/300 = **37.7%** and exits 0; a listwise ordering over a shuffled 50-item list differs far more |
 | A31 | `report.py` does **not** enforce §8 check 5 | **Confirmed** — its structural check counts duplicate `(query_id, doc_id)` pairs (`report.py:243`, printed as `duplicate doc ids … (query, doc) pair(s)`), not `(qid, score)`. Check 5 needs its own computation by the executing session, as the Phase 1 gate did. §8 already scopes its `report.py` claim to "The first two" |
 | A32 | The 8192 completion budget | **Unverified here, and cannot be** — no tokenizer is reachable on this box (`transformers`, `tiktoken` both absent; `python-libs` holds only ir_measures, numpy, scipy, pyndeval, pytrec_eval). Covered operationally, not by measurement: `finish_reason: "length"` routes into §6 row 1, §6 row 2 then refuses a partial run file, and §11 budgets "under $20 including a failed pass" — so an inadequate budget costs a pass, loudly, and cannot silently corrupt the gate |
+| A33 | The repeat's two passes must not share a `--responses` file | **Confirmed** — two identical passes through the route §8 mandates print `delta +0.0000`, `permutation p = 1.0000`, `queries changed 0 / 50`, **exit 0**; the only banner is `!! FEW QUERIES CHANGED`, which fires identically for a genuinely deterministic teacher, so nothing distinguishes a replay from the real result. Separately: `--baseline` carries no reorder floor — `check_pool` is defined at `report.py:732` and called only at `:784` inside `run_pair_statistics`; `run_paired_statistics` (`:630`) never calls it |
 
 ## 11. Execution outline
 
@@ -285,8 +290,9 @@ Verified 2026-09-20 against the repo and the preserved corpora.
    GPU and no spend; the `--pair` stage is exercised by the real run, whose ordering differs.
 3. Rent the instance, serve the model, record vLLM version and the structured-output parameter name.
 4. Run 300 queries. Verify the five structural checks.
-5. Run the 50-query repeat, scoring both passes against a qrels file restricted to the subsample's
-   50 query ids, with `--baseline` and never `--pair` (§8).
+5. Run the 50-query repeat, each pass writing its own `--responses` file, scoring both passes
+   against a qrels file restricted to the subsample's 50 query ids, with `--baseline` and never
+   `--pair` (§8).
 6. Write the verdict doc with md5s; destroy the instance.
 
 Estimated spend: $2–5 per pass, under $20 including a failed pass and the repeat.
