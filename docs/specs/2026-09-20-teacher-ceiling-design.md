@@ -133,7 +133,8 @@ identity goes in a `"reranker"` block, exactly as `rerank-a1.meta.json` records 
 `test_teacher_rerank.py`, matching the existing `test_*.py` convention. Everything except the model
 call is tested on the dev box **before any GPU is rented**: permutation validation (missing,
 duplicated, invented ids), JSON parsing, the refusal-to-write rule, seeded-shuffle reproducibility,
-and run-file formatting.
+run-file formatting, and resume behaviour — that it skips a query with an accepted entry and
+re-issues one whose entries are all rejected.
 
 ## 6. Failure behaviour
 
@@ -145,7 +146,7 @@ a reranked one":
 | Response is not valid JSON, or not a permutation of the 50 input ids | One retry with the same prompt; on a second failure the query is recorded unscored |
 | Any query unscored at the end | **The run file is not written.** Exit non-zero, listing the failures. Never filled from fusion order |
 | Prompt exceeds the token budget | Same as above. No truncation |
-| Instance dies mid-run | Raw per-query responses are appended to `--responses` as they arrive; **rerunning the same pass with the same `--responses` path resumes from that file and issues no call for a query already present in it.** Resume is for completing an interrupted pass only |
+| Instance dies mid-run | Raw per-query responses are appended to `--responses` as they arrive, **each tagged accepted or rejected by the same permutation check row 1 applies**. Rerunning the same pass with the same `--responses` path resumes from that file and issues no call for a query that already has an **accepted** entry; a query whose entries are all rejected is called again, with row 1's retry budget fresh for that invocation. Where a query has both, the accepted entry is the one used. Resume is for completing an interrupted pass only |
 
 ## 7. Why listwise, and what it avoids
 
@@ -276,6 +277,7 @@ Verified 2026-09-20 against the repo and the preserved corpora.
 | A31 | `report.py` does **not** enforce §8 check 5 | **Confirmed** — its structural check counts duplicate `(query_id, doc_id)` pairs (`report.py:243`, printed as `duplicate doc ids … (query, doc) pair(s)`), not `(qid, score)`. Check 5 needs its own computation by the executing session, as the Phase 1 gate did. §8 already scopes its `report.py` claim to "The first two" |
 | A32 | The 8192 completion budget | **Unverified here, and cannot be** — no tokenizer is reachable on this box (`transformers`, `tiktoken` both absent; `python-libs` holds only ir_measures, numpy, scipy, pyndeval, pytrec_eval). Covered operationally, not by measurement: `finish_reason: "length"` routes into §6 row 1, §6 row 2 then refuses a partial run file, and §11 budgets "under $20 including a failed pass" — so an inadequate budget costs a pass, loudly, and cannot silently corrupt the gate |
 | A33 | The repeat's two passes must not share a `--responses` file | **Confirmed** — two identical passes through the route §8 mandates print `delta +0.0000`, `permutation p = 1.0000`, `queries changed 0 / 50`, **exit 0**; the only banner is `!! FEW QUERIES CHANGED`, which fires identically for a genuinely deterministic teacher, so nothing distinguishes a replay from the real result. Separately: `--baseline` carries no reorder floor — `check_pool` is defined at `report.py:732` and called only at `:784` inside `run_pair_statistics`; `run_paired_statistics` (`:630`) never calls it |
+| A34 | Resume must key on a **success ledger**, not on presence in the data log | **Confirmed** — this is the in-repo convention: `ingest.py:99` documents `.progress` as "one completed docId per line", `:859-862` reads it into `already_done`, `:888` skips on it, and `:892-897` writes the line only *after* `ingest_document` returns, so a failed document is retried on the next `--resume`. Its comment at `:877-882` names the inverse hazard — entries recorded without the work completing are ones "a later `--resume` would otherwise skip". §6 row 4's accepted/rejected tag is the same semantics inside one file |
 
 ## 11. Execution outline
 
