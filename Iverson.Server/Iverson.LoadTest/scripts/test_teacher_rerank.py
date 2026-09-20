@@ -1,0 +1,389 @@
+"""pytest suite for teacher_rerank.py (spec docs/specs/2026-09-20-teacher-ceiling-design.md,
+"Stage 1 of a three-stage line of work on per-tenant distilled rerankers"). Run with:
+
+    python3 -m pytest Iverson.Server/Iverson.LoadTest/scripts/test_teacher_rerank.py -q
+
+Everything except the model call is covered here, on the dev box, before any GPU is rented:
+permutation validation (missing/duplicated/invented/wrong-length rejection, exact-permutation
+acceptance, and P22's unquoted-JSON-number acceptance), JSON parsing, the refusal-to-write rule,
+seeded-shuffle reproducibility (against a literal expected order, per P7), run-file formatting, the
+resume rule (accepted skipped, all-rejected re-issued with a fresh budget, accepted wins when both
+exist), and --subsample's reproducible selection (against a literal expected selection, per P21).
+`build_prompt`/`call_teacher`/`write_sidecar` are the model-call path and the sidecar writer; the
+brief's Step 1 does not enumerate them, so they are exercised only indirectly here (call_teacher is
+monkeypatched out wherever score_query/main are driven).
+
+No non-stdlib imports beyond pytest -- nothing needs PYTHONPATH."""
+import json
+import os
+import sys
+from argparse import Namespace
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import teacher_rerank as tr  # noqa: E402
+
+
+def write(path, text):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return str(path)
+
+
+# --------------------------------------------------------------------------------------------
+# validate_permutation -- missing / duplicated / invented / wrong-length rejection,
+# exact-permutation acceptance, and unquoted-JSON-number acceptance (P22)
+# --------------------------------------------------------------------------------------------
+
+EXPECTED = ["10", "20", "30", "40", "50"]
+
+
+def test_validate_permutation_accepts_an_exact_permutation():
+    ok, result = tr.validate_permutation(["30", "10", "50", "20", "40"], EXPECTED)
+    assert ok is True
+    assert result == ["30", "10", "50", "20", "40"]
+
+
+def test_validate_permutation_rejects_the_wrong_length():
+    ok, reason = tr.validate_permutation(["10", "20", "30"], EXPECTED)
+    assert ok is False
+    assert "length" in reason
+
+
+def test_validate_permutation_rejects_a_duplicated_id():
+    """Five slots, but '10' appears twice and '50' is dropped -- same length as EXPECTED."""
+    ok, reason = tr.validate_permutation(["10", "10", "20", "30", "40"], EXPECTED)
+    assert ok is False
+    assert "duplicat" in reason
+
+
+def test_validate_permutation_rejects_a_response_missing_an_expected_id():
+    """Same length, no duplicates, but '50' never appears and '99' (not in the pool) fills its
+    slot instead -- from the pool's perspective, '50' is MISSING."""
+    ok, reason = tr.validate_permutation(["10", "20", "30", "40", "99"], EXPECTED)
+    assert ok is False
+    assert "missing" in reason
+    assert "50" in reason
+
+
+def test_validate_permutation_rejects_a_response_with_an_invented_id():
+    """Same scenario read from the candidate's side: '99' is an id the pool never offered."""
+    ok, reason = tr.validate_permutation(["10", "20", "30", "40", "99"], EXPECTED)
+    assert ok is False
+    assert "invented" in reason
+    assert "99" in reason
+
+
+def test_validate_permutation_accepts_unquoted_json_numbers():
+    """P22: a reply whose ids are unquoted JSON numbers (decoded as Python ints, not strings) must
+    be ACCEPTED once normalised with str() -- this is the branch Task 2's stub cannot reach, since
+    it always emits ids as strings. Without per-element str() normalisation, set(int) == set(str)
+    is False for every query, which would reject every reply and produce no run file."""
+    candidate_ids = [30, 10, 50, 20, 40]  # json.loads(...) of "[30, 10, 50, 20, 40]" -> Python ints
+    ok, result = tr.validate_permutation(candidate_ids, EXPECTED)
+    assert ok is True
+    assert result == ["30", "10", "50", "20", "40"]
+    assert all(isinstance(doc_id, str) for doc_id in result)
+
+
+# --------------------------------------------------------------------------------------------
+# parse_json_array -- rejects a non-array and a non-JSON body
+# --------------------------------------------------------------------------------------------
+
+def test_parse_json_array_rejects_non_json_text():
+    ids, reason = tr.parse_json_array("this is not json at all")
+    assert ids is None
+    assert "JSON" in reason
+
+
+def test_parse_json_array_rejects_a_json_object_that_is_not_an_array():
+    ids, reason = tr.parse_json_array('{"ranking": ["10", "20"]}')
+    assert ids is None
+    assert "array" in reason
+
+
+def test_parse_json_array_accepts_a_json_array():
+    ids, reason = tr.parse_json_array('["10", "20", "30"]')
+    assert reason is None
+    assert ids == ["10", "20", "30"]
+
+
+# --------------------------------------------------------------------------------------------
+# shuffled_doc_order -- seeded-shuffle reproducibility (P7), against a LITERAL expected order
+# --------------------------------------------------------------------------------------------
+
+def test_shuffled_doc_order_matches_a_literal_expected_order():
+    """The literal below was computed once via:
+        random.Random(f"7:q1").shuffle(["101","102","103","104","105"])
+    and independently reproduced across separate process invocations, including under
+    PYTHONHASHSEED=random, proving random.Random's string seeding is NOT hash()-based (hash() of a
+    str is randomized per process unless PYTHONHASHSEED is fixed). Asserting against this pasted
+    literal -- rather than calling shuffled_doc_order a second time in this same process and
+    comparing the two results -- is what makes this test able to catch an implementation that used
+    `random.Random(hash(query_id))` instead: within one process hash() is stable, so a
+    call-vs-call comparison would pass even on a `hash()`-based, cross-process-unreproducible
+    implementation. Only a pre-computed literal exposes that bug."""
+    doc_ids = ["101", "102", "103", "104", "105"]
+    order = tr.shuffled_doc_order(doc_ids, shuffle_seed=7, query_id="q1")
+    assert order == ["105", "103", "101", "104", "102"]
+
+
+def test_shuffled_doc_order_differs_by_query_id_under_the_same_shuffle_seed():
+    """Confirms the seed is genuinely per-query (f"{shuffle_seed}:{query_id}"), not global -- two
+    different query ids under the same shuffle_seed must not collapse to the same order."""
+    doc_ids = ["101", "102", "103", "104", "105"]
+    order_q1 = tr.shuffled_doc_order(doc_ids, shuffle_seed=7, query_id="q1")
+    order_q2 = tr.shuffled_doc_order(doc_ids, shuffle_seed=7, query_id="q2")
+    assert order_q1 != order_q2
+
+
+def test_shuffled_doc_order_leaves_the_input_list_untouched():
+    doc_ids = ["101", "102", "103"]
+    tr.shuffled_doc_order(doc_ids, shuffle_seed=1, query_id="q1")
+    assert doc_ids == ["101", "102", "103"]
+
+
+# --------------------------------------------------------------------------------------------
+# select_subsample -- reproducible selection (P21), against a LITERAL expected selection
+# --------------------------------------------------------------------------------------------
+
+def test_select_subsample_matches_a_literal_expected_selection():
+    """The literal below was computed once via:
+        random.Random(f"99").sample(sorted(["5","3","1","4","2","9","7","6","8"]), 4)
+    Sorting before sampling is load-bearing (P21): if the ids were collected into a `set` instead
+    (unordered), the sample would differ across processes/Python versions even with the same seed,
+    because random.sample's result depends on input order as well as the seed. A literal, not a
+    second in-process call, is what would catch a regression to an unsorted collection."""
+    run_query_ids = ["5", "3", "1", "4", "2", "9", "7", "6", "8"]
+    selection = tr.select_subsample(run_query_ids, n=4, subsample_seed=99)
+    assert selection == ["2", "9", "1", "5"]
+
+
+def test_select_subsample_is_the_same_across_repeated_calls():
+    run_query_ids = ["5", "3", "1", "4", "2", "9", "7", "6", "8"]
+    first = tr.select_subsample(run_query_ids, n=4, subsample_seed=99)
+    second = tr.select_subsample(run_query_ids, n=4, subsample_seed=99)
+    assert first == second
+
+
+def test_select_subsample_is_insensitive_to_input_order():
+    """Sorting before sampling means the selection must not depend on the order run_query_ids
+    arrived in -- a shuffled input must select the same ids."""
+    sorted_ids = ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+    shuffled_ids = ["8", "1", "9", "3", "5", "2", "7", "4", "6"]
+    assert tr.select_subsample(sorted_ids, 4, 99) == tr.select_subsample(shuffled_ids, 4, 99)
+
+
+# --------------------------------------------------------------------------------------------
+# write_run -- 6 columns, score = 51 - position, ranks 1..50 map to scores 50..1
+# --------------------------------------------------------------------------------------------
+
+def test_write_run_produces_six_whitespace_columns_score_51_minus_position(tmp_path):
+    doc_ids = [f"doc{i}" for i in range(50)]  # 50 docs -> ranks 1..50
+    scored_pool = {"q1": doc_ids}
+    out_path = str(tmp_path / "out.chunks.trec")
+    tr.write_run(out_path, scored_pool, pool_query_order=["q1"])
+
+    with open(out_path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    assert len(lines) == 50
+
+    for position, line in enumerate(lines, start=1):
+        fields = line.split()
+        assert len(fields) == 6, f"expected 6 columns, got {len(fields)}: {line!r}"
+        query_id, iteration, doc_id, rank, score, tag = fields
+        assert query_id == "q1"
+        assert iteration == "Q0"
+        assert doc_id == f"doc{position - 1}"
+        assert int(rank) == position
+        assert score == f"{51 - position:.6f}"
+
+    # rank 1 -> score 50.000000; rank 50 -> score 1.000000, never 0.000000
+    assert lines[0].split()[4] == "50.000000"
+    assert lines[-1].split()[4] == "1.000000"
+    assert all(line.split()[4] != "0.000000" for line in lines)
+
+
+def test_write_run_preserves_pool_query_order_not_dict_order(tmp_path):
+    scored_pool = {"2": ["y"], "1": ["b", "a"]}
+    out_path = str(tmp_path / "out.chunks.trec")
+    tr.write_run(out_path, scored_pool, pool_query_order=["1", "2"])
+    with open(out_path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    assert lines == [
+        "1 Q0 b 1 50.000000 teacher-ceiling",
+        "1 Q0 a 2 49.000000 teacher-ceiling",
+        "2 Q0 y 1 50.000000 teacher-ceiling",
+    ]
+
+
+# --------------------------------------------------------------------------------------------
+# Fixtures for the main()-level tests: refusal-to-write and resume
+# --------------------------------------------------------------------------------------------
+
+class ScriptedTeacher:
+    """Monkeypatches tr.call_teacher with a fixed queue of (content, finish_reason) replies,
+    returned in call order. Records how many times it was invoked so a test can assert exactly
+    which queries actually triggered a model call (e.g. that a resumed, already-accepted query
+    triggers none)."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.calls = 0
+
+    def __call__(self, base_url, model, prompt, seed):
+        self.calls += 1
+        return self.replies.pop(0)
+
+
+def make_fixture_files(tmp_path):
+    """Two queries, three docs each -- hand-computable. q1: d1/d2/d3, q2: e1/e2/e3."""
+    run_path = write(
+        tmp_path / "a0prime.chunks.trec",
+        "q1 Q0 d1 1 0.9 rerank-a0prime\n"
+        "q1 Q0 d2 2 0.8 rerank-a0prime\n"
+        "q1 Q0 d3 3 0.7 rerank-a0prime\n"
+        "q2 Q0 e1 1 0.9 rerank-a0prime\n"
+        "q2 Q0 e2 2 0.8 rerank-a0prime\n"
+        "q2 Q0 e3 3 0.7 rerank-a0prime\n",
+    )
+    corpus_lines = "\n".join(
+        json.dumps({"_id": doc_id, "title": f"title {doc_id}", "text": f"text {doc_id}"})
+        for doc_id in ["d1", "d2", "d3", "e1", "e2", "e3"]
+    )
+    corpus_path = write(tmp_path / "corpus.jsonl", corpus_lines + "\n")
+    queries_path = write(
+        tmp_path / "queries.jsonl",
+        json.dumps({"_id": "q1", "text": "query one"}) + "\n"
+        + json.dumps({"_id": "q2", "text": "query two"}) + "\n",
+    )
+    return run_path, corpus_path, queries_path
+
+
+def base_argv(run_path, corpus_path, queries_path, responses_path, out_path):
+    return [
+        "--run", run_path,
+        "--corpus", corpus_path,
+        "--queries", queries_path,
+        "--base-url", "http://unused.invalid",
+        "--model", "unused-model",
+        "--seed", "0",
+        "--shuffle-seed", "0",
+        "--responses", responses_path,
+        "--out", out_path,
+    ]
+
+
+# --------------------------------------------------------------------------------------------
+# Refusal-to-write: any query unscored -> no run file written, non-zero exit, failures listed
+# --------------------------------------------------------------------------------------------
+
+def test_main_refuses_to_write_a_run_file_when_any_query_is_unscored(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    # q1 succeeds on its first attempt; q2 fails invalid JSON on both of its RETRY_BUDGET (2)
+    # attempts and is therefore left unscored -- the run file must not be written even though q1
+    # itself scored fine, and never filled from fusion order for the query that failed.
+    scripted = ScriptedTeacher([
+        ('["d3", "d1", "d2"]', "stop"),
+        ("not valid json", "stop"),
+        ("still not valid json", "stop"),
+    ])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    with pytest.raises(SystemExit) as exc_info:
+        tr.main(argv)
+
+    assert exc_info.value.code != 0
+    message = str(exc_info.value)
+    assert "q2" in message
+    assert "1" in message  # "1 / 2 queries unscored"
+    assert not os.path.exists(out_path), "no run file may be written when any query is unscored"
+    assert scripted.calls == 3
+
+    # every attempt, including q1's accepted one, was still durably logged to --responses
+    with open(responses_path, encoding="utf-8") as f:
+        records = [json.loads(line) for line in f if line.strip()]
+    assert len(records) == 3
+    assert records[0]["status"] == "accepted"
+    assert records[0]["query_id"] == "q1"
+    assert all(r["status"] == "rejected" for r in records[1:])
+    assert all(r["query_id"] == "q2" for r in records[1:])
+
+
+# --------------------------------------------------------------------------------------------
+# Fail loud before any (paid) model call: a query id missing from --queries, or a doc id missing
+# from --corpus, must be refused up front -- not surfaced as a KeyError partway through a run
+# that already spent money on earlier queries.
+# --------------------------------------------------------------------------------------------
+
+def test_main_refuses_a_missing_query_id_before_any_model_call(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    # Rewrite queries.jsonl to omit q2 entirely.
+    write(queries_path, json.dumps({"_id": "q1", "text": "query one"}) + "\n")
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    scripted = ScriptedTeacher([])  # must never be called
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    with pytest.raises(SystemExit) as exc_info:
+        tr.main(argv)
+
+    assert "q2" in str(exc_info.value)
+    assert scripted.calls == 0
+    assert not os.path.exists(out_path)
+    assert not os.path.exists(responses_path), "nothing should have been written to --responses either"
+
+
+# --------------------------------------------------------------------------------------------
+# Resume: accepted entry skipped; all-rejected entries re-issued with a fresh retry budget;
+# where both exist, the accepted entry wins
+# --------------------------------------------------------------------------------------------
+
+def test_main_resumes_skipping_accepted_and_reissuing_all_rejected_queries(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    # Ledger from a previous, interrupted invocation:
+    #   q1 has BOTH a rejected entry (a failed first attempt) and an accepted entry (a
+    #      successful retry) -- the accepted entry must be the one resume uses.
+    #   q2 has only rejected entries (its previous invocation exhausted its budget) -- this
+    #      invocation must re-issue it with a FRESH RETRY_BUDGET, not treat it as permanently
+    #      failed because of entries already in the ledger.
+    prior_records = [
+        {"query_id": "q1", "status": "rejected", "content": "bad", "order": None, "reason": "invalid JSON"},
+        {"query_id": "q1", "status": "accepted", "content": '["d3","d2","d1"]', "order": ["d3", "d2", "d1"], "reason": None},
+        {"query_id": "q2", "status": "rejected", "content": "bad", "order": None, "reason": "invalid JSON"},
+        {"query_id": "q2", "status": "rejected", "content": "bad again", "order": None, "reason": "invalid JSON"},
+    ]
+    write(responses_path, "\n".join(json.dumps(r) for r in prior_records) + "\n")
+
+    # Only ONE reply queued: if q1 were (wrongly) re-called, or if q2's fresh budget were
+    # (wrongly) treated as already exhausted, this test would fail -- either by call count or by
+    # a SystemExit for an unscored q2.
+    scripted = ScriptedTeacher([
+        ('["e2", "e1", "e3"]', "stop"),
+    ])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    tr.main(argv)  # must not raise -- both queries end up scored
+
+    assert scripted.calls == 1, "q1 has an accepted entry and must not trigger a call"
+
+    with open(out_path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    q1_lines = [l for l in lines if l.startswith("q1 ")]
+    q2_lines = [l for l in lines if l.startswith("q2 ")]
+
+    # q1's order must be the ACCEPTED ledger entry's order (d3, d2, d1), not the rejected one.
+    assert [l.split()[2] for l in q1_lines] == ["d3", "d2", "d1"]
+    # q2's order must be the fresh, successful reply from this invocation.
+    assert [l.split()[2] for l in q2_lines] == ["e2", "e1", "e3"]
