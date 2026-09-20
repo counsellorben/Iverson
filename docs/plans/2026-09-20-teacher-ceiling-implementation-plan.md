@@ -68,6 +68,15 @@ Newly introduced by this plan and verified 2026-09-20 at plan-write time.
 | P12 | Consumer | `~/repositories/iverson-benchmark-corpora/` is **not** a git repo — artifact steps must not `git add` there | `git -C … rev-parse` → `fatal: not a git repository` |
 | P13 | Consumer | Nothing globs `scripts/test_*.py` in a build or CI that the new suite would silently join | `command grep` over `*.yml`/`*.yaml`/`*.csproj`/`*.sh`/`*.slnx` → no hits |
 | P14 | Ordering | Task 2 depends only on Task 1; Task 3 on Tasks 1–2; Task 4 on Task 3's artifacts. Tasks 3's provisioning, main run and repeat share one rented instance and are therefore one task | by construction — see the task headers |
+| P15 | Code validity | `corpus.jsonl` records carry exactly `_id`/`title`/`text`; `queries.jsonl` carries `_id`/`text`. "Abstract" is the `text` field | all 5,183 corpus records have key set `('_id','text','title')` and all 300 query records `('_id','text')`; **0** records with an empty title or text |
+| P16 | Signature | `popularity_rerank.py`'s pattern exists as cited | `load_run` at `:83`, `write_run` at `:226`, `--run` at `:251`, `--out` at `:255`; `write_run` emits `f"{query_id} Q0 {doc_id} {rank} {score:.6f} {tag}\n"` |
+| P17 | File shape | `test_popularity_rerank.py`'s shape is as Task 1 Step 1 prescribes | docstring names the run command at `:1-5`; `sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))` at `:25`; `:18` states "No non-stdlib imports beyond pytest" |
+| P18 | File path | The gate-doc precedent Task 4 cites exists | `ls docs/plans/2026-09-GATE-reranker-phase1.md` resolves |
+| P19 | Consumer | The new script paths are **not** gitignored, so Tasks 1–2 commit with a plain `git add` | `git check-ignore -v` on the new script path returns nothing; sibling `popularity_rerank.py` is tracked |
+| P20 | Code validity | Task 4's report output is re-derivable after the instance is destroyed | `report.py:113-114` — `PERMUTATION_SEED = 20260831`, `PERMUTATION_RESAMPLES = 10_000` are fixed constants, so re-running against the preserved run file reproduces the same p |
+| P21 | Code validity | The repeat's subsample selection is reproducible across processes | `random.Random('repeat-2026-09').sample(sorted(qids), 50)` returned the identical 50 ids in two separate interpreters, over the real 300-query id set. Sorting before sampling is load-bearing |
+| P22 | Code validity | Reply ids may decode as JSON **numbers**, and `str()`-normalisation is total over this id population | `set(json.loads('[7583104,…]')) == set(pool)` → **False**; with `str()` → **True**; an invented id still fails. All 4,083 ids are pure digits with 0 leading zeros (spec A28), so `str(int(x)) == x` for every one |
+| P23 | Command | `PYTHONPATH` and `B` do not survive between tasks | `env -u PYTHONPATH … report.py` → `could not import ir_measures … It must be reached via PYTHONPATH`; with `B` unset, `$B/qrels.trec` expands to `/qrels.trec`, which `report.py` rejects as not found |
 
 ## Tasks
 
@@ -86,7 +95,9 @@ Newly introduced by this plan and verified 2026-09-20 at plan-write time.
   - the refusal-to-write rule: any query unscored ⇒ no run file written, non-zero exit, failures listed;
   - seeded-shuffle reproducibility: the same `--shuffle-seed` and query id give the same presentation order **in a separate process** (P7 — assert against a literal expected order, not against a second in-process call, or the test cannot catch a `hash()`-based seed);
   - run-file formatting: 6 whitespace-delimited columns, `score = 51 − position`, so ranks 1..50 map to 50..1 and no score is `0.000000`;
-  - resume: a query with an **accepted** entry is skipped; a query whose entries are **all rejected** is re-issued with a fresh retry budget; where both exist the accepted entry wins (spec §6 row 4, A34).
+  - resume: a query with an **accepted** entry is skipped; a query whose entries are **all rejected** is re-issued with a fresh retry budget; where both exist the accepted entry wins (spec §6 row 4, A34);
+  - **a reply whose ids are unquoted JSON numbers is accepted** as a valid permutation (P22) — this is the branch Task 2's stub cannot reach, since it emits ids as strings;
+  - `--subsample N --subsample-seed S` selects the same N query ids on every invocation, asserted against a literal expected selection (P21).
 
 - [ ] **Step 2: Run the suite; confirm it fails.**
 ```bash
@@ -98,6 +109,7 @@ python3 -m pytest Iverson.Server/Iverson.LoadTest/scripts/test_teacher_rerank.py
 teacher_rerank.py --run <a0prime.chunks.trec> --corpus <corpus.jsonl> --queries <queries.jsonl>
                   --base-url <vllm> --model <id> --seed N --shuffle-seed N
                   --responses <raw.jsonl> --out <teacher.chunks.trec>
+                  [--subsample N --subsample-seed S]
 ```
   Behaviour, all from spec §§3–6:
   - one call per query; prompt carries the query text and all 50 documents (title + abstract), each labelled by doc id;
@@ -105,6 +117,8 @@ teacher_rerank.py --run <a0prime.chunks.trec> --corpus <corpus.jsonl> --queries 
   - POST to `{base_url}/v1/chat/completions` with stdlib `urllib.request`, `temperature: 0`, `stream: false`, `max_tokens: 8192`, and vLLM guided decoding to a JSON-array schema — the executing session confirms the structured-output parameter name against the installed vLLM version and records it (spec §4, A14);
   - a reply with `finish_reason: "length"` is a §6 row-1 failure and is never parsed;
   - each raw response appended to `--responses` **tagged accepted or rejected** by the permutation check; resume skips a query with an accepted entry, re-issues one whose entries are all rejected;
+  - **reply ids are normalised with `str()` per element before the permutation comparison**, and the `--responses` ledger's query key is written and read as a string — spec A28 anticipates ids decoding as JSON numbers, and an unnormalised `set(int) == set(str)` is `False` for every query, which would reject every reply and produce no run file (P22). Pin the guided-decoding schema's item type to string (`{"type":"array","items":{"type":"string"}}`) as well;
+  - `--subsample N --subsample-seed S` (optional, used only by Task 3 Step 5) selects N query ids with `random.Random(f"{subsample_seed}").sample(sorted(run_query_ids), N)` — **sorted before sampling**, which is what makes it reproducible (P21) — and records both values in the sidecar;
   - write the run file only if every query scored; write `<label>.meta.json` beside it carrying `"composite": "31583db5aea49136"` and the `reranker` block from spec §5.
 
 - [ ] **Step 4: Run the suite; confirm green.** Same command as Step 2.
@@ -163,14 +177,18 @@ Everything that costs money happens here, in one session on one instance. Provis
 
 - [ ] **Step 4: Score the main run and verify all five structural checks** (spec §8). Checks 1–2 are enforced by `--pair`, which exits 1 on violation; checks 3–5 are read off the output, and **check 5 needs its own computation** because `report.py` counts duplicate `(query_id, doc_id)`, not `(qid, score)` (A31).
 ```bash
+export PYTHONPATH=~/repositories/iverson-benchmark-corpora/python-libs
+B=~/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26
 python3 Iverson.Server/Iverson.LoadTest/scripts/report.py \
   --run <teacher>.chunks.trec --qrels $B/qrels.trec \
   --pair <teacher>.chunks.trec=$B/runs/rerank-a0prime.chunks.trec
 ```
   Pool invariance: doc set changed on 0 of 300. ≥25% reordered. R@50 identical to 0.9193 at four decimals. No result above the oracle 0.9196 — above it means label leakage. Zero duplicate `(qid, score)` pairs.
 
-- [ ] **Step 5: Run the 50-query repeat.** A seeded 50-query subsample, **each pass writing its own `--responses` file** and neither reading the main run's (spec §8, A33) — otherwise resume replays pass 1 and the noise floor reads as exactly zero. Build a qrels restricted to the subsample's own 50 query ids, then compare with `--baseline`, **never `--pair`** (A29: against the full 300-query qrels the delta is averaged over 300 denominators and reported at one-sixth its true size, with the `query sets differ` warning suppressed).
+- [ ] **Step 5: Run the 50-query repeat.** Both passes select the subsample with `--subsample 50 --subsample-seed <S>`, the same S for each, **each pass writing its own `--responses` file** and neither reading the main run's (spec §8, A33) — otherwise resume replays pass 1 and the noise floor reads as exactly zero. Build a qrels restricted to the subsample's own 50 query ids, then compare with `--baseline`, **never `--pair`** (A29: against the full 300-query qrels the delta is averaged over 300 denominators and reported at one-sixth its true size, with the `query sets differ` warning suppressed).
 ```bash
+# the same two lines as Step 4, if this runs in a separate shell
+export PYTHONPATH=~/repositories/iverson-benchmark-corpora/python-libs
 python3 Iverson.Server/Iverson.LoadTest/scripts/report.py \
   --run <pass2>.chunks.trec --qrels <qrels-sub50>.trec --baseline <pass1>.chunks.trec
 ```
