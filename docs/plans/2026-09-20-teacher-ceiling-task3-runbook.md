@@ -141,7 +141,18 @@ python3 $S/report.py --run $A/teacher-ceiling.chunks.trec --qrels $B/qrels.trec 
 | 2 | ≥25% of queries reordered | `--pair` exits 1 with `ARM INVALID … at least 25% is required` otherwise |
 | 3 | `R@50` identical to `0.9193` at 4 dp | read off `[scores]`; a deviation means the pool was corrupted |
 | 4 | No result above the oracle **0.9196** | above it means label leakage, not a good teacher — stop and investigate |
-| 5 | Zero duplicate `(qid, score)` pairs | **`report.py` does not compute this** — it counts duplicate `(query_id, doc_id)`. Compute it yourself (one `sort \| uniq -d` over columns 1 and 5) |
+| 5 | Zero duplicate `(qid, score)` pairs | **`report.py` does not compute this** — it counts duplicate `(query_id, doc_id)`. Run it yourself (below) |
+
+Check 5, explicitly — expect `0`:
+
+```bash
+awk '{print $1, $5}' $A/teacher-ceiling.chunks.trec | sort | uniq -d | wc -l
+```
+
+Run it on the **teacher** run, not the baseline: scores there are rank-derived (`51 − position`) so
+ties are structurally impossible, and any duplicate means a writer bug. The same command on
+`rerank-a0prime.chunks.trec` returns `7` — those are real ties in the fusion scores, all at rank ≥23,
+and they are a property of the baseline, not a defect.
 
 ---
 
@@ -167,6 +178,11 @@ awk 'NR==FNR{ids[$1];next} $1 in ids' /tmp/sub50.ids $B/qrels.trec > $A/qrels-su
 python3 $S/report.py --run $A/repeat-2.chunks.trec --qrels $A/qrels-sub50.trec \
         --baseline $A/repeat-1.chunks.trec
 ```
+
+`qrels.trec` is **TAB**-separated while the run files are space-separated. The `awk` above handles
+both (its default field splitting covers tabs), but `cut -d' ' -f1` on the qrels returns the whole
+line and will silently miscount if you verify the result that way — check with
+`awk '{print $1}' $A/qrels-sub50.trec | sort -u | wc -l`, expect `50`.
 
 Two traps, both already burned once in design review:
 
