@@ -4,11 +4,21 @@ docs/specs/2026-09-20-teacher-ceiling-design.md §11 step 2). Stands in for a re
 `teacher_rerank.py` can be exercised end to end -- prompt construction, permutation validation, the
 run writer, and the scorer -- for zero cost, before Task 3 spends real money.
 
-It answers every query with that query's doc ids **in input-run order** (the A0' run file's own
-row order), NOT the shuffled order teacher_rerank.py presented in the prompt: it ignores the
-shuffle and reconstructs fusion order. That makes the dry run's output order-identical to the A0'
-run it started from, which is exactly what report.py's plain `--run`/`--qrels` scoring (not
-`--pair`) must reproduce to the two exact numbers the gate checks (spec §11 step 2).
+It answers every query with that query's doc ids **in input-run order** by default (the A0' run
+file's own row order), NOT the shuffled order teacher_rerank.py presented in the prompt: it
+ignores the shuffle and reconstructs fusion order. That makes the dry run's output order-identical
+to the A0' run it started from, which is exactly what report.py's plain `--run`/`--qrels` scoring
+(not `--pair`) must reproduce to the two exact numbers the gate checks (spec §11 step 2).
+
+`--order reversed` answers instead with each query's ids in REVERSE input-run order. This is the
+other half of the gate (fix round 1, controller ruling): a pipeline bug that discards the model's
+reply and silently falls back to writing fusion order -- exactly the shape of the bug the reviewer
+found, where `score_query` returned the input pool unchanged and the dry run byte-matched the A0'
+baseline under `--order input-run` too -- would emit fusion order in BOTH modes and so score the
+identity-order numbers again under `--order reversed`, instead of the reversed-order numbers. A
+single-mode gate cannot tell "the teacher reordered the pool" apart from "the teacher's reply was
+thrown away and fusion order leaked through"; two modes with two different, exactly-pinned
+acceptance numbers can.
 
 Query identification: the request body carries only the rendered prompt, not a query id, so this
 server recovers the query id by extracting the query text embedded between teacher_rerank.py's
@@ -24,7 +34,8 @@ Run with:
 
     python3 Iverson.Server/Iverson.LoadTest/scripts/stub_vllm_server.py \\
         --run scifact-run-2026-08-26/runs/rerank-a0prime.chunks.trec \\
-        --queries scifact-run-2026-08-26/beir/queries.jsonl
+        --queries scifact-run-2026-08-26/beir/queries.jsonl \\
+        --order input-run
 
 Prints the bound port to stdout, then serves until killed.
 """
@@ -42,11 +53,15 @@ DOCUMENTS_MARKER = "\n\nDocuments (doc id, title, abstract):\n"
 # ── load_run -- own copy, this directory's convention (teacher_rerank.py does not import
 #    popularity_rerank.py's either; see that module's docstring) ────────────────────────────────
 
-def load_run(path):
+def load_run(path, order):
     """Parses a 6-column TREC run: `queryId Q0 docId rank score tag`, whitespace-separated.
     Returns {queryId: [docId, ...]} in file (rank) order -- this IS "input-run order" (spec §11
     step 2): the A0' run file's rows are already fusion-ranked, so preserving file order here is
-    exactly reconstructing fusion order, with no separate sort needed."""
+    exactly reconstructing fusion order, with no separate sort needed.
+
+    `order` selects the mode this stub answers in (fix round 1, controller ruling): `"input-run"`
+    keeps each query's ids in that file order; `"reversed"` reverses each query's list once here,
+    at load time, so every subsequent lookup just serves the already-reversed list."""
     pool = {}
     with open(path, encoding="utf-8") as f:
         for lineno, line in enumerate(f, start=1):
@@ -62,6 +77,8 @@ def load_run(path):
             rows.append(doc_id)
     if not pool:
         sys.exit(f"{path}: no run rows")
+    if order == "reversed":
+        pool = {query_id: list(reversed(ids)) for query_id, ids in pool.items()}
     return pool
 
 
@@ -143,12 +160,16 @@ def build_arg_parser():
     ap.add_argument("--run", required=True, help="the A0' TREC run whose input order this stub reconstructs")
     ap.add_argument("--queries", required=True, help="BEIR queries.jsonl (keys: _id, text)")
     ap.add_argument("--port", type=int, default=0, help="port to bind on 127.0.0.1; 0 (default) picks an ephemeral port")
+    ap.add_argument(
+        "--order", choices=["input-run", "reversed"], default="input-run",
+        help="reply order per query: 'input-run' (default, fusion order) or 'reversed' (fix round 1 gate)",
+    )
     return ap
 
 
 def main(argv=None):
     args = build_arg_parser().parse_args(argv)
-    pool = load_run(args.run)
+    pool = load_run(args.run, args.order)
     queries_by_text = load_queries_by_text(args.queries)
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(pool, queries_by_text))
