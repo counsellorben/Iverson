@@ -70,7 +70,7 @@ Newly introduced by this plan and verified 2026-09-20 at plan-write time.
 | P14 | Ordering | Task 2 depends only on Task 1; Task 3 on Tasks 1–2; Task 4 on Task 3's artifacts. Tasks 3's provisioning, main run and repeat share one rented instance and are therefore one task | by construction — see the task headers |
 | P15 | Code validity | `corpus.jsonl` records carry exactly `_id`/`title`/`text`; `queries.jsonl` carries `_id`/`text`. "Abstract" is the `text` field | all 5,183 corpus records have key set `('_id','text','title')` and all 300 query records `('_id','text')`; **0** records with an empty title or text |
 | P16 | Signature | `popularity_rerank.py`'s pattern exists as cited | `load_run` at `:83`, `write_run` at `:226`, `--run` at `:251`, `--out` at `:255`; `write_run` emits `f"{query_id} Q0 {doc_id} {rank} {score:.6f} {tag}\n"` |
-| P17 | File shape | `test_popularity_rerank.py`'s shape is as Task 1 Step 1 prescribes | docstring names the run command at `:1-5`; `sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))` at `:25`; `:18` states "No non-stdlib imports beyond pytest" |
+| P17 | File shape | `test_popularity_rerank.py`'s shape is as Task 1 Step 1 prescribes | docstring names the run command at `:1-5`; `sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))` at `:25`; `:19` states "No non-stdlib imports beyond pytest" |
 | P18 | File path | The gate-doc precedent Task 4 cites exists | `ls docs/plans/2026-09-GATE-reranker-phase1.md` resolves |
 | P19 | Consumer | The new script paths are **not** gitignored, so Tasks 1–2 commit with a plain `git add` | `git check-ignore -v` on the new script path returns nothing; sibling `popularity_rerank.py` is tracked |
 | P20 | Code validity | Task 4's report output is re-derivable after the instance is destroyed | `report.py:113-114` — `PERMUTATION_SEED = 20260831`, `PERMUTATION_RESAMPLES = 10_000` are fixed constants, so re-running against the preserved run file reproduces the same p |
@@ -89,7 +89,7 @@ Newly introduced by this plan and verified 2026-09-20 at plan-write time.
 **Interfaces:**
 - Produces: the CLI Task 2 and Task 3 invoke; the run-file + sidecar format `report.py` consumes.
 
-- [ ] **Step 1: Write the pytest suite first.** Match `test_popularity_rerank.py`'s shape — module docstring naming the run command, `sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`, stdlib + pytest only, hand-computable fixtures. Cover the six properties spec §5 names:
+- [ ] **Step 1: Write the pytest suite first.** Match `test_popularity_rerank.py`'s shape — module docstring naming the run command, `sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`, stdlib + pytest only, hand-computable fixtures. Cover the six properties spec §5 names, plus the two the round-1 review added:
   - permutation validation rejects a reply with a missing id, a duplicated id, an invented id, or the wrong length, and accepts an exact permutation;
   - JSON parsing rejects a non-array and a non-JSON body;
   - the refusal-to-write rule: any query unscored ⇒ no run file written, non-zero exit, failures listed;
@@ -187,7 +187,7 @@ python3 Iverson.Server/Iverson.LoadTest/scripts/report.py \
 
 - [ ] **Step 5: Run the 50-query repeat.** Both passes select the subsample with `--subsample 50 --subsample-seed <S>`, the same S for each, **each pass writing its own `--responses` file** and neither reading the main run's (spec §8, A33) — otherwise resume replays pass 1 and the noise floor reads as exactly zero. Build a qrels restricted to the subsample's own 50 query ids, then compare with `--baseline`, **never `--pair`** (A29: against the full 300-query qrels the delta is averaged over 300 denominators and reported at one-sixth its true size, with the `query sets differ` warning suppressed).
 ```bash
-# the same two lines as Step 4, if this runs in a separate shell
+# the same PYTHONPATH line as Step 4, if this runs in a separate shell ($B is not used here)
 export PYTHONPATH=~/repositories/iverson-benchmark-corpora/python-libs
 python3 Iverson.Server/Iverson.LoadTest/scripts/report.py \
   --run <pass2>.chunks.trec --qrels <qrels-sub50>.trec --baseline <pass1>.chunks.trec
