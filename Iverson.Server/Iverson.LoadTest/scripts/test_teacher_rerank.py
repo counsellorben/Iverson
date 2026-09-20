@@ -335,6 +335,19 @@ def make_fixture_files(tmp_path):
     return run_path, corpus_path, queries_path
 
 
+def ledger_pass(run_path, shuffle_seed=0, subsample=None, subsample_seed=None):
+    """The stamp tr.pass_identity writes into every ledger record. Ledger fixtures below build
+    their records through this so a record written by THIS pass is distinguishable, in the
+    fixture itself, from one written by another (a different --run, or a different
+    --shuffle-seed / --subsample / --subsample-seed over the same pool)."""
+    return {
+        "run": os.path.abspath(run_path),
+        "shuffleSeed": shuffle_seed,
+        "subsample": subsample,
+        "subsampleSeed": subsample_seed,
+    }
+
+
 def base_argv(run_path, corpus_path, queries_path, responses_path, out_path):
     return [
         "--run", run_path,
@@ -391,6 +404,22 @@ def test_main_presents_documents_to_the_model_in_shuffled_not_fusion_order(tmp_p
     # build_prompt(query_text, expected_ids, corpus) regression would produce instead.
     assert DOC_ID_IN_PROMPT.findall(q1_prompt) != ["d1", "d2", "d3"]
     assert DOC_ID_IN_PROMPT.findall(q2_prompt) != ["e1", "e2", "e3"]
+
+    # ...and the document BODIES must reach the model, not just the id labels. Final whole-branch
+    # review, IMPORTANT: mutating build_prompt's DOCUMENT_TEMPLATE.format(...) to title="",
+    # text="" -- every document rendering as a bare `[docid]` with no title and no abstract --
+    # left the whole suite green AND the two-sided stub gate byte-identical (0.6980 / 0.9193),
+    # because the stub reads only the query text out of the prompt and the assertions above match
+    # only the `^\[(\S+)\]` label. The title + abstract IS the measurement's entire input: on the
+    # rented GPU the teacher would rank bare ids, score badly, and the verdict doc would record a
+    # FAIL that "closes the per-tenant reranking line" off a run in which the model never saw a
+    # single document. Asserting the id, title and text as ONE contiguous block also pins that
+    # each body is attached to its own id, not merely present somewhere in the prompt.
+    for prompt, doc_ids in ((q1_prompt, ["d2", "d3", "d1"]), (q2_prompt, ["e2", "e3", "e1"])):
+        for doc_id in doc_ids:
+            assert f"[{doc_id}] title {doc_id}\ntext {doc_id}" in prompt, (
+                f"document {doc_id}'s title and text must appear in the prompt, under its own id"
+            )
 
 
 # --------------------------------------------------------------------------------------------
@@ -454,7 +483,9 @@ def test_main_refuses_to_write_a_run_file_when_any_query_is_unscored(tmp_path, m
     assert exc_info.value.code != 0
     message = str(exc_info.value)
     assert "q2" in message
-    assert "1" in message  # "1 / 2 queries unscored"
+    assert "1 / 2" in message  # "1 / 2 queries unscored" -- NOT a bare "1": mutating the count
+    # to len(failures)+99 yields "100 / 2 queries unscored", and a bare "1" still matches that,
+    # because "1" also occurs inside the embedded reason "Expecting value: line 1 column 1".
     assert not os.path.exists(out_path), "no run file may be written when any query is unscored"
     assert scripted.calls == 3
 
@@ -510,11 +541,13 @@ def test_main_resumes_skipping_accepted_and_reissuing_all_rejected_queries(tmp_p
     #   q2 has only rejected entries (its previous invocation exhausted its budget) -- this
     #      invocation must re-issue it with a FRESH RETRY_BUDGET, not treat it as permanently
     #      failed because of entries already in the ledger.
+    # Every record carries THIS pass's stamp -- the interrupted-pass case resume exists for.
+    this_pass = ledger_pass(run_path)
     prior_records = [
-        {"query_id": "q1", "status": "rejected", "content": "bad", "order": None, "reason": "invalid JSON"},
-        {"query_id": "q1", "status": "accepted", "content": '["d3","d2","d1"]', "order": ["d3", "d2", "d1"], "reason": None},
-        {"query_id": "q2", "status": "rejected", "content": "bad", "order": None, "reason": "invalid JSON"},
-        {"query_id": "q2", "status": "rejected", "content": "bad again", "order": None, "reason": "invalid JSON"},
+        {"query_id": "q1", "status": "rejected", "content": "bad", "order": None, "reason": "invalid JSON", "pass": this_pass},
+        {"query_id": "q1", "status": "accepted", "content": '["d3","d2","d1"]', "order": ["d3", "d2", "d1"], "reason": None, "pass": this_pass},
+        {"query_id": "q2", "status": "rejected", "content": "bad", "order": None, "reason": "invalid JSON", "pass": this_pass},
+        {"query_id": "q2", "status": "rejected", "content": "bad again", "order": None, "reason": "invalid JSON", "pass": this_pass},
     ]
     write(responses_path, "\n".join(json.dumps(r) for r in prior_records) + "\n")
 
@@ -540,3 +573,253 @@ def test_main_resumes_skipping_accepted_and_reissuing_all_rejected_queries(tmp_p
     assert [l.split()[2] for l in q1_lines] == ["d3", "d2", "d1"]
     # q2's order must be the fresh, successful reply from this invocation.
     assert [l.split()[2] for l in q2_lines] == ["e2", "e1", "e3"]
+
+
+# --------------------------------------------------------------------------------------------
+# Resume must not accept a FOREIGN ledger. Final whole-branch review, IMPORTANT: the resume
+# branch reused a ledger's accepted order with no check of any kind, so (a) a ledger recorded
+# against a different --run replayed wholesale -- exit 0, "300 queries, all scored", and the
+# written doc set differed from the --run pool on 300 of 300 queries -- and (b) a ledger from a
+# different PASS of the same pool was accepted silently: replaying pass 1's ledger under
+# --shuffle-seed 99 made ZERO model calls, wrote byte-identical output, exited 0, and left a
+# sidecar claiming "shuffleSeed": 99. (b) is the fabricated zero noise floor plan Task 3 Step 5
+# warns about; the verdict doc would report it as a measured result.
+# --------------------------------------------------------------------------------------------
+
+def foreign_pool_fixture(tmp_path):
+    """A second, complete input set whose pools share NO doc id with make_fixture_files' (x*/y*
+    instead of d*/e*), under its own --run path -- a genuinely different pass, not a relabelling."""
+    run_path = write(
+        tmp_path / "other-a0prime.chunks.trec",
+        "q1 Q0 x1 1 0.9 rerank-other\n"
+        "q1 Q0 x2 2 0.8 rerank-other\n"
+        "q1 Q0 x3 3 0.7 rerank-other\n"
+        "q2 Q0 y1 1 0.9 rerank-other\n"
+        "q2 Q0 y2 2 0.8 rerank-other\n"
+        "q2 Q0 y3 3 0.7 rerank-other\n",
+    )
+    return run_path
+
+
+def test_main_refuses_a_responses_ledger_recorded_against_a_different_run(tmp_path, monkeypatch):
+    """(a) The ledger's records are stamped with another --run. Every one of its accepted orders
+    happens to be internally well-formed, so nothing downstream would have noticed; the refusal
+    must come from the stamp, before any model call."""
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    other_run_path = foreign_pool_fixture(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    other_pass = ledger_pass(other_run_path)
+    prior_records = [
+        {"query_id": "q1", "status": "accepted", "content": '["x3","x2","x1"]', "order": ["x3", "x2", "x1"], "reason": None, "pass": other_pass},
+        {"query_id": "q2", "status": "accepted", "content": '["y3","y2","y1"]', "order": ["y3", "y2", "y1"], "reason": None, "pass": other_pass},
+    ]
+    write(responses_path, "\n".join(json.dumps(r) for r in prior_records) + "\n")
+
+    scripted = ScriptedTeacher([])  # must never be called
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    with pytest.raises(SystemExit) as exc_info:
+        tr.main(argv)
+
+    message = str(exc_info.value)
+    assert exc_info.value.code != 0
+    assert "DIFFERENT" in message
+    assert responses_path in message
+    assert os.path.abspath(other_run_path) in message, "the refusal must show the ledger's own stamp"
+    assert os.path.abspath(run_path) in message, "...and this run's, so the operator can see which differs"
+    assert scripted.calls == 0
+    assert not os.path.exists(out_path), "a foreign ledger must never produce a run file"
+
+
+def test_main_refuses_a_responses_ledger_from_another_pass_of_the_same_pool(tmp_path, monkeypatch):
+    """(b) Same --run, same pool, same doc ids -- only --shuffle-seed differs, so every accepted
+    order IS a valid permutation and the permutation check alone cannot tell the two passes apart.
+    Replaying it would issue zero calls and reproduce pass 1 exactly: a noise floor of exactly
+    zero, recorded as if measured."""
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    pass_one = ledger_pass(run_path, shuffle_seed=1)  # this invocation runs --shuffle-seed 99
+    prior_records = [
+        {"query_id": "q1", "status": "accepted", "content": '["d3","d2","d1"]', "order": ["d3", "d2", "d1"], "reason": None, "pass": pass_one},
+        {"query_id": "q2", "status": "accepted", "content": '["e3","e2","e1"]', "order": ["e3", "e2", "e1"], "reason": None, "pass": pass_one},
+    ]
+    write(responses_path, "\n".join(json.dumps(r) for r in prior_records) + "\n")
+
+    scripted = ScriptedTeacher([])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    argv[argv.index("--shuffle-seed") + 1] = "99"
+    with pytest.raises(SystemExit) as exc_info:
+        tr.main(argv)
+
+    message = str(exc_info.value)
+    assert "shuffleSeed" in message
+    assert '"shuffleSeed": 1' in message and '"shuffleSeed": 99' in message
+    assert scripted.calls == 0
+    assert not os.path.exists(out_path)
+    assert not os.path.exists(tr.sidecar_path_for(out_path)), (
+        "no sidecar either -- a sidecar recording shuffleSeed 99 over pass 1's replayed answers "
+        "is a false provenance record"
+    )
+
+
+def test_main_refuses_a_subsample_ledger_replayed_as_a_different_subsample_pass(tmp_path, monkeypatch):
+    """The same hazard through --subsample-seed: Task 3's two 50-query repeat passes differ only
+    in which --responses file they use, so a copied or reused ledger path is the realistic slip."""
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    pass_one = ledger_pass(run_path, subsample=1, subsample_seed=5)
+    write(responses_path, json.dumps(
+        {"query_id": "q1", "status": "accepted", "content": '["d3","d2","d1"]',
+         "order": ["d3", "d2", "d1"], "reason": None, "pass": pass_one}
+    ) + "\n")
+
+    scripted = ScriptedTeacher([])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path) + [
+        "--subsample", "1", "--subsample-seed", "6",
+    ]
+    with pytest.raises(SystemExit) as exc_info:
+        tr.main(argv)
+
+    assert "subsampleSeed" in str(exc_info.value)
+    assert scripted.calls == 0
+    assert not os.path.exists(out_path)
+
+
+def test_main_rejects_a_resumed_order_that_is_not_a_permutation_of_the_pool(tmp_path, monkeypatch):
+    """The same contract enforced at the POINT OF USE: the stamp matches this pass, but the
+    accepted order names doc ids the pool never contained (a hand-edited or corrupt ledger). Every
+    order this script writes is validated as a permutation of that query's ids -- the resume path
+    is a way into the run file just as much as a fresh model reply is."""
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    this_pass = ledger_pass(run_path)
+    prior_records = [
+        {"query_id": "q1", "status": "accepted", "content": '["x3","x2","x1"]', "order": ["x3", "x2", "x1"], "reason": None, "pass": this_pass},
+        {"query_id": "q2", "status": "accepted", "content": '["e3","e2"]', "order": ["e3", "e2"], "reason": None, "pass": this_pass},
+    ]
+    write(responses_path, "\n".join(json.dumps(r) for r in prior_records) + "\n")
+
+    scripted = ScriptedTeacher([])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    with pytest.raises(SystemExit) as exc_info:
+        tr.main(argv)
+
+    message = str(exc_info.value)
+    assert "q1" in message and "invented" in message  # x1/x2/x3 are not in q1's pool
+    assert "q2" in message and "length" in message    # two ids for a three-document pool
+    assert not os.path.exists(out_path), "a corrupt resumed order must never reach the run file"
+
+
+# --------------------------------------------------------------------------------------------
+# A truncated TRAILING ledger line (the crash-mid-write spec §6 row 4 exists for) must name
+# path:lineno, not raise a bare json.decoder.JSONDecodeError that identifies neither.
+# --------------------------------------------------------------------------------------------
+
+def test_read_responses_ledger_names_path_and_line_for_a_truncated_trailing_line(tmp_path):
+    responses_path = str(tmp_path / "responses.jsonl")
+    good = json.dumps({"query_id": "q1", "status": "accepted", "content": "[]", "order": [], "reason": None, "pass": None})
+    truncated = '{"query_id": "q2", "status": "accepted", "content": "[\"e1'  # interrupted append
+    write(responses_path, good + "\n" + good + "\n" + truncated)
+
+    with pytest.raises(SystemExit) as exc_info:
+        tr.read_responses_ledger(responses_path)
+
+    message = str(exc_info.value)
+    assert f"{responses_path}:3" in message, "the operator needs the file AND the line number"
+    assert "truncated" in message, "and to be told an interrupted append is the likely cause"
+
+
+def test_main_reports_path_and_line_for_a_malformed_ledger_before_any_model_call(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+    write(responses_path, '{"query_id": "q1", "status": "accepted", "order": ["d1"')
+
+    scripted = ScriptedTeacher([])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    with pytest.raises(SystemExit) as exc_info:
+        tr.main(argv)
+
+    assert f"{responses_path}:1" in str(exc_info.value)
+    assert scripted.calls == 0
+    assert not os.path.exists(out_path)
+
+
+# --------------------------------------------------------------------------------------------
+# The length-guard reason must name the knob that actually caused it. finish_reason=length means
+# the COMPLETION hit max_tokens; a prompt over budget is the separate max_model_len HTTP 400.
+# --------------------------------------------------------------------------------------------
+
+def test_length_finish_reason_blames_max_tokens_not_the_prompt(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    scripted = ScriptedTeacher([
+        ('["d2", "d3"', "length"),   # q1: truncated completion, both attempts
+        ('["d2", "d3"', "length"),
+        ('["e2", "e3", "e1"]', "stop"),
+    ])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    with pytest.raises(SystemExit) as exc_info:
+        tr.main(argv)
+
+    message = str(exc_info.value)
+    assert "max_tokens" in message, "the completion budget is the knob to raise"
+    assert "prompt exceeded" not in message, (
+        "finish_reason=length is NOT a prompt-too-long failure -- that is max_model_len's HTTP 400, "
+        "and naming it here sends the operator to the wrong knob"
+    )
+    assert "max_model_len" in message, "and the message should distinguish the two explicitly"
+
+    with open(responses_path, encoding="utf-8") as f:
+        q1_records = [json.loads(l) for l in f if l.strip() and json.loads(l)["query_id"] == "q1"]
+    assert len(q1_records) == 2
+    assert all("max_tokens" in r["reason"] for r in q1_records)
+
+
+# --------------------------------------------------------------------------------------------
+# The stamp is written, not merely checked: a fresh pass's records must carry it, or the check
+# above would refuse every resume of a genuinely interrupted pass.
+# --------------------------------------------------------------------------------------------
+
+def test_main_stamps_each_ledger_record_with_this_pass_and_resumes_from_it(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    scripted = ScriptedTeacher([('["d2", "d3", "d1"]', "stop"), ('["e2", "e3", "e1"]', "stop")])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    tr.main(argv)
+
+    with open(responses_path, encoding="utf-8") as f:
+        records = [json.loads(line) for line in f if line.strip()]
+    assert [r["pass"] for r in records] == [ledger_pass(run_path)] * 2
+
+    # Re-running the SAME pass resumes off those stamps: no further calls, same output.
+    first_output = open(out_path, encoding="utf-8").read()
+    scripted_again = ScriptedTeacher([])
+    monkeypatch.setattr(tr, "call_teacher", scripted_again)
+    tr.main(argv)
+    assert scripted_again.calls == 0
+    assert open(out_path, encoding="utf-8").read() == first_output

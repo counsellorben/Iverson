@@ -224,16 +224,35 @@ def read_responses_ledger(path):
     exist (the first invocation of a pass). Each record's `query_id` field is read back with
     `str()` -- the ledger's query key is written and read as a string, matching how the model's
     reply ids are normalised (spec: "the --responses ledger's query key is written and read as a
-    string")."""
+    string").
+
+    A malformed line exits with `path:lineno` and the offending text rather than propagating a bare
+    `json.decoder.JSONDecodeError` that names neither file nor line. This reader's whole reason to
+    exist is the crash-mid-write scenario (spec §6 row 4), where an interrupted append leaves the
+    final line truncated, and the operator needs to be told which single line to remove. Silently
+    TOLERATING a truncated trailing line was the other option and was rejected: skipping data
+    because it looks incomplete is a degradation (this line of work's standing rule is fail loud,
+    never degrade), and it would equally mask a genuinely broken writer. Loud, with the exact
+    pointer and the one-line fix named, gets the operator moving just as fast."""
     ledger = {}
     if path is None or not os.path.exists(path):
         return ledger
     with open(path, encoding="utf-8") as f:
-        for line in f:
+        for lineno, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
-            record = json.loads(line)
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as e:
+                sys.exit(
+                    f"{path}:{lineno}: malformed ledger line ({e}). If this is the file's LAST "
+                    "line it is a truncated append from an interrupted pass -- an incomplete "
+                    "append is by definition not an accepted entry; delete that one line and "
+                    f"resume. Line was: {line[:160]!r}"
+                )
+            if "query_id" not in record:
+                sys.exit(f"{path}:{lineno}: ledger line has no 'query_id' field: {line[:160]!r}")
             query_id = str(record["query_id"])
             ledger.setdefault(query_id, []).append(record)
     return ledger
@@ -258,14 +277,64 @@ def append_response(path, record):
         f.write(json.dumps(record) + "\n")
 
 
-def make_record(query_id, status, content, order, reason):
+def make_record(query_id, status, content, order, reason, pass_id):
     return {
         "query_id": str(query_id),
         "status": status,
         "content": content,
         "order": order,
         "reason": reason,
+        "pass": pass_id,
     }
+
+
+def pass_identity(args):
+    """The parameters that identify WHICH PASS a ledger record belongs to, stamped into every
+    record by `make_record` and re-checked by `validate_ledger_pass` before a resume reuses any of
+    them. Two invocations differing in any of these are different measurements, not two halves of
+    one interrupted pass: `--run` is the candidate pool itself, and `--shuffle-seed` /
+    `--subsample` / `--subsample-seed` are which presentation of that pool the teacher was asked to
+    rank. `--run` is absolutised so the same file reached by a different relative path (a resume
+    launched from another working directory) still resumes rather than falsely refusing.
+
+    Deliberately NOT included: `--seed`, `--model`, `--base-url`. Those are serving identity, which
+    the sidecar already records, and they do not change which questions were asked."""
+    return {
+        "run": os.path.abspath(args.run),
+        "shuffleSeed": args.shuffle_seed,
+        "subsample": args.subsample,
+        "subsampleSeed": args.subsample_seed,
+    }
+
+
+def validate_ledger_pass(path, ledger, expected_pass):
+    """Refuses loudly -- before any model call -- when `--responses` holds records written by a
+    DIFFERENT pass, instead of replaying them (spec §6 row 4: "Resume is for completing an
+    interrupted pass only"; plan Task 3 Step 5: "otherwise resume replays pass 1 and the noise
+    floor reads as exactly zero").
+
+    Two verified failures this closes. A ledger recorded against a different `--run` replayed
+    wholesale -- exit 0, "all scored", and every written doc set foreign to the pool actually
+    passed in. And a ledger from a different pass of the SAME pool was accepted silently: replaying
+    pass 1's ledger under a new `--shuffle-seed` issued zero model calls, wrote byte-identical
+    output, and left a sidecar recording the new seed -- a false provenance record and a fabricated
+    zero noise floor in the verdict doc.
+
+    A record with no `pass` stamp at all (a ledger written before this stamp existed) is a mismatch
+    too: an unstamped record cannot be shown to belong to this pass, and guessing that it does is
+    exactly the silent replay this exists to stop."""
+    for query_id, records in ledger.items():
+        for record in records:
+            stamped = record.get("pass")
+            if stamped != expected_pass:
+                sys.exit(
+                    f"[teacher_rerank] refusing to resume -- {path} was recorded by a DIFFERENT "
+                    f"pass (first mismatch at query {query_id!r}):\n"
+                    f"  ledger:   {json.dumps(stamped, sort_keys=True)}\n"
+                    f"  this run: {json.dumps(expected_pass, sort_keys=True)}\n"
+                    "  resume is for completing an interrupted pass only (spec §6 row 4); a new "
+                    "pass needs a fresh --responses path"
+                )
 
 
 # ── Prompt construction and the model call (untested here -- spec: "Everything except the model
@@ -317,11 +386,21 @@ def score_query(query_id, expected_ids, query_text, corpus, args, ledger):
     Resume: a query with an accepted ledger entry is skipped entirely -- no call is issued, and its
     accepted order is reused (spec §6 row 4). Otherwise this invocation gets a FRESH RETRY_BUDGET
     (2) attempts regardless of how many rejected entries already sit in the ledger from a previous
-    invocation -- the ledger is a durable log of every attempt, not a countdown."""
+    invocation -- the ledger is a durable log of every attempt, not a countdown.
+
+    A resumed order is re-validated against this query's pool before it is reused: the script's
+    contract is that every order it writes is a permutation of that query's 50 ids, and the resume
+    path is a way into the run file just as much as a fresh model reply is. `validate_ledger_pass`
+    already refused a ledger stamped by another pass; this is the same rule enforced at the point
+    of use, so a hand-edited or otherwise corrupt entry cannot reach `write_run` unchecked."""
+    pass_id = pass_identity(args)
     existing = ledger.get(str(query_id), [])
     accepted = accepted_entry(existing)
     if accepted is not None:
-        return accepted["order"], None
+        ok, result = validate_permutation(accepted.get("order") or [], expected_ids)
+        if not ok:
+            return None, f"resumed ledger entry is not a permutation of this query's pool: {result}"
+        return result, None
 
     shuffled = shuffled_doc_order(expected_ids, args.shuffle_seed, query_id)
     prompt = build_prompt(query_text, shuffled, corpus)
@@ -330,23 +409,28 @@ def score_query(query_id, expected_ids, query_text, corpus, args, ledger):
     for _attempt in range(RETRY_BUDGET):
         content, finish_reason = call_teacher(args.base_url, args.model, prompt, args.seed)
         if finish_reason == "length":
-            last_reason = f"finish_reason=length (prompt exceeded the {MAX_COMPLETION_TOKENS}-token completion budget)"
-            append_response(args.responses, make_record(query_id, "rejected", content, None, last_reason))
+            last_reason = (
+                f"finish_reason=length (the completion hit the {MAX_COMPLETION_TOKENS}-token "
+                "max_tokens budget before the reply was complete -- raise MAX_COMPLETION_TOKENS. "
+                f"A prompt over the {MAX_MODEL_LEN}-token max_model_len is the SEPARATE HTTP 400 "
+                "failure, not this one.)"
+            )
+            append_response(args.responses, make_record(query_id, "rejected", content, None, last_reason, pass_id))
             continue
 
         ids, parse_error = parse_json_array(content)
         if parse_error is not None:
             last_reason = parse_error
-            append_response(args.responses, make_record(query_id, "rejected", content, None, last_reason))
+            append_response(args.responses, make_record(query_id, "rejected", content, None, last_reason, pass_id))
             continue
 
         ok, result = validate_permutation(ids, expected_ids)
         if ok:
-            append_response(args.responses, make_record(query_id, "accepted", content, result, None))
+            append_response(args.responses, make_record(query_id, "accepted", content, result, None, pass_id))
             return result, None
 
         last_reason = result
-        append_response(args.responses, make_record(query_id, "rejected", content, None, last_reason))
+        append_response(args.responses, make_record(query_id, "rejected", content, None, last_reason, pass_id))
 
     return None, last_reason
 
@@ -487,6 +571,7 @@ def main(argv=None):
     validate_inputs_before_any_model_call(pool, pool_query_order, corpus, queries)
 
     ledger = read_responses_ledger(args.responses)
+    validate_ledger_pass(args.responses, ledger, pass_identity(args))
 
     scored_pool = {}
     failures = []
