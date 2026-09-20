@@ -17,7 +17,6 @@ No non-stdlib imports beyond pytest -- nothing needs PYTHONPATH."""
 import json
 import os
 import sys
-from argparse import Namespace
 
 import pytest
 
