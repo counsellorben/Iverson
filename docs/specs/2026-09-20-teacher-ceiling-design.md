@@ -198,7 +198,14 @@ on violation:
 ### Repeat check (reported, not gating)
 
 Rerun a seeded 50-query subsample and report how many orderings differ, plus the nDCG@10 delta
-between passes. Phase 1 never needed this — retrieval is bit-deterministic (0 of 323 sequences
+between passes. **Both passes are scored against a qrels file restricted to the subsample's own 50
+query ids, and compared with `report.py --baseline <pass1> --run <pass2>`, never `--pair`.** Two
+properties of `report.py` force this: `ir_measures.iter_calc` emits a value for every query in the
+qrels file, so against the full 300-query qrels a 50-query pairing computes its delta over 300
+denominators (`report.py:517,526`) and reports the true subsample delta divided by 6, with the
+`query sets differ` warning suppressed (`report.py:596`); and `check_pool`'s ≥25%-reordered floor
+(`report.py:700,760-766`) rejects a near-deterministic second pass outright — which is the outcome
+this check exists to observe. Phase 1 never needed this — retrieval is bit-deterministic (0 of 323 sequences
 differed across independent invocations) — but a language model is not, and the size of that noise
 floor conditions how much any near-threshold result can be trusted.
 
@@ -258,8 +265,12 @@ Verified 2026-09-20 against the repo and the preserved corpora.
 | A24 | Nothing in code consumes the A0′ run file | **Confirmed** — docs-only references |
 | A25 | Scripts need no manifest registration | **Confirmed** — standalone scripts + `test_*.py` |
 | A26 | The sidecar is found by **run filename**, not `configLabel` | **Confirmed** — `report.py:167-182` (`sidecar_path_for`) strips `.trec`, then a trailing `.chunks`/`.similar`, then appends `.meta.json`. So `--out` must be `<label>.chunks.trec`; a mismatch degrades to `BUILD UNKNOWN`, which is loud, not silent |
-| A27 | `report.py`'s delta equals `teacher − 0.6980` | **Confirmed** — delta is a mean over the query-set intersection (`report.py:517-527`), and §6 row 2 forbids a partial run file, so the intersection is all 300. §8's two PASS conditions are therefore equivalent, not independent |
+| A27 | `report.py`'s delta equals `teacher − 0.6980` | **Confirmed** — delta is a mean over the query-set intersection (`report.py:517-527`), and §6 row 2 forbids a partial run file, so the intersection is all 300. §8 condition 2's two forms — `delta ≥ +0.055` and `nDCG@10 ≥ 0.753` — are therefore the same test, and either may be read off `report.py`'s output. Condition 1 (permutation p) remains independent of condition 2, and both must hold |
 | A28 | Doc ids survive a JSON round-trip losslessly | **Confirmed** — all 4,083 ids are pure digits, 4–9 chars, 0 leading zeros, max < 2^53; number-or-string decoding is lossless either way |
+| A29 | `report.py` scores a **partial-coverage** run against the qrels it is given, not against the run | **Confirmed** — `ir_measures.iter_calc` returns one value per *qrels* query (300 keys for a 50-query run), so `common_ids` (`report.py:517`) is 300 and `delta` (`:526`) averages over 300 denominators, with the `query sets differ` warning suppressed (`:596`). Measured: a 50-query pair whose true mean delta is −0.7318 reports −0.1220 (exactly ÷6) against the full qrels, and −0.7318 against a qrels restricted to its 50 ids. This is why §8's repeat check restricts the qrels |
+| A30 | A realistic teacher ordering clears §8 check 2's 25% floor | **Confirmed** — the tightest real case, a perfect oracle over these pools, reorders 113/300 = **37.7%** and exits 0; a listwise ordering over a shuffled 50-item list differs far more |
+| A31 | `report.py` does **not** enforce §8 check 5 | **Confirmed** — its structural check counts duplicate `(query_id, doc_id)` pairs (`report.py:243`, printed as `duplicate doc ids … (query, doc) pair(s)`), not `(qid, score)`. Check 5 needs its own computation by the executing session, as the Phase 1 gate did. §8 already scopes its `report.py` claim to "The first two" |
+| A32 | The 8192 completion budget | **Unverified here, and cannot be** — no tokenizer is reachable on this box (`transformers`, `tiktoken` both absent; `python-libs` holds only ir_measures, numpy, scipy, pyndeval, pytrec_eval). Covered operationally, not by measurement: `finish_reason: "length"` routes into §6 row 1, §6 row 2 then refuses a partial run file, and §11 budgets "under $20 including a failed pass" — so an inadequate budget costs a pass, loudly, and cannot silently corrupt the gate |
 
 ## 11. Execution outline
 
@@ -274,7 +285,8 @@ Verified 2026-09-20 against the repo and the preserved corpora.
    GPU and no spend; the `--pair` stage is exercised by the real run, whose ordering differs.
 3. Rent the instance, serve the model, record vLLM version and the structured-output parameter name.
 4. Run 300 queries. Verify the five structural checks.
-5. Run the 50-query repeat.
+5. Run the 50-query repeat, scoring both passes against a qrels file restricted to the subsample's
+   50 query ids, with `--baseline` and never `--pair` (§8).
 6. Write the verdict doc with md5s; destroy the instance.
 
 Estimated spend: $2–5 per pass, under $20 including a failed pass and the repeat.
