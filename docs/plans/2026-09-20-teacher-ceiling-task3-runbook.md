@@ -143,7 +143,7 @@ run log.
 python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
   --corpus $B/beir/corpus.jsonl --queries $B/beir/queries.jsonl \
   --base-url http://127.0.0.1:8000 --model <model-id> --seed 7 --shuffle-seed 7 \
-  --subsample 1 --subsample-seed smoke \
+  --subsample 1 --subsample-seed 7 \
   --vllm-version <ver> --quantisation mxfp4 --instance-type <sku> \
   --responses $A/smoke.responses.jsonl --out $A/smoke.chunks.trec
 ```
@@ -223,7 +223,7 @@ for P in 1 2; do
   python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
     --corpus $B/beir/corpus.jsonl --queries $B/beir/queries.jsonl \
     --base-url http://127.0.0.1:8000 --model <model-id> --seed 20260920 --shuffle-seed 20260920 \
-    --subsample 50 --subsample-seed repeat-2026-09 \
+    --subsample 50 --subsample-seed 20260920 \
     --responses $A/repeat-$P.responses.jsonl --out $A/repeat-$P.chunks.trec
 done
 ```
