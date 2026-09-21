@@ -114,25 +114,37 @@ but the budget is not the thing to trim if you hit trouble.
 
 **Copy the inputs up first** (from the dev box, 8.9 MB raw / 2.8 MB compressed; the pod needs nothing installed):
 
+**Connection form — get this right or everything below fails with `Permission denied (publickey)`.**
+RunPod's proxy username is the **pod id**, not `root`; a `root@<podid>@ssh.runpod.io` string makes
+ssh read `root@<podid>` as the username (it splits on the LAST `@`) and the key is rejected. Direct
+TCP SSH to a pod with a public IP *does* use `root@<ip>` — the two forms are not interchangeable.
+Set these once per shell and use them everywhere below:
+
+```bash
+K=~/.ssh/runpod_ed25519                     # the key registered in RunPod -> Settings -> SSH Public Keys
+H=<podid>-<hash>@ssh.runpod.io              # exactly as the Connect dialog shows it, no root@
+ssh -i $K $H 'nvidia-smi --query-gpu=name --format=csv,noheader'   # prove it before anything else
+```
+
 **`scp` fails on RunPod's proxied SSH** — the proxy accepts shell commands but does not expose
 SFTP, and modern OpenSSH `scp` uses SFTP by default. Either force the legacy protocol with `-O`
 (capital letter O), or pipe through `ssh`, which always works:
 
 ```bash
 # FIRST create the directories both options write into:
-ssh -p <port> root@<host> 'mkdir -p /workspace/inputs/runs /workspace/inputs/beir /workspace/artifacts'
+ssh -i $K $H 'mkdir -p /workspace/inputs/runs /workspace/inputs/beir /workspace/artifacts'
 
 # option A -- force the legacy SCP protocol
-scp -O -P <port> Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py root@<host>:/workspace/
-scp -O -P <port> $B/runs/rerank-a0prime.chunks.trec  root@<host>:/workspace/inputs/runs/
-scp -O -P <port> $B/beir/corpus.jsonl $B/beir/queries.jsonl root@<host>:/workspace/inputs/beir/
+scp -O -i $K Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py $H:/workspace/
+scp -O -i $K $B/runs/rerank-a0prime.chunks.trec  $H:/workspace/inputs/runs/
+scp -O -i $K $B/beir/corpus.jsonl $B/beir/queries.jsonl $H:/workspace/inputs/beir/
 
 # option B -- pipe over ssh (needs only `tar` on the pod; ~2.8 MB compressed)
 mkdir -p /tmp/upload/runs /tmp/upload/beir
 cp Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py /tmp/upload/
 cp $B/runs/rerank-a0prime.chunks.trec /tmp/upload/runs/
 cp $B/beir/corpus.jsonl $B/beir/queries.jsonl /tmp/upload/beir/
-tar czf - -C /tmp/upload . | ssh -p <port> root@<host> 'mkdir -p /workspace/staging && tar xzf - -C /workspace/staging'
+tar czf - -C /tmp/upload . | ssh -i $K $H 'mkdir -p /workspace/staging && tar xzf - -C /workspace/staging'
 ```
 
 Option B lands everything under `/workspace/staging`; then **on the pod**:
@@ -216,7 +228,7 @@ file without its `.meta.json` scores fine but prints `BUILD UNKNOWN`:
 ```bash
 mkdir -p $A
 # scp -O, or the ssh pipe if the proxy refuses even that:
-ssh -p <port> root@<host> 'tar czf - -C /workspace/artifacts teacher-ceiling.chunks.trec teacher-ceiling.meta.json' \
+ssh -i $K $H 'tar czf - -C /workspace/artifacts teacher-ceiling.chunks.trec teacher-ceiling.meta.json' \
   | tar xzf - -C $A
 ```
 
@@ -296,7 +308,7 @@ Reported, not gating. Confirm `distinct queries 50` and `covered by this run 50 
 **Pull everything off the pod before terminating — `/workspace` does not survive.**
 
 ```bash
-ssh -p <port> root@<host> 'tar czf - -C /workspace/artifacts .' | tar xzf - -C $A
+ssh -i $K $H 'tar czf - -C /workspace/artifacts .' | tar xzf - -C $A
 ls $A    # expect: teacher-ceiling.chunks.trec + .meta.json, main/repeat-1/repeat-2 responses JSONLs,
          # smoke.* , and the run log
 ```
