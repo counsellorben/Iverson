@@ -350,12 +350,17 @@ def build_prompt(query_text, shuffled_doc_ids, corpus):
     return PROMPT_INSTRUCTIONS.format(query=query_text, documents=documents)
 
 
-def call_teacher(base_url, model, prompt, seed):
+def call_teacher(base_url, model, prompt, seed, api_key=None):
     """POSTs to `{base_url}/v1/chat/completions` with stdlib `urllib.request`, the same transport
     shape as `enrich_bench.py:56-62` (temperature 0, stream false), plus `max_tokens:
     MAX_COMPLETION_TOKENS` (NOT enrich_bench.py's 256, spec §4), a fixed `seed`, and vLLM guided
     decoding to `RESPONSE_SCHEMA` under `STRUCTURED_OUTPUT_PARAM`. Returns (content, finish_reason);
-    the caller checks `finish_reason == "length"` before ever parsing `content` (spec §6 row 1)."""
+    the caller checks `finish_reason == "length"` before ever parsing `content` (spec §6 row 1).
+
+    `api_key`, when given, is sent as `Authorization: Bearer <api_key>` -- some vLLM deployments
+    (e.g. a RunPod template that launches `vllm serve --api-key` from a `VLLM_API_KEY` env var
+    before the operator ever runs this script) require it; the header is simply omitted when
+    `api_key` is None, so unauthenticated servers are unaffected."""
     body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -371,6 +376,8 @@ def call_teacher(base_url, model, prompt, seed):
         method="POST",
     )
     req.add_header("Content-Type", "application/json")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
     with urllib.request.urlopen(req, timeout=600) as resp:
         parsed = json.loads(resp.read())
     choice = parsed["choices"][0]
@@ -407,7 +414,9 @@ def score_query(query_id, expected_ids, query_text, corpus, args, ledger):
 
     last_reason = None
     for _attempt in range(RETRY_BUDGET):
-        content, finish_reason = call_teacher(args.base_url, args.model, prompt, args.seed)
+        content, finish_reason = call_teacher(
+            args.base_url, args.model, prompt, args.seed, api_key=args.api_key
+        )
         if finish_reason == "length":
             last_reason = (
                 f"finish_reason=length (the completion hit the {MAX_COMPLETION_TOKENS}-token "
@@ -526,6 +535,7 @@ def build_arg_parser():
     ap.add_argument("--subsample-seed", type=int, default=None, help="seed for --subsample's selection")
     ap.add_argument("--vllm-version", default=None, help="serving identity recorded verbatim in the sidecar's reranker block; omit to record null")
     ap.add_argument("--quantisation", default=None, help="serving identity recorded verbatim in the sidecar's reranker block; omit to record null")
+    ap.add_argument("--api-key", default=None, help="sent as 'Authorization: Bearer <key>' if given; omitted otherwise (some vLLM deployments require it, e.g. RunPod's VLLM_API_KEY template)")
     ap.add_argument("--instance-type", default=None, help="serving identity recorded verbatim in the sidecar's reranker block; omit to record null")
     return ap
 

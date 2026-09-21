@@ -14,10 +14,12 @@ brief's Step 1 does not enumerate them, so they are exercised only indirectly he
 monkeypatched out wherever score_query/main are driven).
 
 No non-stdlib imports beyond pytest -- nothing needs PYTHONPATH."""
+import http.server
 import json
 import os
 import re
 import sys
+import threading
 from argparse import Namespace
 
 import pytest
@@ -305,9 +307,10 @@ class ScriptedTeacher:
         self.calls = 0
         self.prompts = []
 
-    def __call__(self, base_url, model, prompt, seed):
+    def __call__(self, base_url, model, prompt, seed, api_key=None):
         self.calls += 1
         self.prompts.append(prompt)
+        self.api_key = api_key
         return self.replies.pop(0)
 
 
@@ -371,6 +374,102 @@ def base_argv(run_path, corpus_path, queries_path, responses_path, out_path):
 # --------------------------------------------------------------------------------------------
 
 DOC_ID_IN_PROMPT = re.compile(r"^\[(\S+)\]", re.M)
+
+
+# --------------------------------------------------------------------------------------------
+# --api-key: some vLLM deployments require Authorization: Bearer <key> (e.g. a RunPod template
+# that launches `vllm serve --api-key` from VLLM_API_KEY before the operator runs this script).
+# The plumbing test proves args.api_key reaches call_teacher through main(), via ScriptedTeacher
+# recording what it received. The transport test proves call_teacher itself sends the header when
+# given a key and omits it when not, against a real HTTP server on loopback -- not a mock of
+# urllib, since a mock could assert the header was passed to the wrong urllib call.
+# --------------------------------------------------------------------------------------------
+
+def test_main_passes_api_key_through_to_call_teacher(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    scripted = ScriptedTeacher([
+        ('["d1", "d2", "d3"]', "stop"),
+        ('["e1", "e2", "e3"]', "stop"),
+    ])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    argv += ["--api-key", "sk-test-through-main"]
+    monkeypatch.setattr(sys, "argv", ["teacher_rerank.py"] + argv)
+    tr.main()
+
+    assert scripted.api_key == "sk-test-through-main"
+
+
+def test_main_omits_api_key_when_not_given(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    scripted = ScriptedTeacher([
+        ('["d1", "d2", "d3"]', "stop"),
+        ('["e1", "e2", "e3"]', "stop"),
+    ])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    monkeypatch.setattr(sys, "argv", ["teacher_rerank.py"] + argv)
+    tr.main()
+
+    assert scripted.api_key is None
+
+
+class _RecordingAuthHandler(http.server.BaseHTTPRequestHandler):
+    """Echoes back a valid chat-completion reply and records the Authorization header it saw."""
+
+    seen_auth = None
+
+    def do_POST(self):
+        _RecordingAuthHandler.seen_auth = self.headers.get("Authorization")
+        length = int(self.headers["Content-Length"])
+        self.rfile.read(length)  # drain the request body
+        reply = json.dumps(
+            {"choices": [{"message": {"content": "[]"}, "finish_reason": "stop"}]}
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(reply)))
+        self.end_headers()
+        self.wfile.write(reply)
+
+    def log_message(self, *args):  # silence stdout during the test run
+        pass
+
+
+def test_call_teacher_sends_bearer_header_when_given_an_api_key():
+    _RecordingAuthHandler.seen_auth = None
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RecordingAuthHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        tr.call_teacher(f"http://127.0.0.1:{port}", "m", "p", 0, api_key="sk-test-header")
+        assert _RecordingAuthHandler.seen_auth == "Bearer sk-test-header"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_call_teacher_omits_authorization_header_when_api_key_is_none():
+    _RecordingAuthHandler.seen_auth = "unset"  # sentinel distinct from None
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RecordingAuthHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        tr.call_teacher(f"http://127.0.0.1:{port}", "m", "p", 0, api_key=None)
+        assert _RecordingAuthHandler.seen_auth is None
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
 
 
 def test_main_presents_documents_to_the_model_in_shuffled_not_fusion_order(tmp_path, monkeypatch):
