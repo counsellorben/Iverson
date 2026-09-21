@@ -105,16 +105,15 @@ but the budget is not the thing to trim if you hit trouble.
 **Copy the inputs up first** (from the dev box, ~6 MB total; the pod needs nothing installed):
 
 ```bash
-ssh -p <port> root@<host> 'mkdir -p /workspace/inputs /workspace/artifacts'
+ssh -p <port> root@<host> 'mkdir -p /workspace/inputs/runs /workspace/inputs/beir /workspace/artifacts'
 scp -P <port> Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py root@<host>:/workspace/
-scp -P <port> $B/runs/rerank-a0prime.chunks.trec root@<host>:/workspace/inputs/
-scp -P <port> $B/beir/corpus.jsonl $B/beir/queries.jsonl root@<host>:/workspace/inputs/
+scp -P <port> $B/runs/rerank-a0prime.chunks.trec  root@<host>:/workspace/inputs/runs/
+scp -P <port> $B/beir/corpus.jsonl $B/beir/queries.jsonl root@<host>:/workspace/inputs/beir/
 ```
 
-Note the pod's layout differs from the dev box's: the run file sits directly in `$B` on the pod
-(`/workspace/inputs/rerank-a0prime.chunks.trec`), **not** under `$B/runs/`. Steps 5, 6 and 8 below
-write `$B/runs/...` — on the pod, drop the `runs/` segment. Likewise `$B/beir/corpus.jsonl` becomes
-`$B/corpus.jsonl`.
+The `runs/` and `beir/` subdirectories are deliberate: they mirror the dev box's layout, so every
+`$B/runs/...` and `$B/beir/...` path in steps 5, 6 and 8 is copy-pasteable verbatim on the pod once
+you have exported the pod's `$B`. Do not flatten them.
 
 **Keep the `--run` path identical across every pass on the pod.** The ledger stamps that path into
 each record and refuses a resume whose path differs — that is the guard that stops a repeat pass
