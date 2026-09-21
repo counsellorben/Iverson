@@ -17,8 +17,8 @@ Two machines. Getting this wrong is the most likely way to waste rented time.
 | Steps | 1, 7, 8-scoring, 9-archive, 10 | 3, 4, 5, 6, 8-runs |
 
 **The rule:** every `teacher_rerank.py` invocation runs **on the pod**; every `report.py` invocation
-runs **on the dev box**. Artifacts move pod → dev through an `ssh` pipe (step 3 explains why `scp`
-does not work over RunPod's proxy). `report.py` needs `python-libs`, which
+runs **on the dev box**. Artifacts move pod → dev with `runpodctl send`/`receive` (step 3 explains why `scp`
+and `ssh $H 'cmd'` both fail over RunPod's proxy). `report.py` needs `python-libs`, which
 is not on the pod; the GPU is not on the dev box.
 
 `teacher_rerank.py` is stdlib-only, so the pod needs no install — just the script and three input
@@ -114,50 +114,52 @@ but the budget is not the thing to trim if you hit trouble.
 
 **Copy the inputs up first** (from the dev box, 8.9 MB raw / 2.8 MB compressed; the pod needs nothing installed):
 
-**Connection form — get this right or everything below fails with `Permission denied (publickey)`.**
-RunPod's proxy username is the **pod id**, not `root`; a `root@<podid>@ssh.runpod.io` string makes
-ssh read `root@<podid>` as the username (it splits on the LAST `@`) and the key is rejected. Direct
-TCP SSH to a pod with a public IP *does* use `root@<ip>` — the two forms are not interchangeable.
-Set these once per shell and use them everywhere below:
+**RunPod's proxied SSH is a console gateway with no exec channel.** Three consequences, all
+verified the hard way: `scp` fails (no SFTP), `ssh $H 'command'` fails with *"Your SSH client
+doesn't support PTY"* (no exec channel), and piping `tar` through `ssh -t` would corrupt the archive
+(a PTY does newline translation and interprets control bytes). Use `runpodctl`, which is
+pre-installed on every pod and needs no open ports.
+
+Also note the connection form: the proxy username is the **pod id**, not `root`. A
+`root@<podid>@ssh.runpod.io` string makes ssh read `root@<podid>` as the username (it splits on the
+LAST `@`) and the key is rejected with `Permission denied (publickey)`. Direct TCP SSH to a pod with
+a public IP *does* use `root@<ip>` — the two forms are not interchangeable. Pin the key with `-i`:
 
 ```bash
-K=~/.ssh/runpod_ed25519                     # the key registered in RunPod -> Settings -> SSH Public Keys
-H=<podid>-<hash>@ssh.runpod.io              # exactly as the Connect dialog shows it, no root@
-ssh -i $K $H 'nvidia-smi --query-gpu=name --format=csv,noheader'   # prove it before anything else
+K=~/.ssh/runpod_ed25519         # the key registered in RunPod -> Settings -> SSH Public Keys
+H=<podid>-<hash>@ssh.runpod.io  # exactly as the Connect dialog shows it, no root@
+ssh -i $K $H                    # INTERACTIVE shell only; a trailing command will not run
 ```
 
-**`scp` fails on RunPod's proxied SSH** — the proxy accepts shell commands but does not expose
-SFTP, and modern OpenSSH `scp` uses SFTP by default. Either force the legacy protocol with `-O`
-(capital letter O), or pipe through `ssh`, which always works:
+**Upload — one archive, laid out so it extracts straight into place.** On the dev box:
 
 ```bash
-# FIRST create the directories both options write into:
-ssh -i $K $H 'mkdir -p /workspace/inputs/runs /workspace/inputs/beir /workspace/artifacts'
-
-# option A -- force the legacy SCP protocol
-scp -O -i $K Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py $H:/workspace/
-scp -O -i $K $B/runs/rerank-a0prime.chunks.trec  $H:/workspace/inputs/runs/
-scp -O -i $K $B/beir/corpus.jsonl $B/beir/queries.jsonl $H:/workspace/inputs/beir/
-
-# option B -- pipe over ssh (needs only `tar` on the pod; ~2.8 MB compressed)
-mkdir -p /tmp/upload/runs /tmp/upload/beir
+rm -rf /tmp/upload /tmp/teacher-ceiling-inputs.tar.gz
+mkdir -p /tmp/upload/inputs/runs /tmp/upload/inputs/beir
 cp Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py /tmp/upload/
-cp $B/runs/rerank-a0prime.chunks.trec /tmp/upload/runs/
-cp $B/beir/corpus.jsonl $B/beir/queries.jsonl /tmp/upload/beir/
-tar czf - -C /tmp/upload . | ssh -i $K $H 'mkdir -p /workspace/staging && tar xzf - -C /workspace/staging'
+cp $B/runs/rerank-a0prime.chunks.trec /tmp/upload/inputs/runs/
+cp $B/beir/corpus.jsonl $B/beir/queries.jsonl /tmp/upload/inputs/beir/
+tar czf /tmp/teacher-ceiling-inputs.tar.gz -C /tmp/upload .
+md5sum /tmp/teacher-ceiling-inputs.tar.gz      # note this value
+runpodctl send /tmp/teacher-ceiling-inputs.tar.gz    # prints a one-time code; leave it running
 ```
 
-Option B lands everything under `/workspace/staging`; then **on the pod**:
+Then in an **interactive** pod shell (or the console's web terminal):
 
 ```bash
-mv /workspace/staging/teacher_rerank.py /workspace/
-mv /workspace/staging/runs/rerank-a0prime.chunks.trec /workspace/inputs/runs/
-mv /workspace/staging/beir/corpus.jsonl /workspace/staging/beir/queries.jsonl /workspace/inputs/beir/
-rm -rf /workspace/staging
+cd /workspace
+runpodctl receive <code>
+md5sum teacher-ceiling-inputs.tar.gz           # must equal the dev-box value
+tar xzf teacher-ceiling-inputs.tar.gz && rm teacher-ceiling-inputs.tar.gz
+mkdir -p /workspace/artifacts
 ls -la /workspace/teacher_rerank.py /workspace/inputs/runs /workspace/inputs/beir
 ```
 
-Verify with `md5sum` on both sides before you rely on the upload — it takes seconds at this size.
+The archive is ~2.9 MB and unpacks to `/workspace/teacher_rerank.py`, `/workspace/inputs/runs/` and
+`/workspace/inputs/beir/` — no `mv` step, and the `md5sum` on both sides is the integrity check.
+
+*If you provisioned a pod with a public IP and a real `sshd`*, normal tooling works and you can use
+`scp -O -i $K` / `rsync` / `ssh $H 'cmd'` instead of any of the above.
 
 The `runs/` and `beir/` subdirectories are deliberate: they mirror the dev box's layout, so every
 `$B/runs/...` and `$B/beir/...` path in steps 5, 6 and 8 is copy-pasteable verbatim on the pod once
@@ -225,11 +227,16 @@ the ledger records the run path and both seeds, and refuses loudly if you change
 Bring the run file **and its sidecar** down — `report.py` finds the sidecar by filename, so a run
 file without its `.meta.json` scores fine but prints `BUILD UNKNOWN`:
 
+On the **pod**:
 ```bash
-mkdir -p $A
-# scp -O, or the ssh pipe if the proxy refuses even that:
-ssh -i $K $H 'tar czf - -C /workspace/artifacts teacher-ceiling.chunks.trec teacher-ceiling.meta.json' \
-  | tar xzf - -C $A
+tar czf /workspace/main.tar.gz -C /workspace/artifacts teacher-ceiling.chunks.trec teacher-ceiling.meta.json
+runpodctl send /workspace/main.tar.gz
+```
+On the **dev box**:
+```bash
+mkdir -p $A && cd $A
+runpodctl receive <code>
+tar xzf main.tar.gz && rm main.tar.gz
 ```
 
 Then score on the dev box (`$B`, `$A`, `$S` here are the **dev box** block):
@@ -307,8 +314,16 @@ Reported, not gating. Confirm `distinct queries 50` and `covered by this run 50 
 
 **Pull everything off the pod before terminating — `/workspace` does not survive.**
 
+On the **pod**:
 ```bash
-ssh -i $K $H 'tar czf - -C /workspace/artifacts .' | tar xzf - -C $A
+tar czf /workspace/artifacts.tar.gz -C /workspace/artifacts .
+runpodctl send /workspace/artifacts.tar.gz
+```
+On the **dev box**:
+```bash
+mkdir -p $A && cd $A
+runpodctl receive <code>
+tar xzf artifacts.tar.gz && rm artifacts.tar.gz
 ls $A    # expect: teacher-ceiling.chunks.trec + .meta.json, main/repeat-1/repeat-2 responses JSONLs,
          # smoke.* , and the run log
 ```
