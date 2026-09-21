@@ -17,7 +17,8 @@ Two machines. Getting this wrong is the most likely way to waste rented time.
 | Steps | 1, 7, 8-scoring, 9-archive, 10 | 3, 4, 5, 6, 8-runs |
 
 **The rule:** every `teacher_rerank.py` invocation runs **on the pod**; every `report.py` invocation
-runs **on the dev box**. Artifacts move pod → dev by `scp`. `report.py` needs `python-libs`, which
+runs **on the dev box**. Artifacts move pod → dev through an `ssh` pipe (step 3 explains why `scp`
+does not work over RunPod's proxy). `report.py` needs `python-libs`, which
 is not on the pod; the GPU is not on the dev box.
 
 `teacher_rerank.py` is stdlib-only, so the pod needs no install — just the script and three input
@@ -34,7 +35,7 @@ S=Iverson.Server/Iverson.LoadTest/scripts                                # repo-
 **Pod, after you SSH in** (step 3 copies these up):
 ```bash
 B=/workspace/inputs          # rerank-a0prime.chunks.trec, corpus.jsonl, queries.jsonl
-A=/workspace/artifacts       # mkdir -p; scp these DOWN before terminating
+A=/workspace/artifacts       # mkdir -p; pull these DOWN before terminating (step 9)
 S=/workspace                 # teacher_rerank.py lives here
 ```
 Do **not** export `PYTHONPATH` on the pod — nothing there reads it, and `report.py` is not on the pod.
@@ -111,14 +112,40 @@ gpt-oss-120b (Apache 2.0, MXFP4, 128K context) under vLLM, `--max-model-len 1310
 The worst-case prompt in this corpus is 137,152 characters ≈ 34K tokens, so 128K leaves ample room —
 but the budget is not the thing to trim if you hit trouble.
 
-**Copy the inputs up first** (from the dev box, ~6 MB total; the pod needs nothing installed):
+**Copy the inputs up first** (from the dev box, 8.9 MB raw / 2.8 MB compressed; the pod needs nothing installed):
+
+**`scp` fails on RunPod's proxied SSH** — the proxy accepts shell commands but does not expose
+SFTP, and modern OpenSSH `scp` uses SFTP by default. Either force the legacy protocol with `-O`
+(capital letter O), or pipe through `ssh`, which always works:
 
 ```bash
+# FIRST create the directories both options write into:
 ssh -p <port> root@<host> 'mkdir -p /workspace/inputs/runs /workspace/inputs/beir /workspace/artifacts'
-scp -P <port> Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py root@<host>:/workspace/
-scp -P <port> $B/runs/rerank-a0prime.chunks.trec  root@<host>:/workspace/inputs/runs/
-scp -P <port> $B/beir/corpus.jsonl $B/beir/queries.jsonl root@<host>:/workspace/inputs/beir/
+
+# option A -- force the legacy SCP protocol
+scp -O -P <port> Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py root@<host>:/workspace/
+scp -O -P <port> $B/runs/rerank-a0prime.chunks.trec  root@<host>:/workspace/inputs/runs/
+scp -O -P <port> $B/beir/corpus.jsonl $B/beir/queries.jsonl root@<host>:/workspace/inputs/beir/
+
+# option B -- pipe over ssh (needs only `tar` on the pod; ~2.8 MB compressed)
+mkdir -p /tmp/upload/runs /tmp/upload/beir
+cp Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py /tmp/upload/
+cp $B/runs/rerank-a0prime.chunks.trec /tmp/upload/runs/
+cp $B/beir/corpus.jsonl $B/beir/queries.jsonl /tmp/upload/beir/
+tar czf - -C /tmp/upload . | ssh -p <port> root@<host> 'mkdir -p /workspace/staging && tar xzf - -C /workspace/staging'
 ```
+
+Option B lands everything under `/workspace/staging`; then **on the pod**:
+
+```bash
+mv /workspace/staging/teacher_rerank.py /workspace/
+mv /workspace/staging/runs/rerank-a0prime.chunks.trec /workspace/inputs/runs/
+mv /workspace/staging/beir/corpus.jsonl /workspace/staging/beir/queries.jsonl /workspace/inputs/beir/
+rm -rf /workspace/staging
+ls -la /workspace/teacher_rerank.py /workspace/inputs/runs /workspace/inputs/beir
+```
+
+Verify with `md5sum` on both sides before you rely on the upload — it takes seconds at this size.
 
 The `runs/` and `beir/` subdirectories are deliberate: they mirror the dev box's layout, so every
 `$B/runs/...` and `$B/beir/...` path in steps 5, 6 and 8 is copy-pasteable verbatim on the pod once
@@ -181,15 +208,16 @@ the ledger records the run path and both seeds, and refuses loudly if you change
 
 ---
 
-## 7. [dev] The five structural checks — scp the run file down first
+## 7. [dev] The five structural checks — pull the run file down first
 
 Bring the run file **and its sidecar** down — `report.py` finds the sidecar by filename, so a run
 file without its `.meta.json` scores fine but prints `BUILD UNKNOWN`:
 
 ```bash
 mkdir -p $A
-scp -P <port> root@<host>:/workspace/artifacts/teacher-ceiling.chunks.trec \
-              root@<host>:/workspace/artifacts/teacher-ceiling.meta.json  $A/
+# scp -O, or the ssh pipe if the proxy refuses even that:
+ssh -p <port> root@<host> 'tar czf - -C /workspace/artifacts teacher-ceiling.chunks.trec teacher-ceiling.meta.json' \
+  | tar xzf - -C $A
 ```
 
 Then score on the dev box (`$B`, `$A`, `$S` here are the **dev box** block):
@@ -268,7 +296,7 @@ Reported, not gating. Confirm `distinct queries 50` and `covered by this run 50 
 **Pull everything off the pod before terminating — `/workspace` does not survive.**
 
 ```bash
-scp -P <port> -r root@<host>:/workspace/artifacts/. $A/
+ssh -p <port> root@<host> 'tar czf - -C /workspace/artifacts .' | tar xzf - -C $A
 ls $A    # expect: teacher-ceiling.chunks.trec + .meta.json, main/repeat-1/repeat-2 responses JSONLs,
          # smoke.* , and the run log
 ```
