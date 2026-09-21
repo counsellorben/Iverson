@@ -377,6 +377,21 @@ DOC_ID_IN_PROMPT = re.compile(r"^\[(\S+)\]", re.M)
 
 
 # --------------------------------------------------------------------------------------------
+# RESPONSE_SCHEMA must constrain array length to exactly the pool size (50), not just item type.
+# Live evidence (2026-09-21, gpt-oss-120b on vLLM 0.29.0): at temperature 0 with a fixed seed,
+# two separate attempts for the same query both returned well-formed 46-element arrays -- valid
+# against an unconstrained schema, invalid against the 50-id pool -- each costing a full
+# multi-minute generation before Python-side validation caught it.
+# --------------------------------------------------------------------------------------------
+
+def test_response_schema_constrains_array_length_to_exactly_fifty():
+    assert tr.RESPONSE_SCHEMA["minItems"] == 50
+    assert tr.RESPONSE_SCHEMA["maxItems"] == 50
+    assert tr.RESPONSE_SCHEMA["type"] == "array"
+    assert tr.RESPONSE_SCHEMA["items"] == {"type": "string"}
+
+
+# --------------------------------------------------------------------------------------------
 # --api-key: some vLLM deployments require Authorization: Bearer <key> (e.g. a RunPod template
 # that launches `vllm serve --api-key` from VLLM_API_KEY before the operator runs this script).
 # The plumbing test proves args.api_key reaches call_teacher through main(), via ScriptedTeacher

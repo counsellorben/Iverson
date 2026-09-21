@@ -54,7 +54,17 @@ STRUCTURED_OUTPUT_PARAM = "guided_json"
 # Item type pinned to string (spec: "Pin the guided-decoding schema's item type to string") -- the
 # model may still emit unquoted JSON numbers regardless of the schema hint (P22), which
 # validate_permutation's str() normalisation handles independently of this schema.
-RESPONSE_SCHEMA = {"type": "array", "items": {"type": "string"}}
+RESPONSE_SCHEMA = {"type": "array", "items": {"type": "string"}, "minItems": 50, "maxItems": 50}
+# minItems/maxItems added after live evidence: at temperature 0 with a fixed seed, gpt-oss-120b
+# twice returned a well-formed 46-element array for the same query (different ids dropped each
+# time -- not deterministic despite the fixed seed), which passed guided-JSON validation and only
+# failed Python-side length validation after a full ~3-6 minute generation. Constraining array
+# length in the schema itself should make vLLM's guided decoder refuse to terminate the array
+# below 50 elements, catching this at generation time instead of after paying for it.
+# UNVERIFIED: whether this vLLM version's guided-decoding backend actually enforces minItems/
+# maxItems on structured JSON output -- no vLLM is reachable on the dev box to confirm. If it
+# does not enforce them, this is a no-op and the post-hoc length check in validate_permutation
+# remains the real defense, as it was before this change.
 
 RETRY_BUDGET = 2  # one initial attempt + one retry (spec §6 row 1: "One retry ... on a second
 # failure the query is recorded unscored"). A resumed invocation gets a FRESH budget of 2, never a
