@@ -42,8 +42,9 @@ The following were verified by `thorough-brainstorming` at spec-write time and a
 | 8 (Cat 6 — Task 2 modifies the runbook) | Consumer impact | Nothing else in the repo references `docs/plans/2026-09-20-teacher-ceiling-task3-runbook.md`'s path or its internal step numbers, so appending a new section is safe | `grep -rl "2026-09-20-teacher-ceiling-task3-runbook" docs/` → no results |
 | 9 | Code-in-plan validity | Runbook Step 5's code block is exactly lines 200–207; Step 6's is exactly lines 217–223 (the exact commands Task 2 Step 1 rewrites) | Fresh read, `docs/plans/2026-09-20-teacher-ceiling-task3-runbook.md:198-232` |
 | 10 | Sibling-set (seed-triple convention) | The runbook's own smoke-test precedent sets `--seed`, `--shuffle-seed`, and `--subsample-seed` to the *same* value for a single-query pass (`7` in the existing Step 5) — Task 2 follows this exact convention for each of the 8 new seeds | Fresh read, `docs/plans/2026-09-20-teacher-ceiling-task3-runbook.md:200-207`: `--seed 7 --shuffle-seed 7 ... --subsample 1 --subsample-seed 7` |
+| 11 | Rule-like (completion-detection mechanism) | A `pgrep -f` pattern anchored to both the script name and the invocation's unique `--responses` path (`"teacher_rerank.py.*--responses <path>"`) correctly tracks a real `teacher_rerank.py` process for its full lifetime, and does not match unrelated background commands that a bare filename-substring pattern would; a two-phase `until <appears>; while <disappears>` structure avoids a race where the first check could run before the backgrounded process exists | `docs/criticalreviews/2026-09-21-teacher-ceiling-attempt-measurement-implementation-plan-critical-review-1.md` Finding 1 (proves the original `PID=$!`/`kill -0` mechanism broken); verified in the `update-implementation-plan` round applying this fix: an anchored pattern correctly ignored unrelated background processes that a bare substring pattern matched, and a `while pgrep; do sleep; done` loop tracked a real process for its full observed lifetime with no early exit |
 
-**Note on the `setsid nohup ... & disown` pattern used in Task 2:** this exact detachment pattern was validated live during the 2026-09-21 GPU session (a request survived >6 minutes past the ~5m42s window that had previously killed 3 requests) but was never written back into the committed runbook — `grep -rn "setsid" docs/plans/*.md` finds it nowhere in this line of work. There is no repo precedent to cite for its exact syntax; it is reconstructed here from the live session's own account, not from a committed artifact. Task 2 Step 1 both applies it to Steps 5/6 and uses it in the new section, so this is the one command shape in this plan that rests on operator testimony rather than repo evidence — flagged rather than silently treated as equally certain as the other rows.
+**Note on the `setsid nohup ... & disown` pattern used in Task 2:** the launch itself (`setsid nohup ... & disown`) was validated live during the 2026-09-21 GPU session (a request survived >6 minutes past the ~5m42s window that had previously killed 3 requests) but was never written back into the committed runbook — `grep -rn "setsid" docs/plans/*.md` finds it nowhere in this line of work, so the launch still rests on operator testimony rather than repo evidence. The *completion-detection* half (originally `PID=$!`/`kill -0`) was found broken by `critical-implementation-review` round 1 — under job control, plain `setsid` (no `-f`/`--wait`) forks internally and the PID `$!` captures exits almost immediately, well before the real process does — and was replaced with a `pgrep -f`-based check, verified locally (not live) to track a real process for its full lifetime. Per that review's Forced decision 2, `setsid --wait` (which would also fix PID-tracking) was deliberately NOT adopted, to avoid introducing an unverified change to the launch mechanism itself; the `pgrep` replacement touches only completion-detection, leaving the live-validated launch untouched.
 
 ## Tasks
 
@@ -215,9 +216,40 @@ Everything that costs money happens here — same discipline as the original pla
 **Interfaces:**
 - Consumes: Task 1's `summarize_teacher_attempts.py`; the existing runbook's pod-connection and provisioning steps (§§1–4) if the pod from the prior live session is no longer active.
 
-- [ ] **Step 1: Fix the runbook's Steps 5/6 detachment gap, and append the new section.** Steps 5 and 6 (`docs/plans/2026-09-20-teacher-ceiling-task3-runbook.md:200-207` and `:217-223`) still launch `teacher_rerank.py` as a plain foreground command — the exact shape that hit the SSH-session-tied SIGTERM bug live. Wrap both in the same `setsid nohup ... & disown` pattern the live session used to fix it, redirecting output to a log file so the operator can `tail -f` it. Then append this new section at the end of the file (after "## What is still unverified going in", which stays the file's last section):
+- [ ] **Step 1: Fix the runbook's Steps 5/6 detachment gap, and append the new section.** Steps 5 and 6 (`docs/plans/2026-09-20-teacher-ceiling-task3-runbook.md:200-207` and `:217-223`) still launch `teacher_rerank.py` as a plain foreground command — the exact shape that hit the SSH-session-tied SIGTERM bug live. Replace each with the launch-plus-detection pattern below: launch via `setsid nohup ... & disown`, matching what the live session validated; completion detected via `pgrep -f`, not `PID=$!`/`kill -0` (see `docs/criticalreviews/2026-09-21-teacher-ceiling-attempt-measurement-implementation-plan-critical-review-1.md` Finding 1 for why the PID form doesn't track the real process under an interactive shell's job control).
 
-```markdown
+Step 5 becomes:
+```bash
+setsid nohup python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
+  --corpus $B/beir/corpus.jsonl --queries $B/beir/queries.jsonl \
+  --base-url http://127.0.0.1:8000 --model <model-id> --seed 7 --shuffle-seed 7 \
+  --subsample 1 --subsample-seed 7 \
+  --vllm-version <ver> --quantisation mxfp4 --instance-type <sku> \
+  --responses $A/smoke.responses.jsonl --out $A/smoke.chunks.trec \
+  > $A/smoke.log 2>&1 < /dev/null &
+disown
+PATTERN="teacher_rerank.py.*--responses $A/smoke.responses.jsonl"
+until pgrep -f "$PATTERN" > /dev/null; do sleep 1; done
+while pgrep -f "$PATTERN" > /dev/null; do sleep 15; done
+```
+
+Step 6 becomes:
+```bash
+setsid nohup python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
+  --corpus $B/beir/corpus.jsonl --queries $B/beir/queries.jsonl \
+  --base-url http://127.0.0.1:8000 --model <model-id> --seed 20260920 --shuffle-seed 20260920 \
+  --vllm-version <ver> --quantisation mxfp4 --instance-type <sku> \
+  --responses $A/main.responses.jsonl --out $A/teacher-ceiling.chunks.trec \
+  > $A/main.log 2>&1 < /dev/null &
+disown
+PATTERN="teacher_rerank.py.*--responses $A/main.responses.jsonl"
+until pgrep -f "$PATTERN" > /dev/null; do sleep 1; done
+while pgrep -f "$PATTERN" > /dev/null; do sleep 15; done
+```
+
+Then append this new section at the end of the file (after "## What is still unverified going in", which stays the file's last section):
+
+````markdown
 ---
 
 ## 11. [pod] Attempt-failure-rate measurement batch (8 queries)
@@ -241,8 +273,9 @@ for SEED in 101 102 103 104 105 106 107 108; do
       --responses $A/q$SEED.responses.jsonl --out $A/q$SEED.chunks.trec \
       > $A/q$SEED.pass$PASS.log 2>&1 < /dev/null &
     disown
-    PID=$!
-    while kill -0 $PID 2>/dev/null; do sleep 15; done
+    PATTERN="teacher_rerank.py.*--responses $A/q$SEED.responses.jsonl"
+    until pgrep -f "$PATTERN" > /dev/null; do sleep 1; done
+    while pgrep -f "$PATTERN" > /dev/null; do sleep 15; done
     echo "seed $SEED pass $PASS done -- $(tail -1 $A/q$SEED.pass$PASS.log)"
   done
 done
@@ -264,7 +297,7 @@ token-budget-exceeded query's), pass their `--responses` paths as additional arg
 they were named in that session's `$A`.
 
 Pull the 8 new ledgers down (`runpodctl send`) before terminating the instance, same as step 9.
-```
+````
 
 - [ ] **Step 2: Commit the runbook changes.**
 ```bash
@@ -276,7 +309,7 @@ git commit -m "runbook: fix steps 5/6 SIGTERM detachment gap, add the 8-query me
 
 - [ ] **Step 4: Copy the new summarizer script up**, same `runpodctl send`/`receive` mechanism already used for `teacher_rerank.py`.
 
-- [ ] **Step 5: Run the fixed Steps 5/6 pattern check, then the new §11 loop**, per the runbook text written in Step 1. Confirm the loop completes for all 8 seeds — each `q<seed>.responses.jsonl` should hold either one accepted record or up to 4 rejected records.
+- [ ] **Step 5: Verify the detection mechanism on seed 101, then let the §11 loop run.** Before letting the loop run unattended, watch seed 101's pass 1 invocation once: confirm via `pgrep -af "teacher_rerank.py.*--responses $A/q101.responses.jsonl"` that the process appears while running and disappears once `tail -1 $A/q101.pass1.log` shows the script's own completion or failure line. Once confirmed for one iteration, let the loop continue unattended for the rest. Confirm the loop completes for all 8 seeds — each `q<seed>.responses.jsonl` should hold, for its one query, exactly one of: (a) a single accepted record and nothing else, (b) up to 4 rejected records with no accepted one (exhausted), or (c) 1-3 rejected records followed by one accepted record (the query needed a retry before succeeding — an expected outcome, not a defect, and exactly what this measurement is designed to observe).
 
 - [ ] **Step 6: Run the summarizer** against all 8 ledgers (optionally including the 2 prior session's ledgers, per the runbook's note). Save its output — this is the deliverable a later design session reads to pick `RETRY_BUDGET`/`MAX_COMPLETION_TOKENS` and decide on §6 row 2.
 
@@ -284,4 +317,4 @@ git commit -m "runbook: fix steps 5/6 SIGTERM detachment gap, add the 8-query me
 
 ## Known issues inherited from spec
 
-The `setsid nohup ... & disown` pattern's exact syntax has no committed precedent to verify against (see "Verified plan-level assumptions," the note after row 10) — it is reconstructed from the live session's own account. If it turns out not to reproduce the fix, that is itself informative for the next design.
+The `setsid nohup ... & disown` *launch* has no committed precedent to verify against (see "Verified plan-level assumptions," the note after row 10) — it is reconstructed from the live session's own account, and its SSH-disconnect-survival property remains validated only by that live session, not by any static review. Its original completion-detection mechanism (`PID=$!`/`kill -0`) was found broken and replaced with a `pgrep`-based check by `critical-implementation-review` round 1 (see `docs/criticalreviews/2026-09-21-teacher-ceiling-attempt-measurement-implementation-plan-critical-review-1.md`); that replacement is verified locally for process-tracking but, like the launch itself, not against a real live disconnect. If either half turns out not to hold live, that is itself informative for the next design.
