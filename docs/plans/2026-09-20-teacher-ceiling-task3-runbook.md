@@ -27,10 +27,18 @@ files copied up.
 **Dev box, every shell:**
 ```bash
 export PYTHONPATH=~/repositories/iverson-benchmark-corpora/python-libs   # report.py needs this
+W=/home/ben/repositories/Iverson/.worktrees/teacher-ceiling              # the branch worktree
 B=~/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26
 A=~/repositories/iverson-benchmark-corpora/teacher-ceiling-2026-09       # artifacts; mkdir -p it
-S=Iverson.Server/Iverson.LoadTest/scripts                                # repo-relative
+S=$W/Iverson.Server/Iverson.LoadTest/scripts
+cd $W
 ```
+
+`teacher_rerank.py`, `stub_vllm_server.py` and `test_teacher_rerank.py` exist **only on the
+`teacher-ceiling` branch**, which is unmerged — the main checkout at `/home/ben/repositories/Iverson`
+does not contain them, and running these commands there gives
+`cp: cannot stat '…/teacher_rerank.py': No such file or directory`. `$S` is absolute for that
+reason; `report.py` and `qrels` are on both, so only the three new scripts actually depend on it.
 
 **Pod, after you SSH in** (step 3 copies these up):
 ```bash
@@ -136,7 +144,7 @@ ssh -i $K $H                    # INTERACTIVE shell only; a trailing command wil
 ```bash
 rm -rf /tmp/upload /tmp/teacher-ceiling-inputs.tar.gz
 mkdir -p /tmp/upload/inputs/runs /tmp/upload/inputs/beir
-cp Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py /tmp/upload/
+cp $S/teacher_rerank.py /tmp/upload/
 cp $B/runs/rerank-a0prime.chunks.trec /tmp/upload/inputs/runs/
 cp $B/beir/corpus.jsonl $B/beir/queries.jsonl /tmp/upload/inputs/beir/
 tar czf /tmp/teacher-ceiling-inputs.tar.gz -C /tmp/upload .
