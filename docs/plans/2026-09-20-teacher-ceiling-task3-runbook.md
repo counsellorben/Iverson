@@ -378,6 +378,9 @@ preserved run file reproduces the same p.
 | `BUILD MISMATCH … confounded` | sidecar composite is not `31583db5aea49136` | fix the sidecar; no re-spend needed, it is a JSON file |
 | Result **above 0.9196** | label leakage, not a good teacher | stop; something is feeding relevance into the ordering |
 | `could not import ir_measures` | `PYTHONPATH` unset in this shell | re-export it; it is per-shell |
+| `Permission denied (publickey)` on ssh | `root@` prefix on the proxy form, or the wrong key | user is the pod id, not `root`; add `-i ~/.ssh/<your-runpod-key>`; `ssh -v` names the keys offered |
+| `Your SSH client doesn't support PTY` | you ran `ssh $H 'command'` — the proxy has no exec channel | open an interactive shell instead; move files with `runpodctl`, not `scp` or a `tar` pipe |
+| `scp` fails / hangs | the proxy exposes no SFTP subsystem | use `runpodctl send`/`receive` (step 3) |
 
 ## What is still unverified going in
 
