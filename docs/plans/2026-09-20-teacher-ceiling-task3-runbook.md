@@ -6,21 +6,48 @@ Tasks 1–2 are already built and committed on branch `teacher-ceiling`.
 **The meter runs from step 2 to step 9.** Everything before step 2 is free and must pass first.
 Budget: $2–5 per pass, under $20 including one failed pass and the repeat.
 
-Throughout:
+## Which machine runs what
 
+Two machines. Getting this wrong is the most likely way to waste rented time.
+
+| | **Dev box** | **Rented pod** |
+|---|---|---|
+| Runs | `report.py`, `stub_vllm_server.py`, `pytest` | vLLM, `teacher_rerank.py` |
+| Has | the corpora, `python-libs`, the git repo | the GPU and the model weights |
+| Steps | 1, 7, 8-scoring, 9-archive, 10 | 3, 4, 5, 6, 8-runs |
+
+**The rule:** every `teacher_rerank.py` invocation runs **on the pod**; every `report.py` invocation
+runs **on the dev box**. Artifacts move pod → dev by `scp`. `report.py` needs `python-libs`, which
+is not on the pod; the GPU is not on the dev box.
+
+`teacher_rerank.py` is stdlib-only, so the pod needs no install — just the script and three input
+files copied up.
+
+**Dev box, every shell:**
 ```bash
-export PYTHONPATH=~/repositories/iverson-benchmark-corpora/python-libs   # report.py needs this in EVERY shell
+export PYTHONPATH=~/repositories/iverson-benchmark-corpora/python-libs   # report.py needs this
 B=~/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26
 A=~/repositories/iverson-benchmark-corpora/teacher-ceiling-2026-09       # artifacts; mkdir -p it
-S=Iverson.Server/Iverson.LoadTest/scripts
+S=Iverson.Server/Iverson.LoadTest/scripts                                # repo-relative
 ```
+
+**Pod, after you SSH in** (step 3 copies these up):
+```bash
+B=/workspace/inputs          # rerank-a0prime.chunks.trec, corpus.jsonl, queries.jsonl
+A=/workspace/artifacts       # mkdir -p; scp these DOWN before terminating
+S=/workspace                 # teacher_rerank.py lives here
+```
+Do **not** export `PYTHONPATH` on the pod — nothing there reads it, and `report.py` is not on the pod.
+
+Below, each step is tagged **[dev]**, **[pod]** or **[dashboard]**. Where a step's commands use `$B`,
+`$A` or `$S`, use the block for that step's machine.
 
 `~/repositories/iverson-benchmark-corpora/` is **not a git repository**. Never `git add` anything
 there. The only thing that gets committed is the verdict doc in step 10.
 
 ---
 
-## 1. Pre-flight on the dev box — free, and it gates the spend
+## 1. [dev] Pre-flight — free, and it gates the spend
 
 Run all three. If any disagrees, stop: the pipeline is wrong and renting a GPU would measure nothing.
 
@@ -58,7 +85,7 @@ to catch later.
 
 ---
 
-## 2. Provision
+## 2. [dashboard] Provision
 
 One 80 GB GPU, per-second billing. RunPod Community A100 80 GB ≈ $1.39/hr or H100 ≈ $1.99/hr
 (third-party listings from August 2026 — confirm the rate at rental). Vast.ai H100 from ~$1.49/hr.
@@ -68,16 +95,34 @@ single-GPU H100 SKU at all.
 
 ---
 
-## 3. Serve the model
+## 3. [pod] Serve the model, and copy the inputs up
 
 gpt-oss-120b (Apache 2.0, MXFP4, 128K context) under vLLM, `--max-model-len 131072`.
 
 The worst-case prompt in this corpus is 137,152 characters ≈ 34K tokens, so 128K leaves ample room —
 but the budget is not the thing to trim if you hit trouble.
 
+**Copy the inputs up first** (from the dev box, ~6 MB total; the pod needs nothing installed):
+
+```bash
+ssh -p <port> root@<host> 'mkdir -p /workspace/inputs /workspace/artifacts'
+scp -P <port> Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py root@<host>:/workspace/
+scp -P <port> $B/runs/rerank-a0prime.chunks.trec root@<host>:/workspace/inputs/
+scp -P <port> $B/beir/corpus.jsonl $B/beir/queries.jsonl root@<host>:/workspace/inputs/
+```
+
+Note the pod's layout differs from the dev box's: the run file sits directly in `$B` on the pod
+(`/workspace/inputs/rerank-a0prime.chunks.trec`), **not** under `$B/runs/`. Steps 5, 6 and 8 below
+write `$B/runs/...` — on the pod, drop the `runs/` segment. Likewise `$B/beir/corpus.jsonl` becomes
+`$B/corpus.jsonl`.
+
+**Keep the `--run` path identical across every pass on the pod.** The ledger stamps that path into
+each record and refuses a resume whose path differs — that is the guard that stops a repeat pass
+silently replaying the main run, and it means you cannot resume a pod-started pass on the dev box.
+
 ---
 
-## 4. Resolve the two execution-time checks — before the 300-query run
+## 4. [pod] Resolve the two execution-time checks — before the 300-query run
 
 Both are inherited unknowns (spec A13, A14). Answer them with one cheap call, not on query 1 of 300.
 
@@ -93,7 +138,7 @@ run log.
 
 ---
 
-## 5. Smoke-test one query against the real model
+## 5. [pod] Smoke-test one query against the real model
 
 ```bash
 python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
@@ -110,7 +155,7 @@ reply shape. Read `$A/smoke.responses.jsonl` and confirm the reply is a 50-eleme
 
 ---
 
-## 6. The main run — 300 queries
+## 6. [pod] The main run — 300 queries
 
 ```bash
 python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
@@ -128,12 +173,26 @@ the ledger records the run path and both seeds, and refuses loudly if you change
 
 ---
 
-## 7. The five structural checks
+## 7. [dev] The five structural checks — scp the run file down first
+
+Bring the run file **and its sidecar** down — `report.py` finds the sidecar by filename, so a run
+file without its `.meta.json` scores fine but prints `BUILD UNKNOWN`:
+
+```bash
+mkdir -p $A
+scp -P <port> root@<host>:/workspace/artifacts/teacher-ceiling.chunks.trec \
+              root@<host>:/workspace/artifacts/teacher-ceiling.meta.json  $A/
+```
+
+Then score on the dev box (`$B`, `$A`, `$S` here are the **dev box** block):
 
 ```bash
 python3 $S/report.py --run $A/teacher-ceiling.chunks.trec --qrels $B/qrels.trec \
-  --pair $A/teacher-ceiling.chunks.trec=$B/runs/rerank-a0prime.chunks.trec
+  --pair $A/teacher-ceiling.chunks.trec=$B/runs/rerank-a0prime.chunks.trec \
+  | tee $A/report-output.txt
 ```
+
+`tee` matters: step 10 takes the md5 of that output, and §9 of the spec preserves it.
 
 | # | Check | How it shows |
 |---|---|---|
@@ -156,7 +215,7 @@ and they are a property of the baseline, not a defect.
 
 ---
 
-## 8. The repeat — noise floor
+## 8. [pod runs, dev scores] The repeat — noise floor
 
 Two passes, **each with its own `--responses` path**, same `--subsample-seed`:
 
@@ -196,16 +255,30 @@ Reported, not gating. Confirm `distinct queries 50` and `covered by this run 50 
 
 ---
 
-## 9. Preserve and destroy
+## 9. [both] Preserve and destroy
 
-Preserve in `$A/`: all three response JSONLs, the run file, the sidecar, the full `report.py` output
-(redirect it to a file), and the run log. **No `git add` in that tree.**
+**Pull everything off the pod before terminating — `/workspace` does not survive.**
 
-Then destroy the instance. Per-second billing means idle time is real money.
+```bash
+scp -P <port> -r root@<host>:/workspace/artifacts/. $A/
+ls $A    # expect: teacher-ceiling.chunks.trec + .meta.json, main/repeat-1/repeat-2 responses JSONLs,
+         # smoke.* , and the run log
+```
+
+Preserve in `$A/` on the dev box: all response JSONLs, the run file, the sidecar, the full
+`report.py` output (`report-output.txt` from step 7), and the run log. **No `git add` in that tree** —
+it is not a git repo.
+
+Then **terminate** the pod — not "stop". A stopped pod still bills for storage. If you created a
+network volume for the model weights and you are done with the experiment, delete that too; it bills
+continuously.
+
+Check the artifacts are readable on the dev box *before* you terminate. Recovering a terminated pod's
+disk is not possible.
 
 ---
 
-## 10. The verdict — Task 4, free, offline
+## 10. [dev] The verdict — Task 4, free, offline
 
 ```bash
 md5sum $A/teacher-ceiling.chunks.trec $A/report-output.txt
