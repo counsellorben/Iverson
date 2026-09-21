@@ -87,8 +87,17 @@ to catch later.
 
 ## 2. [dashboard] Provision
 
-One 80 GB GPU, per-second billing. RunPod Community A100 80 GB ≈ $1.39/hr or H100 ≈ $1.99/hr
-(third-party listings from August 2026 — confirm the rate at rental). Vast.ai H100 from ~$1.49/hr.
+**It must be an H100 (or H200/B200) — not an A100.** gpt-oss-120b ships MXFP4-quantised, and vLLM's
+MXFP4 kernels target Hopper and Blackwell; the A100 (SM80) is not on the supported list. Dequantising
+to bf16 would need ~240 GB, so it does not fit one card either. An A100 is the cheaper rental and it
+will not serve this model.
+
+One 80 GB **H100**, per-second billing: RunPod Community ≈ $1.99/hr, Vast.ai from ~$1.49/hr
+(third-party listings from August 2026 — confirm the rate at rental).
+
+If only A100s are available, switch to the spec's fallback — a 32B-class reasoning model in FP8 —
+and record the substitution in the sidecar's `--model` and the verdict doc. Do not try to force
+gpt-oss-120b onto SM80.
 
 Avoid the hyperscalers for this: Azure's cheapest 80 GB equivalent is ≈ $3.67/hr, and AWS has no
 single-GPU H100 SKU at all.
