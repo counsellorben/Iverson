@@ -440,7 +440,7 @@ app.MapGet("/build", () =>
 {
     var (composite, assemblies) = BuildIdentity.Compute();
     return Results.Ok(new { composite, assemblies });
-}).WithName("BuildIdentity").AllowAnonymous();
+}).WithName("BuildIdentity").AllowAnonymous().WithMetadata(new HttpListenerOnly());
 
 app.MapGet("/health", async (HealthCheckCache healthCheckCache) =>
 {

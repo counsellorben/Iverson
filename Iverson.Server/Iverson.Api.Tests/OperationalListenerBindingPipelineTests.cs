@@ -104,19 +104,24 @@ public class OperationalListenerBindingPipelineTests : IClassFixture<AuthTestWeb
     }
 
     // Drift guard, and the reason the two theories above are not sufficient on their own: their
-    // seven paths are enumerated by hand, by the same hand that attaches the metadata in
-    // Program.cs. An eighth /probe/* added next month would ship answering on the gRPC listener
-    // with the whole suite green, because no InlineData would name it. This asserts over the
-    // app's real EndpointDataSource that the set of endpoints carrying HttpListenerOnly is
-    // EXACTLY these seven route patterns, which fails in both directions: a marker missing from
-    // a new operational endpoint, and a marker landing somewhere it must not (a gRPC service,
-    // /v1/traces, /admin/console/*). Route patterns rather than endpoint names because
-    // MapPrometheusScrapingEndpoint sets no name.
+    // eight paths are enumerated by hand, by the same hand that attaches the metadata in
+    // Program.cs. A ninth operational endpoint added next month would ship answering on the
+    // gRPC listener with the whole suite green, because no InlineData would name it. This
+    // asserts over the app's real EndpointDataSource that the set of endpoints carrying
+    // HttpListenerOnly is EXACTLY these eight route patterns, which fails in both directions: a
+    // marker missing from a new operational endpoint, and a marker landing somewhere it must not
+    // (a gRPC service, /v1/traces, /admin/console/*). Route patterns rather than endpoint names
+    // because MapPrometheusScrapingEndpoint sets no name.
+    //
+    // /build is here because it is the live instance of the first failure mode: it arrived
+    // anonymous and unmarked in a merge from main, was served on both listeners, and this guard
+    // could not see it until the marker and this InlineData row were both added.
     [Fact]
     public void HttpListenerOnlyMetadata_IsOnExactlyTheOperationalEndpoints()
     {
         string[] expected =
         [
+            "/build",
             "/health",
             "/health/live",
             "/metrics",
