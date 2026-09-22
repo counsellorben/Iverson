@@ -6,6 +6,14 @@ on:
       - "Iverson.AdminUI/**"
       # This workflow guards itself too: a change here must be able to run.
       - ".github/workflows/admin-ui.yml"
+  # A direct push (to a branch or to main) otherwise runs neither the cold `npm ci`
+  # build nor the image-contract job, so nothing in the repo catches a regression
+  # introduced outside a PR.
+  push:
+    branches: [main]
+    paths:
+      - "Iverson.AdminUI/**"
+      - ".github/workflows/admin-ui.yml"
 
 # Least-privilege default: both jobs here only check out the repo, install and build
 # it, and build/run a container from a locally built image -- neither needs to write
