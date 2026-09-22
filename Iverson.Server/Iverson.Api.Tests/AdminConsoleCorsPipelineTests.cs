@@ -131,4 +131,20 @@ public class AdminConsoleCorsPipelineTests :
         response.Headers.Contains("Access-Control-Allow-Origin").Should().BeTrue();
         response.Headers.Contains("Access-Control-Allow-Credentials").Should().BeFalse();
     }
+
+    // 6. X-Trace-Id is set on every response (Program.cs's trace-id middleware), but a
+    // cross-origin fetch's Response.headers cannot read it unless it is CORS-exposed: only the
+    // handful of CORS-safelisted response headers are visible to script by default, and
+    // X-Trace-Id is not one of them. Confirms WithExposedHeaders("X-Trace-Id") actually reaches
+    // the wire as Access-Control-Expose-Headers on the configured policy.
+    [Fact]
+    public async Task ConfiguredOrigin_CrossOriginGet_HealthLive_ExposesTraceIdHeader()
+    {
+        using var request = CrossOriginGet("/health/live", CorsConfiguredTestWebApplicationFactory.ConfiguredOrigin);
+
+        var response = await _configured.SendAsync(request);
+
+        response.Headers.TryGetValues("Access-Control-Expose-Headers", out var exposed).Should().BeTrue();
+        exposed!.Should().ContainSingle().Which.Should().Be("X-Trace-Id");
+    }
 }

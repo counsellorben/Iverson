@@ -103,7 +103,11 @@ if (!string.IsNullOrEmpty(adminConsoleOrigin))
     builder.Services.AddCors(options => options.AddPolicy(AdminConsoleCorsPolicy, policy => policy
         .WithOrigins(adminConsoleOrigin)
         .WithHeaders("Authorization", "Content-Type")
-        .AllowAnyMethod()));
+        .AllowAnyMethod()
+        // Without this, the server sets X-Trace-Id on every response (below) but the browser's
+        // fetch Response.headers cannot see it cross-origin — only the CORS-safelisted response
+        // headers are exposed to script by default, and X-Trace-Id is not one of them.
+        .WithExposedHeaders("X-Trace-Id")));
 }
 // If adminConsoleOrigin is unset, no CORS policy is registered at all — cross-origin
 // requests fail closed rather than silently falling back to a permissive policy.
