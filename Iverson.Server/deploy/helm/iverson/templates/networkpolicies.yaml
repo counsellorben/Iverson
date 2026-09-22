@@ -511,7 +511,10 @@ spec:
         - { protocol: TCP, port: 8080 }
     - from: []   # kubelet readiness/liveness probes: the kubelet connects directly from the
                # node, not from any pod/namespace, so there's no podSelector/namespaceSelector
-               # to scope this to — same any-source reasoning as the api-ingress rule above.
+               # to scope this to. Deliberately allow-all: this is the same pre-existing
+               # exposure the api-ingress rule used to have before it was migrated to a
+               # clusterCidrs-based ipBlock list — this rule has not been migrated yet. See
+               # api-ingress above for the pattern to follow.
                # Same port as the ingress rule above since admin-ui has no dedicated health port.
       ports:
         - { protocol: TCP, port: 8080 }
@@ -596,10 +599,13 @@ spec:
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
       ports: [{ protocol: TCP, port: 9000 }]
-    - from: []   # kubelet readiness/liveness probes: same any-source reasoning as api-ingress's
-               # kubelet-probe rule — authentik's server process serves both app traffic and its
-               # own health endpoints (/-/health/live/, /-/health/ready/) on the same port, so
-               # there's no separate dedicated health port to scope this to.
+    - from: []   # kubelet readiness/liveness probes: authentik's server process serves both app
+               # traffic and its own health endpoints (/-/health/live/, /-/health/ready/) on the
+               # same port, so there's no separate dedicated health port to scope this to.
+               # Deliberately allow-all: this is the same pre-existing exposure the api-ingress
+               # rule used to have before it was migrated to a clusterCidrs-based ipBlock list —
+               # this rule has not been migrated yet. See api-ingress above for the pattern to
+               # follow.
       ports: [{ protocol: TCP, port: 9000 }]
 ---
 apiVersion: networking.k8s.io/v1
