@@ -39,7 +39,13 @@ public sealed class HealthCheckCache(
     IOptions<EngagementStoreOptions> engagementOptions,
     IMemoryCache cache)
 {
-    private const string CacheKey = "health-fan-out";
+    // Namespaced so this key cannot collide with TenantStatusCache's keys in the same shared
+    // IMemoryCache: TenantStatusCache caches a null string for an unknown tenant, and
+    // IMemoryCache.TryGetValue<TItem> returns true (with value = default) for a cached null
+    // rather than falling through to false, so a bare "health-fan-out" key would have been
+    // indistinguishable from a tenant literally named "health-fan-out" -- and GetAsync would
+    // NullReferenceException on `lazy!.Value` for that tenant's TTL window.
+    private const string CacheKey = "iverson:health:fan-out";
 
     // Must stay under the readiness probe's 10-second default period so a genuinely
     // recovered/degraded backend is reflected before the next probe.

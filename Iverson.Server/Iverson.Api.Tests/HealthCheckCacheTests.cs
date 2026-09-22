@@ -174,6 +174,36 @@ public class HealthCheckCacheTests
         second.StarRocks.Should().Be(EngagementHealthStatus.Unhealthy);
     }
 
+    // Regression test for the review finding that the pre-fix bare "health-fan-out" cache key
+    // shared the same IMemoryCache keyspace as Tenancy/TenantStatusCache.cs, which keys on raw
+    // tenantId. TenantStatusCache caches a null string for an unknown tenant, and
+    // IMemoryCache.TryGetValue<TItem> returns true with value = default for a cached null
+    // instead of falling through to false (it only falls through on a type mismatch) — so a
+    // tenant literally named "health-fan-out" would make HealthCheckCache.GetAsync()'s first
+    // TryGetValue return true with a null Lazy, and `lazy!.Value` would NullReferenceException.
+    // This simulates exactly that pre-existing entry in the shared cache and asserts the
+    // namespaced key ("iverson:health:fan-out") is not shadowed by it.
+    [Fact]
+    public async Task GetAsync_SharedCacheHasNullCachedUnderLegacyBareKey_DoesNotThrow()
+    {
+        var counters = new CallCounters();
+        var memoryCache = new MemoryCache(new MemoryCacheOptions());
+        memoryCache.Set("health-fan-out", (string?)null, TimeSpan.FromSeconds(30));
+
+        var options = Options.Create(new EngagementStoreOptions { Enabled = true });
+        var cache = new HealthCheckCache(
+            new CountingRecordStoreQueryExecutor(counters, gate: null),
+            new CountingEngagementStoreHealthCheck(counters, gate: null),
+            new CountingVectorSchemaManager(counters, gate: null),
+            new CountingEventProducer(counters, gate: null),
+            options,
+            memoryCache);
+
+        var act = async () => await cache.GetAsync();
+
+        await act.Should().NotThrowAsync();
+    }
+
     private static HealthCheckCache BuildCache(CallCounters counters, Task? gate = null)
     {
         var memoryCache = new MemoryCache(new MemoryCacheOptions());
