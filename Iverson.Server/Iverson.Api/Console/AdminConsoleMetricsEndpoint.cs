@@ -315,9 +315,15 @@ internal static class PrometheusQueries
     internal const string RpcRequestsPerSecond =
         "sum(rate(http_server_request_duration_seconds_count{" + RpcRouteFilter + "}" + RateWindow + "))";
 
+    // The numerator is wrapped in `or vector(0)` because an absent 5xx series (the common healthy
+    // case — zero 5xx responses in the window) makes rate()/sum() evaluate to an empty vector,
+    // and empty / scalar is empty, so the whole expression would read as "No data" rather than
+    // "0%" on a healthy deployment. `vector(0)` is label-free, so it still matches the
+    // denominator for the division. A genuinely empty denominator (no traffic at all) is left
+    // alone, so that case still yields an honest null rather than a fabricated 0%.
     internal const string RpcErrorPercentage =
-        "(sum(rate(http_server_request_duration_seconds_count{" + RpcRouteFilter
-        + ",http_response_status_code=~\"5..\"}" + RateWindow + "))"
+        "((sum(rate(http_server_request_duration_seconds_count{" + RpcRouteFilter
+        + ",http_response_status_code=~\"5..\"}" + RateWindow + ")) or vector(0))"
         + " / sum(rate(http_server_request_duration_seconds_count{" + RpcRouteFilter + "}" + RateWindow
         + "))) * 100";
 

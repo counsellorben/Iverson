@@ -230,6 +230,38 @@ public sealed class PrometheusQueryClientTests
         }
     }
 
+    /// <summary>
+    /// THE "OR VECTOR(0)" ASSERTION. Pins that <see cref="PrometheusQueries.RpcErrorPercentage"/>
+    /// wraps its numerator with <c>or vector(0)</c>, so an absent 5xx series (the common
+    /// healthy-deployment case: zero 5xx responses in the window) evaluates the ratio's numerator
+    /// to 0 rather than leaving the whole expression an empty vector that reaches the wire as
+    /// "No data" on a healthy deployment. This is a wire-content assertion rather than a live
+    /// PromQL evaluation: there is no PromQL engine in this test process, and
+    /// <see cref="PrometheusQueryClient.QueryInstantAsync"/> only ever sees Prometheus's single
+    /// already-evaluated scalar result — an "absent 5xx series" fixture is not expressible
+    /// through that seam without a fake PromQL evaluator or a live Prometheus, which is out of
+    /// scope for this fix. What this pins is the fix itself, so a future edit that drops the
+    /// fallback (or misapplies it to the denominator, which would fabricate a 0% denominator and
+    /// turn "no traffic at all" into a divide-by-zero instead of an honest null) fails.
+    /// </summary>
+    [Fact]
+    public async Task RpcErrorPercentageQuery_WrapsNumeratorOnlyWithOrVectorZero_OnTheWire()
+    {
+        var handler = new FakeHttpMessageHandler(_ => JsonResponse(HttpStatusCode.OK,
+            """{"status":"success","data":{"resultType":"vector","result":[]}}"""));
+        var sut = CreateClient(handler);
+
+        await sut.QueryInstantAsync(PrometheusQueries.RpcErrorPercentage, CancellationToken.None);
+
+        var sent = SentQuery(handler.Requests[0]);
+        sent.Should().Be(PrometheusQueries.RpcErrorPercentage);
+        CountOccurrences(sent, "or vector(0)").Should().Be(1);
+        // The fallback must close off the numerator specifically, immediately before the
+        // division operator -- not the denominator -- so a genuinely traffic-free window (an
+        // empty denominator) still yields the honest null rather than a fabricated 0%.
+        sent.Should().Contain("5..\"}[5m])) or vector(0)) / sum(rate(");
+    }
+
     private static int CountOccurrences(string haystack, string needle)
     {
         var count = 0;
