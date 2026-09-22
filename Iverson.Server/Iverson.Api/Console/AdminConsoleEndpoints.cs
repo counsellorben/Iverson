@@ -154,10 +154,16 @@ public static class AdminConsoleEndpoints
     /// types") without re-disclosing the names that filtering removed.
     /// </para>
     /// <para>
-    /// <b>An operator sees <c>types: []</c> with a non-zero <c>deniedTypeCount</c> today.</b> The
-    /// evaluator denies any principal with no <c>tenant_id</c> claim, and an operator carries none.
-    /// That is pre-existing authorization semantics, not something this endpoint may paper over;
-    /// the response says so explicitly instead of returning zeroes.
+    /// <b>An operator sees <c>types: []</c> with a non-zero <c>deniedTypeCount</c>, structurally
+    /// and permanently — this is unrelated to whether any human is currently a member of the
+    /// <c>operators</c> Authentik group (see <c>docs/runbooks/operator-access-onboarding.md</c>
+    /// for that separate, unrelated onboarding step, which gates <c>/tenants</c> and
+    /// <c>/qdrant</c> below, not this endpoint).</b> Operators are cross-tenant by design and so
+    /// never carry a <c>tenant_id</c> claim, and the evaluator denies any principal without one.
+    /// This endpoint is not <c>Operator</c>-gated — any authenticated caller reaches it — so
+    /// onboarding an operator does not change this outcome. That is pre-existing authorization
+    /// semantics, not something this endpoint may paper over; the response says so explicitly
+    /// instead of returning zeroes.
     /// </para>
     /// </summary>
     public static async Task<IResult> GetDataVolumeAsync(

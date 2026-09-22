@@ -50,9 +50,11 @@ import { config } from "../config";
  * response. Anything reading a `reason` or `error` out of a 403 body would be reading a field
  * that never arrives, and the outcome would degrade to a generic `"failed"` — a red "request
  * failed" card where "you are not authorized to see this" belongs. That is not a hypothetical:
- * the three Operator-gated endpoints (`tenants`, `qdrant`, `metrics`) 403 for every human today,
- * because nobody currently satisfies the Operator policy. `error` is carried only on the chance
- * a future 403 does include a body, and is `null` for every 403 the server sends now.
+ * the three Operator-gated endpoints (`tenants`, `qdrant`, `metrics`) 403 for every human until
+ * an operator is onboarded — the `operators` Authentik group and its token claim both exist,
+ * but group membership is a deliberate one-time manual step, not something blueprinted into any
+ * deployment (see `docs/runbooks/operator-access-onboarding.md`). `error` is carried only on the
+ * chance a future 403 does include a body, and is `null` for every 403 the server sends now.
  */
 
 // ── Result contract ───────────────────────────────────────────────────────────

@@ -25,8 +25,11 @@ export const CONSOLE_ROUTE_PREFIX = "/admin/console";
 
 /**
  * Operator-gated: a cross-tenant enumeration. A non-Operator gets `kind: "forbidden"` with a
- * null `error` — the server's 403 carries no body. NOBODY SATISFIES THE OPERATOR POLICY TODAY,
- * so this is the outcome every human currently gets; render it as "not authorized", not as a
+ * null `error` — the server's 403 carries no body. UNTIL AN OPERATOR IS ONBOARDED, this is the
+ * outcome every human gets: the `operators` Authentik group exists and its claim is wired
+ * through, but membership is a deliberate one-time manual step (not blueprinted, to avoid
+ * hardcoding a privilege escalation) — see
+ * `docs/runbooks/operator-access-onboarding.md`. Render it as "not authorized", not as a
  * request failure.
  */
 export const fetchTenants: ApiFetcher<TenantsResponse> = (token, signal) =>

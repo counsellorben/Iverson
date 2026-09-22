@@ -21,10 +21,12 @@ import { TenantRosterWidget } from "../widgets/TenantRosterWidget";
  *
  * Nine cards, seven sources: the four Band B metrics cards are all fed by ONE poll of
  * `/admin/console/metrics`, which `MetricsBand` owns — see the note there. Six of the nine
- * render "not authorized" on a real deployment today, because `tenants`, `metrics` and
- * `qdrant` are all `Operator`-gated and no human satisfies that policy yet (Design 4d). That
- * is a first-class rendered state, not an error, and it is deliberately not hidden: the page
- * degrades per Design 3 rather than showing a smaller page to a less privileged user.
+ * render "not authorized" on a real deployment until an operator is onboarded, because
+ * `tenants`, `metrics` and `qdrant` are all `Operator`-gated (Design 4d) and group membership
+ * is a deliberate one-time manual step rather than something blueprinted — see
+ * `docs/runbooks/operator-access-onboarding.md`. That is a first-class rendered state, not an
+ * error, and it is deliberately not hidden: the page degrades per Design 3 rather than showing
+ * a smaller page to a less privileged user.
  */
 export function LandingPage() {
   const auth = useAuth();
