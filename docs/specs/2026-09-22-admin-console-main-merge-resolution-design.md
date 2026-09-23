@@ -35,7 +35,10 @@ in 18 files.
 **The checkable property is: no main decision is overridden.** A literal "zero main-owned
 lines changed" cannot hold, because `GetSchema`'s inline body *is* main's code and the
 branch refactored it away. Every place main's lines necessarily change is listed
-explicitly in R1.
+explicitly: in R1 (`GetSchema`'s dead body), and in R3 — the CSP origin added to main's
+`nginx.conf`, `docker-entrypoint.sh` and admin-ui Ingress snippet, and the `apiBaseUrl` value R3
+writes over main's in `values.yaml`, `values-local.yaml`, `values-aws.yaml`, `values-azure.yaml`
+and `values-gcp.yaml`.
 
 ## Phase 1 — the merge commit
 
@@ -148,8 +151,17 @@ Rewrite its comment, which currently points at the deleted `HealthCheckCache.Cac
 
 The console cannot load data without all of it:
 
-- The admin-api origin in the CSP `connect-src` (`nginx.conf`, `docker-entrypoint.sh`).
-  Main's CSP is `default-src 'self'; … connect-src 'self' ${OIDC_ORIGIN}` — no admin-api origin.
+- The admin-api origin in the CSP `connect-src`, at **three** sites: the pod's `nginx.conf` and
+  `docker-entrypoint.sh`, and main's `charts/admin-ui/templates/ingress.yaml:42`. Main's CSP is
+  `default-src 'self'; … connect-src 'self' ${OIDC_ORIGIN}` — no admin-api origin. The third
+  site matters because for `ingress.className: nginx` main's template emits a
+  `configuration-snippet` whose `more_set_headers` **replaces** the pod's CSP at the Ingress layer
+  (its own comment at `:6-7` says so), so on the `nginx`-class profiles the browser enforces the
+  Ingress header whatever the pod sends. Its `connect-src` becomes
+  `'self' {{ printf "%s://admin-api.%s" .Values.global.externalScheme .Values.global.ingressHost }} {{ $oidcOrigin }}`,
+  mirroring main's own `$oidcOrigin` formula at `:27`. No other class writes CSP text from the
+  chart: the `azure-application-gateway` branch is opt-in via `securityHeadersRuleSet` (default
+  `""`, set by no profile), and `alb` and `gce` leave the pod's header in force.
 - `adminApiIngress`, `adminConsoleOrigin` and `apiBaseUrl` across the five profile values files.
 - `networkPolicy.clusterCidrs` in `values-aws.yaml` (`["10.0.0.0/16"]`), `values-azure.yaml`
   (`["10.1.0.0/16"]`) and `values-gcp.yaml`
@@ -166,10 +178,30 @@ The console cannot load data without all of it:
   metrics widget is permanently dead on four of five profiles. The key must be *set* either way:
   absent is the one state that installs the subchart and withholds its URL.
 - `docker-compose.yml`: local CORS origin and `Prometheus__BaseUrl`.
+- The CORS middleware in `Program.cs`: `if (!string.IsNullOrEmpty(adminConsoleOrigin))
+  app.UseCors(AdminConsoleCorsPolicy);`, between main's `app.UseHttpsRedirection();` and
+  `app.UseAuthentication();`. The policy registration (`AddCors`, where `adminConsoleOrigin` is
+  declared) survives the merge, but this call sits in the middleware region main rewrote — adding
+  `ListenerPortGateAsync` and a pre-auth `UseRateLimiter` — so `-X theirs` removes it. Without it
+  no response carries `Access-Control-Allow-Origin` and preflights fall through to the
+  FallbackPolicy as 401. It must precede authentication because a preflight carries no
+  `Authorization` header. Main has no CORS at all, so this inserts into main's pipeline without
+  overriding a main decision.
 
 Re-applied **on top of** main's restructured values — main eliminated `api.ingress.host` drift,
-added a `tlsSecretName` guard and templated the external scheme — so this is an additive fit,
-not a revert of main's files.
+added a `tlsSecretName` guard and templated the external scheme. Most of this is additive: the
+restored keys are ones main never declared. Two parts are not, and both are in the resolution
+policy's roster: the CSP origin written into main's three CSP sites, and `apiBaseUrl`, whose
+single-origin value on main (`http://iverson.local`, `https://iverson.example.com`) R3
+**overwrites** with the admin-api host in five files. `values-laptop.yaml` sets `apiBaseUrl` on
+neither side.
+
+One route is **removed** rather than restored: drop the `/v1/traces` rule from the branch-only
+`charts/api/templates/admin-api-ingress.yaml:51-57`. Main pins `/v1/traces` to
+`RequireListenerPort(8080)` (`main:Program.cs:697`), while this Ingress targets Service port 8081,
+where main's `ListenerPortGateAsync` answers 404 to every export. Console span export is off until
+follow-up 5 lands, and silently so: the exporter surfaces no failure, and `WebApplicationFactory`'s
+`LocalPort` of 0 passes the gate in tests.
 
 ### R4 — Resolve `AuthProvider.test.tsx`; re-add `onSigninCallback`
 
@@ -204,8 +236,15 @@ justification R2 uses for its server-side deletions:
   Deleting it removes the false `client.ts:152` comment rather than rewriting it. A non-expiry
   401 (a revoked session) then falls through to the widget's `unauthorized` state.
 
-**Restore only** `renderProviderAndCaptureSettings` and `onSigninCallback`. `setTokenRenewer`
-and `requestTokenRenewal` are needed by no surviving test.
+**Restore only** `renderProviderAndCaptureSettings` and `onSigninCallback` — and restore the
+helper **rewritten against main's surviving mock**, not in its branch form. The branch helper
+resets and returns `capturedProviderProps`, which only the branch's `vi.mock` ever assigned; the
+merged file carries main's mock, which pushes into `capturedOidcProps` instead. Restored as-is it
+compiles (the `let capturedProviderProps` declaration survives) and throws `AuthProvider did not
+render the OIDC provider`, failing the kept `:148` test. So: reset `capturedOidcProps.length = 0`,
+render, return `capturedOidcProps[0]`; delete the orphaned `let capturedProviderProps`; add
+`onSigninCallback` to main's import. Main's `vi.mock` stays as it is. `setTokenRenewer` and
+`requestTokenRenewal` are needed by no surviving test.
 
 ### R5 — Session expiry
 
@@ -276,6 +315,10 @@ These are main-owned and deliberately excluded by the resolution policy:
 4. Deleting the branch's drift-guard test loses its "the marked endpoint set has not drifted"
    assertion; main's `AuthenticationPipelineTests` covers `RequireListenerPort` but not that
    invariant.
+5. Serve `/v1/traces` on the listener the admin-api Ingress targets. Main pins it to
+   `RequireListenerPort(8080)` (`main:Program.cs:697`) and the admin-api Ingress sends it to 8081,
+   so R3 drops that rule and console span export is off until this lands. Re-add the `/v1/traces`
+   rule to `admin-api-ingress.yaml` with it.
 
 **Not a follow-up:** main's `"health-composite"` cache-key collision, closed incidentally by R2.
 
@@ -283,7 +326,9 @@ These are main-owned and deliberately excluded by the resolution policy:
 
 **Gates.** All three suites green with no test deleted except the ones R2 and R4 enumerate, each
 with its stated reason: `Iverson.Api.Tests`,
-`Iverson.Vector.Tests`, AdminUI `npm test`. `npx tsc --noEmit` back to a baseline **re-established
+`Iverson.Vector.Tests`, AdminUI `npm test`. `AdminConsoleCorsPipelineTests` is the guard for R3's
+CORS middleware — it goes red if the `UseCors` call is missing. `npx tsc --noEmit` back to a
+baseline **re-established
 post-merge and written here as a number** (the branch's was 7; the spliced merge showed 13;
 main's own count is unmeasured).
 
@@ -306,7 +351,10 @@ profile renders `adminApiIngress` where a console exists and does not where one 
   nothing.
 - *R3's CSP* — the admin-api origin is present in `connect-src` **as a whole token within that
   directive**. An earlier check on this branch passed while the origin was missing from
-  `connect-src`, because the same string appeared in `frame-src`.
+  `connect-src`, because the same string appeared in `frame-src`. Assert it in **both** places
+  the browser can get the header from: the pod's CSP, and the rendered `values-local` admin-ui
+  Ingress `configuration-snippet`. The pod-side assertion alone passes while the Ingress snippet
+  replaces the header and the browser still blocks.
 
 **Known-unknowns, named rather than discovered later:**
 
@@ -351,7 +399,10 @@ profile renders `adminApiIngress` where a console exists and does not where one 
 | Widget `authPending` tests are hand-fed fixtures | `HealthStrip.test.tsx:118,133` |
 | The AdminUI CI job is branch-unique | Absent from `main:.github/workflows/` |
 | Branch work is well-isolated | 85 of 113 changed files untouched by main |
-
-**Carried over, not re-verified:** that Authentik defaults `include_claims_in_id_token` to
-`True` — which is what makes dropping the pin safe — was verified against the pinned image in
-an earlier session. Follow-up 1 removes the dependency entirely.
+| Authentik defaults `include_claims_in_id_token` to `True` | `ghcr.io/goauthentik/server:2026.5.3` (the tag main pins in `charts/authentik/values.yaml`), `/authentik/providers/oauth2/models.py:250-251` `BooleanField(default=True, …)`, re-probed with `docker run`. This is what makes dropping the pin safe; follow-up 1 removes the dependency |
+| The console's access token is accepted by the merged API | Helm: `main:charts/admin-ui/templates/deployment.yaml:56-60` `OIDC_CLIENT_ID` and `main:charts/api/templates/deployment.yaml:141-143` `Authentication__ValidAudiences__0` both read secret `{{ .Release.Name }}-authentik-human-oidc-client` / `client-id`. Compose: `.env.development:1` and `main:docker-compose.yml:483` are both `dev-iverson-human-oidc-client-id` |
+| The merge drops the CORS middleware, and main has no CORS | `main:Program.cs` has 0 `UseCors`/`AddCors`; the branch's call at `Program.cs:421-422` sits in the region main rewrote (`main:Program.cs:436-440`); `adminConsoleOrigin` is declared at `:100` in the surviving `AddCors` region |
+| Main's admin-ui Ingress replaces the pod's CSP on the `nginx` class only | `main:charts/admin-ui/templates/ingress.yaml:37-42` `more_set_headers` CSP with `connect-src 'self' {{ $oidcOrigin }}`; the AGIC branch is opt-in (`securityHeadersRuleSet: ""` at `main:values.yaml:182,243`, set by no profile); `alb` and `gce` do not override; the branch never touched `charts/admin-ui/` |
+| R3 overwrites main's `apiBaseUrl` in five files | main: `values.yaml:238` and `values-local.yaml:147` `http://iverson.local`; `values-aws.yaml:150`, `values-azure.yaml:141`, `values-gcp.yaml:142` `https://iverson.example.com`. `values-laptop.yaml` sets it on neither side |
+| Main's surviving test mock writes `capturedOidcProps`, not `capturedProviderProps` | `main:AuthProvider.test.tsx:6` `const capturedOidcProps`, `:11` push inside `vi.mock`, `:20` reset; the branch helper reads `let capturedProviderProps` (`b60e4928:…:7,24-34`), set only by the branch's mock at `:16` |
+| Main pins `/v1/traces` to 8080; the admin-api Ingress targets 8081 | `main:Program.cs:697` `.WithMetadata(new RequireListenerPort(8080))`; `charts/api/templates/admin-api-ingress.yaml:51` `/v1/traces` to port `8081`, the `Protocols: Http1` listener (`main:appsettings.json:15-17`) |
