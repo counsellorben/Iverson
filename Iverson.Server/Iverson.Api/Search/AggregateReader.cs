@@ -53,6 +53,10 @@ public sealed class AggregateReader(
         if (schema is null)
             return TypeRowCount.UnknownType;
 
+        if (schema.OwnerTenantId is not null
+            && schema.OwnerTenantId != actingUser?.FindFirst("tenant_id")?.Value)
+            return TypeRowCount.Denied;
+
         var decision = authEvaluator.Evaluate(schema, actingUser, AuthorizationAction.Read);
         if (decision.Denied)
             return TypeRowCount.Denied;

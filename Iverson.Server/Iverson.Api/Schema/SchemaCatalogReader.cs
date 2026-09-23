@@ -56,9 +56,14 @@ public sealed class SchemaCatalogReader(
         // other RelationDescriptor.RelatedTypeName lookup (EntityRelationResolver), so a relation
         // declaring a differently-cased related type is not silently dropped from the catalog.
         var survivingNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var callerTenant = actingUser?.FindFirst("tenant_id")?.Value;
 
         foreach (var schema in registry.All.Values)
         {
+            // Main's cross-tenant fix (6509b6be): another tenant's schema is not even enumerable.
+            if (schema.OwnerTenantId is not null && schema.OwnerTenantId != callerTenant)
+                continue;
+
             var decision = authEvaluator.Evaluate(schema, actingUser, AuthorizationAction.Read);
             if (decision.Denied)
                 continue;
