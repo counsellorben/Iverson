@@ -36,7 +36,11 @@ export type WidgetState =
   | "loading"
   /** 403. A real authorization answer that a fresh token cannot change. */
   | "forbidden"
-  /** 401. Silent renewal has been requested; there is nothing for the user to do. */
+  /**
+   * 401. Not ordinary expiry — `useSessionExpiry` ends the session when the token expires, which
+   * drops the card to `awaitingToken` — but a token the API rejects while the client still holds
+   * it (an IdP reset, a signing-key rotation). Nothing renews it; the user has to sign in again.
+   */
   | "unauthorized"
   /** A non-2xx that carried a `reason` — `disabled`, `notReady`, `notDeployed`, … */
   | "unavailable"
@@ -151,7 +155,7 @@ function noticeTextFor<T>(state: WidgetState, props: WidgetCardProps<T>): string
     case "forbidden":
       return props.forbiddenMessage ?? DEFAULT_FORBIDDEN_MESSAGE;
     case "unauthorized":
-      return "Session expired — renewing…";
+      return "Session no longer accepted — sign in again.";
     case "unavailable":
       return (props.reasonText ?? defaultReasonText)(
         failure !== null && failure.kind === "problem" ? failure.reason : null

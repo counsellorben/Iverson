@@ -124,6 +124,15 @@ describe("WidgetCard", () => {
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
   });
 
+  it("tells the user to sign in again on a 401, and does not promise a renewal that never comes", () => {
+    renderCard({ failure: { kind: "unauthorized", status: 401 } });
+
+    expect(state()).toBe("unauthorized");
+    const notice = screen.getByTestId("widget-example-notice");
+    expect(notice).toHaveTextContent("Session no longer accepted — sign in again.");
+    expect(notice).not.toHaveTextContent(/renew/i);
+  });
+
   it("disables Refresh while awaiting a token, because refresh() is inert there", () => {
     renderCard({ loading: true, awaitingToken: true, exhausted: true });
 
