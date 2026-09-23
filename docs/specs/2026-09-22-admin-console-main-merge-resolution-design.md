@@ -38,7 +38,9 @@ branch refactored it away. Every place main's lines necessarily change is listed
 explicitly: in R1 (`GetSchema`'s dead body), and in R3 — the CSP origin added to main's
 `nginx.conf`, `docker-entrypoint.sh` and admin-ui Ingress snippet, and the `apiBaseUrl` value R3
 writes over main's in `values.yaml`, `values-local.yaml`, `values-aws.yaml`, `values-azure.yaml`
-and `values-gcp.yaml`.
+and `values-gcp.yaml`; and in R6 — the README's two `8080` port references (the API at
+`http://localhost:8080`, and `VITE_API_BASE_URL=http://localhost:8080`), rewritten to `8081` to
+match the merged `.env.development:3`, which already reads `8081`.
 
 ## Phase 1 — the merge commit
 
@@ -84,6 +86,15 @@ documented by `docs/user-management-and-security.md` and R6.
 It *splices* three files into incoherence rather than picking a side. These must be resolved
 **inside Phase 1**, or the merge commits a tree that does not compile — bad for bisect and
 CI, for no gain. See R1.
+
+R1's splices are enough for `Iverson.Api` to build but not for `Iverson.Api.Tests`, so two of
+R2's deletions also land in the merge commit. Measured on the resolved merge: `dotnet build
+Iverson.slnx` fails with 4 errors in `HealthCheckCacheTests.cs`, whose fakes do not implement
+interface members main changed (`IRecordStoreQueryExecutor` gained a parameter,
+`IVectorSchemaManager` gained `PingAsync`); with that file gone it fails with 1 error in
+`OperationalListenerBindingPipelineTests.cs`, which references the removed `HttpListenerOnly`.
+With both gone — and `HealthCheckCache.cs` and its `AddSingleton` with its tests — the whole
+solution builds with 0 errors.
 
 ## Phase 2 — the repair series
 
@@ -147,6 +158,9 @@ so every tenant-owned schema is excluded. Fail-closed, and consistent with main'
 `onSigninCallback`). Resolve per R4's disposition list.
 
 ### R2 — Delete branch code main's equivalents supersede
+
+The first and third items land in the Phase 1 merge commit, because the solution does not compile
+without them (see Phase 1); the rest are R2's own commit.
 
 - `HealthCheckCache.cs` + `HealthCheckCacheTests.cs`, and its `AddSingleton<HealthCheckCache>()`
   registration — orphaned once main's inline cache owns `/health`.
@@ -350,9 +364,11 @@ These are main-owned and deliberately excluded by the resolution policy:
 
 1. Re-pin `include_claims_in_id_token: true` on **both** blueprint paths.
 2. Restore the four-value `starrocks` wire form (`authPending`) on `/health`; trips R7's tripwire.
-3. `Dockerfile` pins `node:20-alpine` **by digest** (a deliberate hardening decision) with no
-   `engines` field, while main's own react-router 8.3.1 declares `engines.node >=22.22.0`.
-   `EBADENGINE` is a warning, not a failure, so this breaks nothing today.
+3. `Dockerfile` pins `node:20-alpine` **by digest** (a deliberate hardening decision), while the
+   merged `package.json` declares `engines.node >=22.22.0` — main's own `package.json` has no
+   `engines` field, but the branch's survives the merge, and it matches the floor main's
+   react-router 8.3.1 requires. So the merged tree declares a Node floor its own build image
+   does not meet. `EBADENGINE` is a warning, not a failure, so this breaks nothing today.
 4. Deleting the branch's drift-guard test loses its "the marked endpoint set has not drifted"
    assertion; main's `AuthenticationPipelineTests` covers `RequireListenerPort` but not that
    invariant.
@@ -408,7 +424,12 @@ profile renders `adminApiIngress` where a console exists and does not where one 
 
 1. The server suite has never run in a merged state — the build failed before reaching it — so
    main's several hundred new tests against the branch's changes are unmeasured. R1/R2 may
-   surface more than the 12 compile errors did.
+   surface more than the 12 compile errors did. **Measured at plan-write time, and closed:** on
+   the Phase 1 tree `Iverson.Api.Tests` ran 1,186 tests with exactly 8 failures — the gRPC
+   tenant-filter test R1 fixes, the four `AdminConsoleCorsPipelineTests` R3's `UseCors` fixes, and
+   the three `ProbeAuthorizationPipelineTests` R2 deletes — and `Iverson.Vector.Tests` ran 170
+   with 1 failure, a branch test whose `apiKey` fixture is shorter than main's new 32-byte
+   minimum. No other interaction between main's tests and the branch's changes fails.
 2. Main's global rate limiter (6,000/min per principal) now covers `/admin/console/*`. Nine
    widgets at a 30-second cadence is ~18 req/min — fine by three orders of magnitude — but
    multi-tab use multiplies it, so check rather than assume.
@@ -454,6 +475,9 @@ profile renders `adminApiIngress` where a console exists and does not where one 
 | R3 overwrites main's `apiBaseUrl` in five files | main: `values.yaml:238` and `values-local.yaml:147` `http://iverson.local`; `values-aws.yaml:150`, `values-azure.yaml:141`, `values-gcp.yaml:142` `https://iverson.example.com`. `values-laptop.yaml` sets it on neither side |
 | Main's surviving test mock writes `capturedOidcProps`, not `capturedProviderProps` | `main:AuthProvider.test.tsx:6` `const capturedOidcProps`, `:11` push inside `vi.mock`, `:20` reset; the branch helper reads `let capturedProviderProps` (`b60e4928:…:7,24-34`), set only by the branch's mock at `:16` |
 | Main pins `/v1/traces` to 8080; the admin-api Ingress targets 8081 | `main:Program.cs:697` `.WithMetadata(new RequireListenerPort(8080))`; `charts/api/templates/admin-api-ingress.yaml:51` `/v1/traces` to port `8081`, the `Protocols: Http1` listener (`main:appsettings.json:15-17`) |
+| R1's splices alone do not compile `Iverson.Api.Tests` | Measured on the resolved merge: `dotnet build Iverson.slnx` gives 4 errors in `HealthCheckCacheTests.cs`, then 1 in `OperationalListenerBindingPipelineTests.cs` (`HttpListenerOnly` not found); 0 errors once both, plus `HealthCheckCache.cs` and its `AddSingleton`, are removed |
+| The merged `package.json` declares `engines.node >=22.22.0` | `git merge 65cdf63a -X theirs` onto `e4028710`: `engines` = `{"node":">=22.22.0"}`; `main:Iverson.AdminUI/package.json` has no `engines` |
+| The merged console's dev API port is `8081` | merged `Iverson.AdminUI/.env.development:3` `VITE_API_BASE_URL=http://localhost:8081`; `docker-compose.yml` publishes `127.0.0.1:8081:8081`; main's README says `8080` |
 | The AdminUI CI job starts main's entrypoint without main's env contract | `admin-ui.yml:156-159` passes only `OIDC_CLIENT_ID`, `OIDC_AUTHORITY`, `API_BASE_URL`; `main:Iverson.AdminUI/docker-entrypoint.sh:2` `set -eu` and `:16` reads `$EXTERNAL_SCHEME`; the job asserts `frame-src` at `:210`, which `main:nginx.conf` omits; `BASELINE=7` at `:100`, compared with `-gt` at `:109` |
 | Main's placeholder guard needs the CI overrides on cloud profiles | `main:templates/networkpolicies.yaml:1` includes `iverson.validateNoPlaceholders` (`_validate.tpl`, `https` profiles only); `values-{aws,azure,gcp}.ci-override.yaml` count 0 at `9eb99f76` and on the branch, 3 on main; `main:deploy-validate.yml:64-73` layers them |
 | Four branch hunks auto-merge into the compose blueprint | branch `compose-only/service-clients.yaml`: the pin; `offline_access` `!Find` under `iverson-oidc-default` (`:188`) and `iverson-loadtest-human` (`:296`); the `operators` grant (`:335`). Main's compose file has 0 `offline_access` and 0 `operators`; main's Helm `iverson-loadtest-human` maps only `groups` and `tenant_id` (`secret-service-clients.yaml:485-486`); main's LoadTest requests `offline_access` through it (`Iverson.Server/Iverson.LoadTest/Auth/AuthentikFlowExecutorClient.cs:281`) |
