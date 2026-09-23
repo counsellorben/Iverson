@@ -41,7 +41,7 @@ public class ServiceCollectionExtensionsTests
         // lives in Microsoft.Extensions.Logging — this project references only the Abstractions.
         services.AddSingleton<ILogger<IntelligenceCollectionReader>>(
             NullLogger<IntelligenceCollectionReader>.Instance);
-        services.AddQdrant("localhost", 6334, apiKey: "test-api-key");
+        services.AddQdrant("localhost", 6334, apiKey: "test-signing-key-0123456789abcdef");
 
         using var provider = services.BuildServiceProvider();
         var reader = provider.GetRequiredService<IVectorCollectionReader>();
