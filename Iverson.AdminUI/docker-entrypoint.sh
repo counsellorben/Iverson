@@ -2,8 +2,8 @@
 #
 # Renders the two per-environment artefacts the console needs, at CONTAINER START.
 #
-#   /usr/share/nginx/html/config.js               — the runtime config the SPA reads
-#   /etc/nginx/conf.d/admin-ui-security-headers.inc — the CSP and its companions
+#   /usr/share/nginx/html/config.js  — the runtime config the SPA reads (rendered from config.js.template)
+#   /etc/nginx/conf.d/default.conf   — the CSP and its companions, rendered in place
 #
 # Neither can be baked into the image. The OIDC client id, the Authentik authority
 # and the admin-api base URL are all per-environment values that only exist as
@@ -19,10 +19,6 @@
 # exec'ing nginx if this script exits non-zero. That is deliberate and load-bearing:
 # a rejected value must stop the container, not serve a broken console.
 set -eu
-
-CONFIG_TEMPLATE=/usr/share/nginx/html/config.js.template
-CONFIG_OUTPUT=/usr/share/nginx/html/config.js
-HEADERS_OUTPUT=/etc/nginx/conf.d/admin-ui-security-headers.inc
 
 fail() {
     echo "admin-ui entrypoint: $1" >&2

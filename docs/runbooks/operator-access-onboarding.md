@@ -18,7 +18,7 @@ Nothing to do — `blueprints/compose-only/service-clients.yaml` seeds `iverson-
 into `operators` at blueprint-apply time, so that identity already satisfies the policy for local
 admin-console testing. To grant a different local user access, follow the kind/production steps
 below against the compose Authentik instance (`http://localhost:9000`, bootstrap login
-`admin@iverson.local` / `dev-admin-password`).
+`admin@iverson.local` / the `AUTHENTIK_BOOTSTRAP_PASSWORD` value in `Iverson.Server/.env`).
 
 ## Kind / production
 

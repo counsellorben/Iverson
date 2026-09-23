@@ -27,6 +27,9 @@ manage tenants, view storage, and inspect performance data via Iverson.Api.
   if you don't have one yet. (Bootstrap admin login for compose:
   `admin@iverson.local` / the `AUTHENTIK_BOOTSTRAP_PASSWORD` value generated
   into `.env` by `scripts/generate-compose-secrets.sh`.)
+  For compose, one is already seeded: `iverson-loadtest-bypass-user`, whose password is
+  the `IVERSON_BYPASS_PASSWORD` value in the same `.env`; it belongs to `operators` out of
+  the box (`blueprints/compose-only/service-clients.yaml`).
 
 ## Running locally
 

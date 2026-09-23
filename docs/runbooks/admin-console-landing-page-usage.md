@@ -64,10 +64,10 @@ requirements out of the box:
 
 ```
 username: iverson-loadtest-bypass-user
-password: dev-only-not-for-production-bypass-password-0123456789
+password: <IVERSON_BYPASS_PASSWORD from Iverson.Server/.env>
 ```
 
-These credentials are **dev-only and hardcoded deliberately**, for a stack that binds to
+The password is generated per checkout by `scripts/generate-compose-secrets.sh` and is **dev-only**, for a stack that binds to
 localhost. They are never valid in a shared, CI, or production environment.
 
 ### 2b. Creating your own local user instead
@@ -76,7 +76,7 @@ localhost. They are never valid in a shared, CI, or production environment.
    `authentik-server` to become healthy — blueprints apply at startup and login will not
    work before then.
 2. Open Authentik at <http://localhost:9000> and sign in as
-   `admin@iverson.local` / `dev-admin-password`.
+   `admin@iverson.local` / the `AUTHENTIK_BOOTSTRAP_PASSWORD` value in `Iverson.Server/.env`.
 3. **Directory → Users → Create.** Set a username, name, and password.
 4. **Set the tenant attribute.** Edit the user, and in the **Attributes** field (YAML) add:
    ```yaml
