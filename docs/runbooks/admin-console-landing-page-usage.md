@@ -68,7 +68,7 @@ password: <IVERSON_BYPASS_PASSWORD from Iverson.Server/.env>
 ```
 
 The password is generated per checkout by `scripts/generate-compose-secrets.sh` and is **dev-only**, for a stack that binds to
-localhost. They are never valid in a shared, CI, or production environment.
+localhost. It is never valid in a shared, CI, or production environment.
 
 ### 2b. Creating your own local user instead
 
