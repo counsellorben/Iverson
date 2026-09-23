@@ -281,6 +281,11 @@ entries:
     identifiers:
       name: iverson-loadtest-bypass
     attrs: {}
+  # Idempotent duplicate of ../operators-group.yaml: the synchronous import must not depend on worker discovery order. Do not dedupe.
+  - model: authentik_core.group
+    identifiers:
+      name: operators
+    attrs: {}
   - model: authentik_core.user
     identifiers:
       username: iverson-loadtest-bypass-user
@@ -294,6 +299,11 @@ entries:
         tenant_id: "tenant_bypass"
       groups:
         - !Find [authentik_core.group, [name, iverson-loadtest-bypass]]
+        # Compose-only: gives this dev user operator access so a developer can log the admin
+        # console into a user that already satisfies the Operator policy without a manual
+        # Authentik UI step. Never blueprinted for a deployment overlay -- see
+        # docs/runbooks/operator-access-onboarding.md.
+        - !Find [authentik_core.group, [name, operators]]
   - model: authentik_core.group
     identifiers:
       name: tenant-admins

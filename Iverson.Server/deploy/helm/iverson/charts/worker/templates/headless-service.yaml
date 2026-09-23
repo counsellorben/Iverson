@@ -1,0 +1,18 @@
+# Headless counterpart to the ClusterIP Service above (service.yaml) — additive, not a
+# replacement. worker's ClusterIP Service carries no Ingress today, but the same
+# per-pod-vs-VIP reasoning applies: Prometheus's dns_sd_configs scrape (Task 8,
+# charts/prometheus/templates/configmap.yaml) needs one A record per pod IP so its
+# counters (fan-out backlog, DLQ/retry) don't flicker across the HPA's replicas the way a
+# ClusterIP VIP scrape would.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-worker-headless
+spec:
+  clusterIP: None
+  selector:
+    app: {{ .Release.Name }}-worker
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081

@@ -61,7 +61,7 @@ The load-bearing ones, by area:
 
 - **Identity (T1):** A27–A29 — no human identity satisfies `Operator` today; the console requests a scope that yields no `groups`; no `operators` group exists.
 - **Transport (T4):** A55, A56, A69, A70 — the api subchart sees `global.ingressHost`; a second hostname is an established pattern; the cloud profiles use three ingress classes and two TLS mechanisms; no certificate covers the new host yet.
-- **Endpoints (T5, T6, T7):** A58, A59 — the acting-user interceptor is gRPC-only and the evaluator grants full access with a null principal; A65, A66 — `GetCollectionInfoAsync` is not on `IVectorSchemaManager`, and the aggregate path is private.
+- **Endpoints (T5, T6, T7):** A58, A59 — the acting-user interceptor is gRPC-only and the evaluator **denies** a null principal (corrected; a dropped principal empties the view rather than widening it); A65, A66 — `GetCollectionInfoAsync` is not on `IVectorSchemaManager`, and the aggregate path is private.
 - **Deployment (T3):** A68 — five deployment profiles, overlays self-contained; A53, A54 — the AWS VPC CIDR default and Calico enforcement in kind.
 - **Console (T9–T12):** A47, A48, A49 — `revokeTokensOnSignout` passes through, `onSigninCallback` is a real prop, `applyCustomAttributesOnSpan` has the shape the fix uses; A63 — the four gRPC-Web npm dependencies are unused.
 
@@ -93,7 +93,7 @@ Newly introduced by this plan and verified at plan-write time.
 | 20 | Code validity | `AddCors`/`UseCors` and `AddEndpointFilter` need no package reference; they ship in the ASP.NET Core shared framework used by `Iverson.Api.csproj` (`net10.0`) | `Iverson.Api.csproj:4` `<TargetFramework>net10.0</TargetFramework>`; no CORS package referenced anywhere today |
 | 21 | File path | `charts/worker/templates/` exists and already holds a ClusterIP `service.yaml`, so T8's headless Service sits alongside it rather than replacing it | `ls charts/worker/templates/` returns `deployment.yaml hpa.yaml service.yaml` |
 | 22 | File path | `docs/runbooks/grpc-admin-auth-cutover.md` exists, so T1 Step 4's membership note has the neighbour the spec names | `ls docs/runbooks/` returns it among seven runbooks |
-| 23 | Code validity | The `IMemoryCache` shape T2 cites **memoizes but does not single-flight** — `TenantStatusCache` holds no lock, semaphore, `GetOrCreate` or `Lazy`, so every concurrent caller on a miss runs the work independently. T2 Step 2 therefore caches a `Lazy<Task<…>>` instead of copying that shape | `grep -nE "lock\|Semaphore\|GetOrCreate\|Lazy" Tenancy/TenantStatusCache.cs` returns nothing; the body at `:12-23` is `TryGetValue` → work → `Set` |
+| 23 | Code validity | The `IMemoryCache` shape T2 cites **memoizes but does not single-flight** — `TenantStatusCache` holds no lock, semaphore, `GetOrCreate` or `Lazy`, so every concurrent caller on a miss runs the work independently. T2 Step 2 therefore caches a `Lazy<Task<…>>` behind a double-checked lock instead of copying that shape. `GetOrCreate` does not close the gap either — it returns the locally created value rather than re-reading the cache, so it memoizes without single-flighting | `grep -nE "lock\|Semaphore\|GetOrCreate\|Lazy" Tenancy/TenantStatusCache.cs` returns nothing; the body at `:12-23` is `TryGetValue` → work → `Set` |
 | 24 | Code validity | Helm's `required` does **not** abort on an empty list — only on nil and on an empty string. T3 Step 4 therefore uses `fail` behind a `not` test | `helm template` over a fixture chart with `cidrs: []` and `{{ required "…" .Values.cidrs }}` renders `x: []` and exits 0, on helm v3.16.4+g7877b45 |
 
 ## Tasks
@@ -150,19 +150,32 @@ git commit -m "make the Operator policy satisfiable: request groups scope and cr
 
 - [ ] **Step 2: Single-flight `/health`'s fan-out on a 5-second window.** Cache behind `IMemoryCache` (already registered at `Program.cs:217`) with a `private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5)`. Cache the checks result, not the `IResult`, so the 200/503 decision is re-derived each call. The window must stay under the readiness probe's 10-second default period.
 
-  **Cache a `Lazy<Task<…>>`, not the resolved value**, so concurrent callers on a miss await the same in-flight fan-out:
+  **Cache a `Lazy<Task<…>>`, not the resolved value**, so concurrent callers on a miss await the same in-flight fan-out. `IMemoryCache.GetOrCreate` is NOT sufficient here: it is `TryGetValue` → `CreateEntry` → factory → publish, and it returns the value the *local* call created rather than re-reading the cache, so N callers racing the miss window each build their own `Lazy` and each run the fan-out (measured: 13 independent fan-outs from 32 barrier-released threads). Use a double-checked lock, with `.Value` evaluated OUTSIDE the lock so the `Lazy`'s `ExecutionAndPublication` monitor never blocks a thread while holding the gate:
 ```csharp
-cache.GetOrCreate(HealthCacheKey, entry =>
+private readonly object _gate = new();
+
+public Task<HealthChecks> GetAsync()
 {
-    entry.AbsoluteExpirationRelativeToNow = Ttl;
-    return new Lazy<Task<HealthChecks>>(FanOutAsync);
-})!.Value
+    if (cache.TryGetValue(CacheKey, out Lazy<Task<HealthChecks>>? lazy))
+        return lazy!.Value;
+
+    lock (_gate)
+    {
+        if (!cache.TryGetValue(CacheKey, out lazy))
+        {
+            lazy = new Lazy<Task<HealthChecks>>(FanOutAsync);
+            cache.Set(CacheKey, lazy, Ttl);
+        }
+    }
+
+    return lazy!.Value;
+}
 ```
   This **deliberately departs from `Tenancy/TenantStatusCache.cs`'s shape**. That file is `TryGetValue` → work → `Set` with no lock, semaphore or `Lazy`, which memoizes but does not single-flight: every concurrent caller on a miss runs the work independently. That is harmless where it guards one indexed read, and wrong here — `/health` fans out to four backends of which two are writes, and this plan routes it to the public `admin-api` host while it stays `AllowAnonymous`. Without single-flighting, N concurrent requests at expiry produce N Kafka produces and N Qdrant collection-ensures, and the stated bound below is not achieved. Do not "correct" this back to the `TenantStatusCache` pattern.
 
   The bound this delivers: **at most one fan-out per 5s per pod regardless of request rate**, which is the whole of the change.
 
-- [ ] **Step 3: Test.** Assert an anonymous probe request is rejected, an Operator-authorized one succeeds, that two sequential `/health` calls inside the window issue one fan-out, and — separately — that **N concurrent** calls on a cold cache also issue one. The sequential assertion alone passes against a non-single-flighting implementation, so the concurrent case is the one that pins this step.
+- [ ] **Step 3: Test.** Assert an anonymous probe request is rejected, an Operator-authorized one succeeds, that two sequential `/health` calls inside the window issue one fan-out, and — separately — that **N concurrent** calls on a cold cache also issue one. The sequential assertion alone passes against a non-single-flighting implementation, so the concurrent case is the one that pins this step. The concurrent case must use **real threads released together by a `Barrier`**: `Enumerable.Range(0, N).Select(_ => GetAsync())` starts the calls sequentially on one thread — caller 0 publishes the entry before returning, so callers 1..N-1 are cache hits and no race is ever created. Verify the concurrent test FAILS against a `GetOrCreate`-shaped implementation before accepting it.
 ```bash
 dotnet test Iverson.Server/Iverson.Api.Tests
 ```
@@ -197,11 +210,21 @@ git commit -m "require Operator on the probe endpoints and cache the health fan-
 ```
   `fail` aborts unconditionally, and `not` is true for an empty list as well as for nil.
 
-- [ ] **Step 4b: Assert the guard fires.** Render one overlay with the key nulled and again with it set to an empty list; both must abort rather than emit a policy.
+- [ ] **Step 4b: Assert the guard fires.** Render one overlay three ways — key nulled, key set to a true empty list, and key set via `--set`'s `{}` spelling. All three must abort rather than emit a policy.
 ```bash
 helm template Iverson.Server/deploy/helm/iverson -f Iverson.Server/deploy/helm/iverson/values-local.yaml --set networkPolicy.clusterCidrs=null
+helm template Iverson.Server/deploy/helm/iverson -f Iverson.Server/deploy/helm/iverson/values-local.yaml --set-json 'networkPolicy.clusterCidrs=[]'
 helm template Iverson.Server/deploy/helm/iverson -f Iverson.Server/deploy/helm/iverson/values-local.yaml --set 'networkPolicy.clusterCidrs={}'
 ```
+  **`--set 'x={}'` does not produce an empty list** — helm parses it to a ONE-ELEMENT list `[""]`, so the emptiness guard above never fires on it and the render emits `ipBlock: { cidr: }`. That is a loud failure rather than a silent one (the API server rejects an `ipBlock` with no CIDR, unlike an empty `from`, which matches every source) — but `{}` is the spelling a human clearing an override actually types, so guard the blank entry too:
+```
+{{- range .Values.networkPolicy.clusterCidrs }}
+{{- if not (trim (toString .)) }}
+{{- fail "networkPolicy.clusterCidrs contains a blank entry; every entry must be a CIDR" }}
+{{- end }}
+{{- end }}
+```
+  Use `--set-json` (or a values file) for the true-empty-list case; that one exercises the emptiness guard.
 
 - [ ] **Step 5: Verify the CI gate passes for every overlay.**
 ```bash
@@ -294,7 +317,7 @@ git commit -m "extract the schema-catalog and aggregate readers from their gRPC 
   - `GET /admin/console/data-volume` — **authenticated only**, same principal handling, one count per type
   - `GET /admin/console/qdrant` — `Operator`, over the new read interface
 
-- [ ] **Step 3: Do not normalise the two authenticated rows to `Operator`.** `GetSchema` carries no `[Authorize]` by design (`ObjectMappingGrpcService.cs:61-62`) and `ObjectSearchGrpcService` is mapped without one (`Program.cs:443`); gating them would change who can see what. They pass `HttpContext.User` explicitly because the acting-user interceptor is gRPC-only and the evaluator grants full access on a null principal (spec A58, A59).
+- [ ] **Step 3: Do not normalise the two authenticated rows to `Operator`.** `GetSchema` carries no `[Authorize]` by design (`ObjectMappingGrpcService.cs:61-62`) and `ObjectSearchGrpcService` is mapped without one (`Program.cs:443`); gating them would change who can see what. They pass `HttpContext.User` explicitly because the acting-user interceptor is gRPC-only and the evaluator **denies** a null principal (spec A58, A59 — corrected: `AuthorizationDecision`'s first positional member is `Denied`, so `RowFieldAuthorizationEvaluator.cs:14-15` fails closed). A dropped principal therefore yields an **empty** view, not a widened one. Note the corollary: an operator carrying no `tenant_id` claim is denied every type, so these two rows render nothing for operators until Design 4d is resolved — surface that as an explicit no-access state, never as a zero.
 
 - [ ] **Step 4: Return projections, not descriptors** — the schema endpoint returns object types with field counts and relation edges, which is what the widget renders.
 
@@ -403,7 +426,7 @@ git commit -m "add the console fetch layer and polled-resource hook"
 
 - [ ] **Step 4: Tenant roster and schema catalog.** Fetch on mount plus manual refresh; no polling. Both go through the console's existing OIDC token and return what that user is entitled to.
 
-- [ ] **Step 5: Data volume.** One call per object type, on mount plus manual refresh, **never polled** — a 30-second timer turns an open tab into sustained aggregate load against StarRocks for a number that changes slowly. Label it **tenant-scoped**, not a deployment total. State that zero may mean denied rather than empty.
+- [ ] **Step 5: Data volume.** One call per object type, on mount plus manual refresh, **never polled** — a 30-second timer turns an open tab into sustained aggregate load against StarRocks for a number that changes slowly. Label it **tenant-scoped**, not a deployment total. **Do NOT caveat the zeros** — that instruction predates Task 6, which made a denied type *unconstructible* as a zero: denied types get no entry at all, only an aggregate `deniedTypeCount`, and unknown types get `unknownTypeCount`. Render those two counts as an explicit "N types not shown" affordance; a zero in the list is now a real, trustworthy zero.
 
 - [ ] **Step 6: Render-test each widget** over fixture responses, including error and stale states.
 ```bash
@@ -479,7 +502,7 @@ git commit -m "revoke tokens at signout, scrub the oidc code from traces, and gu
 **Interfaces:**
 - Consumes: T4's `admin-api` origin, which the CSP must name.
 
-- [ ] **Step 1 (5d): Validate before substituting.** Each of `OIDC_CLIENT_ID`, `OIDC_AUTHORITY` and `API_BASE_URL` must match `^[A-Za-z0-9:/._-]+$`; exit non-zero otherwise. `envsubst` has no notion of JavaScript syntax, so an unvalidated value containing a double quote breaks out of its string literal into code that runs on every page load. `jq` is **not** in the runtime image (spec A43), so JSON emission is not available.
+- [ ] **Step 1 (5d): Validate before substituting.** Each of `OIDC_CLIENT_ID`, `OIDC_AUTHORITY` and `API_BASE_URL` must consist only of `[A-Za-z0-9:/._-]`; exit non-zero otherwise. **Do NOT implement this with `grep -Eq '^[A-Za-z0-9:/._-]+$'`** — `grep` is line-oriented, so it matches the anchors against each line independently and *accepts* a value containing an embedded newline such as `$'http://ok\nx", evil:"1'`, which is exactly the injection the control exists to stop. Use a whole-string check that has no concept of lines, e.g. strip every allowed character with `tr -d` and reject if anything remains. `envsubst` has no notion of JavaScript syntax, so an unvalidated value containing a double quote breaks out of its string literal into code that runs on every page load. `jq` is **not** in the runtime image (spec A43), so JSON emission is not available.
 
 - [ ] **Step 2 (5c): Emit the CSP at container start, not at build time.** `nginx.conf` is copied in at build time while both origins are per-environment values, so a baked `connect-src` either carries an unresolved placeholder or omits the origin — and omitting it blocks the discovery fetch and token exchange, so **login cannot complete**. Render the header in the entrypoint with both origins interpolated via `envsubst`.
 

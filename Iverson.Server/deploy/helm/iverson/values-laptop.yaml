@@ -8,10 +8,21 @@
 #
 # Capacity: 250+250+250+250+250+100+100+50+200 = 1.7 CPU of requests; system + operators
 # measured ~2.0; metrics-server ~0.1. Total ~3.8 of 4.0 (~95%). Margin is thin — roughly
-# 200m.
+# 200m. Re-measure with `kubectl top` after deploying.
+#
+# 172.18.0.0/16 is kind's Docker bridge network (this profile also runs on
+# kind) — the *node* IP range the kubelet probes api from, not kind's pod CIDR
+# (10.244.0.0/16) or service CIDR (10.96.0.0/12); pod IPs come from Calico's
+# own pool (deploy/kind/setup.sh installs it), not this range. See values.yaml's
+# networkPolicy comment for why every profile must set this itself.
+networkPolicy:
+  clusterCidrs: ["172.18.0.0/16"]
+
 global:
   engagementEnabled: false   # no StarRocks: vendor sizes FE at 8 CPU/16GB
   tracingEnabled: false      # no jaeger
+  prometheusEnabled: false   # single source of truth (Chart.yaml condition, both prometheus
+                              # NetworkPolicy rules, and api's Prometheus__BaseUrl env var)
   # One entry, served by the tei subchart. A profile list override REPLACES rather than merges, and
   # activeEmbeddingModel (inherited from values.yaml) must name an entry here. This list must still
   # contain every model any REGISTERED type's stored `_iverson_schema` row names — under TEI,
@@ -26,8 +37,6 @@ global:
   # default (values.yaml) turns off.
   provisionTestIdentities: true
 
-prometheus:
-  enabled: false
 adminUi:
   enabled: false
 

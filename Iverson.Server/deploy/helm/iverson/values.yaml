@@ -10,6 +10,21 @@
 # cannot enforce NetworkPolicy at all — disabling it removes network
 # segmentation entirely rather than degrading gracefully, so treat "false"
 # as an explicit, logged exception, not a default anyone should ship with.
+#
+# networkPolicy.clusterCidrs has no default here on purpose. It scopes the
+# api-ingress rules on 8080/8081 AND prometheus-ingress's 9090 rule (where it
+# carries the kubelet's /-/ready probe): list every non-pod IP range that must
+# legitimately reach those ports — always the node/kubelet range, plus whatever
+# load-balancer or health-check ranges the platform itself connects from (on AWS/Azure/GCP,
+# which have no ingress-nginx namespace, that's the cloud load balancer; GCP
+# additionally needs GCLB's fixed health-check ranges alongside its node
+# subnet — see values-gcp.yaml). That set is a different, non-overlapping value
+# per profile — every values-*.yaml overlay MUST set its own.
+# templates/networkpolicies.yaml fails the render with `fail` (not `required`,
+# which lets an empty list through, and not just on an empty list — a list
+# containing only a blank entry, the shape `--set clusterCidrs={}` actually
+# produces, is rejected too) if this is left unset, rather than silently
+# falling back to an ingress rule that matches every source.
 networkPolicy:
   enabled: true
 
@@ -70,6 +85,13 @@ global:
   engagementEnabled: true
   # Drives the jaeger subchart's condition AND the api/worker OTLP env vars.
   tracingEnabled: true
+  # Drives the prometheus subchart's condition (Chart.yaml), BOTH its NetworkPolicy rules
+  # (templates/networkpolicies.yaml's api-egress and prometheus-ingress) AND the api/worker
+  # Prometheus__BaseUrl env var (charts/api/templates/deployment.yaml, Task 7) — the same
+  # single-source-of-truth reasoning as engagementEnabled above: two flags that must agree
+  # can disagree, and the disagreeing state here would either point Prometheus__BaseUrl at a
+  # Service that was never installed, or silently report "not deployed" when it was.
+  prometheusEnabled: true
   # Gates the Authentik blueprint's dev-only test identities (smoke-test user, loadtest-bypass
   # user/group, loadtest/webtest service clients, the loadtest-human provider, and the
   # localhost:5173 redirect URIs) AND Tenancy__SeedLegacyTenants (the five-tenant legacy seeding
@@ -184,6 +206,21 @@ api:
                                  # className is "azure-application-gateway". This repo's Terraform
                                  # does not provision one — leave empty unless you have provisioned
                                  # it yourself, otherwise AGIC references a rule set that does not exist.
+  # admin-api.<global.ingressHost>, the console's dedicated JSON/CORS-reachable host (Task
+  # 4) — left empty here (the api subchart's own nginx/no-TLS default is correct for
+  # laptop, which never states an override). values-local.yaml restates the same
+  # nginx/no-TLS shape explicitly anyway, matching how it restates api.ingress in full;
+  # cloud overlays override className/annotations/tlsSecretName the same way
+  # api.ingress above does.
+  adminApiIngress: {}
+  # Whether the admin console is reachable on this profile — drives AdminConsole__Origin
+  # (fed to the API for CORS) and whether the admin-api Ingress renders at all (see
+  # charts/api/templates/admin-api-ingress.yaml). Left false here (the api subchart's own
+  # default): this file is the base every overlay merges, including values-laptop.yaml
+  # (adminUi.enabled: false, no console to grant CORS to) — a true default here would leak
+  # a CORS grant and an admin-api hostname onto that profile. Every overlay that actually
+  # runs a console (values-local/-aws/-azure/-gcp) sets its own true.
+  adminConsoleEnabled: false
 
 worker:
   enabled: true
@@ -208,7 +245,6 @@ jaeger:
   nodeSelector: {}
 
 prometheus:
-  enabled: true
   imageTag: "v2.55.1"
   storageSize: "20Gi"
   storageClassName: ""
@@ -235,7 +271,6 @@ adminUi:
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "250m", memory: "256Mi" }
-  apiBaseUrl: "http://iverson.local"
   ingress:
     className: ""
     annotations: {}

@@ -20,3 +20,28 @@ ingress:
   # override was removed; left in place it would have been a silent no-op for
   # any operator who still (harmlessly but confusingly) set it.
   tlsSecretName: ""
+# Backs the dedicated admin-api.<global.ingressHost> Ingress (Task 4) — the console's
+# JSON/CORS-reachable origin, distinct from the h2c/gRPC host above. No `host` key here:
+# the template computes it via printf from global.ingressHost, mirroring
+# charts/authentik/templates/ingress.yaml. Defaults to nginx/no-TLS so local and laptop
+# (which run ingress-nginx and never override this block) need no values of their own —
+# same pattern as charts/authentik/values.yaml's own ingress default.
+adminApiIngress:
+  className: "nginx"
+  annotations: {}
+  tlsSecretName: ""
+# Whether the admin console exists on this profile. The parent's adminUi.enabled can't be
+# read here directly — a subchart sees only its own scope plus .Values.global — so this is
+# a separate flag the parent must keep in sync (values-local/-aws/-azure/-gcp set it true;
+# values-laptop.yaml, which sets adminUi.enabled: false, leaves it at this default).
+#
+# When true: the API gets AdminConsole__Origin = <global.externalScheme>://<global.ingressHost>
+# (Program.cs's CORS registration) — that's the console's origin because main's admin-ui
+# Ingress serves it at global.ingressHost — and the admin-api Ingress
+# (templates/admin-api-ingress.yaml) renders admin-api.<global.ingressHost>.
+#
+# When false: Program.cs registers no CORS policy at all rather than falling back to
+# something permissive, so cross-origin calls fail closed; and the admin-api Ingress does
+# not render, so a console-less profile does not expose /admin and /health (ANONYMOUS) on a
+# public hostname for nobody to call.
+adminConsoleEnabled: false

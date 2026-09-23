@@ -1,5 +1,13 @@
 {{- include "iverson.validateNoPlaceholders" . -}}
 {{- if .Values.networkPolicy.enabled }}
+{{- if not .Values.networkPolicy.clusterCidrs }}
+{{- fail "networkPolicy.clusterCidrs must list at least one CIDR; an empty list renders an allow-all ingress rule" }}
+{{- end }}
+{{- range .Values.networkPolicy.clusterCidrs }}
+{{- if not (trim (toString .)) }}
+{{- fail "networkPolicy.clusterCidrs contains a blank entry; every entry must be a CIDR (note: helm's --set x={} produces a one-element list [\"\"], not an empty list — use --set-json or a values file for a true empty list)" }}
+{{- end }}
+{{- end }}
 # Default-deny: nothing in the namespace can talk to anything else unless a
 # more specific policy below explicitly allows it.
 apiVersion: networking.k8s.io/v1
@@ -10,8 +18,23 @@ spec:
   podSelector: {}
   policyTypes: ["Ingress", "Egress"]
 ---
-# api is the only component allowed in from outside the namespace (via
-# ingress-nginx), and the only component allowed to reach every datastore.
+# api is reachable from outside the namespace two ways: through ingress-nginx
+# (local/laptop, where it runs as an in-cluster namespace) or directly from
+# whatever IP ranges `.Values.networkPolicy.clusterCidrs` lists for the profile
+# (AWS/Azure/GCP have no ingress-nginx namespace at all — the cloud load
+# balancer connects from inside those ranges instead; guarded near the top of
+# this file, since an empty list would otherwise render an ingress rule that
+# matches every source, not zero). This is NOT a tight four-consumer allowlist
+# on every profile: on AWS (VPC CNI) and Azure (`network_plugin: azure`), pod
+# IPs are drawn from the VPC/VNet itself, so the `ipBlock` entries there admit
+# every pod in every namespace and every VM in that VPC/VNet to api:8080 and
+# api:8081 — not just the load balancer and kubelet. That is still far
+# narrower than the `from: []` it replaces, and is the accepted design; see
+# each profile's values-*.yaml for what its clusterCidrs entries actually
+# cover. Port 8081 also admits the kubelet, which connects the same way (no
+# pod/namespace identity of its own) for readiness/liveness probes, and
+# Prometheus, which scrapes /metrics from the dedicated Http1 health port
+# rather than from 8080.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -24,12 +47,18 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+        {{- range .Values.networkPolicy.clusterCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
       ports:
         - { protocol: TCP, port: 8080 }
-    - from: []   # kubelet readiness/liveness probes: the kubelet connects directly from the
-               # node, not from any pod/namespace, so there's no podSelector/namespaceSelector
-               # to scope this to — same any-source reasoning as the port-only egress rules
-               # elsewhere in this file. Scoped to the dedicated Http1 health port only.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } }
+        {{- range .Values.networkPolicy.clusterCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
       ports:
         - { protocol: TCP, port: 8081 }
 ---
@@ -60,6 +89,12 @@ spec:
       ports: [{ protocol: TCP, port: 4317 }, { protocol: TCP, port: 4318 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-authentik-server } } }]
       ports: [{ protocol: TCP, port: 9000 }]
+{{- if .Values.global.prometheusEnabled }}
+    - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } } }]
+               # api queries Prometheus's own HTTP API (not the /metrics scrape port) to
+               # serve live status on the admin console landing page.
+      ports: [{ protocol: TCP, port: 9090 }]
+{{- end }}
     - to: []   # DNS — every egress policy needs this or in-cluster name resolution breaks
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
 ---
@@ -158,10 +193,14 @@ spec:
     - to: []   # Kubernetes API server: CNPG's own initdb/bootstrap job (baked into the
                # postgres image, not a sidecar) calls back to the API server directly to
                # sync Cluster status — without this it times out forever and the Cluster
-               # never leaves "Setting up primary". No portable way to scope this tighter:
-               # the API server isn't a normal in-namespace pod, and its address/CIDR
-               # differs across kind/EKS/AKS/GKE (managed control planes aren't even
-               # in-cluster pods), so this can't be a podSelector/namespaceSelector rule.
+               # never leaves "Setting up primary". This is a different scoping problem
+               # than api-ingress's ipBlock rules above: those cover node/pod-IP traffic
+               # inside the per-profile `.Values.networkPolicy.clusterCidrs` range, but
+               # the control-plane API server isn't guaranteed to live inside that range —
+               # on managed control planes (EKS/AKS/GKE) it's provider-operated
+               # infrastructure, not a normal in-cluster pod, and its address varies in a
+               # way no single CIDR (per-profile or otherwise) reliably covers. So this
+               # stays a port-only `to: []` rule rather than an ipBlock/podSelector one.
                # Both 443 and 6443 are listed because NetworkPolicy enforcement happens
                # after kube-proxy's Service DNAT rewrites the destination port: the
                # `kubernetes` Service is always :443, but self-hosted/kubeadm-style
@@ -473,7 +512,10 @@ spec:
         - { protocol: TCP, port: 8080 }
     - from: []   # kubelet readiness/liveness probes: the kubelet connects directly from the
                # node, not from any pod/namespace, so there's no podSelector/namespaceSelector
-               # to scope this to — same any-source reasoning as the api-ingress rule above.
+               # to scope this to. Deliberately allow-all: this is the same pre-existing
+               # exposure the api-ingress rule used to have before it was migrated to a
+               # clusterCidrs-based ipBlock list — this rule has not been migrated yet. See
+               # api-ingress above for the pattern to follow.
                # Same port as the ingress rule above since admin-ui has no dedicated health port.
       ports:
         - { protocol: TCP, port: 8080 }
@@ -505,7 +547,7 @@ spec:
     - to: []   # DNS
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
 {{- end }}
-{{- if .Values.prometheus.enabled }}
+{{- if .Values.global.prometheusEnabled }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -522,6 +564,28 @@ spec:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
       ports: [{ protocol: TCP, port: 8081 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-prometheus-ingress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-prometheus }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+               # api's own query path into Prometheus's HTTP API (the api-egress rule's
+               # counterpart) — for the admin console landing page's live status.
+        {{- range .Values.networkPolicy.clusterCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+               # kubelet readiness probe (charts/prometheus/templates/deployment.yaml's
+               # /-/ready on :9090) — same no-pod/namespace-identity reasoning as the
+               # api-ingress kubelet peers above, scoped the same way via clusterCidrs
+               # instead of an unrestricted `from: []`.
+        {{- end }}
+      ports: [{ protocol: TCP, port: 9090 }]
 {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -536,10 +600,13 @@ spec:
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
       ports: [{ protocol: TCP, port: 9000 }]
-    - from: []   # kubelet readiness/liveness probes: same any-source reasoning as api-ingress's
-               # kubelet-probe rule — authentik's server process serves both app traffic and its
-               # own health endpoints (/-/health/live/, /-/health/ready/) on the same port, so
-               # there's no separate dedicated health port to scope this to.
+    - from: []   # kubelet readiness/liveness probes: authentik's server process serves both app
+               # traffic and its own health endpoints (/-/health/live/, /-/health/ready/) on the
+               # same port, so there's no separate dedicated health port to scope this to.
+               # Deliberately allow-all: this is the same pre-existing exposure the api-ingress
+               # rule used to have before it was migrated to a clusterCidrs-based ipBlock list —
+               # this rule has not been migrated yet. See api-ingress above for the pattern to
+               # follow.
       ports: [{ protocol: TCP, port: 9000 }]
 ---
 apiVersion: networking.k8s.io/v1

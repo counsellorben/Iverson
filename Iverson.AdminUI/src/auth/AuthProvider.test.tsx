@@ -13,7 +13,20 @@ vi.mock("react-oidc-context", () => ({
   },
 }));
 
-import { AuthGate, AuthProvider } from "./AuthProvider";
+import { AuthGate, AuthProvider, onSigninCallback } from "./AuthProvider";
+
+function renderProviderAndCaptureSettings(): Record<string, unknown> {
+  capturedOidcProps.length = 0;
+  render(
+    <AuthProvider>
+      <div>App</div>
+    </AuthProvider>
+  );
+  if (capturedOidcProps.length === 0) {
+    throw new Error("AuthProvider did not render the OIDC provider");
+  }
+  return capturedOidcProps[0];
+}
 
 describe("AuthProvider", () => {
   beforeEach(() => {
@@ -98,5 +111,55 @@ describe("AuthGate", () => {
 
     expect(screen.queryByText("Protected content")).not.toBeInTheDocument();
     expect(signinRedirect).not.toHaveBeenCalled();
+  });
+
+  it("ends the session when the access token expires, so the redirect can fire", () => {
+    let onExpired: (() => void) | undefined;
+    const removeUser = vi.fn(async () => undefined);
+    useAuthMock.mockReturnValue({
+      isLoading: false,
+      isAuthenticated: true,
+      signinRedirect,
+      removeUser,
+      events: {
+        addAccessTokenExpired: (cb: () => void) => {
+          onExpired = cb;
+          return () => {};
+        },
+      },
+    });
+
+    render(
+      <AuthGate>
+        <div>Protected content</div>
+      </AuthGate>
+    );
+    onExpired!();
+
+    expect(removeUser).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("AuthProvider OIDC settings", () => {
+  it("wires a signin callback that strips the authorization code out of the URL", () => {
+    const settings = renderProviderAndCaptureSettings();
+    window.history.replaceState({}, "", "/callback?code=secret-auth-code&state=abc123");
+
+    (settings.onSigninCallback as () => void)();
+
+    expect(window.location.search).toBe("");
+    expect(window.location.href).not.toContain("secret-auth-code");
+    expect(window.location.pathname).toBe("/callback");
+  });
+
+  it("leaves no history entry that can restore the code with the back button", () => {
+    window.history.replaceState({}, "", "/callback?code=secret-auth-code&state=abc123");
+    const depthBefore = window.history.length;
+
+    onSigninCallback();
+
+    // replaceState, not pushState: the callback URL must not be revisitable.
+    expect(window.history.length).toBe(depthBefore);
+    expect(window.location.search).toBe("");
   });
 });

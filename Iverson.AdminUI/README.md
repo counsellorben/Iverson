@@ -20,13 +20,16 @@ manage tenants, view storage, and inspect performance data via Iverson.Api.
   ```
 
   (or `dotnet run` from `Iverson.Server/Iverson.Launcher`). This brings up
-  Authentik at `http://localhost:9000` and the API at `http://localhost:8080`,
+  Authentik at `http://localhost:9000` and the API at `http://localhost:8081`,
   matching the defaults in `.env.development`.
 - At least one human user in the `operators` Authentik group to log in with —
   see [Creating a human user and granting operator access](../docs/user-management-and-security.md#creating-a-human-user-and-granting-operator-access)
   if you don't have one yet. (Bootstrap admin login for compose:
   `admin@iverson.local` / the `AUTHENTIK_BOOTSTRAP_PASSWORD` value generated
   into `.env` by `scripts/generate-compose-secrets.sh`.)
+  For compose, one is already seeded: `iverson-loadtest-bypass-user`, whose password is
+  the `IVERSON_BYPASS_PASSWORD` value in the same `.env`; it belongs to `operators` out of
+  the box (`blueprints/compose-only/service-clients.yaml`).
 
 ## Running locally
 
@@ -52,7 +55,7 @@ with defaults for the docker-compose target:
 ```
 VITE_OIDC_CLIENT_ID=dev-iverson-human-oidc-client-id
 VITE_OIDC_AUTHORITY=http://localhost:9000/application/o/iverson-api/
-VITE_API_BASE_URL=http://localhost:8080
+VITE_API_BASE_URL=http://localhost:8081
 ```
 
 To point at a different target (e.g. a local kind cluster), copy these into

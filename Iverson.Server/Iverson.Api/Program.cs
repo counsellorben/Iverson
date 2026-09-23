@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Caching.Memory;
 using Iverson.Api;
 using Iverson.Api.Authorization;
+using Iverson.Api.Console;
 using Iverson.Api.Consumers;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
@@ -151,6 +152,31 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0
             }));
 });
+
+// ── CORS (admin console) ────────────────────────────────────────────────────────
+// The admin console is served from the shared iverson.local-style hostname while this
+// API answers on the dedicated admin-api hostname (Task 4) — the browser's fetch calls
+// to /health, /admin/*, and /v1/traces are cross-origin, so they need an explicit CORS
+// policy or the preflight OPTIONS (and the real request behind it) fails closed.
+// AllowAnyOrigin is never acceptable: with a bearer token in play, it would let any page
+// on the internet drive these endpoints from a visitor's browser. AllowCredentials is
+// deliberately NOT set — this API authenticates via a bearer token in the Authorization
+// header, not a cookie, so credentialed CORS buys nothing here.
+const string AdminConsoleCorsPolicy = "AdminConsole";
+var adminConsoleOrigin = cfg["AdminConsole:Origin"];
+if (!string.IsNullOrEmpty(adminConsoleOrigin))
+{
+    builder.Services.AddCors(options => options.AddPolicy(AdminConsoleCorsPolicy, policy => policy
+        .WithOrigins(adminConsoleOrigin)
+        .WithHeaders("Authorization", "Content-Type")
+        .AllowAnyMethod()
+        // Without this, the server sets X-Trace-Id on every response (below) but the browser's
+        // fetch Response.headers cannot see it cross-origin — only the CORS-safelisted response
+        // headers are exposed to script by default, and X-Trace-Id is not one of them.
+        .WithExposedHeaders("X-Trace-Id")));
+}
+// If adminConsoleOrigin is unset, no CORS policy is registered at all — cross-origin
+// requests fail closed rather than silently falling back to a permissive policy.
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -307,6 +333,11 @@ builder.Services.AddSingleton<IOutboxPublisher, OutboxPublisher>();
 builder.Services.AddSingleton<IEnrichmentStateRepository>(sp =>
     new EnrichmentStateRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddSingleton<IEntityRelationResolver, EntityRelationResolver>();
+// The admin-console JSON endpoints' two readers. Both take the acting user as a method
+// parameter — the gRPC-only ActingUserInterceptor never runs for them, so they are handed
+// HttpContext.User instead. Singleton to match every dependency they hold.
+builder.Services.AddSingleton<Iverson.Api.Schema.SchemaCatalogReader>();
+builder.Services.AddSingleton<Iverson.Api.Search.AggregateReader>();
 builder.Services.AddSingleton<ISchemaRegistrationOrchestrator, SchemaRegistrationOrchestrator>();
 builder.Services.AddSingleton<IReconciliationQueueRepository>(sp => new ReconciliationQueueRepository(
     Iverson.Api.Reconciliation.ReconciliationSchema.TableName,
@@ -347,6 +378,25 @@ builder.Services.AddHttpClient("JaegerOtlpHttp", client =>
 {
     client.BaseAddress = new Uri(cfg["Jaeger:OtlpHttpUrl"] ?? "http://iverson-jaeger:4318");
 });
+
+// The admin console's metrics proxy (/admin/console/metrics). BaseUrl is empty by default
+// (appsettings.json) and stays empty on any profile that never installs the prometheus
+// subchart (values-laptop.yaml) — the named client below is still registered unconditionally,
+// same as JaegerOtlpHttp above, but AdminConsoleMetricsEndpoint checks PrometheusOptions.BaseUrl
+// BEFORE ever asking this client to make a call, so an unconfigured deployment reports
+// "notDeployed" rather than attempting (and failing) a connection to an empty BaseAddress.
+builder.Services.Configure<Iverson.Api.Console.PrometheusOptions>(
+    cfg.GetSection(Iverson.Api.Console.PrometheusOptions.Section));
+builder.Services.AddHttpClient(Iverson.Api.Console.PrometheusQueryClient.HttpClientName, (sp, client) =>
+{
+    var promOptions = sp.GetRequiredService<IOptions<Iverson.Api.Console.PrometheusOptions>>().Value;
+    if (!string.IsNullOrEmpty(promOptions.BaseUrl))
+        client.BaseAddress = new Uri(promOptions.BaseUrl);
+    // Short: this endpoint is polled by every open console tab, and a hung Prometheus must not
+    // hang all of them for the framework's 100s default.
+    client.Timeout = TimeSpan.FromSeconds(5);
+});
+builder.Services.AddSingleton<Iverson.Api.Console.IPrometheusQueryClient, Iverson.Api.Console.PrometheusQueryClient>();
 
 builder.Services.Configure<EngagementStoreOptions>(cfg.GetSection(EngagementStoreOptions.Section));
 
@@ -436,6 +486,17 @@ preAuthOptions.AddPolicy("traces", _ => RateLimitPartition.GetNoLimiter<string>(
 app.Use(ListenerPortGateAsync);
 app.UseRateLimiter(preAuthOptions);
 app.UseHttpsRedirection();
+
+// Must run before UseAuthentication: a cross-origin preflight OPTIONS carries no
+// Authorization header, so if it reached the FallbackPolicy's RequireAuthenticatedUser
+// first, every preflight would be rejected before CORS ever got to answer it.
+// (AdminConsoleCorsPipelineTests.ConfiguredOrigin_PreflightOptions_AdminDlq_AnsweredByCors
+// NotFallbackPolicy pins this: moving UseCors below UseAuthentication/UseAuthorization
+// makes that one test fail with 401, confirmed empirically before this comment was
+// restored.)
+if (!string.IsNullOrEmpty(adminConsoleOrigin))
+    app.UseCors(AdminConsoleCorsPolicy);
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();   // existing DI-configured GlobalLimiter, unchanged
@@ -585,6 +646,17 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
 
     return Results.Ok(new { replayed = true, id, topic = row.SourceTopic });
 }).WithName("ReplayDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
+
+// The admin console's four read-only JSON endpoints, under the same /admin prefix and — for
+// three of the four — the same Operator policy as the routes above. /admin/console/schema and
+// /admin/console/data-volume are authenticated-only on purpose and pass HttpContext.User to
+// their readers; see AdminConsoleEndpoints for why neither may be normalised to Operator.
+app.MapAdminConsoleEndpoints();
+
+// The console's fifth endpoint, Operator-gated like /tenants and /qdrant above — a Prometheus
+// proxy over a fixed, server-authored query set. In its own file/registration call per the SDD
+// pre-flight ledger's Ruling 1; see AdminConsoleMetricsEndpoint for the three-state contract.
+app.MapAdminConsoleMetricsEndpoint();
 
 // ── Schema hydration ───────────────────────────────────────────────────────────
 try

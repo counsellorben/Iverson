@@ -1,6 +1,28 @@
 import { useEffect } from "react";
 import { AuthProvider as OidcAuthProvider, useAuth } from "react-oidc-context";
 import { config } from "../config";
+import { useSessionExpiry } from "./useSessionExpiry";
+
+/**
+ * Removes the OIDC authorization code and state from the address bar once the code has been
+ * exchanged for tokens.
+ *
+ * The code is single-use and already spent by the time this runs, but the URL that carries it
+ * is not: it stays in `window.location`, in the browser's history entry, and — the reason this
+ * matters here — in the `http.url` attribute of every span the OpenTelemetry web SDK records
+ * for this document, which the console exports to Jaeger. A `?code=` in a trace backend is a
+ * credential in a log store.
+ *
+ * `replaceState` rather than `pushState`: the callback URL must not become a history entry the
+ * back button can return to.
+ *
+ * This covers the SUCCESS path only. The error path — where `CallbackPage` renders the failure
+ * and never navigates, so `react-oidc-context` never invokes this — is covered by the span
+ * attribute scrub in `telemetry.ts`. Both are needed; neither subsumes the other.
+ */
+export function onSigninCallback(): void {
+  window.history.replaceState({}, document.title, window.location.pathname);
+}
 
 // Deliberately no `offline_access` scope: requesting it makes oidc-client-ts
 // obtain a refresh token and store the whole token set (access + id +
@@ -31,6 +53,7 @@ const oidcConfig = {
   // and unaffected by this addition.
   scope: "openid profile email groups tenant_id",
   automaticSilentRenew: false,
+  onSigninCallback,
 };
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -41,10 +64,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
  * Gates its children behind an authenticated session, redirecting an
  * unauthenticated visitor into the Authentik login flow. `AppLayout`
  * (Task 4) is the intended child; this component only concerns itself
- * with the auth boundary.
+ * with the auth boundary. It also ends the session when the access token
+ * expires — see `useSessionExpiry`.
  */
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const auth = useAuth();
+  useSessionExpiry();
 
   useEffect(() => {
     if (!auth.isLoading && !auth.isAuthenticated) {

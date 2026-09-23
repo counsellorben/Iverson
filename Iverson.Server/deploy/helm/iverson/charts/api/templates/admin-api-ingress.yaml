@@ -1,0 +1,71 @@
+{{/*
+  Rendered ONLY where a console exists to reach this host.
+
+  adminConsoleEnabled is the api subchart's own "is there a console on this profile"
+  flag — the parent sets it true on every profile that deploys the admin UI
+  (values-local/-aws/-azure/-gcp) and leaves it false on the one that does not
+  (values-laptop.yaml, adminUi.enabled: false). It is the right condition here because
+  it is the SAME fact the CORS grant in deployment.yaml is gated on: an admin-api host
+  with no console has nobody it would answer cross-origin for.
+
+  adminUi.enabled itself is unusable as the condition — it lives at the parent's top
+  level, and a subchart can see only its own scope plus .Values.global.
+
+  Why guard at all: this Ingress publishes /admin and /health on a public
+  hostname, and /health is ANONYMOUS (passive since CSR #7 — it no longer writes, but it
+  still fans out to all four stores). Publishing that with no console deployed and no
+  CORS grant is attack surface for zero function.
+*/}}
+{{- if .Values.adminConsoleEnabled }}
+{{/*
+  main's guard (templates/_validate.tpl) lists its three Ingresses (api.ingress,
+  authentik.ingress, adminUi.ingress) inline and checks them there. This
+  branch-owned Ingress isn't in that list, so it carries the same two checks
+  itself instead of editing main's file — keep the two in step.
+*/}}
+{{- if eq (dig "externalScheme" "http" .Values.global) "https" }}
+{{- range $k, $v := .Values.adminApiIngress.annotations }}
+{{- if and (kindIs "string" $v) (regexMatch "^<.*>$" $v) }}
+{{- fail (printf "api.adminApiIngress.annotations[%s] is still the placeholder %q — replace it with a real value before deploying a cloud/https profile (CSR round-2 finding #3)." $k $v) }}
+{{- end }}
+{{- end }}
+{{- if lookup "v1" "ServiceAccount" $.Release.Namespace "default" }}
+{{- if .Values.adminApiIngress.tlsSecretName }}
+{{- if not (lookup "v1" "Secret" $.Release.Namespace .Values.adminApiIngress.tlsSecretName) }}
+{{- fail (printf "api.adminApiIngress.tlsSecretName %q does not resolve to an existing Secret in namespace %q — create it (e.g. via cert-manager or your cloud's certificate-import flow) before this install/upgrade completes, or the Ingress has no working TLS (CSR round-3 finding #11)." .Values.adminApiIngress.tlsSecretName $.Release.Namespace) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-admin-api
+  annotations:
+    {{- toYaml .Values.adminApiIngress.annotations | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.adminApiIngress.className | quote }}
+{{- if .Values.adminApiIngress.tlsSecretName }}
+  tls:
+    - hosts: [{{ printf "admin-api.%s" .Values.global.ingressHost | quote }}]
+      secretName: {{ .Values.adminApiIngress.tlsSecretName | quote }}
+{{- end }}
+  rules:
+    - host: {{ printf "admin-api.%s" .Values.global.ingressHost | quote }}
+      http:
+        paths:
+          - path: /admin
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8081
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8081
+{{- end }}

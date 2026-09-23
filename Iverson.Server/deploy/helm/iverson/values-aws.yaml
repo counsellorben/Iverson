@@ -1,8 +1,15 @@
 # AWS EKS overlay — StorageClass names and node-pool labels match modules/operators
 # and modules/cluster-aws's fixed naming exactly (see Tasks 2 and 3 of this plan).
 
+# modules/cluster-aws's VPC CIDR — covers both the kubelet (node IPs) and the ALB's
+# pod-IP targets, since AWS has no ingress-nginx namespace for api-ingress to admit
+# instead. See values.yaml's networkPolicy comment for why every profile sets this.
+networkPolicy:
+  clusterCidrs: ["10.0.0.0/16"]
+
 global:
   ingressHost: "iverson.example.com"
+  prometheusEnabled: true   # single source of truth — see values.yaml's comment on this flag
   externalScheme: "https"
 
 postgres:
@@ -91,6 +98,20 @@ api:
       alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
       alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
       alb.ingress.kubernetes.io/ssl-redirect: "443"
+  # admin-api.iverson.example.com — same ALB, same ACM certificate (assumed to cover
+  # every *.iverson.example.com host the way it already does for authentik/adminUi
+  # below), but this backend serves plain HTTP/1.1 JSON, not gRPC — the
+  # backend-protocol-version: GRPC annotation above must NEVER be copied here. Omitting
+  # it leaves ALB's default (HTTP1), which is correct for this Ingress.
+  adminApiIngress:
+    className: "alb"
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
+  adminConsoleEnabled: true
 
 # worker/prometheus/redis/authentik: none of these get a dedicated node pool in
 # modules/cluster-aws (only postgres/kafka/starrocks/qdrant/ollama do — confirmed
@@ -139,24 +160,42 @@ authentik:
   ingress:
     className: "alb"
     annotations:
-      # ALB terminates TLS using an ACM certificate referenced by ARN, not a
-      # Kubernetes Secret — tlsSecretName stays empty (chart default) same as
-      # api.ingress above. Replace <ACM_CERT_ARN> with a real certificate
-      # provisioned for the real host before applying — without it ALB will
-      # only serve HTTP.
+      # Completed to match api.ingress/adminApiIngress/adminUi.ingress (scheme/
+      # target-type/listen-ports/ssl-redirect). certificate-arn ALONE is not enough:
+      # without listen-ports the AWS Load Balancer Controller defaults to
+      # [{"HTTP":80}] and this Ingress answers over plain HTTP only. That matters
+      # here specifically because adminUi.ingress below now DOES serve HTTPS, so the
+      # console is an https:// page — and an https:// page may not make OIDC calls to
+      # an http:// authority (the browser blocks them as mixed content and login never
+      # completes). Authentik and the console must terminate the same scheme; keep
+      # these four annotations and global.externalScheme above (the admin-ui chart
+      # composes its OIDC authority from it) in lockstep.
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
       alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
 
 adminUi:
-  apiBaseUrl: "https://iverson.example.com"
   ingress:
     className: "alb"
     annotations:
+      # Completed to match api.ingress/adminApiIngress above (scheme/target-type/
+      # listen-ports/ssl-redirect) — without them the AWS Load Balancer Controller
+      # defaults to listen-ports [{"HTTP":80}] and serves this Ingress over plain
+      # HTTP, so the browser's Origin header would be http://iverson.example.com,
+      # not https://, and would never match the AdminConsole__Origin CORS grant —
+      # derived from global.externalScheme ("https" here) — on the API side.
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
       # ALB terminates TLS using an ACM certificate referenced by ARN, not a
       # Kubernetes Secret — tlsSecretName stays empty (chart default) same as
       # api.ingress/authentik.ingress above. Replace <ACM_CERT_ARN> with a real
       # certificate provisioned for the real host before applying — without it
       # ALB will only serve HTTP.
       alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
 
 jaeger:
   nodeSelector: {}

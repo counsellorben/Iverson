@@ -193,16 +193,22 @@ change who can see what.
 
 **These two endpoints pass `HttpContext.User` to the evaluator as the acting user.** This matters
 because of how the evaluator treats an absent one: `RowFieldAuthorizationEvaluator.cs:14-15`
-returns a not-denied, unrestricted decision when `actingUser` is null. The acting user is
-populated only by `ActingUserInterceptor`, which is registered on the gRPC pipeline
-(`Program.cs:87`) and returns early when no `x-acting-user-authorization` header is present. The
-console sends no such header, so without this the filtering would be inert and every
-authenticated caller would receive the complete catalog and every type's row count.
+returns `new AuthorizationDecision(true, …)`, and `AuthorizationDecision`'s first positional
+member is `Denied` (`IRowFieldAuthorizationEvaluator.cs:16-17`) — so an absent acting user is
+**denied**, not unrestricted. The acting user is populated only by `ActingUserInterceptor`, which
+is registered on the gRPC pipeline (`Program.cs:87`) and returns early when no
+`x-acting-user-authorization` header is present. The console sends no such header, so without
+this every authenticated caller would receive an **empty** catalog and a denial for every type's
+row count. The failure mode is a blank console, not a disclosure.
 
-Note what this does and does not change: `RowFieldAuthorizationEvaluator.cs:32-33` also returns
-an unrestricted decision when the principal carries no `tenant_id` claim, and an operator has
-none. So for an operator the result is the same full view either way; the difference appears only
-for a tenant-scoped human, which is exactly where it should.
+Note what this does and does not change: `RowFieldAuthorizationEvaluator.cs:32-33` likewise
+returns `Denied = true` when the principal carries no `tenant_id` claim, and an operator has
+none. **So an operator is denied every type through these two endpoints** — the schema catalog
+comes back empty and every row count comes back denied. This is a live consequence, not a
+theoretical one, and it compounds Design 4d, which records that no human satisfies the `Operator`
+policy today. The endpoints therefore report denial as a distinct outcome rather than as a zero
+count; whether operators should see cross-tenant data at all is a decision for after 4d, and
+changing the evaluator's semantics to grant it is explicitly out of scope here.
 
 **Two extractions are required**, and they are the genuine cost of serving JSON from endpoints
 rather than annotating the proto. `ListTenants` needs neither: it is already a three-line
@@ -367,9 +373,18 @@ page. Two corrections that the implementation must honour:
   `// total matching docs`, but the implementation never assigns it — it constructs
   `new AggregateResponse { TraceId = ... }` at `:514` and only ever adds to `Results`.
   The field is always zero.
-- A **denied type is indistinguishable from an empty type.** When authorization denies the
-  primary type, `:501` returns an empty response rather than an error. The widget renders
-  zero in both cases and the page says so, rather than implying the count is authoritative.
+- A **denied type is distinguishable from an empty one, and must be rendered differently.**
+  This constraint was inverted while the design still routed the widget through the `Aggregate`
+  RPC, where `:501` returns an empty response on denial and the two genuinely collapse. The
+  JSON endpoints do not: `/admin/console/data-volume` reports `Denied`, `Counted(n)` and
+  `UnknownType` as three distinct outcomes, and a denied type is not merely "not a zero" — it
+  gets **no entry at all**, only an aggregate `deniedTypeCount`, so a client cannot construct a
+  zero for it even by mistake. `/admin/console/schema` carries the same signal as
+  `withheldTypeCount`. Naming the denied types is deliberately withheld: it would disclose to an
+  authenticated caller that a type it may not see exists, which is exactly what `GetSchema`'s
+  filtering withholds. **The widget must render an explicit no-access state when that count is
+  non-zero, never a zero count.** This matters today, not hypothetically: an operator carries no
+  `tenant_id` claim and is therefore denied every type (A59, Design 4d).
 
 **Data volume is tenant-scoped.** `Aggregate` enforces tenant isolation, so the number is the
 acting user's tenant, not a deployment total. The widget labels it as such.
@@ -860,7 +875,7 @@ verified on ingress-nginx and assumed on ALB. All three hold.
 A55-A64 were enumerated cold against the transport replacement — a dedicated `admin-api` hostname
 and JSON endpoints in place of a path prefix and gRPC-Web — and then checked: six held, four
 failed. Two of the failures shaped the design rather than a detail. The acting-user mechanism does
-not reach minimal-API endpoints and the evaluator grants full access without one (A58, A59), so the
+not reach minimal-API endpoints, and the evaluator DENIES a request arriving without one (A58, A59), so the
 two authenticated endpoints pass `HttpContext.User` explicitly. And `google.api.http` annotations
 would have broken codegen for four SDK clients (A64), which is why this design uses endpoints
 rather than JSON transcoding. A38, A45 and A52 are marked moot: the mechanisms they describe are no
@@ -939,7 +954,7 @@ to *contain*.
 | A56 | A second hostname is an established, resolvable pattern | **Holds** — `charts/authentik/templates/ingress.yaml:21` renders `printf "authentik.%s" .Values.global.ingressHost`, and `docs/user-management-and-security.md:231-235` documents adding `<ingress-controller-ip>  iverson.local authentik.iverson.local` to `/etc/hosts` for kind. `admin-api.<ingressHost>` follows both |
 | A57 | The backing services are injectable into minimal-API endpoints | **Holds** — `ITenantRepository` is registered at `Program.cs:214`, and `Program.cs:348` already injects `IVectorSchemaManager` into the `/probe/vector` minimal-API endpoint. The pattern exists in the same file |
 | A58 | The acting-user identity mechanism reaches minimal-API endpoints | **Failed** — `ActingUserInterceptor` is registered on the gRPC pipeline only (`Program.cs:87`, `AddGrpc(options => options.Interceptors.Add<...>())`), and even on that pipeline it returns early leaving the acting user null when no `x-acting-user-authorization` header is present, which the console never sends. Resolved by having the two authenticated endpoints pass `HttpContext.User` to the evaluator; see Design 1's endpoint set |
-| A59 | The evaluator filters by default when no acting user is supplied | **Failed** — `RowFieldAuthorizationEvaluator.cs:14-15` returns a not-denied, unrestricted decision when `actingUser` is null, and `:32-33` does the same when the principal carries no `tenant_id` claim. So "authenticated plus internal filtering" would have been inert for the console. This is what forced the acting-user decision above, and it means an operator (who has no `tenant_id`) sees the full view either way |
+| A59 | The evaluator filters by default when no acting user is supplied | **Failed, in the opposite direction to what this table asserted through review round 10 and task 5.** `RowFieldAuthorizationEvaluator.cs:14-15` returns `new AuthorizationDecision(true, …)`, and `AuthorizationDecision`'s **first positional member is `Denied`** (`IRowFieldAuthorizationEvaluator.cs:16-17`) — so a null principal is **denied**, not unrestricted. Every early return in that evaluator pairs `Denied = true`, the no-`tenant_id` branch at `:32-33` included, and the file's own comment calls the tenant check the "FAIL-CLOSED BACKSTOP". Pinned by `RowFieldAuthorizationEvaluatorTests.Evaluate_NoIdentity_ReturnsDenied`. The design consequence is unchanged — the two authenticated endpoints must still pass `HttpContext.User` explicitly — but the failure mode when they don't is an **empty** view, not an unfiltered one. **The original entry's last clause was materially wrong and has a live consequence:** an operator carrying no `tenant_id` claim is denied *everything*, so operator-facing widgets render nothing rather than a full view. See Design 4d |
 | A60 | The two projected gRPC services are authenticated-only, not Operator-gated | **Holds** — `ObjectMappingGrpcService.cs:61-62` states GetSchema is discovery with no `[Authorize]`, filtering internally; `Program.cs:443` maps `ObjectSearchGrpcService` with no `RequireAuthorization`. The two JSON endpoints projecting them match that model rather than the Operator model of their three siblings |
 | A61 | Nothing depends on `admin_console.proto` or `AdminConsoleService` | **Holds** — `grep -rn "admin_console\|AdminConsoleService"` across `*.cs`, `*.proto` and `*.ts` returns nothing outside `docs/`. The proto was specified but never created, so dropping it removes no dependency |
 | A62 | Local development can reach the API today | **Failed** — `docker compose port iverson-api 8081` returns nothing, so the REST port is unpublished, and `.env.development` points `VITE_API_BASE_URL` at `8080`, the h2c-only port. Both must change for the console to reach the API locally |

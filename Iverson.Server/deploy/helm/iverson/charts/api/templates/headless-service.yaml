@@ -1,0 +1,20 @@
+# Headless counterpart to the ClusterIP Service above (service.yaml) — additive, not a
+# replacement. The api Ingress and the admin-api Ingress both target the ClusterIP Service
+# by name (charts/api/templates/ingress.yaml, admin-api-ingress.yaml) and must keep doing
+# so; this Service exists only so Prometheus's dns_sd_configs scrape (Task 8,
+# charts/prometheus/templates/configmap.yaml) can resolve one A record per pod IP instead
+# of the ClusterIP VIP, which load-balances across the HPA's 2-5 replicas and makes
+# per-pod counters look non-monotonic. Only the metrics/health port is exposed — nothing
+# outside this chart resolves grpc (8080) through the headless name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-api-headless
+spec:
+  clusterIP: None
+  selector:
+    app: {{ .Release.Name }}-api
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081

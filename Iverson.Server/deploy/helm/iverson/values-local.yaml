@@ -7,7 +7,19 @@
 # because this profile never leaves localhost. Every cloud overlay in the
 # companion Terraform plan sets a real tlsSecretName.
 
+# 172.18.0.0/16 is kind's Docker bridge network — the *node* IP range the
+# kubelet probes api from, not kind's pod CIDR (10.244.0.0/16) or service CIDR
+# (10.96.0.0/12); pod IPs come from Calico's own pool (deploy/kind/setup.sh
+# installs it), not this range. See values.yaml's networkPolicy comment for
+# why every profile must set this itself.
+networkPolicy:
+  clusterCidrs: ["172.18.0.0/16"]
+
 global:
+  # Restated explicitly even though it matches values.yaml's own default (true) — this profile
+  # runs the prometheus subchart (unlike values-laptop.yaml), and Task 7's Prometheus__BaseUrl
+  # env var (charts/api/templates/deployment.yaml) is gated on this flag.
+  prometheusEnabled: true
   # One entry, served by the tei subchart. A profile list override REPLACES rather than merges, and
   # activeEmbeddingModel (inherited from values.yaml) must name an entry here. This list must still
   # contain every model any REGISTERED type's stored `_iverson_schema` row names — under TEI,
@@ -102,6 +114,15 @@ api:
     className: "nginx"
     annotations: {}
     tlsSecretName: ""
+  # Stated explicitly (even though it matches the api subchart's own nginx/no-TLS
+  # default) for the same self-contained-overlay reason api.ingress above is
+  # restated in full: an operator reading this file shouldn't have to open
+  # charts/api/values.yaml to know what admin-api.iverson.local resolves to.
+  adminApiIngress:
+    className: "nginx"
+    annotations: {}
+    tlsSecretName: ""
+  adminConsoleEnabled: true
 
 worker:
   replicas: 1
@@ -144,7 +165,6 @@ adminUi:
   resources:
     requests: { cpu: "50m", memory: "64Mi" }
     limits: { cpu: "100m", memory: "128Mi" }
-  apiBaseUrl: "http://iverson.local"
   ingress:
     className: "nginx"
     annotations: {}
