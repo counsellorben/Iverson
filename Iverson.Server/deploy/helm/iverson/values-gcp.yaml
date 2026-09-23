@@ -108,7 +108,7 @@ api:
     # handshake fails on a name mismatch. Replace with a real cert-manager-issued
     # Secret name for the real host before applying.
     tlsSecretName: "iverson-admin-api-tls"
-  adminConsoleOrigin: "https://iverson.example.com"
+  adminConsoleEnabled: true
 
 # worker/prometheus/redis/authentik: none of these get a dedicated node pool in
 # modules/cluster-gcp (only postgres/kafka/starrocks/qdrant/ollama do — confirmed
@@ -163,7 +163,6 @@ authentik:
     tlsSecretName: "iverson-authentik-tls"
 
 adminUi:
-  apiBaseUrl: "https://admin-api.iverson.example.com"
   ingress:
     className: "gce"
     annotations: {}

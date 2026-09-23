@@ -122,7 +122,7 @@ api:
     className: "nginx"
     annotations: {}
     tlsSecretName: ""
-  adminConsoleOrigin: "http://iverson.local"
+  adminConsoleEnabled: true
 
 worker:
   replicas: 1
@@ -165,7 +165,6 @@ adminUi:
   resources:
     requests: { cpu: "50m", memory: "64Mi" }
     limits: { cpu: "100m", memory: "128Mi" }
-  apiBaseUrl: "http://admin-api.iverson.local"
   ingress:
     className: "nginx"
     annotations: {}

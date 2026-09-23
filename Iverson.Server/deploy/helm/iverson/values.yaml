@@ -213,17 +213,14 @@ api:
   # cloud overlays override className/annotations/tlsSecretName the same way
   # api.ingress above does.
   adminApiIngress: {}
-  # The exact scheme+host the browser loads the console from — fed to the API as
-  # AdminConsole__Origin for CORS. Left empty here (the api subchart's own default)
-  # rather than "http://iverson.local": this file is the base every overlay merges,
-  # including values-laptop.yaml (adminUi.enabled: false, no console to grant CORS
-  # to) — a non-empty default here would leak a CORS grant onto that profile. Every
-  # overlay that actually runs a console (values-local/-aws/-azure/-gcp) sets its own.
-  #
-  # It ALSO gates whether the admin-api Ingress renders at all — see
-  # charts/api/templates/admin-api-ingress.yaml. On laptop that leaves the admin-api
-  # hostname unpublished, which is right: there is no console there to call it.
-  adminConsoleOrigin: ""
+  # Whether the admin console is reachable on this profile — drives AdminConsole__Origin
+  # (fed to the API for CORS) and whether the admin-api Ingress renders at all (see
+  # charts/api/templates/admin-api-ingress.yaml). Left false here (the api subchart's own
+  # default): this file is the base every overlay merges, including values-laptop.yaml
+  # (adminUi.enabled: false, no console to grant CORS to) — a true default here would leak
+  # a CORS grant and an admin-api hostname onto that profile. Every overlay that actually
+  # runs a console (values-local/-aws/-azure/-gcp) sets its own true.
+  adminConsoleEnabled: false
 
 worker:
   enabled: true
@@ -274,7 +271,6 @@ adminUi:
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "250m", memory: "256Mi" }
-  apiBaseUrl: "http://admin-api.iverson.local"
   ingress:
     className: ""
     annotations: {}

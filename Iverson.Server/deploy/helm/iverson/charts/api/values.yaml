@@ -30,12 +30,18 @@ adminApiIngress:
   className: "nginx"
   annotations: {}
   tlsSecretName: ""
-# Fed to the API as AdminConsole__Origin (Program.cs's CORS registration) — the exact
-# scheme+host the browser loads the console from. Empty means "no console reachable on
-# this profile": Program.cs registers no CORS policy at all rather than falling back to
-# something permissive, so cross-origin calls fail closed.
+# Whether the admin console exists on this profile. The parent's adminUi.enabled can't be
+# read here directly — a subchart sees only its own scope plus .Values.global — so this is
+# a separate flag the parent must keep in sync (values-local/-aws/-azure/-gcp set it true;
+# values-laptop.yaml, which sets adminUi.enabled: false, leaves it at this default).
 #
-# It ALSO gates the admin-api Ingress (templates/admin-api-ingress.yaml): empty means the
-# admin-api host is not published at all, so a console-less profile does not expose
-# /admin and /health on a public hostname for nobody to call.
-adminConsoleOrigin: ""
+# When true: the API gets AdminConsole__Origin = <global.externalScheme>://<global.ingressHost>
+# (Program.cs's CORS registration) — that's the console's origin because main's admin-ui
+# Ingress serves it at global.ingressHost — and the admin-api Ingress
+# (templates/admin-api-ingress.yaml) renders admin-api.<global.ingressHost>.
+#
+# When false: Program.cs registers no CORS policy at all rather than falling back to
+# something permissive, so cross-origin calls fail closed; and the admin-api Ingress does
+# not render, so a console-less profile does not expose /admin and /health (ANONYMOUS) on a
+# public hostname for nobody to call.
+adminConsoleEnabled: false

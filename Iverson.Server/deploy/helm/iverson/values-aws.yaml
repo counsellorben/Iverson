@@ -111,7 +111,7 @@ api:
       alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
       alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
       alb.ingress.kubernetes.io/ssl-redirect: "443"
-  adminConsoleOrigin: "https://iverson.example.com"
+  adminConsoleEnabled: true
 
 # worker/prometheus/redis/authentik: none of these get a dedicated node pool in
 # modules/cluster-aws (only postgres/kafka/starrocks/qdrant/ollama do — confirmed
@@ -177,7 +177,6 @@ authentik:
       alb.ingress.kubernetes.io/ssl-redirect: "443"
 
 adminUi:
-  apiBaseUrl: "https://admin-api.iverson.example.com"
   ingress:
     className: "alb"
     annotations:
@@ -185,8 +184,8 @@ adminUi:
       # listen-ports/ssl-redirect) — without them the AWS Load Balancer Controller
       # defaults to listen-ports [{"HTTP":80}] and serves this Ingress over plain
       # HTTP, so the browser's Origin header would be http://iverson.example.com,
-      # not https://, and adminConsoleOrigin below (which this Ingress's own host
-      # is the origin of) would never match the CORS grant on the API side.
+      # not https://, and would never match the AdminConsole__Origin CORS grant —
+      # derived from global.externalScheme ("https" here) — on the API side.
       alb.ingress.kubernetes.io/scheme: internet-facing
       alb.ingress.kubernetes.io/target-type: ip
       # ALB terminates TLS using an ACM certificate referenced by ARN, not a

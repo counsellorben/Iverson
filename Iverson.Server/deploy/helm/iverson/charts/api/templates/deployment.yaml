@@ -174,9 +174,9 @@ spec:
             - name: Jaeger__OtlpHttpUrl
               value: "http://{{ .Release.Name }}-jaeger:4318"
             {{- end }}
-            {{- if .Values.adminConsoleOrigin }}
+            {{- if .Values.adminConsoleEnabled }}
             - name: AdminConsole__Origin
-              value: {{ .Values.adminConsoleOrigin | quote }}
+              value: "{{ .Values.global.externalScheme }}://{{ .Values.global.ingressHost }}"
             {{- end }}
             {{- if .Values.global.prometheusEnabled }}
             # The admin console's metrics proxy (/admin/console/metrics — Task 7). The Service
