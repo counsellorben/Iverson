@@ -171,4 +171,22 @@ public class AdminConsoleDataVolumeEndpointTests
         names.Should().Contain(AdminConsoleTestWebApplicationFactory.VisibleTypeWithRows);
         names.Should().NotContain("ForeignArticle");
     }
+
+    [Fact]
+    public async Task OwnTenantSchema_IsEnumeratedByName()
+    {
+        var registry = await SeededRegistryAsync();
+        await registry.RegisterAsync(AdminConsoleSchemaRegistryRepository.Article() with
+        {
+            TypeName = "OwnedArticle", OwnerTenantId = "tenant_alpha"
+        });
+        var reader = new AggregateReader(
+            new NullReturningSearchService(), registry, new RowFieldAuthorizationEvaluator());
+
+        var result = await AdminConsoleEndpoints.GetDataVolumeAsync(ReaderContext(), registry, reader);
+
+        var names = result.Should().BeOfType<Ok<DataVolumeResponse>>().Subject.Value!.Types
+            .Select(t => t.TypeName).ToList();
+        names.Should().Contain("OwnedArticle");
+    }
 }
