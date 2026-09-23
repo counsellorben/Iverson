@@ -38,7 +38,7 @@
     "ts-proto": "^2.12.3",
     "vitest": "^5.0.0",
     "jsdom": "^30.0.1",
-    "@testing-library/react": "^16.3.2",
+    "@testing-library/react": "^16.3.3",
     "@testing-library/jest-dom": "^7.0.1"
   },
   "overrides": {
