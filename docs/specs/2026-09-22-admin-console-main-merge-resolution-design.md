@@ -38,9 +38,7 @@ branch refactored it away. Every place main's lines necessarily change is listed
 explicitly: in R1 (`GetSchema`'s dead body), and in R3 — the CSP origin added to main's
 `nginx.conf`, `docker-entrypoint.sh` and admin-ui Ingress snippet, and the `apiBaseUrl` value R3
 writes over main's in `values.yaml`, `values-local.yaml`, `values-aws.yaml`, `values-azure.yaml`
-and `values-gcp.yaml`; and in R6 — the README's two `8080` port references (the API at
-`http://localhost:8080`, and `VITE_API_BASE_URL=http://localhost:8080`), rewritten to `8081` to
-match the merged `.env.development:3`, which already reads `8081`.
+and `values-gcp.yaml`.
 
 ## Phase 1 — the merge commit
 
@@ -302,11 +300,12 @@ with the resolution policy.
 
 - Stale comments left pointing at removed structures (`values-aws.yaml`, `docker-entrypoint.sh`
   still reference `adminApiIngress` / admin-api after `-X theirs` removed them).
-- README port correction, and the seeded-user sentence added **after** main's bootstrap-password
+- The README's seeded-user sentence, added **after** main's bootstrap-password
   sentence (`main:Iverson.AdminUI/README.md:27-29`, which stays). It names main's generated
   `IVERSON_BYPASS_PASSWORD` from `.env` (via `scripts/generate-compose-secrets.sh`), not the
   branch's static password — restoring the branch text verbatim would name a password main
-  replaced and revert main's own sentence.
+  replaced and revert main's own sentence. The README's port lines need no change: the merge
+  already carries the branch's `8081` (`README.md:23,55`), because main never touched them.
 - The two branch-only runbooks, which still give the static credentials main replaced with
   generated ones: `docs/runbooks/admin-console-landing-page-usage.md` `:67` (bypass password),
   `:70` ("hardcoded deliberately") and `:79` (`dev-admin-password`), and
@@ -477,7 +476,7 @@ profile renders `adminApiIngress` where a console exists and does not where one 
 | Main pins `/v1/traces` to 8080; the admin-api Ingress targets 8081 | `main:Program.cs:697` `.WithMetadata(new RequireListenerPort(8080))`; `charts/api/templates/admin-api-ingress.yaml:51` `/v1/traces` to port `8081`, the `Protocols: Http1` listener (`main:appsettings.json:15-17`) |
 | R1's splices alone do not compile `Iverson.Api.Tests` | Measured on the resolved merge: `dotnet build Iverson.slnx` gives 4 errors in `HealthCheckCacheTests.cs`, then 1 in `OperationalListenerBindingPipelineTests.cs` (`HttpListenerOnly` not found); 0 errors once both, plus `HealthCheckCache.cs` and its `AddSingleton`, are removed |
 | The merged `package.json` declares `engines.node >=22.22.0` | `git merge 65cdf63a -X theirs` onto `e4028710`: `engines` = `{"node":">=22.22.0"}`; `main:Iverson.AdminUI/package.json` has no `engines` |
-| The merged console's dev API port is `8081` | merged `Iverson.AdminUI/.env.development:3` `VITE_API_BASE_URL=http://localhost:8081`; `docker-compose.yml` publishes `127.0.0.1:8081:8081`; main's README says `8080` |
+| The merged README and `.env.development` already say `8081` | merged `Iverson.AdminUI/README.md:23,55` and `.env.development:3` read `8081`; base `9eb99f76` and main `65cdf63a` both read `8080` on those README lines, so the branch's change merges cleanly and is not a main-line change; `docker-compose.yml` publishes `127.0.0.1:8081:8081` |
 | The AdminUI CI job starts main's entrypoint without main's env contract | `admin-ui.yml:156-159` passes only `OIDC_CLIENT_ID`, `OIDC_AUTHORITY`, `API_BASE_URL`; `main:Iverson.AdminUI/docker-entrypoint.sh:2` `set -eu` and `:16` reads `$EXTERNAL_SCHEME`; the job asserts `frame-src` at `:210`, which `main:nginx.conf` omits; `BASELINE=7` at `:100`, compared with `-gt` at `:109` |
 | Main's placeholder guard needs the CI overrides on cloud profiles | `main:templates/networkpolicies.yaml:1` includes `iverson.validateNoPlaceholders` (`_validate.tpl`, `https` profiles only); `values-{aws,azure,gcp}.ci-override.yaml` count 0 at `9eb99f76` and on the branch, 3 on main; `main:deploy-validate.yml:64-73` layers them |
 | Four branch hunks auto-merge into the compose blueprint | branch `compose-only/service-clients.yaml`: the pin; `offline_access` `!Find` under `iverson-oidc-default` (`:188`) and `iverson-loadtest-human` (`:296`); the `operators` grant (`:335`). Main's compose file has 0 `offline_access` and 0 `operators`; main's Helm `iverson-loadtest-human` maps only `groups` and `tenant_id` (`secret-service-clients.yaml:485-486`); main's LoadTest requests `offline_access` through it (`Iverson.Server/Iverson.LoadTest/Auth/AuthentikFlowExecutorClient.cs:281`) |
