@@ -11,7 +11,8 @@ import { WidgetCard } from "./WidgetCard";
  *
  * `withheldTypeCount` is rendered, never dropped. A zero-length `types` array with a non-zero
  * `withheldTypeCount` does not mean "no types are registered" — it means "you may see none of
- * the N that are", which is a completely different thing to tell an operator.
+ * the N in your scope", which is a completely different thing to tell an operator. Another
+ * tenant's types are outside that scope and are not counted.
  *
  * On mount and manual refresh only; the type registry does not move at poll timescales.
  */

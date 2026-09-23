@@ -50,9 +50,10 @@ export interface SchemaCatalogResponse {
   typeCount: number;
   types: SchemaTypeSummary[];
   /**
-   * Registered types this caller may not see, counted but never named. NON-ZERO WITH AN
-   * EMPTY `types` IS NOT "no types are registered" — it is "you may see none of the N that
-   * are". Render it; do not drop it.
+   * Types in this caller's scope (its own tenant's plus unscoped ones) that it may not see,
+   * counted but never named. Another tenant's types are absent, not counted. NON-ZERO WITH AN
+   * EMPTY `types` IS NOT "no types are registered" — it is "you may see none of the N in your
+   * scope". Render it; do not drop it.
    */
   withheldTypeCount: number;
 }
@@ -72,7 +73,10 @@ export interface TypeRowCountEntry {
 
 export interface DataVolumeResponse {
   types: TypeRowCountEntry[];
-  /** Types denied to this caller by row/field authorization. Counted, never named. */
+  /**
+   * In-scope types denied to this caller by row/field authorization. Counted, never named.
+   * Another tenant's types are absent, not denied.
+   */
   deniedTypeCount: number;
   /** Types that vanished from the registry mid-request. Effectively always 0. */
   unknownTypeCount: number;

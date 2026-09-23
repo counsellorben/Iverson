@@ -153,8 +153,47 @@ public class AdminConsoleDataVolumeEndpointTests
             => Task.FromResult<EngagementAggResult?>(null);
     }
 
+    /// <summary>
+    /// Another tenant's schema is ABSENT: no name, and no effect on any count. Folding it into
+    /// <c>deniedTypeCount</c> (or <c>unknownTypeCount</c>) would tell any authenticated caller how
+    /// many types other tenants own, and let it watch that number move. The expected response is
+    /// the same caller's against the same registry minus the foreign schemas, not a constant. Two
+    /// foreign schemas, one this caller's groups could read and one they could not.
+    /// </summary>
     [Fact]
-    public async Task ForeignTenantSchema_IsNotEnumeratedByName()
+    public async Task ForeignTenantSchema_IsAbsentFromTheDataVolume()
+    {
+        var baseline = await DataVolumeAsync();
+        var withForeign = await DataVolumeAsync(
+            AdminConsoleSchemaRegistryRepository.Article() with
+            {
+                TypeName = "ForeignArticle", OwnerTenantId = "tenant_beta"
+            },
+            AdminConsoleSchemaRegistryRepository.Ledger() with
+            {
+                TypeName = "ForeignLedger", OwnerTenantId = "tenant_beta"
+            });
+
+        var names = withForeign.Types.Select(t => t.TypeName).ToList();
+        names.Should().Contain(AdminConsoleTestWebApplicationFactory.VisibleTypeWithRows);
+        names.Should().NotContain("ForeignArticle");
+        names.Should().NotContain("ForeignLedger");
+
+        baseline.DeniedTypeCount.Should().BePositive(
+            "the fixture must deny something of its own, or equal counts prove nothing");
+        withForeign.DeniedTypeCount.Should().Be(baseline.DeniedTypeCount);
+        withForeign.UnknownTypeCount.Should().Be(baseline.UnknownTypeCount);
+        withForeign.Types.Should().HaveSameCount(baseline.Types);
+        withForeign.Should().BeEquivalentTo(baseline);
+    }
+
+    /// <summary>
+    /// The reader on its own, below the handler's pre-filter: a foreign schema answers exactly as
+    /// an unregistered name does. <c>Denied</c> would claim the type exists and is merely closed to
+    /// this caller, which is the distinction main's <c>677d85aa</c> removed as an existence oracle.
+    /// </summary>
+    [Fact]
+    public async Task ForeignTenantSchema_CountRows_IsUnknownTypeNotDenied()
     {
         var registry = await SeededRegistryAsync();
         await registry.RegisterAsync(AdminConsoleSchemaRegistryRepository.Article() with
@@ -164,12 +203,24 @@ public class AdminConsoleDataVolumeEndpointTests
         var reader = new AggregateReader(
             new NullReturningSearchService(), registry, new RowFieldAuthorizationEvaluator());
 
+        var foreign = await reader.CountRowsAsync("ForeignArticle", ReaderContext().User);
+        var unregistered = await reader.CountRowsAsync("NoSuchType", ReaderContext().User);
+
+        foreign.Should().Be(TypeRowCount.UnknownType);
+        foreign.Should().Be(unregistered);
+    }
+
+    private static async Task<DataVolumeResponse> DataVolumeAsync(params SchemaDescriptor[] extra)
+    {
+        var registry = await SeededRegistryAsync();
+        foreach (var schema in extra)
+            await registry.RegisterAsync(schema);
+        var reader = new AggregateReader(
+            new NullReturningSearchService(), registry, new RowFieldAuthorizationEvaluator());
+
         var result = await AdminConsoleEndpoints.GetDataVolumeAsync(ReaderContext(), registry, reader);
 
-        var names = result.Should().BeOfType<Ok<DataVolumeResponse>>().Subject.Value!.Types
-            .Select(t => t.TypeName).ToList();
-        names.Should().Contain(AdminConsoleTestWebApplicationFactory.VisibleTypeWithRows);
-        names.Should().NotContain("ForeignArticle");
+        return result.Should().BeOfType<Ok<DataVolumeResponse>>().Subject.Value!;
     }
 
     [Fact]

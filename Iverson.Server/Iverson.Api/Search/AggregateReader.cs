@@ -53,9 +53,10 @@ public sealed class AggregateReader(
         if (schema is null)
             return TypeRowCount.UnknownType;
 
-        if (schema.OwnerTenantId is not null
-            && schema.OwnerTenantId != actingUser?.FindFirst("tenant_id")?.Value)
-            return TypeRowCount.Denied;
+        // Another tenant's schema is ABSENT, not denied: Denied would tell this caller the type
+        // exists. See SchemaTenantScope.
+        if (schema.IsForeignTo(actingUser))
+            return TypeRowCount.UnknownType;
 
         var decision = authEvaluator.Evaluate(schema, actingUser, AuthorizationAction.Read);
         if (decision.Denied)
@@ -121,7 +122,10 @@ public enum TypeRowCountStatus
     Counted,
     /// <summary>The caller is denied read access to the type.</summary>
     Denied,
-    /// <summary>No schema is registered under that type name.</summary>
+    /// <summary>
+    /// No schema is registered under that type name, or the one registered belongs to another
+    /// tenant — which, to this caller, is the same fact.
+    /// </summary>
     UnknownType
 }
 

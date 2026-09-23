@@ -97,22 +97,27 @@ public static class AdminConsoleEndpoints
     /// <para>
     /// <b>An empty catalog is reported as withheld, not as zero</b> — the same rule
     /// <see cref="GetDataVolumeAsync"/> follows. Without
-    /// <see cref="SchemaCatalogResponse.WithheldTypeCount"/> an operator (denied every type today,
-    /// having no <c>tenant_id</c> claim) would receive a body byte-identical to a deployment with
-    /// no registered types at all, and the widget would render "0 object types" when the truth is
-    /// "you may see none of the N that exist". Disclosing the count of withheld types re-discloses
-    /// nothing: <c>/data-volume</c> already reports the same figure to the same authenticated
-    /// audience, and neither endpoint names them.
+    /// <see cref="SchemaCatalogResponse.WithheldTypeCount"/> a caller denied every type it can
+    /// enumerate (an operator, having no <c>tenant_id</c> claim, is denied every unscoped type)
+    /// would receive a body byte-identical to a deployment with none, and the widget would render
+    /// "0 object types" when the truth is "you may see none of the N in your scope". Disclosing
+    /// that count re-discloses nothing: <c>/data-volume</c> already reports the same figure to the
+    /// same authenticated audience, and neither endpoint names them.
+    /// </para>
+    /// <para>
+    /// <b>Another tenant's types are absent, not withheld</b>: every count here is taken over the
+    /// types this caller's tenant may enumerate at all (<see cref="SchemaTenantScope"/>), so no
+    /// foreign type moves any number in the response.
     /// </para>
     /// </summary>
     public static IResult GetSchema(HttpContext http, SchemaRegistry registry, SchemaCatalogReader reader)
     {
-        // Snapshot the registry size BEFORE reading the catalog. registry.All is a live
+        // Snapshot the in-scope registry size BEFORE reading the catalog. registry.All is a live
         // ConcurrentDictionary that SchemaRefreshWorker can grow or shrink between the two reads;
         // taking the count first means a type registered mid-request can only ever make the
         // subtraction below smaller (down to the clamp), never invent a withheld type that was
-        // never registered.
-        var registeredTypeCount = registry.All.Count;
+        // never registered. Foreign types are excluded here exactly as the reader excludes them.
+        var registeredTypeCount = registry.All.Values.Count(s => !s.IsForeignTo(http.User));
 
         // HttpContext.User, never null and never elided — see the class note.
         var catalog = reader.ReadCatalog(http.User);
@@ -154,12 +159,20 @@ public static class AdminConsoleEndpoints
     /// types") without re-disclosing the names that filtering removed.
     /// </para>
     /// <para>
-    /// <b>An operator sees <c>types: []</c> with a non-zero <c>deniedTypeCount</c>, structurally
-    /// and permanently — this is unrelated to whether any human is currently a member of the
+    /// <b>Another tenant's types are absent, not denied</b>: they are dropped from the snapshot
+    /// before any count is taken (<see cref="SchemaTenantScope"/>), so no foreign type moves
+    /// <c>deniedTypeCount</c> or <c>unknownTypeCount</c>. Counting them would tell any
+    /// authenticated caller how many types other tenants own.
+    /// </para>
+    /// <para>
+    /// <b>An operator sees <c>types: []</c>, structurally and permanently — this is unrelated to
+    /// whether any human is currently a member of the
     /// <c>operators</c> Authentik group (see <c>docs/runbooks/operator-access-onboarding.md</c>
     /// for that separate, unrelated onboarding step, which gates <c>/tenants</c> and
     /// <c>/qdrant</c> below, not this endpoint).</b> Operators are cross-tenant by design and so
-    /// never carry a <c>tenant_id</c> claim, and the evaluator denies any principal without one.
+    /// never carry a <c>tenant_id</c> claim, and the evaluator denies any principal without one:
+    /// every unscoped type (no <c>OwnerTenantId</c>) lands in <c>deniedTypeCount</c>, and every
+    /// tenant-owned type is absent under the rule above.
     /// This endpoint is not <c>Operator</c>-gated — any authenticated caller reaches it — so
     /// onboarding an operator does not change this outcome. That is pre-existing authorization
     /// semantics, not something this endpoint may paper over; the response says so explicitly
@@ -173,10 +186,14 @@ public static class AdminConsoleEndpoints
         var denied = 0;
         var unknown = 0;
 
-        // Snapshot the type names first: registry.All is a live ConcurrentDictionary that
+        // Snapshot the in-scope type names first: registry.All is a live ConcurrentDictionary that
         // SchemaRefreshWorker can mutate mid-enumeration, which is also the only way
-        // TypeRowCountStatus.UnknownType can be reached from here.
-        var typeNames = registry.All.Values.Select(s => s.TypeName).ToList();
+        // TypeRowCountStatus.UnknownType can be reached from here. Foreign types are filtered HERE,
+        // not left to CountRowsAsync: it reports them as UnknownType, which would still count them.
+        var typeNames = registry.All.Values
+            .Where(s => !s.IsForeignTo(http.User))
+            .Select(s => s.TypeName)
+            .ToList();
 
         try
         {
@@ -287,10 +304,11 @@ public sealed record SchemaTypeSummary(
 /// The catalog projection, plus the count of registered types this caller did not get.
 /// <para>
 /// <b><see cref="WithheldTypeCount"/> is "withheld", not "denied", and the name is the contract.</b>
-/// <c>SchemaCatalogReader</c> drops a type on two grounds — row-level denial, and an empty
+/// <c>SchemaCatalogReader</c> drops an in-scope type on two grounds — row-level denial, and an empty
 /// authorized field set after <c>FieldPermission</c> filtering (<c>SchemaCatalogReader.cs</c>, the
 /// <c>fields.Count == 0</c> guard) — and this figure merges them, because it is derived from the
-/// registry size rather than from the reader's own reasons. Both grounds genuinely mean "withheld
+/// size of the registry subset this caller's tenant may enumerate rather than from the reader's own
+/// reasons. Another tenant's types are outside that subset, so they are absent, not withheld. Both grounds genuinely mean "withheld
 /// from you", so the merge is honest; calling it <c>deniedTypeCount</c> would not be, since it
 /// would claim a precision the derivation does not have. Contrast
 /// <see cref="DataVolumeResponse.DeniedTypeCount"/>, which is incremented from an actual

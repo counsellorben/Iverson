@@ -38,9 +38,11 @@ It reads a **user attribute**. If the user has none, the claim is null — and
 `RowFieldAuthorizationEvaluator` denies a principal carrying no `tenant_id`, on every
 type.
 
-**Without it:** the schema catalog comes back empty and every data-volume row comes back
-denied — *even for a full operator*. The page looks broken while behaving exactly as
-specified. Group membership does not rescue this; the two requirements are orthogonal.
+**Without it:** the schema catalog and the data-volume list both come back empty — *even
+for a full operator*. Types registered with no owning tenant are counted as withheld or
+denied; every tenant-owned type is absent altogether, so there may be no "not shown" line
+either. The page looks broken while behaving exactly as specified. Group membership does
+not rescue this; the two requirements are orthogonal.
 
 > A `tenant_id` that does not match a provisioned tenant is not an error either. The
 > store has no database to address, so counts render as a legitimate `0`.
@@ -50,7 +52,7 @@ specified. Group membership does not rescue this; the two requirements are ortho
 | | Unlocks | Failure mode if missing |
 |---|---|---|
 | `operators` group | tenant roster, metrics band, Qdrant | three "not authorized" cards |
-| `tenant_id` attribute | schema catalog, data volume | empty catalog, all rows denied |
+| `tenant_id` attribute | schema catalog, data volume | empty catalog and data volume |
 
 ---
 
@@ -199,7 +201,7 @@ repo, so an absence points at a modified blueprint.
 | Symptom | Cause |
 |---|---|
 | Three cards say "not authorized" | Requirement A — the user is not in `operators`. |
-| Schema catalog empty **and** every data-volume row denied | Requirement B — no `tenant_id` attribute. This happens to full operators too. |
+| Schema catalog **and** data volume both empty although types are registered | Requirement B — no `tenant_id` attribute. This happens to full operators too. |
 | Every card sits on a spinner | The access token never arrived. Cards distinguish "waiting for session" from "loading", so a permanent spinner usually means the OIDC flow did not complete. |
 | Metrics band says Prometheus is not deployed | `global.prometheusEnabled` is false for that profile — `values-laptop.yaml` disables it deliberately. Reported distinctly from "deployed but unreachable". |
 | Backlog and DLQ read "No data" | Those five series are **worker-only**. If the worker is not scraped they are absent, not zero — and absent is what is shown. |
