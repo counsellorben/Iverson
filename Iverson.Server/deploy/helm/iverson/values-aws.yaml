@@ -168,7 +168,8 @@ authentik:
       # console is an https:// page — and an https:// page may not make OIDC calls to
       # an http:// authority (the browser blocks them as mixed content and login never
       # completes). Authentik and the console must terminate the same scheme; keep
-      # these four annotations and adminUi.oidcAuthority below in lockstep.
+      # these four annotations and global.externalScheme above (the admin-ui chart
+      # composes its OIDC authority from it) in lockstep.
       alb.ingress.kubernetes.io/scheme: internet-facing
       alb.ingress.kubernetes.io/target-type: ip
       alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"

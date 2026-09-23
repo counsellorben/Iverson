@@ -184,7 +184,7 @@ jobs:
           # contract, but the directive names and origins that follow are.
           CSP=$(sed -n -E 's/^[Cc]ontent-[Ss]ecurity-[Pp]olicy:[[:space:]]*//p' headers.txt | tr -d '\r')
           if [ -z "$CSP" ]; then
-            echo "::error::no Content-Security-Policy header was served. nginx.conf includes admin-ui-security-headers.inc, which docker-entrypoint.sh renders at container start -- one of those two is broken."
+            echo "::error::no Content-Security-Policy header was served. nginx.conf carries it, and docker-entrypoint.sh substitutes its origin placeholders in place at container start -- one of those two is broken."
             exit 1
           fi
           printf '%s\n' "$CSP" | tr ';' '\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' > directives.txt

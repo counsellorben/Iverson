@@ -8,12 +8,17 @@
 # Neither can be baked into the image. The OIDC client id, the Authentik authority
 # and the admin-api base URL are all per-environment values that only exist as
 # environment variables once the container is scheduled, and the CSP has to NAME
-# two of them: the console is served from its own hostname while the API lives on a
+# two origins: the console is served from its own hostname while the API lives on a
 # dedicated `admin-api` one, so `connect-src 'self'` — which was sufficient while the
 # two shared an origin — now blocks every call the console makes, and omitting the
 # Authentik origin blocks the OIDC discovery fetch and the token exchange outright,
 # which means login cannot complete. A `connect-src` written into nginx.conf at build
 # time would therefore carry either an unresolved placeholder or a wrong origin.
+#
+# The two origins do NOT arrive the same way. ADMIN_API_ORIGIN is derived HERE, by
+# origin_of, from API_BASE_URL after validate has checked it. The Authentik origin is
+# OIDC_ORIGIN, passed in separately (the admin-ui chart sets it) and substituted as given:
+# this script neither derives it from OIDC_AUTHORITY nor validates it.
 #
 # Run by the base image's /docker-entrypoint.sh, which `set -e`s and aborts before
 # exec'ing nginx if this script exits non-zero. That is deliberate and load-bearing:
@@ -34,11 +39,12 @@ fail() {
 # operator's session and access token. The values are URLs and a client id, none of
 # which need a character outside this set, so the narrow allow-list costs nothing.
 #
-# Excluding `$` is load-bearing too, and for a SECOND consumer: these same values are
-# interpolated into an nginx config below, where `$foo` is a variable reference. A value
-# carrying a `$` would either resolve to some unrelated nginx variable inside the CSP or
-# fail the config parse and stop the container. Do not "simplify" `$` back into the
-# character class.
+# Excluding `$` is load-bearing too, and for a SECOND consumer: the origin derived from
+# API_BASE_URL is interpolated into an nginx config below, where `$foo` is a variable
+# reference. A value carrying a `$` would either resolve to some unrelated nginx variable
+# inside the CSP or fail the config parse and stop the container. Do not "simplify" `$`
+# back into the character class. (OIDC_ORIGIN reaches that config too, but is not
+# validated here — see the header.)
 #
 # Written with `tr` rather than `grep -Eq '^[A-Za-z0-9:/._-]+$'` because grep is
 # LINE-oriented: for a value whose first line is a clean URL and whose second line

@@ -12,9 +12,9 @@
   level, and a subchart can see only its own scope plus .Values.global.
 
   Why guard at all: this Ingress publishes /admin and /health on a public
-  hostname, and /health is ANONYMOUS and write-bearing (it drives Qdrant
-  EnsureCollectionAsync and a Kafka produce). Publishing that with no console deployed
-  and no CORS grant is attack surface for zero function.
+  hostname, and /health is ANONYMOUS (passive since CSR #7 — it no longer writes, but it
+  still fans out to all four stores). Publishing that with no console deployed and no
+  CORS grant is attack surface for zero function.
 */}}
 {{- if .Values.adminConsoleOrigin }}
 apiVersion: networking.k8s.io/v1
