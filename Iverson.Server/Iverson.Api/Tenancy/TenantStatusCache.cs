@@ -10,9 +10,9 @@ public sealed class TenantStatusCache(
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(30);
 
     // Prefixed so a raw tenantId can never collide with another consumer's key in the same
-    // shared IMemoryCache (see HealthCheckCache.CacheKey's comment for the collision this closes
-    // off: IMemoryCache.TryGetValue<TItem> returns true with a default value for a cached null,
-    // so an un-namespaced key here could shadow -- or be shadowed by -- an unrelated cache entry).
+    // shared IMemoryCache: /health caches its composite result under "health-composite"
+    // (Program.cs), and IMemoryCache.TryGetValue<TItem> returns true with a default value for a
+    // cached null, so an un-namespaced tenant key could shadow -- or be shadowed by -- that entry.
     private static string KeyFor(string tenantId) => $"tenant-status:{tenantId}";
 
     public async Task<string?> GetStatusAsync(string tenantId)
