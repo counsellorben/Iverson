@@ -17,6 +17,26 @@
   CORS grant is attack surface for zero function.
 */}}
 {{- if .Values.adminConsoleEnabled }}
+{{/*
+  main's guard (templates/_validate.tpl) lists its three Ingresses (api.ingress,
+  authentik.ingress, adminUi.ingress) inline and checks them there. This
+  branch-owned Ingress isn't in that list, so it carries the same two checks
+  itself instead of editing main's file — keep the two in step.
+*/}}
+{{- if eq (dig "externalScheme" "http" .Values.global) "https" }}
+{{- range $k, $v := .Values.adminApiIngress.annotations }}
+{{- if and (kindIs "string" $v) (regexMatch "^<.*>$" $v) }}
+{{- fail (printf "api.adminApiIngress.annotations[%s] is still the placeholder %q — replace it with a real value before deploying a cloud/https profile (CSR round-2 finding #3)." $k $v) }}
+{{- end }}
+{{- end }}
+{{- if lookup "v1" "ServiceAccount" $.Release.Namespace "default" }}
+{{- if .Values.adminApiIngress.tlsSecretName }}
+{{- if not (lookup "v1" "Secret" $.Release.Namespace .Values.adminApiIngress.tlsSecretName) }}
+{{- fail (printf "api.adminApiIngress.tlsSecretName %q does not resolve to an existing Secret in namespace %q — create it (e.g. via cert-manager or your cloud's certificate-import flow) before this install/upgrade completes, or the Ingress has no working TLS (CSR round-3 finding #11)." .Values.adminApiIngress.tlsSecretName $.Release.Namespace) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
