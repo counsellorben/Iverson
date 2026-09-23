@@ -22,15 +22,17 @@
     "reflect-metadata": "^0.2.2"
   },
   "devDependencies": {
-    "@grpc/proto-loader": "^0.7.15",
-    "ts-proto": "^2.7.0",
-    "typescript": "^5.8.0",
-    "vitest": "^3.2.0"
+    "@grpc/proto-loader": "^0.8.1",
+    "ts-proto": "^2.12.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.0"
   },
   "vitest": {
     "environment": "node"
   },
   "overrides": {
-    "protobufjs": "^7.6.5"
+    "protobufjs": "^7.6.5",
+    "nanoid": "^3.3.18"
   }
 }

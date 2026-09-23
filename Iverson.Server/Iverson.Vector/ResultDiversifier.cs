@@ -1,5 +1,4 @@
 using System.Numerics.Tensors;
-using Microsoft.Extensions.Options;
 
 namespace Iverson.Vector;
 
@@ -8,11 +7,9 @@ namespace Iverson.Vector;
 /// Pure and I/O-free. Selection replaces a plain Take(topK): the first candidate is always the
 /// highest-fused one, and each subsequent pick maximises lambda*fused - (1-lambda)*maxSim.
 /// </summary>
-public sealed class ResultDiversifier(IOptions<VectorRankingOptions> options) : IResultDiversifier
+public sealed class ResultDiversifier : IResultDiversifier
 {
-    private readonly VectorRankingOptions _o = options.Value;
-
-    public IReadOnlyList<RerankedResult> Diversify(IReadOnlyList<DiversifyCandidate> ranked, int topK)
+    public IReadOnlyList<RerankedResult> Diversify(IReadOnlyList<DiversifyCandidate> ranked, int topK, double lambda)
     {
         if (ranked.Count == 0 || topK <= 0) return [];
 
@@ -74,8 +71,8 @@ public sealed class ResultDiversifier(IOptions<VectorRankingOptions> options) : 
         // An absent similarity term contributes NO penalty — never a substituted 0.0.
         double Mmr(int i) =>
             hasSim[i]
-                ? _o.Lambda * ranked[i].Score - (1 - _o.Lambda) * maxSim[i]
-                : _o.Lambda * ranked[i].Score;
+                ? lambda * ranked[i].Score - (1 - lambda) * maxSim[i]
+                : lambda * ranked[i].Score;
 
         void Select(int index)
         {

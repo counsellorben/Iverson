@@ -13,9 +13,9 @@
   "distance": "Cosine",
   "collectionNaming": {
     "base": "benchmark_documents",
-    "template": "{base}{suffix}_{tenant}",
-    "objectSuffix": "",
-    "chunksSuffix": "_chunks"
+    "knownTenantId": "tenant_bypass",
+    "objectCollectionForKnownTenant": "benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk",
+    "chunksCollectionForKnownTenant": "benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk"
   },
   "embedding": {
     "documentPrefixes": {
@@ -24,7 +24,14 @@
       "BAAI/bge-base-en-v1.5": "",
       "BAAI/bge-small-en-v1.5": ""
     },
-    "defaultDocumentPrefix": ""
+    "defaultDocumentPrefix": "",
+    "queryPrefixes": {
+      "nomic-embed-text": "search_query: ",
+      "snowflake-arctic-embed": "Represent this sentence for searching relevant passages: ",
+      "BAAI/bge-base-en-v1.5": "Represent this sentence for searching relevant passages: ",
+      "BAAI/bge-small-en-v1.5": "Represent this sentence for searching relevant passages: "
+    },
+    "defaultQueryPrefix": ""
   },
   "golden": {
     "chunking": [
@@ -175,6 +182,28 @@
       "BAAI/bge-small-en-v1.5": {
         "text": "the quick brown fox",
         "composed": "the quick brown fox"
+      },
+      "__default__": {
+        "text": "the quick brown fox",
+        "composed": "the quick brown fox"
+      }
+    },
+    "queryComposition": {
+      "nomic-embed-text": {
+        "text": "the quick brown fox",
+        "composed": "search_query: the quick brown fox"
+      },
+      "snowflake-arctic-embed": {
+        "text": "the quick brown fox",
+        "composed": "Represent this sentence for searching relevant passages: the quick brown fox"
+      },
+      "BAAI/bge-base-en-v1.5": {
+        "text": "the quick brown fox",
+        "composed": "Represent this sentence for searching relevant passages: the quick brown fox"
+      },
+      "BAAI/bge-small-en-v1.5": {
+        "text": "the quick brown fox",
+        "composed": "Represent this sentence for searching relevant passages: the quick brown fox"
       },
       "__default__": {
         "text": "the quick brown fox",

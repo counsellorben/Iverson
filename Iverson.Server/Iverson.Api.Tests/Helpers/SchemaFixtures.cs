@@ -13,8 +13,11 @@ namespace Iverson.Api.Tests.Helpers;
 /// <c>SchemaRegistry.LoadAsync</c>, so exercising it is valuable — but it is WHY two findings hid:
 /// Ruling 70 (Iverson.StarRocks keyed its tenant-column exclusion on the per-schema VALUE while
 /// Iverson.Api keyed every one of its own on the RESERVED LITERAL, and no fixture that met both
-/// sides existed), and Task 7's <c>tenantScoped:</c> mutants M4/M5, which survive because the
-/// expression they mutate is already true for every fixture here.
+/// sides existed), and Task 7's <c>tenantScoped:</c> mutants M4/M5 (that boolean parameter has
+/// since been replaced by <c>EntityAccess</c> — see CSR round-3 finding #5 — but the same
+/// fixture-shape gap applies to whichever expression now distinguishes tenant-scoped from
+/// cross-tenant access), which survive because that expression is already true for every fixture
+/// here.
 /// </para>
 /// <para>
 /// DELIBERATELY NOT MASS-REWRITTEN. Flipping 45 sites to the reserved name would silently retire
@@ -120,6 +123,88 @@ public static class SchemaFixtures
         VectorFields   = [],
         ChunkFields    = [],
         Relations      = [new RelationDescriptor("Tags", RelationKind.ManyToMany, "Tag", "TagIds")],
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
+    };
+
+    // Employee: ManyToOne(Manager) -> Employee itself. Self-referencing type used to build a
+    // genuine cyclic relation graph (A -> B -> A) for EntityRelationResolverTests' CSR finding #6
+    // cycle-guard coverage — the finding notes this shape is legal in the schema model.
+    public static SchemaDescriptor EmployeeSchema() => new()
+    {
+        TypeName       = "Employee",
+        TableName      = "employees",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Name", "text", false), new ColumnDescriptor("ManagerId", "uuid", true)],
+        FkColumns      = [new ForeignKeyDescriptor("ManagerId", "Employee")],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      = [new RelationDescriptor("Manager", RelationKind.ManyToOne, "Employee", "ManagerId")],
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
+    };
+
+    // Team / User(->Team) / Document(->User x2): a DIAMOND relation shape — Document.CreatedBy and
+    // Document.UpdatedBy are two DIFFERENT relations that can both point at the SAME User row.
+    // Not a cycle (User -> Team is a dead end), but a real regression risk for a traversal-global
+    // "seen anywhere in this request" cycle guard, which would silently fail to expand
+    // User.Team on the second occurrence even though it's well within MaxRelationDepth. Used by
+    // EntityRelationResolverTests' diamond-reference coverage (CSR finding #6 fix-round 1).
+    public static SchemaDescriptor DiamondTeamSchema() => new()
+    {
+        TypeName       = "DiamondTeam",
+        TableName      = "diamond_teams",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Name", "text", false)],
+        FkColumns      = [],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      = [],
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
+    };
+
+    public static SchemaDescriptor DiamondUserSchema() => new()
+    {
+        TypeName       = "DiamondUser",
+        TableName      = "diamond_users",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Name", "text", false), new ColumnDescriptor("TeamId", "uuid", true)],
+        FkColumns      = [new ForeignKeyDescriptor("TeamId", "DiamondTeam")],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      = [new RelationDescriptor("Team", RelationKind.ManyToOne, "DiamondTeam", "TeamId")],
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
+    };
+
+    public static SchemaDescriptor DiamondDocumentSchema() => new()
+    {
+        TypeName       = "DiamondDocument",
+        TableName      = "diamond_documents",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  =
+        [
+            new ColumnDescriptor("Title", "text", false),
+            new ColumnDescriptor("CreatedById", "uuid", false),
+            new ColumnDescriptor("UpdatedById", "uuid", false)
+        ],
+        FkColumns      =
+        [
+            new ForeignKeyDescriptor("CreatedById", "DiamondUser"),
+            new ForeignKeyDescriptor("UpdatedById", "DiamondUser")
+        ],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      =
+        [
+            new RelationDescriptor("CreatedBy", RelationKind.ManyToOne, "DiamondUser", "CreatedById"),
+            new RelationDescriptor("UpdatedBy", RelationKind.ManyToOne, "DiamondUser", "UpdatedById")
+        ],
         Authorization  = BypassAuthorization(),
         TenantColumn   = "TenantId"
     };

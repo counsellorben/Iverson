@@ -1,6 +1,6 @@
 # Iverson.Vector is a class library — it is packaged into Iverson.Api at build time.
 # This Dockerfile builds just the library for standalone artifact inspection or packaging.
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:2fa828c68761b1b8c23d7662dc134421b9d3b59fe1425fdbc80804e390cdb24d AS build
 WORKDIR /src
 
 COPY ["Iverson.Vector/Iverson.Vector.csproj", "Iverson.Vector/"]

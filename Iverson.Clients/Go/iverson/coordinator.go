@@ -2,6 +2,7 @@ package iverson
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	pb "github.com/iverson/clients/go/generated"
@@ -76,9 +78,14 @@ type IversonClient struct {
 
 // NewIversonClient creates an IversonClient pointing at a single gRPC endpoint.
 // The same connection is reused for all services.
+//
+// When no dial options are supplied, the connection defaults to TLS. Callers that need a
+// plaintext (h2c) connection — local development or a test double — must say so explicitly,
+// e.g. grpc.WithTransportCredentials(insecure.NewCredentials()) (or the deprecated
+// grpc.WithInsecure()).
 func NewIversonClient(target string, opts ...grpc.DialOption) (*IversonClient, error) {
 	if len(opts) == 0 {
-		opts = []grpc.DialOption{grpc.WithInsecure()} //nolint:staticcheck
+		opts = []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{}))}
 	}
 	conn, err := grpc.Dial(target, opts...) //nolint:staticcheck
 	if err != nil {

@@ -6,7 +6,11 @@ using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Events;
 using Iverson.Sql;
+using Iverson.StarRocks;
 using Microsoft.AspNetCore.Authorization;
+using Npgsql;
+using ContractsRelationKind = Iverson.Client.Contracts.RelationKind;
+using SchemaRelationKind    = Iverson.Api.Schema.RelationKind;
 
 namespace Iverson.Api.Grpc;
 
@@ -21,6 +25,7 @@ public sealed class ObjectMappingGrpcService(
     IOutboxPublisher _outboxPublisher,
     SchemaRegistry _registry,
     IRelationValidator _relationValidator,
+    IPayloadSizeValidator _payloadSizeValidator,
     IEntityKeyAccessor _keyAccessor,
     IOutboxWriter _outboxWriter,
     ILogger<ObjectMappingGrpcService> _logger,
@@ -28,7 +33,8 @@ public sealed class ObjectMappingGrpcService(
     IRowFieldAuthorizationEvaluator _authEvaluator,
     IEntityRelationResolver _relationResolver,
     ISchemaRegistrationOrchestrator _schemaRegistration,
-    AuditLog _auditLog)
+    AuditLog _auditLog,
+    EngagementQueryLimitOptions _queryLimits)
     : ObjectMappingService.ObjectMappingServiceBase
 {
     // ── Schema registration ────────────────────────────────────────────────────
@@ -44,7 +50,8 @@ public sealed class ObjectMappingGrpcService(
         if (request.RootType is null)
             throw new RpcException(new Status(StatusCode.InvalidArgument, "root_type is required."));
 
-        var registered = await _schemaRegistration.RegisterAsync(request, context.CancellationToken);
+        var ownerTenantId = _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value;
+        var registered = await _schemaRegistration.RegisterAsync(request, ownerTenantId, context.CancellationToken);
 
         _auditLog.AdminOperation(context.GetHttpContext().User, "RegisterSchema", request.RootType.TypeName);
 
@@ -79,13 +86,16 @@ public sealed class ObjectMappingGrpcService(
         ServerCallContext context)
     {
         _logger.LogInformation("[Mapping.Get] type={Type} key={Key} depth={Depth}",
-            request.TypeName.SanitizeForLog(), request.Key, request.Depth);
+            request.TypeName.SanitizeForLog(), request.Key.SanitizeForLog(), request.Depth);
+
+        if (request.Depth > _queryLimits.MaxRelationDepth)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Mapping.Get: depth {request.Depth} exceeds the maximum of {_queryLimits.MaxRelationDepth}."));
 
         var schema = RequireSchema(request.TypeName);
 
         var rowJson = await FetchByKeyAsync(schema, request.Key,
-            tenantScoped: true,
-            tenantId: _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
+            EntityAccess.ForTenant(_actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
         if (rowJson is null)
             return new MappingResponse
             {
@@ -136,7 +146,8 @@ public sealed class ObjectMappingGrpcService(
 
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
-            AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, _auditLog);
+            AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, _auditLog,
+            _payloadSizeValidator);
 
         _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
@@ -190,7 +201,11 @@ public sealed class ObjectMappingGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Update requires a non-empty '{schema.KeyColumn.Name}' in the payload."));
 
-        var existingRowJson = await FetchByKeyAsync(schema, key);
+        // Narrowed to the acting tenant (CSR round 9 Finding #5) — see the identical read in
+        // ObjectPersistenceGrpcService.Update for why a cross-tenant read here was an
+        // information-disclosure oracle, and how the RLS collision below replaces it.
+        var existingRowJson = await FetchByKeyAsync(schema, key,
+            EntityAccess.ForTenant(_actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             _authEvaluator,
             _actingUserAccessor.ActingUser,
@@ -199,16 +214,30 @@ public sealed class ObjectMappingGrpcService(
             AuthorizationAction.Write,
             "Not authorized to update this entity.",
             existingRowJson,
-            _auditLog);
+            _auditLog,
+            _payloadSizeValidator);
 
         _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
-        var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
-            SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
-            tenantId: decision.TenantValue);
+        Guid outboxRowId;
+        try
+        {
+            outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
+                SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
+                tenantId: decision.TenantValue);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText.Contains("row-level security policy"))
+        {
+            _logger.LogWarning(
+                "[Mapping.Update] RLS collision swallowed as success: type={Type} key={Key} traceId={TraceId} message={Message}",
+                schema.TypeName.SanitizeForLog(), key.SanitizeForLog(), request.TraceId.SanitizeForLog(), ex.MessageText.SanitizeForLog());
+            _auditLog.Denied(_actingUserAccessor.ActingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
+            AuthorizationFieldMasking.RemoveTenantColumn(request.Payload);
+            return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
+        }
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
@@ -249,13 +278,12 @@ public sealed class ObjectMappingGrpcService(
     public override async Task<MappingDeleteResponse> Delete(
         MappingDeleteRequest request, ServerCallContext context)
     {
-        _logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key);
+        _logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key.SanitizeForLog());
 
         var schema = RequireSchema(request.TypeName);
 
         var rowJson = await FetchByKeyAsync(schema, request.Key,
-            tenantScoped: true,
-            tenantId: _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
+            EntityAccess.ForTenant(_actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
         if (rowJson is null)
             return new MappingDeleteResponse
             {
@@ -299,8 +327,11 @@ public sealed class ObjectMappingGrpcService(
                 tx,
                 SchemaBuilder.ToTableSchema(schema),
                 request.Key,
-                tenantScoped: decision.TenantColumn is not null,
-                tenantId: decision.TenantValue);
+                // A type with no tenant column carries no RLS policy and no iverson_runtime grant,
+                // so a tenant-scoped delete of it would be 42501 rather than a filtered delete.
+                decision.TenantColumn is not null
+                    ? EntityAccess.ForTenant(decision.TenantValue)
+                    : EntityAccess.CrossTenantMaintenance);
 
             await _outboxWriter.EnqueueDeleteOutboxRowAsync(
                 tx,
@@ -337,10 +368,9 @@ public sealed class ObjectMappingGrpcService(
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
 
     private Task<string?> FetchByKeyAsync(
-        SchemaDescriptor schema, string key, bool tenantScoped = false, string? tenantId = null) =>
+        SchemaDescriptor schema, string key, EntityAccess access) =>
         _entities.FetchByKeyAsync(
             SchemaBuilder.ToTableSchema(schema),
             key,
-            tenantScoped,
-            tenantId);
+            access);
 }

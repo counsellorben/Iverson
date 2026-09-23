@@ -79,63 +79,30 @@ validate OIDC_AUTHORITY "${OIDC_AUTHORITY-}"
 validate API_BASE_URL "${API_BASE_URL-}"
 
 envsubst '${OIDC_CLIENT_ID} ${OIDC_AUTHORITY} ${API_BASE_URL}' \
-  < "$CONFIG_TEMPLATE" \
-  > "$CONFIG_OUTPUT"
+  < /usr/share/nginx/html/config.js.template \
+  > /usr/share/nginx/html/config.js
 
-ADMIN_API_ORIGIN=$(origin_of API_BASE_URL "$API_BASE_URL")
-OIDC_ORIGIN=$(origin_of OIDC_AUTHORITY "$OIDC_AUTHORITY")
-export ADMIN_API_ORIGIN OIDC_ORIGIN
+# nginx.conf (unlike config.js.template) is not a template file rendered to
+# a separate destination — it IS the served config, so it must be rewritten
+# in place through a temp file: `envsubst < f > f` truncates f the instant
+# the shell opens it for writing, before envsubst reads a byte, which would
+# leave a zero-length default.conf and a pod that never binds :8080.
+#
+# HSTS is emitted only when the deployment terminates (or is fronted by
+# something that terminates) TLS as https; advertising it over a plain-http
+# origin would tell every browser to force https on this host regardless.
+if [ "$EXTERNAL_SCHEME" = "https" ]; then
+  export HSTS_LINE='add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;'
+else
+  export HSTS_LINE=''
+fi
 
-# Included by name from nginx.conf's server block. The `.inc` extension is not an
-# accident: the base image's /etc/nginx/nginx.conf globs `/etc/nginx/conf.d/*.conf`
-# into the http block, so a `.conf` name here would ALSO be included at http level —
-# and an http-level add_header applies to every server block in that context, not just
-# ours. (It would not double the header on our own responses: add_header is inherited
-# from an outer level only when the current level defines none, and this server block
-# defines its own. The problem is the blast radius, not duplication.) Today this image
-# serves one server block, so the practical effect is nil; the naming keeps it that way
-# if a second one is ever added.
-#
-# `always` on every header: without it nginx omits add_header on error responses, so
-# the 404 that a client-side route resolves through — and any 4xx/5xx — would come
-# back with no CSP at all.
-#
-# No Strict-Transport-Security. This listener is plaintext HTTP behind a
-# TLS-terminating ingress; HSTS belongs on the hop the browser actually speaks TLS to.
-envsubst '${ADMIN_API_ORIGIN} ${OIDC_ORIGIN}' > "$HEADERS_OUTPUT" <<'TEMPLATE'
-# Rendered at container start by /docker-entrypoint.d/40-admin-ui-config.sh.
-# Do not edit: this file is overwritten on every start.
-#
-# default-src 'self' covers script-src, img-src and font-src — the bundle, the
-# self-hosted Fraunces woff2 files and every image are served from this origin, and
-# nothing in the build emits a data: URI, a blob:, a Worker or a `new Function`.
-# Only the directives that default-src cannot express are spelled out:
-#
-#   style-src   MUI/Emotion inject their styles as inline <style> elements at
-#               runtime, so 'unsafe-inline' is required here or the console renders
-#               completely unstyled.
-#   connect-src the two cross-origin hosts the console talks to: admin-api (every
-#               widget's fetch, plus the OTLP trace export) and Authentik (discovery,
-#               token exchange, refresh and revocation).
-#   frame-src   inert on today's happy path and deliberately present anyway. The
-#               console requests `offline_access` and the provider grants a refresh
-#               token, so automaticSilentRenew uses the refresh-token FETCH path that
-#               connect-src already covers. But auth/AuthProvider.tsx's own comment
-#               documents the fallback: with no refresh token, oidc-client-ts drops to
-#               IFRAME silent renew. default-src 'self' would block that frame outright
-#               and silently, stacking a second invisible failure on top of the missing
-#               callback handler that comment already warns about. Naming the IdP origin
-#               here leaves that path with one documented failure instead of two silent
-#               ones. (frame-src is not spelled 'none' like frame-ancestors: they are
-#               opposite directions — who we may frame, versus who may frame us.)
-#   base-uri    does NOT fall back to default-src; without it an injected <base>
-#               could re-point every relative asset URL.
-#   frame-ancestors  does NOT fall back to default-src; 'none' is the clickjacking
-#               control for a console that is never legitimately framed.
-add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${ADMIN_API_ORIGIN} ${OIDC_ORIGIN}; frame-src ${OIDC_ORIGIN}" always;
-add_header X-Content-Type-Options "nosniff" always;
-# no-referrer rather than the usual strict-origin-when-cross-origin: the OIDC redirect
-# lands the browser on /callback?code=..., and a Referer sent from that document would
-# carry the authorization code off-origin.
-add_header Referrer-Policy "no-referrer" always;
-TEMPLATE
+# SHELL-FORMAT restricts substitution to exactly these three names. A bare
+# envsubst would substitute every $NAME it finds, including the $uri
+# references in nginx.conf's `try_files $uri $uri/ /index.html;` line,
+# replacing each with an empty string and turning it into
+# `try_files  / /index.html;` — a 404 for every client-side route (starting
+# with /callback, breaking OIDC login) instead of the SPA fallback.
+envsubst '${OIDC_ORIGIN} ${EXTERNAL_SCHEME} ${HSTS_LINE}' \
+  < /etc/nginx/conf.d/default.conf > /etc/nginx/conf.d/default.conf.tmp \
+  && mv /etc/nginx/conf.d/default.conf.tmp /etc/nginx/conf.d/default.conf

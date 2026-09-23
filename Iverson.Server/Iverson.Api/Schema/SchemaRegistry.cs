@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using Iverson.Api.Grpc;
 using Iverson.Sql;
 
 namespace Iverson.Api.Schema;
@@ -183,6 +184,35 @@ public sealed class SchemaRegistry(
                             "and must be re-registered with a distinct navigation property name.",
                             typeName, relation.PropertyName, relation.ForeignKey);
                     }
+                }
+
+                if (!SchemaRegistrationOrchestrator.IsValidIdentifier(descriptor.TypeName) ||
+                    // The server-owned tenant column is exempt: SchemaBuilder appends the reserved
+                    // "__TenantId" to every descriptor's ScalarColumns, and its underscores fail the
+                    // client identifier pattern. Checked against the fixed reserved name (not the row's
+                    // own tenantColumn value), so a tampered row cannot exempt an arbitrary column.
+                    descriptor.ScalarColumns.Any(c =>
+                        !SchemaDescriptor.IsTenantColumn(c.Name) &&
+                        !SchemaRegistrationOrchestrator.IsValidIdentifier(c.Name)) ||
+                    descriptor.FkColumns.Any(c => !SchemaRegistrationOrchestrator.IsValidIdentifier(c.ColumnName)) ||
+                    // The TenantColumn VALUE is interpolated raw into SQL identifiers (the RLS policy
+                    // DDL every startup re-applies, EntityRepository's tenant select, every StarRocks
+                    // tenant predicate), and nothing above validates it unless it happens to be one of
+                    // the ScalarColumns. Reserved name or a valid identifier — NOT pinned to the reserved
+                    // name: legacy rows carrying a client-declared tenant column (e.g. "TenantId") are
+                    // still admitted and scoped by their own column.
+                    !(SchemaDescriptor.IsTenantColumn(descriptor.TenantColumn) ||
+                      SchemaRegistrationOrchestrator.IsValidIdentifier(descriptor.TenantColumn)) ||
+                    // OrdinalIgnoreCase, not Ordinal: production (SchemaBuilder) always emits
+                    // "UUID", but the check's security intent is catching a genuinely wrong SQL
+                    // type (e.g. "TEXT" masquerading as a key column), not policing letter case —
+                    // and test fixtures throughout this suite construct descriptors with "uuid".
+                    !string.Equals(descriptor.KeyColumn.SqlType, "UUID", StringComparison.OrdinalIgnoreCase))
+                {
+                    logger.LogError(
+                        "Schema '{TypeName}' failed identifier/key-type validation on rehydration and was NOT loaded.",
+                        typeName);
+                    continue;
                 }
 
                 _schemas[typeName] = descriptor;

@@ -9,7 +9,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// service identity in <c>authorization</c> and the acting-user identity in
 /// <c>x-acting-user-authorization</c> — that the server resolves a row's tenant and owner from the
 /// acting user rather than from the payload, and that an acting user belonging to a different
-/// tenant is denied a write to that row.
+/// tenant is answered without a gRPC error status when attempting a write to that row — the same
+/// as an accepted one, per CSR round 9's Finding #5 mitigation.
 ///
 /// The shape follows S6 query's and S7 vector-search's, for the same reasons: the subject is one
 /// shared type (<c>IdentityDoc</c>) that every language writes into and every language then reads
@@ -60,10 +61,10 @@ namespace Iverson.ClientConformance.Scenarios;
 /// different active tenant (<c>TokenBroker.GetOtherTenantActingTokenAsync</c>), and passes it to
 /// every driver as <c>--wrong-acting-token</c>. Each driver attempts a mapped UPDATE of the row it
 /// just created, carrying that token in place of its own, and reports the gRPC status code it
-/// received. Drivers report; they never judge. The code is reported and compared NUMERICALLY
-/// (<see cref="DeniedStatusCode"/>), because the five languages spell the same code five ways
-/// (<c>PermissionDenied</c>, <c>PERMISSION_DENIED</c>, <c>7</c>) and a name comparison would report
-/// a spelling difference as a conformance failure.</para>
+/// received. Drivers report; they never judge. The code is reported and compared NUMERICALLY,
+/// because the five languages spell the same code five ways (<c>PermissionDenied</c>,
+/// <c>PERMISSION_DENIED</c>, <c>7</c>) and a name comparison would report a spelling difference as
+/// a conformance failure.</para>
 ///
 /// <para><b>The update payload's tenant no longer affects this leg, and that is a CHANGE.</b> It
 /// used to: the server once rejected an existing row's payload tenant that differed from the
@@ -85,53 +86,61 @@ namespace Iverson.ClientConformance.Scenarios;
 /// for it. On an upgraded deployment carrying such a row for a type not yet re-registered, a
 /// payload carrying <c>TenantId</c> passes the <c>InvalidArgument</c> guard — which matches only the
 /// server-owned name — reaches the immutability check with a non-null attempted tenant, and is
-/// denied with <c>TenantImmutable</c> TODAY. What is true here is narrower: THIS
-/// harness registers its types fresh against the build under test, so this leg alone is insensitive
-/// to the payload tenant. The only refusal left on it is the tenant MISMATCH between the existing
-/// row's tenant and the wrong acting user's own claim — precisely the identity-derived denial this
-/// requirement wants. The drivers still send the acting user's own tenant in their user column, so
-/// this leg keeps sending a payload a conforming client would send.</para>
+/// denied with <c>TenantImmutable</c> TODAY. What that branch is no longer is the thing THIS
+/// harness's negative leg exercises, and for a broader reason than the harness registering its
+/// types fresh: CSR round 9's Finding #5 mitigation narrows the existing-row read to the acting
+/// tenant unconditionally, for every schema, legacy or fresh. A wrong-tenant caller's update
+/// therefore finds no visible row and takes the no-existing-row branch whatever the target schema's
+/// registration history — so neither the tenant MISMATCH nor the immutability refusal fires on this
+/// leg any more, and the refusal it used to observe is gone (see below). The drivers still send the
+/// acting user's own tenant in their user column, so this leg keeps sending a payload a conforming
+/// client would send.</para>
 ///
-/// <para><b>What the status code cannot distinguish.</b> <c>PermissionDenied</c> (7) is the
-/// server's answer to several distinct refusals on this path, and it carries the SAME message for
-/// all of them — <c>"Not authorized to update this entity."</c>, the one <c>deniedMessage</c>
-/// <c>ObjectMappingGrpcService.Update</c> passes into
-/// <c>AuthorizationFieldMasking.EnforceWriteAuthorization</c> for every branch — and no trailers.
-/// Two consequences, both verified live and neither of them fixable from the client side:
-/// <list type="bullet">
-/// <item><description><b>A driver that attaches NO acting user at all still goes green.</b>
-/// <c>ActingUserInterceptor.ValidateActingUserAsync</c> returns early on an empty header, the
-/// acting-user principal is null, <c>RowFieldAuthorizationEvaluator.Evaluate</c> returns
-/// <c>Denied</c>, and the same status 7 with the same message comes back. The server's audit log
-/// tells the two apart (<c>reason=TenantMismatch</c> versus <c>reason=AccessDenied</c>, with
-/// <c>actor=unknown tenant=unknown</c>), but nothing a client can read does — so no assertion here
-/// can. This is recorded as a Deferred area in the IDN coverage ledger rather than papered over: a
-/// driver self-report ("I attached the header") would be worthless in exactly the case it exists
-/// for, since a library that silently DROPPED the header would still have its driver report
-/// success.</description></item>
-/// <item><description><b>Which tenancy check ran is not isolated either.</b> With the payload
-/// tenant set to the caller's own claim, the wrong caller trips the existing row's tenant check;
-/// were it set to anything else it would additionally trip the immutability check. Both compare
-/// against the CALLER's own <c>tenant_id</c> claim, so the denial stays identity-derived whichever
-/// fires — which is why the assertion does not try to tell them apart.</description></item>
-/// </list></para>
+/// <para><b>What used to be indistinguishable no longer is, by accident.</b> A caller with no
+/// acting-user token at all is still denied before this row is ever read
+/// (<c>RowFieldAuthorizationEvaluator.Evaluate</c> returns <c>Denied</c> on a null acting user,
+/// <c>reason=AccessDenied</c>) — unchanged by this fix. A wrong-tenant caller's write, by contrast,
+/// now reaches the narrowed read, finds no visible row, and is silently swallowed as a success. The
+/// two cases used to grade identically (both <c>PermissionDenied</c>, indistinguishable to a
+/// client); they now grade oppositely, but not by any designed signal — see the standard's IDN
+/// Deferred ledger.</para>
 ///
-/// <para><b>Why an update, and not a create.</b> A create by the wrong acting user is NOT denied:
-/// with no existing row, <c>EnforceWriteAuthorization</c> force-sets tenant and owner from the
-/// caller's own claims and lets the write through, into the caller's own tenant. The denial exists
-/// only against an EXISTING row whose tenant differs from the caller's — which is what makes the
-/// backstop below load-bearing rather than decorative.</para>
+/// <para><b>Why every cross-tenant update now takes the create branch.</b> With the read narrowed
+/// to the caller's own tenant, a foreign-tenant row is never visible to
+/// <c>EnforceWriteAuthorization</c> — so every wrong-tenant update takes the same no-existing-row
+/// branch a genuine create does, and the actual collision is caught later, at the database layer,
+/// per CSR round 9's Finding #5 mitigation. This is what makes the backstop below load-bearing
+/// rather than decorative.</para>
 ///
 /// <para><b>Backstop assertion.</b> <see cref="Judge"/>'s "the write phase reported a row key for
 /// this language" assertion is this axis's backstop, in the sense
-/// <c>docs/standards/iverson-client-standard.md</c>'s REL authoring notes require. Without a
-/// seeded row the negative leg's update would take the create branch described above and SUCCEED,
-/// and a scenario whose denial never had anything to deny would render green. The backstop fires
-/// unconditionally, on every language, before and outside both the read-back and the denial
-/// assertions. It carries no requirement ID: no <c>IVC-IDN-*</c> statement owns "this language
-/// seeded a row" as such — that is a property of the harness's fixture, not of a client — and it is
-/// strictly weaker than <see cref="Requirements.IdnActingUserPropagatedToRow"/> and
-/// <see cref="Requirements.IdnTenancyDerivedAndEnforced"/> wherever either can fail.</para>
+/// <c>docs/standards/iverson-client-standard.md</c>'s REL authoring notes require. Since CSR
+/// round 9's Finding #5 mitigation, EVERY cross-tenant update takes the create branch described
+/// above and SUCCEEDS, so there is no denial left for a missing row to defeat — and with no seeded
+/// row, every driver still derives a well-formed key for a row that was never created, that update
+/// is accepted as an ordinary create, and the driver reports NO gRPC status code. So
+/// <see cref="Requirements.IdnCrossTenantUpdateAnsweredWithoutError"/>'s "answered without a gRPC
+/// error status" assertion PASSES in the no-seeded-row state exactly as it does for a genuine
+/// swallowed cross-tenant write: it cannot tell the two apart. That is signal this leg has LOST —
+/// before the mitigation the same assertion demanded status 7 and therefore reddened when there was
+/// nothing to deny.</para>
+///
+/// <para>What the backstop is worth, stated no higher than it is. It is NOT the only assertion that
+/// reddens in that state: with no seeded row,
+/// <see cref="Requirements.IdnActingUserPropagatedToRow"/>'s two assertions,
+/// <see cref="Requirements.IdnTenancyDerivedFromActingUser"/>'s two and
+/// <see cref="Requirements.IdnServerTenantColumnAbsentFromPointRead"/>'s one all fail as well, so
+/// the cell goes red with or without it. What it uniquely supplies is the DIAGNOSIS — it is the
+/// only assertion whose subject is the fixture precondition itself, so it attributes that red cell
+/// to the harness having seeded nothing rather than to five clients having broken at once. The
+/// backstop fires unconditionally, on every language, before and outside both the read-back and the
+/// enforcement assertions. It carries no requirement ID: no <c>IVC-IDN-*</c> statement owns "this
+/// language seeded a row" as such — that is a property of the harness's fixture, not of a client —
+/// and it stays strictly weaker than <see cref="Requirements.IdnActingUserPropagatedToRow"/>
+/// (wherever the backstop fails, the read-back fails too). It is NOT weaker than
+/// <see cref="Requirements.IdnCrossTenantUpdateAnsweredWithoutError"/>, and the relation does not
+/// merely fail to hold — it inverts: in the no-seeded-row state the backstop fails while that
+/// assertion passes.</para>
 /// </summary>
 public sealed class IdentityScenario(
     IDriverRunner runner,
@@ -176,12 +185,6 @@ public sealed class IdentityScenario(
     /// force-sets the acting user's own tenant instead.
     /// </summary>
     internal const string WrongTenantValue = "tenant_not_the_acting_user";
-
-    /// <summary>
-    /// The numeric gRPC status code the negative leg must produce: <c>PERMISSION_DENIED</c>.
-    /// Numeric because the five languages spell the same code five ways.
-    /// </summary>
-    internal const int DeniedStatusCode = 7;
 
     internal const string RegisterStepName = "register_identity_doc";
     internal const string WriteStepName = "write_identity_doc";
@@ -410,8 +413,8 @@ public sealed class IdentityScenario(
             seededKey is not null,
             seededKey is not null
                 ? $"row '{seededKey}' is what the read-back and the denied update both target"
-                : "with no seeded row, the wrong acting user's update would be treated as a create and " +
-                  "SUCCEED, rendering a denial assertion green that had nothing to deny"));
+                : "with no seeded row, every read-dependent assertion fails and the cross-tenant " +
+                  "enforcement assertion passes vacuously — this backstop is what still catches it"));
 
         // ── IVC-IDN-002: the acting user's own row reads back, carrying its owner ─────────────
         var readStep = document.Steps.FirstOrDefault(s => s.Name == ReadStepName);
@@ -443,7 +446,7 @@ public sealed class IdentityScenario(
             $"'{expectedOwnerId}'",
             Requirements.IdnActingUserPropagatedToRow));
 
-        // ── IVC-IDN-003, derivation: observed where only the orchestrator can see it ──────────
+        // ── IVC-IDN-006, derivation: observed where only the orchestrator can see it ──────────
         //
         // This REPLACED a driver-side read-back assertion that compared the driver's own reported
         // `tenant` against the acting tenant. That assertion is unfalsifiable now: the value it
@@ -453,31 +456,32 @@ public sealed class IdentityScenario(
         // graded an ECHO, not a derivation.
         assertions.AddRange(JudgeTenantDerivation(language, expectedTenant, observation));
 
-        // ── IVC-IDN-003, enforcement: another tenant's acting user is denied ──────────────────
+        // ── IVC-IDN-007, response shape: a cross-tenant update is answered without an error ────
         var deniedStep = document.Steps.FirstOrDefault(s => s.Name == DeniedStepName);
         var code = deniedStep is { Ok: true } ? ReadStatusCode(deniedStep.Entity) : null;
 
         // The status NAME and MESSAGE are reported alongside the code purely as diagnostics — no
-        // assertion grades them, because the server's message is byte-identical across the
-        // refusals this axis can provoke (see the class doc comment's "What the status code cannot
-        // distinguish"). Carrying them in the detail is what let that be established empirically
-        // rather than only read off the server source.
+        // assertion grades them; carrying them in the detail is what let the prior denial-shaped
+        // behavior be established empirically rather than only read off the server source.
         var reportedStatus = ReadString(deniedStep?.Entity, "status");
         var reportedDetail = ReadString(deniedStep?.Entity, "detail");
 
+        var malformedCode = deniedStep is { Ok: true } && IsStatusCodeMalformed(deniedStep.Entity);
+
         assertions.Add(Assertion.From(
-            $"{language}: an acting user of another tenant is denied a write to this row",
-            code == DeniedStatusCode,
+            $"{language}: an acting user of another tenant is answered without a gRPC error status",
+            deniedStep is { Ok: true } && code is null && !malformedCode,
             deniedStep is null
                 ? $"the driver reported no '{DeniedStepName}' step"
                 : !deniedStep.Ok
-                    ? $"the attempt itself broke, so no denial was observed: {deniedStep.Error ?? "no error text"}"
+                    ? $"the attempt itself broke, so no answer was observed: {deniedStep.Error ?? "no error text"}"
                     : code is null
-                        ? "the driver reported no gRPC status code, which is what it reports when the " +
-                          "wrong acting user's write was ACCEPTED"
-                        : $"the driver reported gRPC status {code}, expected {DeniedStatusCode} " +
-                          "(PERMISSION_DENIED)",
-            Requirements.IdnTenancyDerivedAndEnforced));
+                        ? malformedCode
+                            ? "the driver reported a 'statusCode' that could not be parsed as a number, " +
+                              "which is a malformed report rather than evidence of an accepted write"
+                            : "the driver reported no gRPC status code, as expected for an accepted write"
+                        : $"the driver reported gRPC status {code}, expected no gRPC error status",
+            Requirements.IdnCrossTenantUpdateAnsweredWithoutError));
 
         assertions[^1] = assertions[^1] with
         {
@@ -514,7 +518,7 @@ public sealed class IdentityScenario(
     }
 
     /// <summary>
-    /// <c>IVC-IDN-003</c>'s derivation half, plus the control that makes it mean anything. Pure
+    /// <c>IVC-IDN-006</c>'s derivation Statement, plus the control that makes it mean anything. Pure
     /// over <see cref="TenantObservation"/>, so both failure directions are exercisable from a unit
     /// test.
     ///
@@ -534,8 +538,8 @@ public sealed class IdentityScenario(
     /// <item><description>ABSENT from the wire — the orchestrator's own gRPC read of the SAME row
     /// does not carry the column at all. Cited, but to
     /// <see cref="Requirements.IdnServerTenantColumnAbsentFromPointRead"/> (<c>IVC-IDN-005</c>) and
-    /// NOT to <c>IVC-IDN-003</c>. It grades the server's outbound STRIP — an EMISSION claim — which
-    /// is a different rule from IVC-IDN-003's DERIVATION Statement; citing it there would silently
+    /// NOT to <c>IVC-IDN-006</c>. It grades the server's outbound STRIP — an EMISSION claim — which
+    /// is a different rule from IVC-IDN-006's DERIVATION Statement; citing it there would silently
     /// widen that requirement to own a rule it does not make. Two requirements graded from one
     /// observation, in one cell, so the cell goes red if either regresses — and this leg is also
     /// what proves the probe above is reading something gRPC genuinely cannot
@@ -564,7 +568,7 @@ public sealed class IdentityScenario(
                     ? whyNoRow
                     : $"{PostgresProbe.TableName(TypeName)}.{PostgresProbe.ServerOwnedTenantColumn} is " +
                       $"'{storedTenant ?? "<absent>"}'; the acting-user token claims '{expectedTenant}'",
-                Requirements.IdnTenancyDerivedAndEnforced),
+                Requirements.IdnTenancyDerivedFromActingUser),
 
             Assertion.From(
                 $"{language}: the tenant the client sent stayed in the client's own column and did not " +
@@ -577,10 +581,10 @@ public sealed class IdentityScenario(
                     : $"{DriverDeclaredTenantColumn}='{storedUserColumn ?? "<absent>"}' (the driver sent " +
                       $"'{WrongTenantValue}'), {PostgresProbe.ServerOwnedTenantColumn}=" +
                       $"'{storedTenant ?? "<absent>"}'",
-                Requirements.IdnTenancyDerivedAndEnforced),
+                Requirements.IdnTenancyDerivedFromActingUser),
 
-            // Cites IVC-IDN-005, NOT IVC-IDN-003 — see this method's doc comment. It grades the
-            // server's outbound STRIP (an emission claim), not IVC-IDN-003's DERIVATION Statement.
+            // Cites IVC-IDN-005, NOT IVC-IDN-006 — see this method's doc comment. It grades the
+            // server's outbound STRIP (an emission claim), not IVC-IDN-006's DERIVATION Statement.
             Assertion.From(
                 $"{language}: the orchestrator's own gRPC read of the same row does not carry the " +
                 "server-owned tenant column",
@@ -644,6 +648,19 @@ public sealed class IdentityScenario(
         && value.TryGetInt32(out var code)
             ? code
             : null;
+
+    /// <summary>
+    /// True when a driver's step entity carries a "statusCode" property that IS present and is not
+    /// JSON null, but cannot be read as a number — a malformed report. <see cref="ReadStatusCode"/>
+    /// collapses this case and genuine absence (no property, or a JSON null) to the same null, which
+    /// is correct for most callers; the IVC-IDN-007 assertion needs to tell them apart, because a
+    /// malformed report must still fail rather than being graded as an accepted write.
+    /// </summary>
+    internal static bool IsStatusCodeMalformed(JsonElement? entity) =>
+        entity is { ValueKind: JsonValueKind.Object } document
+        && document.TryGetProperty("statusCode", out var value)
+        && value.ValueKind != JsonValueKind.Null
+        && !(value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out _));
 
     // ── register-phase descriptor capture ────────────────────────────────────────────────────
 

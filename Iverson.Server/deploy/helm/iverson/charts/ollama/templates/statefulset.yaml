@@ -54,9 +54,34 @@ spec:
             - sh
             - -c
             - |
+              set -e
               ollama serve &
               sleep 5
               ollama pull {{ .Values.global.generativeModel }}
+              # CSR round-2 finding #6: pin the model-registry pull. The port-443 egress to
+              # registry.ollama.ai itself is an accepted, documented residual (no NetworkPolicy
+              # hostname selector exists to scope it further) — this check does not attempt to
+              # close that hole, only to detect if the floating tag "{{ .Values.global.generativeModel }}"
+              # gets silently re-pointed to different weights upstream. Ollama's registry has no
+              # supported `pull model@sha256:...` syntax (the model-name parser documents digest
+              # support as removed, pending a future re-add), so the strongest pin available is to
+              # verify the digest actually served against the one recorded in
+              # global.generativeModelDigest, using the same short-digest `ollama list` reports
+              # locally (and the registry's Ollama-Content-Digest header) — and refuse to start on
+              # a mismatch rather than silently running unexpected weights.
+              ACTUAL_DIGEST=$(ollama list | awk -v m={{ .Values.global.generativeModel | quote }} '$1==m {print $2; exit}')
+              EXPECTED_DIGEST={{ required "global.generativeModelDigest must pin the expected manifest digest (CSR round-2 finding #6)" .Values.global.generativeModelDigest | quote }}
+              if [ -z "$ACTUAL_DIGEST" ]; then
+                echo "FATAL: could not read a digest for pulled model '{{ .Values.global.generativeModel }}' from 'ollama list' — refusing to start rather than skip the pin check." >&2
+                exit 1
+              fi
+              case "$EXPECTED_DIGEST" in
+                "$ACTUAL_DIGEST"*) : ;;
+                *)
+                  echo "FATAL: pulled model '{{ .Values.global.generativeModel }}' digest ($ACTUAL_DIGEST) does not match the pinned prefix ($EXPECTED_DIGEST) — the upstream tag may have moved; refusing to start. Review the new weights and update global.generativeModelDigest deliberately if this is expected." >&2
+                  exit 1
+                  ;;
+              esac
           resources:
             requests: { cpu: "500m", memory: "512Mi", ephemeral-storage: "1Gi" }
             limits: { cpu: "1", memory: "1Gi", ephemeral-storage: "2Gi" }

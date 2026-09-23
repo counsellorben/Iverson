@@ -53,9 +53,11 @@ coverage/
 # Secrets / local config
 appsettings.*.json
 !appsettings.json
+!appsettings.Development.json
 secrets.json
 *.pfx
 *.p12
+.env
 
 # Terraform
 **/.terraform/
@@ -79,3 +81,8 @@ Iverson.Server/deploy/helm/**/charts/*.tgz
 # Python
 __pycache__/
 *.pyc
+build/
+*.egg-info/
+
+# Reasoning-agent virtualenv (created by the implementation plan, Task 1)
+Iverson.Agents/Python/.venv/

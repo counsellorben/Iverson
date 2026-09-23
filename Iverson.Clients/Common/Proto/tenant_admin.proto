@@ -12,9 +12,14 @@ service TenantAdminGrpcService {
 }
 
 message InviteUserRequest {
-    string username         = 1;
-    string email            = 2;
-    string initial_password = 3;
+    string username = 1;
+    string email    = 2;
+    // Field 3 (initial_password) removed: CSR round-2 finding #4 remediation replaced
+    // password-based onboarding with Authentik's own recovery-link flow before any client ever
+    // populated this field, so it was always ignored server-side. Reserved rather than reused,
+    // per proto3 convention, so an old client sending it degrades harmlessly (unknown field).
+    reserved 3;
+    reserved "initial_password";
 }
 
 message ListUsersRequest {
@@ -37,4 +42,9 @@ message TenantUser {
     string user_id  = 1;
     string username = 2;
     string email    = 3;
+    // Populated only by InviteUser: the one-time Authentik recovery link the new user follows
+    // to set their own password (CSR round-2 finding #4 follow-up — previously this link was
+    // only written to the server log). Empty for every other RPC that returns a TenantUser
+    // (ListUsers, SetTenantAdmin), since those never mint a new recovery link.
+    string recovery_link = 4;
 }

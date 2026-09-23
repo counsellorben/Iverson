@@ -41,7 +41,21 @@ spec:
           # writable /data — harmless to correctness (Redis keeps serving from memory) but noisy,
           # recurring error logs. Explicit `--save ""` matches the "cache-only, no durability"
           # decision instead of silently working around it.
-          args: ["--save", ""]
+          # --requirepass: CSR round-2 finding #11 — Redis previously had no authentication and
+          # relied on NetworkPolicy as the only control, but it holds Authentik session/cache
+          # state. `$(REDIS_PASSWORD)` is Kubernetes' own $(VAR_NAME) expansion of the container's
+          # env (below), not a shell substitution — no shell wraps this args list, so this never
+          # puts the password on a process-list-visible command line.
+          args: ["--save", "", "--requirepass", "$(REDIS_PASSWORD)"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-redis, key: password }
+            # redis-cli reads REDISCLI_AUTH automatically (no -a flag, so no plaintext password
+            # in `ps`/exec-probe argv either) — used by the probes below.
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-redis, key: password }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -57,11 +71,11 @@ spec:
               cpu: {{ .Values.resources.limits.cpu | quote }}
               memory: {{ .Values.resources.limits.memory | quote }}
           readinessProbe:
-            exec: { command: ["redis-cli", "ping"] }
+            exec: { command: ["redis-cli", "--no-auth-warning", "ping"] }
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            exec: { command: ["redis-cli", "ping"] }
+            exec: { command: ["redis-cli", "--no-auth-warning", "ping"] }
             initialDelaySeconds: 10
             periodSeconds: 15
           volumeMounts:

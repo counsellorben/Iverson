@@ -53,7 +53,7 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
     private readonly IContainer _container = new ContainerBuilder()
         .WithImage(StarRocksImage.Tag)
         .WithPortBinding(MysqlPort, true)
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(MysqlPort))
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(MysqlPort))
         .Build();
 
     public string ConnectionString { get; private set; } = null!;
@@ -206,6 +206,7 @@ public sealed class StarRocksCollection : ICollectionFixture<StarRocksContainerF
     public const string Name = "starrocks";
 }
 
+[Trait("Category", "Integration")]
 [Collection(StarRocksCollection.Name)]
 public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
 {

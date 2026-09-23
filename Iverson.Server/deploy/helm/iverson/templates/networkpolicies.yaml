@@ -1,3 +1,4 @@
+{{- include "iverson.validateNoPlaceholders" . -}}
 {{- if .Values.networkPolicy.enabled }}
 {{- if not .Values.networkPolicy.clusterCidrs }}
 {{- fail "networkPolicy.clusterCidrs must list at least one CIDR; an empty list renders an allow-all ingress rule" }}

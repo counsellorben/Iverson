@@ -5,6 +5,7 @@
 No Qdrant, no TEI: the request bodies are pinned by the spec's live probes (spec §10 rows 3-5),
 so these tests cover the logic between them -- regrouping, parent resolution, collapse, TREC
 formatting and the latency summary."""
+import json
 import os
 import sys
 
@@ -92,3 +93,108 @@ def test_rank_chunk_hits_collapses_through_the_parent_map():
 def test_rank_chunk_hits_fails_loud_on_unknown_parent():
     with pytest.raises(SystemExit):
         multivector.rank_chunk_hits([{"id": 1, "score": 0.9, "payload": {"parent_id": "zz"}}], {}, 50)
+
+
+def mvpoint(doc_id, score):
+    return {"id": 1, "score": score, "payload": {"docId": doc_id}}
+
+
+def test_rank_multivector_points_dedupes_by_docid_keeping_max():
+    # Two points sharing a docId is what the gate warned would produce a malformed run.
+    ranked = multivector.rank_multivector_points(
+        [mvpoint("d1", 0.3), mvpoint("d2", 0.5), mvpoint("d1", 0.9)], 10)
+    assert ranked == [("d1", 0.9), ("d2", 0.5)]
+
+
+def test_rank_multivector_points_truncates_after_the_collapse():
+    # Truncate-before-collapse would keep only d1.
+    ranked = multivector.rank_multivector_points(
+        [mvpoint("d1", 0.9), mvpoint("d1", 0.8), mvpoint("d2", 0.7)], 2)
+    assert ranked == [("d1", 0.9), ("d2", 0.7)]
+
+
+def test_existing_run_files_reports_only_the_two_run_files(tmp_path):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec").write_text("x")
+    (runs / "unrelated.txt").write_text("x")
+    found = multivector.existing_run_files(str(runs))
+    assert [f.rsplit("/", 1)[-1] for f in found] == [f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec"]
+
+
+def test_existing_run_files_empty_on_a_fresh_directory(tmp_path):
+    assert multivector.existing_run_files(str(tmp_path)) == []
+
+
+def test_tail_query_ids_are_the_queries_whose_value_differs():
+    control = {"a": 1.0, "b": 0.5, "c": 0.25}
+    arm = {"a": 1.0, "b": 0.75, "c": 0.25}
+    assert multivector.tail_query_ids(control, arm) == ["b"]
+
+
+def test_tail_query_ids_counts_a_query_missing_from_one_side():
+    assert multivector.tail_query_ids({"a": 1.0, "b": 0.5}, {"a": 1.0}) == ["b"]
+
+
+def test_probe_set_is_bulk_plus_tail_deduped_in_corpus_order():
+    ids = ["q1", "q2", "q3", "q4", "q5"]
+    assert multivector.probe_set(ids, ["q5", "q2"], 2) == ["q1", "q2", "q5"]
+
+
+def test_probe_set_refuses_a_tail_id_absent_from_the_corpus():
+    with pytest.raises(ValueError):
+        multivector.probe_set(["q1", "q2"], ["q9"], 1)
+
+
+def test_config_snapshot_extracts_ef_construct_and_indexing_threshold():
+    info = {"config": {"hnsw_config": {"ef_construct": 512},
+                        "optimizer_config": {"indexing_threshold": 20000}}}
+    assert multivector.config_snapshot(info) == {"ef_construct": 512, "indexing_threshold": 20000}
+
+
+def test_query_run_refusal_allows_a_fresh_directory(tmp_path):
+    assert multivector.query_run_refusal(str(tmp_path)) is None
+
+
+def test_query_run_refusal_blocks_when_no_sidecar_present(tmp_path):
+    (tmp_path / f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / f"{multivector.MULTIVECTOR_RUN_LABEL}.chunks.trec").write_text("x")
+    refusal = multivector.query_run_refusal(str(tmp_path))
+    assert refusal is not None and "no raw-latency.json sidecar" in refusal
+
+
+def test_query_run_refusal_blocks_a_completed_prior_run(tmp_path):
+    (tmp_path / f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / f"{multivector.MULTIVECTOR_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / "raw-latency.json").write_text(json.dumps({"complete": True}))
+    refusal = multivector.query_run_refusal(str(tmp_path))
+    assert refusal is not None and "does not mark the prior run incomplete" in refusal
+
+
+def test_query_run_refusal_blocks_a_sidecar_missing_the_complete_key(tmp_path):
+    # A sidecar written before this flag existed has no "complete" key -- ambiguous, so this
+    # must fail closed the same as an explicit complete=True.
+    (tmp_path / f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / f"{multivector.MULTIVECTOR_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / "raw-latency.json").write_text(json.dumps({"queries": 300}))
+    refusal = multivector.query_run_refusal(str(tmp_path))
+    assert refusal is not None and "does not mark the prior run incomplete" in refusal
+
+
+def test_query_run_refusal_allows_retry_of_an_incomplete_prior_run(tmp_path):
+    # A run that died mid-loop still leaves both .trec files (write_outputs runs in a
+    # finally) -- the identical retry command must not be locked out by its own failure.
+    (tmp_path / f"{multivector.CHUNKS_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / f"{multivector.MULTIVECTOR_RUN_LABEL}.chunks.trec").write_text("x")
+    (tmp_path / "raw-latency.json").write_text(json.dumps({"complete": False}))
+    assert multivector.query_run_refusal(str(tmp_path)) is None
+
+
+def test_mv_search_params_uses_hnsw_ef_when_not_exact():
+    assert multivector.mv_search_params(False, 65) == {"hnsw_ef": 65}
+
+
+def test_mv_search_params_exact_drops_hnsw_ef_entirely():
+    # Not "a very large hnsw_ef": measured, HNSW over max_sim points never converges to exact
+    # at any beam, so sending both keys would misdescribe what the arm ran.
+    assert multivector.mv_search_params(True, 65) == {"exact": True}

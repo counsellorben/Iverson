@@ -56,7 +56,7 @@ public sealed class TokenBroker : IDisposable
         var actingUserClientId = Env("IVERSON_ACTING_USER_CLIENT_ID", "dev-iverson-loadtest-human-client-id");
         var actingUserRedirectUri = Env("IVERSON_ACTING_USER_REDIRECT_URI", "http://localhost/placeholder-callback");
         var actingUserBypassUsername = Env("IVERSON_ACTING_USER_BYPASS_USERNAME", "iverson-loadtest-bypass-user");
-        var actingUserBypassPassword = Env("IVERSON_ACTING_USER_BYPASS_PASSWORD", "dev-only-not-for-production-bypass-password-0123456789");
+        var actingUserBypassPassword = RequireEnv("IVERSON_ACTING_USER_BYPASS_PASSWORD");
         var actingUserHostHeader = Env("IVERSON_ACTING_USER_HOST_HEADER", "authentik-server:9000");
         var actingUserBaseUrl = DeriveAuthentikBaseUrl(tokenEndpoint);
         // Compose is the only target this task supports; a "kind" target would need the same
@@ -77,8 +77,7 @@ public sealed class TokenBroker : IDisposable
         // Unauthenticated instead, which proves nothing about tenant scoping. The two providers
         // never share a TOTP-secret cache file — AuthentikFlowExecutorClient keys it by username.
         var otherTenantUsername = Env("IVERSON_OTHER_TENANT_USERNAME", "iverson-acting-user-smoke-test");
-        var otherTenantPassword = Env(
-            "IVERSON_OTHER_TENANT_PASSWORD", "dev-only-not-for-production-smoke-test-password-0123456789");
+        var otherTenantPassword = RequireEnv("IVERSON_OTHER_TENANT_PASSWORD");
 
         _otherTenantActingUserTokenProvider = new ActingUserTokenProvider(new AuthentikFlowExecutorClient(
             new AuthentikIdentityConfig(
@@ -193,6 +192,17 @@ public sealed class TokenBroker : IDisposable
 
     private static string Env(string key, string def) =>
         Environment.GetEnvironmentVariable(key) ?? def;
+
+    // CSR round-4 finding #8 follow-up: these two acting-user passwords used to default to the
+    // same literal the docker-compose Authentik blueprint hardcoded, so the default "just worked"
+    // against a fresh stack. That blueprint value is now randomly generated per stack by
+    // scripts/generate-compose-secrets.sh, so a stale literal default here would silently
+    // authenticate with the wrong password and fail with a confusing 401 instead of a clear error.
+    private static string RequireEnv(string key) =>
+        Environment.GetEnvironmentVariable(key) ?? throw new InvalidOperationException(
+            $"Missing required environment variable '{key}' -- the docker-compose stack's Authentik " +
+            "dev-only passwords are now randomly generated per stack by scripts/generate-compose-secrets.sh; " +
+            "read the value out of Iverson.Server/.env.");
 
     public void Dispose()
     {

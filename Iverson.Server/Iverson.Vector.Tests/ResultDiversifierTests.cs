@@ -1,12 +1,11 @@
 using FluentAssertions;
-using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Iverson.Vector.Tests;
 
 public sealed class ResultDiversifierTests
 {
-    private readonly ResultDiversifier _diversifier = new(Options.Create(new VectorRankingOptions()));
+    private readonly ResultDiversifier _diversifier = new();
 
     [Fact]
     public void Diversify_AllVectorsPresent_LambdaArithmeticDrivesSelectionOrder()
@@ -21,7 +20,7 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(3, Score: 0.8, DiversityVector: new float[] { 0f, 1f })
         };
 
-        var results = _diversifier.Diversify(candidates, topK: 3);
+        var results = _diversifier.Diversify(candidates, topK: 3, lambda: 0.70);
 
         results.Select(r => r.Id).Should().ContainInOrder(1UL, 3UL, 2UL);
         results.Select(r => r.FusedScore).Should().Equal(1.0, 0.8, 0.9);
@@ -40,7 +39,7 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(3, Score: 0.60, DiversityVector: new float[] { 0f, 1f })
         };
 
-        var results = _diversifier.Diversify(candidates, topK: 2);
+        var results = _diversifier.Diversify(candidates, topK: 2, lambda: 0.70);
 
         results.Select(r => r.Id).Should().ContainInOrder(1UL, 3UL);
     }
@@ -59,7 +58,7 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(3, Score: 0.8, DiversityVector: vector)
         };
 
-        var results = _diversifier.Diversify(candidates, topK: 3);
+        var results = _diversifier.Diversify(candidates, topK: 3, lambda: 0.70);
 
         results.Select(r => r.Id).Should().ContainInOrder(1UL, 2UL, 3UL);
     }
@@ -76,7 +75,7 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(5, Score: 1.0, DiversityVector: null)
         };
 
-        var results = _diversifier.Diversify(candidates, topK: 3);
+        var results = _diversifier.Diversify(candidates, topK: 3, lambda: 0.70);
 
         var expected = candidates.Take(3).Select(c => new RerankedResult(c.Id, c.Score));
         results.Should().Equal(expected);
@@ -95,7 +94,7 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(3, Score: 0.85, DiversityVector: null)
         };
 
-        var results = _diversifier.Diversify(candidates, topK: 2);
+        var results = _diversifier.Diversify(candidates, topK: 2, lambda: 0.70);
 
         results.Select(r => r.Id).Should().ContainInOrder(1UL, 3UL);
     }
@@ -115,7 +114,7 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(3, Score: 0.5, DiversityVector: new float[] { 0f, 1f })
         };
 
-        var results = _diversifier.Diversify(candidates, topK: 2);
+        var results = _diversifier.Diversify(candidates, topK: 2, lambda: 0.70);
 
         results.Select(r => r.Id).Should().ContainInOrder(1UL, 2UL);
     }
@@ -134,7 +133,7 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(2, Score: double.NaN, DiversityVector: null)
         };
 
-        var results = _diversifier.Diversify(candidates, topK: 3);
+        var results = _diversifier.Diversify(candidates, topK: 3, lambda: 0.70);
 
         results.Select(r => r.Id).Should().Equal(1UL, 3UL, 2UL);
     }
@@ -153,7 +152,7 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(3, Score: 0.5, DiversityVector: null)
         };
 
-        Func<IReadOnlyList<RerankedResult>> act = () => _diversifier.Diversify(candidates, topK: 2);
+        Func<IReadOnlyList<RerankedResult>> act = () => _diversifier.Diversify(candidates, topK: 2, lambda: 0.70);
 
         var results = act.Should().NotThrow().Subject;
         results.Select(r => r.Id).Should().ContainInOrder(1UL, 2UL);
@@ -177,7 +176,7 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(3, Score: 0.4, DiversityVector: new float[] { -1f, 0f })
         };
 
-        var results = _diversifier.Diversify(candidates, topK: 2);
+        var results = _diversifier.Diversify(candidates, topK: 2, lambda: 0.70);
 
         results.Select(r => r.Id).Should().ContainInOrder(1UL, 3UL);
     }
@@ -195,7 +194,7 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(3, Score: 0.7, DiversityVector: new float[] { 0f, 1f })
         };
 
-        var results = _diversifier.Diversify(candidates, topK: 5);
+        var results = _diversifier.Diversify(candidates, topK: 5, lambda: 0.70);
 
         results.Should().HaveCount(3);
         results.Select(r => r.Id).Should().ContainInOrder(1UL, 3UL, 2UL);
@@ -204,7 +203,7 @@ public sealed class ResultDiversifierTests
     [Fact]
     public void Diversify_EmptyPool_ReturnsEmptyResult()
     {
-        var results = _diversifier.Diversify(Array.Empty<DiversifyCandidate>(), topK: 3);
+        var results = _diversifier.Diversify(Array.Empty<DiversifyCandidate>(), topK: 3, lambda: 0.70);
 
         results.Should().BeEmpty();
     }
@@ -218,8 +217,24 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(2, Score: 0.5, DiversityVector: new float[] { 0f, 1f })
         };
 
-        var results = _diversifier.Diversify(candidates, topK: 1);
+        var results = _diversifier.Diversify(candidates, topK: 1, lambda: 0.70);
 
         results.Should().Equal(new RerankedResult(1, 1.0));
+    }
+
+    [Fact]
+    public void Diversify_LambdaOne_IsPlainTakeTopK_OnBothBranches()
+    {
+        // With and without diversity vectors, λ = 1.00 must reduce to Take(topK) bit-for-bit.
+        var withVectors = new[]
+        {
+            new DiversifyCandidate(1, 0.95, new[] { 1f, 0f }),
+            new DiversifyCandidate(2, 0.90, new[] { 1f, 0f }),   // near-duplicate of 1
+            new DiversifyCandidate(3, 0.60, new[] { 0f, 1f }),
+        };
+        var without = withVectors.Select(c => c with { DiversityVector = null }).ToArray();
+
+        _diversifier.Diversify(withVectors, topK: 2, lambda: 1.00).Select(r => r.Id).Should().Equal(1UL, 2UL);
+        _diversifier.Diversify(without,     topK: 2, lambda: 1.00).Select(r => r.Id).Should().Equal(1UL, 2UL);
     }
 }

@@ -353,7 +353,10 @@ async function main(argv: string[]): Promise<number> {
           ? createOAuth2ClientCredentials(clientId, clientSecret, tokenEndpoint)
           : undefined;
 
-    const client = new IversonClient(host, port, false, callCredentials, actingToken);
+    // This driver deliberately dials a plaintext channel (useTls=false) — the accepted
+    // dev/test model — so it must explicitly defeat IversonClient's default guard against
+    // attaching credentials to a plaintext channel.
+    const client = new IversonClient(host, port, false, callCredentials, actingToken, true);
 
     // A second, independent ObjectMappingServiceClient built entirely from the public generated
     // module — the sanctioned capture seam per the plan: SchemaRegistrar takes its mapping client
@@ -702,7 +705,7 @@ async function main(argv: string[]): Promise<number> {
         // between this call and an allowed one is which end user it acts as. The status code is
         // DATA to report, never an error to judge — that is the orchestrator's job.
         const wrongClient = new IversonClient(
-            host, port, false, callCredentials, args.optional('--wrong-acting-token'));
+            host, port, false, callCredentials, args.optional('--wrong-acting-token'), true);
         try {
             // The update payload's tenant value no longer affects the outcome on THIS leg. It USED to: the
             // server once rejected an existing row's payload tenant that differed from the caller's claim as

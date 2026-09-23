@@ -26,10 +26,10 @@ namespace Iverson.Api.Tests.Schema;
 /// IVERSON_REGENERATE_INGEST_CONTRACT=1 dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter IngestContract
 /// </code></para>
 ///
-/// <para><b>What the contract does not pin.</b> Query prefixes are not emitted: queries are
-/// embedded inside <c>Iverson.Api</c>, which is itself that constant's source, so no Python
-/// consumer exists for one. Collection-creation parity (vector names, payload indexes) is also not
-/// emitted — Ben's call, 2026-09-01 — because those derive from <c>Type.GetProperties()</c>, whose
+/// <para><b>What the contract pins, and what it does not.</b> Query prefixes <b>are</b> emitted: <c>aspect_vectors.py</c>
+/// embeds queries Python-side to reproduce recorded retrieval scores, so a Python consumer exists and
+/// the same table must reach it. Collection-creation parity (vector names, payload
+/// indexes) is not emitted — Ben's call, 2026-09-01 — because those derive from <c>Type.GetProperties()</c>, whose
 /// order the CLR does not guarantee, and pinning them would require de-duplicating and
 /// ordinal-sorting to stop the gate flaking against its own committed copy.</para>
 ///
@@ -67,6 +67,14 @@ public class IngestContractTests
     // must not appear in the rule's own literal text (the separators, the "_chunks" suffix).
     private const string BaseProbe   = "BASEPROBE";
     private const string TenantProbe = "TENANTPROBE";
+
+    // The one tenant id ingest.py's TENANT_ID constant actually uses (ingest.py:174). Hand-copied
+    // like EntityName/ChunkFieldName below — this assembly cannot see ingest.py's own literal to
+    // cross-check it. Needed because finding #9 (2026-09) made the tenant segment of
+    // ResolveCollectionName a SHA-256 fingerprint of the tenant id rather than the id verbatim, so
+    // ingest.py can no longer template its way to the physical collection name the way it once
+    // did — the contract now emits the already-resolved names for this one known tenant instead.
+    private const string KnownTenantId = "tenant_bypass";
 
     // The three hand-copied inputs. See the "Three INPUTS" paragraph on the class doc comment for
     // why each is unverifiable from this assembly and what goes silently wrong if one drifts.
@@ -117,6 +125,10 @@ public class IngestContractTests
         foreach (var (family, prefix) in EmbeddingPrefixes.Table)
             documentPrefixes[family] = prefix.Document;
 
+        var queryPrefixes = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (family, prefix) in EmbeddingPrefixes.Table)
+            queryPrefixes[family] = prefix.Query;
+
         var documentComposition = new Dictionary<string, object>(StringComparer.Ordinal);
         foreach (var (family, prefix) in EmbeddingPrefixes.Table)
             documentComposition[family] = new
@@ -128,6 +140,19 @@ public class IngestContractTests
         {
             text     = SampleText,
             composed = ComposeDocumentInput(EmbeddingPrefixes.DefaultDocument, SampleText)
+        };
+
+        var queryComposition = new Dictionary<string, object>(StringComparer.Ordinal);
+        foreach (var (family, prefix) in EmbeddingPrefixes.Table)
+            queryComposition[family] = new
+            {
+                text     = SampleText,
+                composed = ComposeQueryInput(prefix.Query, SampleText)
+            };
+        queryComposition["__default__"] = new
+        {
+            text     = SampleText,
+            composed = ComposeQueryInput(EmbeddingPrefixes.DefaultQuery, SampleText)
         };
 
         var contract = new
@@ -156,14 +181,17 @@ public class IngestContractTests
             embedding = new
             {
                 documentPrefixes,
-                defaultDocumentPrefix = EmbeddingPrefixes.DefaultDocument
+                defaultDocumentPrefix = EmbeddingPrefixes.DefaultDocument,
+                queryPrefixes,
+                defaultQueryPrefix    = EmbeddingPrefixes.DefaultQuery
             },
             golden = new
             {
                 chunking = GoldenChunking(window),
                 pointIds = GoldenPointIds(),
                 centroid = GoldenCentroid(),
-                documentComposition
+                documentComposition,
+                queryComposition
             }
         };
 
@@ -177,10 +205,20 @@ public class IngestContractTests
     // ── Collection naming, read back out of ResolveCollectionName ───────────────────────────
 
     /// <summary>
-    /// Emits the naming RULE, recovered by calling the real
-    /// <see cref="IntelligenceTenantScope.ResolveCollectionName"/> with probe tokens and
-    /// substituting them back out — a change to the separator or the "_chunks" suffix changes the
-    /// contract, rather than the contract silently stating a rule the code no longer follows.
+    /// Emits the naming RULE. Structural shape is checked live against
+    /// <see cref="IntelligenceTenantScope.ResolveCollectionName"/> with probe tokens, so a changed
+    /// separator or "_chunks" suffix fails this test loudly rather than the contract silently
+    /// stating a rule the code no longer follows.
+    ///
+    /// <para><b>Why this no longer emits a reusable format string.</b> Before finding #9 (2026-09),
+    /// the tenant segment was the tenant id substituted verbatim, so <c>ingest.py</c> could
+    /// template <c>"{base}{suffix}_{tenant}"</c> with its own <c>TENANT_ID</c>. The fix makes the
+    /// tenant segment <c>Sanitize(tenantId) + "_" + Fingerprint(tenantId)</c> (a SHA-256 fingerprint
+    /// of the ORIGINAL tenant id — collision-safety was the whole point), which Python cannot
+    /// reproduce by string substitution. So instead of a template, the contract emits the
+    /// ALREADY-RESOLVED collection names for the one tenant id <c>ingest.py</c> actually uses
+    /// (<see cref="KnownTenantId"/>) — computed here by calling the real
+    /// <see cref="IntelligenceTenantScope.ResolveCollectionName"/>, never re-derived by hand.</para>
     /// </summary>
     private static object DeriveCollectionNaming()
     {
@@ -189,27 +227,20 @@ public class IngestContractTests
         var objectResolved = scope.ResolveCollectionName(BaseProbe, TenantProbe, isChunks: false);
         var chunksResolved = scope.ResolveCollectionName(BaseProbe, TenantProbe, isChunks: true);
 
-        var tenantSuffix = "_" + TenantProbe;
-        if (!objectResolved.StartsWith(BaseProbe, StringComparison.Ordinal) ||
-            !objectResolved.EndsWith(tenantSuffix, StringComparison.Ordinal) ||
-            !chunksResolved.StartsWith(BaseProbe, StringComparison.Ordinal) ||
-            !chunksResolved.EndsWith(tenantSuffix, StringComparison.Ordinal))
+        if (!objectResolved.StartsWith(BaseProbe + "_", StringComparison.Ordinal) ||
+            !chunksResolved.StartsWith(BaseProbe + "_chunks_", StringComparison.Ordinal))
             throw new InvalidOperationException(
-                $"ResolveCollectionName no longer produces '{{base}}{{suffix}}_{{tenant}}' " +
+                $"ResolveCollectionName no longer produces '{{base}}{{suffix}}_{{tenant segment}}' " +
                 $"('{objectResolved}', '{chunksResolved}'); the emitted naming rule assumes it does.");
 
-        var objectSuffix = objectResolved[BaseProbe.Length..^tenantSuffix.Length];
-        var chunksSuffix = chunksResolved[BaseProbe.Length..^tenantSuffix.Length];
-
-        var tenantSlot = objectResolved[(BaseProbe.Length + objectSuffix.Length)..]
-            .Replace(TenantProbe, "{tenant}", StringComparison.Ordinal);
+        var baseName = SchemaBuilder.ToTableName(EntityName);
 
         return new
         {
-            @base    = SchemaBuilder.ToTableName(EntityName),
-            template = "{base}{suffix}" + tenantSlot,
-            objectSuffix,
-            chunksSuffix
+            @base                          = baseName,
+            knownTenantId                   = KnownTenantId,
+            objectCollectionForKnownTenant  = scope.ResolveCollectionName(baseName, KnownTenantId, isChunks: false),
+            chunksCollectionForKnownTenant  = scope.ResolveCollectionName(baseName, KnownTenantId, isChunks: true)
         };
     }
 
@@ -359,6 +390,10 @@ public class IngestContractTests
 
     private static string ComposeDocumentInput(string prefix, string text) =>
         (string)NonPublicStatic(typeof(EmbeddingService), "ComposeDocumentInput")
+            .Invoke(null, [prefix, text])!;
+
+    private static string ComposeQueryInput(string prefix, string text) =>
+        (string)NonPublicStatic(typeof(EmbeddingService), "ComposeQueryInput")
             .Invoke(null, [prefix, text])!;
 
     private static IEnumerable<(string Text, int Index)> InvokeSplitIntoChunks(string text, int maxTokens, int overlap) =>

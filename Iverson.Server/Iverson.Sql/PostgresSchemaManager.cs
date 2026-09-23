@@ -30,10 +30,10 @@ public sealed class PostgresSchemaManager(
         //     create are separate steps, so concurrent creators collide on the catalogue with
         //     23505 "duplicate key value violates unique constraint pg_type_typname_nsp_index".
         //     Deterministic; fires on first contact.
-        //   * Existing table: the ENABLE ROW LEVEL SECURITY / GRANT pair below both rewrite the
-        //     table's pg_class row, and Postgres answers the loser with XX000 "tuple concurrently
-        //     updated". Intermittent — ~3 runs in 5 at 8 callers, so a single green run proves
-        //     nothing about it.
+        //   * Existing table: the ENABLE / FORCE ROW LEVEL SECURITY and GRANT statements below all
+        //     rewrite the table's pg_class row, and Postgres answers the loser with XX000 "tuple
+        //     concurrently updated". Intermittent — ~3 runs in 5 at 8 callers, so a single green
+        //     run proves nothing about it.
         //
         // Neither is caught anywhere, so the process exits and only `restart: unless-stopped`
         // recovers it. That is every routine redeploy of the two-role deployment, not just an
@@ -149,6 +149,14 @@ public sealed class PostgresSchemaManager(
                     """);
             }
 
+            // Unconditional, unlike the iverson_runtime grant below: iverson_maintenance is the
+            // role every deliberately-cross-tenant entity access runs under (EntityAccess
+            // .CrossTenantMaintenance), and those callers reach tables with and without a tenant
+            // column alike — a reconciliation replay of a type that declares no tenant field is
+            // still a maintenance read. Granting only the tenant-scoped subset would turn those
+            // into 42501 insufficient_privilege at runtime.
+            await conn.ExecuteAsync($"""GRANT SELECT, INSERT, UPDATE, DELETE ON "{schema.TableName}" TO iverson_maintenance""");
+
             if (schema.TenantColumn is not null)
             {
                 var policyName = $"{schema.TableName}_tenant_isolation";
@@ -172,6 +180,16 @@ public sealed class PostgresSchemaManager(
                 }
 
                 await conn.ExecuteAsync($"""ALTER TABLE "{schema.TableName}" ENABLE ROW LEVEL SECURITY""");
+
+                // ENABLE alone leaves the table's OWNER exempt from its own policy, and the api
+                // connects as the owner (`iverson`, charts/api/templates/deployment.yaml against
+                // the CNPG `bootstrap.initdb.owner`). So without FORCE the policy was inert on
+                // every statement that did not first SET ROLE away from the owner — RLS was not
+                // the independent second layer the threat model claims. FORCE is idempotent, which
+                // matters because Program.cs re-applies this DDL for every registered descriptor
+                // on every startup.
+                await conn.ExecuteAsync($"""ALTER TABLE "{schema.TableName}" FORCE ROW LEVEL SECURITY""");
+
                 await conn.ExecuteAsync($"""GRANT SELECT, INSERT, UPDATE, DELETE ON "{schema.TableName}" TO iverson_runtime""");
             }
 
@@ -190,24 +208,114 @@ public sealed class PostgresSchemaManager(
         }
     }
 
-    public async Task EnsureRuntimeRoleAsync()
+    public async Task EnsureRolesAsync()
     {
         await using var conn = CreateConnection();
         await conn.OpenAsync();
 
-        var exists = await conn.QuerySingleOrDefaultAsync<bool>(
-            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'iverson_runtime')");
-        if (!exists)
+        await EnsureRoleAsync(conn, "iverson_runtime", "CREATE ROLE iverson_runtime NOLOGIN");
+
+        // The counterpart to FORCE ROW LEVEL SECURITY. Once the policy binds the owner too, the
+        // genuinely cross-tenant callers (reconciliation replays, and the consumer paths that
+        // re-derive an entity's authoritative tenant/owner value before any tenant is known) need
+        // somewhere to stand that is not "happens to be the owner" — this is it, and choosing it
+        // is visible in source as EntityAccess.CrossTenantMaintenance.
+        await EnsureRoleAsync(conn, "iverson_maintenance", "CREATE ROLE iverson_maintenance NOLOGIN BYPASSRLS");
+
+        // A pre-existing iverson_maintenance without BYPASSRLS would not error — it would quietly
+        // return zero rows to every maintenance read, i.e. reconciliation silently reprojecting
+        // nothing. Verify rather than assume, and fail startup loudly if it cannot be repaired.
+        var bypassesRls = await conn.QuerySingleOrDefaultAsync<bool>(
+            "SELECT rolbypassrls FROM pg_roles WHERE rolname = 'iverson_maintenance'");
+        if (!bypassesRls)
         {
             try
             {
-                await conn.ExecuteAsync("CREATE ROLE iverson_runtime NOLOGIN");
+                await conn.ExecuteAsync("ALTER ROLE iverson_maintenance BYPASSRLS");
             }
-            catch (PostgresException ex) when (ex.SqlState == "42710")
+            catch (PostgresException ex) when (ex.SqlState == "42501")
             {
-                // Another replica created it concurrently between our check and this CREATE
-                // (this deployment runs multiple API replicas) — fine, it exists now either way.
+                throw new InvalidOperationException(
+                    "Role iverson_maintenance exists without BYPASSRLS and this connection lacks the "
+                    + "privilege to add it. Every cross-tenant maintenance read would return zero rows. "
+                    + "Run `ALTER ROLE iverson_maintenance BYPASSRLS;` as a superuser "
+                    + "(`kubectl cnpg psql <release>-postgres -- -d iverson`) and restart.", ex);
             }
+        }
+
+        // Existence and BYPASSRLS are not enough: this connection must also be able to ENTER each
+        // role. An operator who runs the CREATE ROLE half of the cutover but forgets
+        // `GRANT ... TO iverson` produces a cluster where every check above passes — the role
+        // exists, its attributes are right, and ApplySchemaAsync's GRANT to it succeeds, because a
+        // table's owner may grant to a role it is not a member of. Startup then comes up green and
+        // the failure lands at runtime instead: the first `SET LOCAL ROLE` throws 42501 and every
+        // tenant-scoped read, every reconciliation replay, every re-render queue item and every
+        // consumer tenant/owner re-derivation starts failing in production.
+        await EnsureCanEnterRoleAsync(conn, "iverson_runtime");
+        await EnsureCanEnterRoleAsync(conn, "iverson_maintenance");
+    }
+
+    /// <summary>
+    /// Asserts this connection can enter <paramref name="roleName"/> by issuing the very statement
+    /// the runtime issues, inside a transaction that is then rolled back.
+    /// <para>
+    /// A functional probe rather than a <c>pg_has_role</c> catalogue lookup: <c>SET ROLE</c> is
+    /// gated by the role's SET option in PostgreSQL 16+ but by plain membership before it, so no
+    /// single privilege name is both version-portable and exact — whereas the statement itself is
+    /// exact by construction on every version. A superuser passes unconditionally, which is what
+    /// docker-compose and the Testcontainers fixtures are.
+    /// </para>
+    /// </summary>
+    private static async Task EnsureCanEnterRoleAsync(NpgsqlConnection conn, string roleName)
+    {
+        await using var tx = await conn.BeginTransactionAsync();
+        try
+        {
+            // roleName is a compile-time constant from EnsureRolesAsync, never caller input.
+            await conn.ExecuteAsync($"SET LOCAL ROLE {roleName}", null, tx);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42501")
+        {
+            throw new InvalidOperationException(
+                $"Role {roleName} exists but this connection is not a member of it, so no statement "
+                + "can enter it. Every access that names this role would fail at runtime with 42501. "
+                + $"Run `GRANT {roleName} TO {conn.UserName};` as a superuser "
+                + "(`kubectl cnpg psql <release>-postgres -- -d iverson`), then restart — the grant "
+                + $"target is this connection's own role ({conn.UserName}), not CURRENT_USER as "
+                + "evaluated inside that psql session, which connects as the cluster superuser. See "
+                + "docs/runbooks/rls-force-maintenance-role-cutover.md.", ex);
+        }
+
+        // No commit: SET LOCAL unwinds with the transaction, so the pooled connection is handed
+        // back on its original role either way.
+        await tx.RollbackAsync();
+    }
+
+    private static async Task EnsureRoleAsync(NpgsqlConnection conn, string roleName, string createSql)
+    {
+        var exists = await conn.QuerySingleOrDefaultAsync<bool>(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = @Role)", new { Role = roleName });
+        if (exists) return;
+
+        try
+        {
+            await conn.ExecuteAsync(createSql);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42710")
+        {
+            // Another replica created it concurrently between our check and this CREATE
+            // (this deployment runs multiple API replicas) — fine, it exists now either way.
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42501")
+        {
+            // kubernetes: enableSuperuserAccess is false, so the app user can neither CREATE ROLE
+            // nor (for maintenance) grant BYPASSRLS. The cluster's postInitApplicationSQL creates
+            // both roles at initdb, but that hook does not re-run on an already-initialised
+            // cluster — name the exact remedy rather than surfacing a bare 42501.
+            throw new InvalidOperationException(
+                $"Role {roleName} does not exist and this connection cannot create it. On an "
+                + $"already-initialised cluster run `{createSql};` and `GRANT {roleName} TO iverson;` "
+                + "as a superuser (`kubectl cnpg psql <release>-postgres -- -d iverson`), then restart.", ex);
         }
     }
 

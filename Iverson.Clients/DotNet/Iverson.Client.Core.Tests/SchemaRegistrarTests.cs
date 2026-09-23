@@ -42,6 +42,18 @@ internal sealed class MetadataAnnotationTestEntity
 }
 
 [IversonEntity]
+internal sealed class PopularitySignalAnnotationTestEntity
+{
+    [IversonKey]
+    public Guid Id { get; set; }
+
+    [IversonPopularitySignal]
+    public DateTime InteractedAt { get; set; }
+
+    public DateTime Plain { get; set; }
+}
+
+[IversonEntity]
 internal sealed class EnrichmentAnnotationTestEntity
 {
     [IversonKey]
@@ -579,6 +591,39 @@ public class SchemaRegistrarTests
 
         plain.IsMetadata.Should().BeFalse();
         plain.Description.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RegisterAllAsync_SetsIsPopularitySignal_OnAnnotatedMember_AndLeavesOthersFalse()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "PopularitySignalAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+
+        var id           = req!.RootType.Properties.Single(p => p.Name == "Id");
+        var interactedAt = req.RootType.Properties.Single(p => p.Name == "InteractedAt");
+        var plain        = req.RootType.Properties.Single(p => p.Name == "Plain");
+
+        interactedAt.IsPopularitySignal.Should().BeTrue();
+        id.IsPopularitySignal.Should().BeFalse();
+        plain.IsPopularitySignal.Should().BeFalse();
     }
 
     [Fact]

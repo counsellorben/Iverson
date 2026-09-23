@@ -43,6 +43,7 @@ class FieldMeta:
     chunk_overlap: int = 64
     chunk_contextual: bool = False
     metadata: bool = False
+    popularity_signal: bool = False
     summary: bool = False
     keywords: bool = False
     extract_hint: str | None = ""
@@ -65,6 +66,7 @@ def iverson_field(
     chunk_overlap: int = 64,
     chunk_contextual: bool = False,
     metadata: bool = False,
+    popularity_signal: bool = False,
     summary: bool = False,
     keywords: bool = False,
     extract_hint: str | None = "",
@@ -86,6 +88,9 @@ def iverson_field(
             for chunk-level vector embeddings and its windowing.
         metadata: a property that describes or qualifies the entity rather
             than carrying its primary content.
+        popularity_signal: the UTC-datetime property recording when an
+            interaction happened. Exactly one property per entity may carry
+            this; two fail schema registration.
         summary / keywords: enrichment targets.
         extract_hint: extraction target, guided by this hint. ``""``
             means "not an extraction target"; a blank-but-non-empty hint is
@@ -113,6 +118,7 @@ def iverson_field(
         chunk_overlap=chunk_overlap,
         chunk_contextual=chunk_contextual,
         metadata=metadata,
+        popularity_signal=popularity_signal,
         summary=summary,
         keywords=keywords,
         extract_hint=extract_hint,
@@ -298,6 +304,7 @@ def iverson_entity(cls: type | None = None, *, description: str = "", embedding_
     relations: list[dict] = []
     plain_fields: list[str] = []
     metadata_fields: list[str] = []
+    popularity_signal_fields: list[str] = []
     descriptions: dict[str, str] = {}
     summary_fields: list[str] = []
     keywords_fields: list[str] = []
@@ -334,6 +341,8 @@ def iverson_entity(cls: type | None = None, *, description: str = "", embedding_
                     (field_name, meta.chunk_max_tokens, meta.chunk_overlap, meta.chunk_contextual))
             if meta.metadata:
                 metadata_fields.append(field_name)
+            if meta.popularity_signal:
+                popularity_signal_fields.append(field_name)
             if meta.summary:
                 summary_fields.append(field_name)
             if meta.keywords:
@@ -364,6 +373,7 @@ def iverson_entity(cls: type | None = None, *, description: str = "", embedding_
         "relations": relations,
         "fields": plain_fields,
         "metadata_fields": metadata_fields,
+        "popularity_signal_fields": popularity_signal_fields,
         "descriptions": descriptions,
         "description": description,
         "embedding_model": embedding_model,

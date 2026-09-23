@@ -11,21 +11,22 @@ public class PostgresRepository(
 {
     private NpgsqlConnection CreateConnection() => new(connectionString);
 
-    public async Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null, bool tenantScoped = false, string? tenantId = null)
+    public async Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null, RecordStoreRole role = RecordStoreRole.Connection, string? tenantId = null)
     {
         using var activity = Telemetry.Source.StartActivity("db.query", ActivityKind.Client);
         activity?.SetTag("db.system", "postgresql");
         activity?.SetTag("db.statement", sql);
+        activity?.SetTag("db.role", role.ToString());
 
         logger.LogDebug("Executing query: {Sql}", sql);
 
         try
         {
             IEnumerable<T> results;
-            if (tenantScoped)
+            if (role != RecordStoreRole.Connection)
             {
-                results = await RunTenantScopedAsync(
-                    tenantId, (conn, tx) => conn.QueryAsync<T>(sql, param, tx));
+                results = await RunAsRoleAsync(
+                    role, tenantId, (conn, tx) => conn.QueryAsync<T>(sql, param, tx));
             }
             else
             {
@@ -43,21 +44,22 @@ public class PostgresRepository(
         }
     }
 
-    public async Task<int> ExecuteAsync(string sql, object? param = null, bool tenantScoped = false, string? tenantId = null)
+    public async Task<int> ExecuteAsync(string sql, object? param = null, RecordStoreRole role = RecordStoreRole.Connection, string? tenantId = null)
     {
         using var activity = Telemetry.Source.StartActivity("db.execute", ActivityKind.Client);
         activity?.SetTag("db.system", "postgresql");
         activity?.SetTag("db.statement", sql);
+        activity?.SetTag("db.role", role.ToString());
 
         logger.LogDebug("Executing command: {Sql}", sql);
 
         try
         {
             int rows;
-            if (tenantScoped)
+            if (role != RecordStoreRole.Connection)
             {
-                rows = await RunTenantScopedAsync(
-                    tenantId, (conn, tx) => conn.ExecuteAsync(sql, param, tx));
+                rows = await RunAsRoleAsync(
+                    role, tenantId, (conn, tx) => conn.ExecuteAsync(sql, param, tx));
             }
             else
             {
@@ -76,19 +78,20 @@ public class PostgresRepository(
         }
     }
 
-    public async Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null, bool tenantScoped = false, string? tenantId = null)
+    public async Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null, RecordStoreRole role = RecordStoreRole.Connection, string? tenantId = null)
     {
         using var activity = Telemetry.Source.StartActivity("db.query_single", ActivityKind.Client);
         activity?.SetTag("db.system", "postgresql");
         activity?.SetTag("db.statement", sql);
+        activity?.SetTag("db.role", role.ToString());
 
         try
         {
             T? result;
-            if (tenantScoped)
+            if (role != RecordStoreRole.Connection)
             {
-                result = await RunTenantScopedAsync(
-                    tenantId, (conn, tx) => conn.QuerySingleOrDefaultAsync<T>(sql, param, tx));
+                result = await RunAsRoleAsync(
+                    role, tenantId, (conn, tx) => conn.QuerySingleOrDefaultAsync<T>(sql, param, tx));
             }
             else
             {
@@ -107,21 +110,44 @@ public class PostgresRepository(
     }
 
     /// <summary>
-    /// Opens a fresh connection, switches to the non-superuser <c>iverson_runtime</c> role for the
-    /// duration of one transaction, and sets the RLS session GUC to <paramref name="tenantId"/>
+    /// Opens a fresh connection and runs one statement inside a transaction under an explicit,
+    /// non-ambient role.
+    /// <para>
+    /// <see cref="RecordStoreRole.TenantRuntime"/> switches to the non-superuser, non-owning
+    /// <c>iverson_runtime</c> role and sets the RLS session GUC to <paramref name="tenantId"/>
     /// (which may be <c>null</c> — that flows into <c>set_config</c> as a NULL session value, so
     /// RLS's <c>current_setting(..., true) = tenant_col</c> predicate fails closed to zero rows
-    /// rather than falling back to an unfiltered read on the superuser <c>iverson</c> role).
+    /// rather than falling back to an unfiltered read on the connection's own role).
+    /// </para>
+    /// <para>
+    /// <see cref="RecordStoreRole.Maintenance"/> switches to <c>iverson_maintenance</c>, which
+    /// holds <c>BYPASSRLS</c> — a deliberate, auditable cross-tenant access. No GUC is set: it
+    /// would be inert under <c>BYPASSRLS</c>, and setting one would imply a filtering that is not
+    /// happening.
+    /// </para>
+    /// <para>
+    /// Going through a role in both cases is the point: the connection's own role is the table
+    /// owner in kubernetes and a superuser under docker-compose/Testcontainers, and PostgreSQL
+    /// exempts a superuser from RLS unconditionally and an owner unless the table is FORCEd. Only
+    /// the role switch makes the policy bite in every environment.
+    /// </para>
     /// </summary>
-    private async Task<T> RunTenantScopedAsync<T>(string? tenantId, Func<NpgsqlConnection, NpgsqlTransaction, Task<T>> statement)
+    private async Task<T> RunAsRoleAsync<T>(RecordStoreRole role, string? tenantId, Func<NpgsqlConnection, NpgsqlTransaction, Task<T>> statement)
     {
         await using var conn = CreateConnection();
         await conn.OpenAsync();
         await using var tx = await conn.BeginTransactionAsync();
         try
         {
-            await conn.ExecuteAsync("SET LOCAL ROLE iverson_runtime", null, tx);
-            await conn.ExecuteAsync("SELECT set_config('app.tenant_id', @TenantId, true)", new { TenantId = tenantId }, tx);
+            if (role == RecordStoreRole.Maintenance)
+            {
+                await conn.ExecuteAsync("SET LOCAL ROLE iverson_maintenance", null, tx);
+            }
+            else
+            {
+                await conn.ExecuteAsync("SET LOCAL ROLE iverson_runtime", null, tx);
+                await conn.ExecuteAsync("SELECT set_config('app.tenant_id', @TenantId, true)", new { TenantId = tenantId }, tx);
+            }
             var result = await statement(conn, tx);
             await tx.CommitAsync();
             return result;

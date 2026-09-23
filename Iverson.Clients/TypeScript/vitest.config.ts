@@ -4,7 +4,8 @@ export default defineConfig({
   test: {
     environment: 'node',
   },
-  esbuild: {
+  oxc: {
     target: 'es2022',
+    decorator: { legacy: true, emitDecoratorMetadata: true },
   },
 });

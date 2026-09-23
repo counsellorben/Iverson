@@ -15,10 +15,6 @@ namespace Iverson.Api.Tests.Helpers;
 // none of them connect eagerly at construction time, so they're inert for these tests, which
 // only exercise the authentication/authorization middleware pipeline, not real request handling
 // against those stores.
-// Not sealed: AdminConsoleCorsPipelineTests.cs derives two sibling factories from this one
-// (CorsConfiguredTestWebApplicationFactory / CorsDisabledTestWebApplicationFactory) so they
-// inherit the exact same NoOp infra swaps below rather than duplicating them, differing only
-// in the AdminConsole__Origin env var each sets in its own instance constructor.
 public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 {
     static AuthTestWebApplicationFactory()
@@ -66,6 +62,9 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<ITenantRepository>();
             services.AddSingleton<ITenantRepository, NoOpTenantRepository>();
+
+            services.RemoveAll<IDlqRepository>();
+            services.AddSingleton<IDlqRepository, NoOpDlqRepository>();
 
             services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
             {

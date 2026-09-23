@@ -53,37 +53,51 @@ public class TenantAdminGrpcServiceTests
         var request = new InviteUserRequest
         {
             Username = "bob",
-            Email = "bob@acme.example",
-            InitialPassword = "correct-horse-battery-staple"
+            Email = "bob@acme.example"
         };
         _authentikAdminClient
             .CreateUserAsync(
                 "bob",
                 "bob@acme.example",
-                "correct-horse-battery-staple",
                 "acme",
                 Arg.Is<IReadOnlyList<string>>(g => g.Count == 0))
-            .Returns(Task.FromResult("user-1"));
+            .Returns(Task.FromResult(new CreateUserResult("user-1", "https://authentik.example/if/flow/iverson-recovery/?flow_token=abc")));
 
         var response = await _sut.InviteUser(request, ContextForCallerTenant());
 
         response.UserId.Should().Be("user-1");
         response.Username.Should().Be("bob");
         response.Email.Should().Be("bob@acme.example");
+        response.RecoveryLink.Should().Be("https://authentik.example/if/flow/iverson-recovery/?flow_token=abc");
         await _authentikAdminClient.Received(1)
             .CreateUserAsync(
                 "bob",
                 "bob@acme.example",
-                "correct-horse-battery-staple",
                 "acme",
                 Arg.Is<IReadOnlyList<string>>(g => g.Count == 0));
+    }
+
+    [Fact]
+    public async Task InviteUser_RecoveryLinkAbsent_ReturnsEmptyRecoveryLinkNotNull()
+    {
+        // IdpAdminClient returns a null RecoveryLink when Authentik's recovery response didn't
+        // contain a link (logged as a warning there). The proto field is a plain string — never
+        // null — so the handler must coalesce, not propagate null into the response.
+        var request = new InviteUserRequest { Username = "bob", Email = "bob@acme.example" };
+        _authentikAdminClient
+            .CreateUserAsync("bob", "bob@acme.example", "acme", Arg.Any<IReadOnlyList<string>>())
+            .Returns(Task.FromResult(new CreateUserResult("user-1", null)));
+
+        var response = await _sut.InviteUser(request, ContextForCallerTenant());
+
+        response.RecoveryLink.Should().Be(string.Empty);
     }
 
     [Fact]
     public async Task InviteUser_SuspendedTenant_ThrowsPermissionDeniedAndDoesNotCreateUser()
     {
         _tenantStatusCache.GetStatusAsync("acme").Returns(Task.FromResult<string?>("suspended"));
-        var request = new InviteUserRequest { Username = "bob", Email = "bob@acme.example", InitialPassword = "pw" };
+        var request = new InviteUserRequest { Username = "bob", Email = "bob@acme.example" };
 
         var act = () => _sut.InviteUser(request, ContextForCallerTenant());
 
@@ -94,14 +108,13 @@ public class TenantAdminGrpcServiceTests
                 Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),
-                Arg.Any<string>(),
                 Arg.Any<IReadOnlyList<string>>());
     }
 
     [Fact]
     public async Task InviteUser_NoTenantIdClaim_ThrowsPermissionDeniedAndDoesNotCreateUser()
     {
-        var request = new InviteUserRequest { Username = "bob", Email = "bob@acme.example", InitialPassword = "pw" };
+        var request = new InviteUserRequest { Username = "bob", Email = "bob@acme.example" };
         var context = TestServerCallContext.Create(user: ActingUserFixtures.PrincipalWithTenant("no-tenant-user", null));
 
         var act = () => _sut.InviteUser(request, context);
@@ -110,7 +123,6 @@ public class TenantAdminGrpcServiceTests
         ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
         await _authentikAdminClient.DidNotReceive()
             .CreateUserAsync(
-                Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),

@@ -18,12 +18,30 @@ public interface IVectorQueryService
         string collectionName,
         IReadOnlyList<ulong> ids,
         string vectorName);
+
+    /// <summary>Approximate point count of a collection (Qdrant collection info).</summary>
+    Task<ulong> GetPointCountAsync(string collectionName);
+
+    /// <summary>
+    /// Payload of each listed point, canonicalised to strings exactly as SearchNamedAsync does.
+    /// Ids with no point are absent from the result.
+    /// </summary>
+    Task<IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>> RetrievePayloadAsync(
+        string collectionName, IReadOnlyList<ulong> ids);
 }
 
 public interface IVectorSchemaManager
 {
     Task EnsureCollectionAsync(string collectionName, ulong vectorSize);
     Task ApplyCollectionAsync(CollectionSchema schema);
+
+    /// <summary>
+    /// A non-mutating Qdrant connectivity check — lists collections rather than creating one.
+    /// CSR finding #7: the anonymous <c>/health</c> endpoint used to call
+    /// <see cref="EnsureCollectionAsync"/> against a fixed probe collection name, which CREATES
+    /// the collection if it does not already exist — a write, reachable with no authentication.
+    /// </summary>
+    Task<bool> PingAsync();
 }
 
 public interface IVectorWriteService
@@ -42,6 +60,7 @@ public interface IVectorWriteService
         string collectionName,
         ulong id,
         IReadOnlyDictionary<string, float[]> namedVectors);
+    Task SetPayloadAsync(string collectionName, ulong id, IReadOnlyDictionary<string, object> payload);
     Task DeleteAsync(string collectionName, ulong id);
     Task DeleteByFilterAsync(string collectionName, Filter filter);
 }

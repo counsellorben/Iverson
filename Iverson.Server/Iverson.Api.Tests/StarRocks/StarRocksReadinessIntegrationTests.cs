@@ -13,6 +13,7 @@ namespace Iverson.Api.Tests.StarRocks;
 // out a Repository, which would defeat the point of this test: proving the *production*
 // StarRocksReadinessGate (inside EngagementRepository itself) absorbs the FE-ready-but-
 // BE-not-ready race with no external help.
+[Trait("Category", "Integration")]
 [Collection(ContainerCollection.Name)]
 public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
 {
@@ -25,7 +26,7 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
         // than production, and irreproducible the moment upstream publishes again.
         .WithImage("starrocks/allin1-ubuntu:4.1.1")
         .WithPortBinding(MysqlPort, true)
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(MysqlPort))
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(MysqlPort))
         .Build();
 
     private string _connectionString = null!;

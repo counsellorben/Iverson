@@ -19,11 +19,15 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
             .WithImage("qdrant/qdrant:v1.18.2")
             .WithPortBinding(GrpcPort, assignRandomHostPort: true)
             .WithPortBinding(6333,     assignRandomHostPort: true)
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(GrpcPort))
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(GrpcPort))
             .Build();
 
     public IntelligenceVectorService Service { get; private set; } = null!;
     public IntelligenceCollectionManager CollectionManager { get; private set; } = null!;
+
+    /// <summary>Raw client, exposed only so PingAsync's no-side-effect tests can list collections
+    /// independently of the manager under test.</summary>
+    public QdrantClient Client { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
@@ -33,6 +37,7 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
         var mappedPort = _container.GetMappedPublicPort(GrpcPort);
 
         var qdrantClient  = new QdrantClient(host, mappedPort, https: false);
+        Client            = qdrantClient;
         Service           = new IntelligenceVectorService(qdrantClient);
         CollectionManager = new IntelligenceCollectionManager(qdrantClient, "test-api-key", NullLogger<IntelligenceCollectionManager>.Instance);
     }
@@ -40,16 +45,41 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
     public async Task DisposeAsync() => await _container.DisposeAsync();
 }
 
+[Trait("Category", "Integration")]
 [Collection(ContainerCollection.Name)]
 public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     : IClassFixture<QdrantContainerFixture>
 {
     private readonly IntelligenceVectorService _svc = fixture.Service;
     private readonly IntelligenceCollectionManager _mgr = fixture.CollectionManager;
+    private readonly QdrantClient _rawClient = fixture.Client;
 
     // Each test gets its own collection name to avoid state leakage
     private static string UniqueName() =>
         "col_" + Guid.NewGuid().ToString("N")[..8];
+
+    // ── PingAsync (CSR finding #7 — /health's Qdrant check must not write) ────
+
+    [Fact]
+    public async Task PingAsync_ReturnsTrue_AgainstLiveInstance()
+    {
+        var result = await _mgr.PingAsync();
+
+        result.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PingAsync_CreatesNoCollection()
+    {
+        var before = (await _rawClient.ListCollectionsAsync()).ToList();
+
+        await _mgr.PingAsync();
+
+        var after = (await _rawClient.ListCollectionsAsync()).ToList();
+        after.Should().BeEquivalentTo(before,
+            "PingAsync is a read (ListCollections) — unlike the EnsureCollectionAsync call " +
+            "/health used before CSR finding #7, it must never create a collection as a side effect");
+    }
 
     // ── EnsureCollectionAsync ─────────────────────────────────────────────────
 
@@ -411,5 +441,54 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
         result.Should().HaveCount(count);
         result[1UL].Should().BeEquivalentTo(new float[] { 0f, 1f, 0f, 0f });
         result[600UL].Should().BeEquivalentTo(new float[] { 1f, 0f, 0f, 0f });
+    }
+
+    // ── GetPointCountAsync / RetrievePayloadAsync ──────────────────────────────
+
+    [Fact]
+    public async Task GetPointCountAsync_ReturnsNumberOfUpsertedPoints()
+    {
+        var name = UniqueName();
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
+
+        await _svc.UpsertAsync(name, 1UL, [1f, 0f, 0f, 0f], new Dictionary<string, object> { ["title"] = "one", ["rank"] = 1 });
+        await _svc.UpsertAsync(name, 2UL, [0f, 1f, 0f, 0f], new Dictionary<string, object> { ["title"] = "two", ["rank"] = 2 });
+        await _svc.UpsertAsync(name, 3UL, [0f, 0f, 1f, 0f], new Dictionary<string, object> { ["title"] = "three", ["rank"] = 3 });
+
+        var count = await _svc.GetPointCountAsync(name);
+
+        count.Should().Be(3UL);
+    }
+
+    [Fact]
+    public async Task RetrievePayloadAsync_ReturnsCanonicalisedPayload_AndOmitsMissingIds()
+    {
+        var name = UniqueName();
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
+
+        await _svc.UpsertAsync(name, 1UL, [1f, 0f, 0f, 0f], new Dictionary<string, object> { ["title"] = "one", ["rank"] = 1 });
+        await _svc.UpsertAsync(name, 2UL, [0f, 1f, 0f, 0f], new Dictionary<string, object> { ["title"] = "two", ["rank"] = 2 });
+        await _svc.UpsertAsync(name, 3UL, [0f, 0f, 1f, 0f], new Dictionary<string, object> { ["title"] = "three", ["rank"] = 3 });
+
+        var result = await _svc.RetrievePayloadAsync(name, [1UL, 3UL, 999UL]);
+
+        result.Should().HaveCount(2);
+        result.Should().ContainKey(1UL).WhoseValue.Should().Contain(new KeyValuePair<string, string>("title", "one"))
+            .And.Contain(new KeyValuePair<string, string>("rank", "1"));
+        result.Should().ContainKey(3UL).WhoseValue.Should().Contain(new KeyValuePair<string, string>("title", "three"))
+            .And.Contain(new KeyValuePair<string, string>("rank", "3"));
+        result.Should().NotContainKey(999UL);
+    }
+
+    [Fact]
+    public async Task RetrievePayloadAsync_ReturnsEmptyDictionary_WhenIdsListIsEmpty()
+    {
+        var name = UniqueName();
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
+
+        var act = async () => await _svc.RetrievePayloadAsync(name, []);
+
+        var result = await act.Should().NotThrowAsync();
+        result.Subject.Should().BeEmpty();
     }
 }

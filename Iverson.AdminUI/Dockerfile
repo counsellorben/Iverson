@@ -1,13 +1,16 @@
-# node:22, not node:20. react-router@8.3.0 declares engines.node ">=22.22.0" — the
-# highest floor in the installed tree (164 packages declare engines.node; the next
-# highest is vite/rolldown/@vitejs/plugin-react at "^20.19.0 || >=22.12.0", which
-# already excludes the whole 21 line). node:20-alpine built only because npm treats an
-# unmet engines range as a warning, not an error; the next dependency bump that turns
-# it into a hard failure would break the image build with no warning beforehand.
-# `engines.node` in Iverson.AdminUI/package.json records that floor so this tag and
-# the tree cannot drift apart silently. node:22-alpine currently ships v22.23.2.
-# The runtime stage below is a separate nginx image and is unaffected by this.
-FROM node:22-alpine AS build
+# Pinned by digest (CSR round-3 finding #13): a floating tag lets the base image
+# change under this build with no review. Manifest-list (OCI image index) digest
+# for docker.io/library/node:20-alpine as of 2026-09-13, confirmed via a direct
+# `GET /v2/library/node/manifests/20-alpine` against registry-1.docker.io
+# (Docker-Content-Digest response header, requested with an
+# application/vnd.oci.image.index.v1+json Accept header) — NOT the same as a local
+# `docker inspect --format='{{index .RepoDigests 0}}'` after a plain pull, which
+# recorded this host's own single-platform (linux/amd64) manifest digest instead of
+# the multi-arch index; pinning that value would have silently broken any other
+# platform's build. Bump this deliberately (re-resolve both the tag and its current
+# digest) when a newer 20-alpine patch is wanted; the tag is kept alongside the
+# digest for human readability only — the digest is what's actually resolved.
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS build
 WORKDIR /src
 COPY Iverson.AdminUI/package.json Iverson.AdminUI/package-lock.json ./
 RUN npm ci
@@ -15,7 +18,10 @@ COPY Iverson.AdminUI/ .
 COPY Iverson.Clients/Common/Proto ../Iverson.Clients/Common/Proto
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+# Pinned by digest (CSR round-3 finding #13) — same rationale and same caveat about
+# platform-specific vs. manifest-list digests as the node stage above. Manifest-list
+# digest for docker.io/nginxinc/nginx-unprivileged:1.27-alpine as of 2026-09-13.
+FROM nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0 AS runtime
 # The base image already sets USER 101 as its own default, but /usr/share/nginx/html
 # is baked into that base image as root:root 755 — COPY (even with --chown on the
 # copied files) never retroactively chowns a pre-existing destination directory
@@ -30,7 +36,7 @@ RUN chown 101:101 /usr/share/nginx/html
 # Replaces the base image's stock default.conf, which has no SPA fallback:
 # unmatched paths (e.g. /callback, /performance) 404 instead of resolving to
 # index.html and letting React Router take over client-side.
-COPY Iverson.AdminUI/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --chown=101:101 Iverson.AdminUI/nginx.conf /etc/nginx/conf.d/default.conf
 COPY Iverson.AdminUI/docker-entrypoint.sh /docker-entrypoint.d/40-admin-ui-config.sh
 RUN chmod +x /docker-entrypoint.d/40-admin-ui-config.sh
 USER 101

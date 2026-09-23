@@ -1,0 +1,33 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: iverson-pvc-storageclass
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["persistentvolumeclaims"]
+  validations:
+    - expression: >-
+        has(object.spec.storageClassName) &&
+        object.spec.storageClassName in {{ .Values.allowedStorageClasses | toJson }}
+      reason: Invalid
+      messageExpression: >-
+        "PersistentVolumeClaim " + object.metadata.name + " requests StorageClass " +
+        (has(object.spec.storageClassName) ? object.spec.storageClassName : "<none>") +
+        "; allowed: {{ .Values.allowedStorageClasses | join ", " }}"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: iverson-pvc-storageclass
+spec:
+  policyName: iverson-pvc-storageclass
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}

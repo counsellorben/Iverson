@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func stringPtr(s string) *string { return &s }
@@ -18,7 +22,7 @@ func TestOAuth2ClientCredentials_GetRequestMetadata_FetchesAndCachesToken(t *tes
 	}))
 	defer server.Close()
 
-	creds := &OAuth2ClientCredentials{ClientID: "id", ClientSecret: "secret", TokenEndpoint: server.URL}
+	creds := &OAuth2ClientCredentials{ClientID: "id", ClientSecret: "secret", TokenEndpoint: server.URL, AllowInsecureCredentials: true}
 
 	md, err := creds.GetRequestMetadata(context.Background())
 	if err != nil {
@@ -36,11 +40,55 @@ func TestOAuth2ClientCredentials_GetRequestMetadata_FetchesAndCachesToken(t *tes
 	}
 }
 
-func TestOAuth2ClientCredentials_RequireTransportSecurity_ReturnsFalse(t *testing.T) {
+func TestOAuth2ClientCredentials_RequireTransportSecurity_DefaultsToTrue(t *testing.T) {
 	creds := &OAuth2ClientCredentials{}
-	if creds.RequireTransportSecurity() {
-		t.Error("RequireTransportSecurity() = true, want false (plaintext h2c deployment)")
+	if !creds.RequireTransportSecurity() {
+		t.Error("RequireTransportSecurity() = false, want true (default must enforce transport security)")
 	}
+}
+
+func TestOAuth2ClientCredentials_RequireTransportSecurity_FalseWhenOptedIn(t *testing.T) {
+	creds := &OAuth2ClientCredentials{AllowInsecureCredentials: true}
+	if creds.RequireTransportSecurity() {
+		t.Error("RequireTransportSecurity() = true, want false when AllowInsecureCredentials is set")
+	}
+}
+
+// TestNewIversonClient_PlaintextWithCredentials_FailsWithoutOptIn pins the
+// construction-time behavior the opt-in exists to preserve: grpc-go's own
+// ClientConn.validateTransportCredentials refuses to build a channel that
+// combines insecure transport credentials with a PerRPCCredentials that
+// requires transport security (the default), so the Bearer token can never
+// ride a plaintext channel silently.
+func TestNewIversonClient_PlaintextWithCredentials_FailsWithoutOptIn(t *testing.T) {
+	client, err := NewIversonClient("127.0.0.1:0",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithPerRPCCredentials(&OAuth2ClientCredentials{
+			ClientID: "id", ClientSecret: "secret", TokenEndpoint: "http://example.invalid",
+		}),
+	)
+	if err == nil {
+		client.Close()
+		t.Fatal("NewIversonClient succeeded, want an error: plaintext channel + credentials with no opt-in must be refused at construction")
+	}
+}
+
+// TestNewIversonClient_PlaintextWithCredentials_SucceedsWithOptIn is the
+// matching positive leg: the same combination succeeds once the caller has
+// explicitly set AllowInsecureCredentials, mirroring the conformance driver's
+// deliberate dev/test use of a plaintext h2c channel with credentials.
+func TestNewIversonClient_PlaintextWithCredentials_SucceedsWithOptIn(t *testing.T) {
+	client, err := NewIversonClient("127.0.0.1:0",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithPerRPCCredentials(&OAuth2ClientCredentials{
+			ClientID: "id", ClientSecret: "secret", TokenEndpoint: "http://example.invalid",
+			AllowInsecureCredentials: true,
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewIversonClient failed with opt-in set: %v", err)
+	}
+	client.Close()
 }
 
 func TestGetRequestMetadata_CtxTokenWinsOverDefault(t *testing.T) {
@@ -50,10 +98,11 @@ func TestGetRequestMetadata_CtxTokenWinsOverDefault(t *testing.T) {
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:               "id",
-		ClientSecret:           "secret",
-		TokenEndpoint:          server.URL,
-		DefaultActingUserToken: stringPtr("ambient"),
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
+		DefaultActingUserToken:   stringPtr("ambient"),
+		AllowInsecureCredentials: true,
 	}
 
 	ctx := WithActingUserToken(context.Background(), "percall")
@@ -73,10 +122,11 @@ func TestGetRequestMetadata_DefaultAppliesWhenCtxHasNone(t *testing.T) {
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:               "id",
-		ClientSecret:           "secret",
-		TokenEndpoint:          server.URL,
-		DefaultActingUserToken: stringPtr("ambient"),
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
+		DefaultActingUserToken:   stringPtr("ambient"),
+		AllowInsecureCredentials: true,
 	}
 
 	md, err := creds.GetRequestMetadata(context.Background())
@@ -95,9 +145,10 @@ func TestGetRequestMetadata_ExplicitEmptyPerCallTokenEmitsLoudBearer(t *testing.
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:      "id",
-		ClientSecret:  "secret",
-		TokenEndpoint: server.URL,
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
+		AllowInsecureCredentials: true,
 	}
 
 	ctx := WithActingUserToken(context.Background(), "")
@@ -117,10 +168,11 @@ func TestGetRequestMetadata_ExplicitEmptyPerCallTokenDoesNotFallThroughToDefault
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:               "id",
-		ClientSecret:           "secret",
-		TokenEndpoint:          server.URL,
-		DefaultActingUserToken: stringPtr("ambient"),
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
+		DefaultActingUserToken:   stringPtr("ambient"),
+		AllowInsecureCredentials: true,
 	}
 
 	ctx := WithActingUserToken(context.Background(), "")
@@ -140,10 +192,11 @@ func TestGetRequestMetadata_AmbientEmptyPointerEmitsLoudBearer(t *testing.T) {
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:               "id",
-		ClientSecret:           "secret",
-		TokenEndpoint:          server.URL,
-		DefaultActingUserToken: stringPtr(""),
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
+		DefaultActingUserToken:   stringPtr(""),
+		AllowInsecureCredentials: true,
 	}
 
 	md, err := creds.GetRequestMetadata(context.Background())
@@ -162,9 +215,10 @@ func TestGetRequestMetadata_NoTokenAnywhereOmitsHeader(t *testing.T) {
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:      "id",
-		ClientSecret:  "secret",
-		TokenEndpoint: server.URL,
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL,
+		AllowInsecureCredentials: true,
 	}
 
 	md, err := creds.GetRequestMetadata(context.Background())
@@ -173,5 +227,51 @@ func TestGetRequestMetadata_NoTokenAnywhereOmitsHeader(t *testing.T) {
 	}
 	if _, exists := md[ActingUserMetadataKey]; exists {
 		t.Errorf("ActingUserMetadataKey should be absent from metadata, but got %q", md[ActingUserMetadataKey])
+	}
+}
+
+func TestOAuth2ClientCredentials_RejectsPlaintextEndpointWithoutOptIn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test-token", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	// Test with plaintext endpoint and AllowInsecureCredentials=false (default)
+	creds := &OAuth2ClientCredentials{
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL, // plaintext server.URL
+		AllowInsecureCredentials: false,
+	}
+
+	_, err := creds.GetRequestMetadata(context.Background())
+	if err == nil {
+		t.Fatal("GetRequestMetadata should reject plaintext endpoint without opt-in, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "refusing to send OAuth2 client credentials to a non-https token endpoint") {
+		t.Errorf("got unexpected error: %v", err)
+	}
+}
+
+func TestOAuth2ClientCredentials_AcceptsPlaintextEndpointWithOptIn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test-token", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	// Test with plaintext endpoint and AllowInsecureCredentials=true
+	creds := &OAuth2ClientCredentials{
+		ClientID:                 "id",
+		ClientSecret:             "secret",
+		TokenEndpoint:            server.URL, // plaintext server.URL
+		AllowInsecureCredentials: true,
+	}
+
+	md, err := creds.GetRequestMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("GetRequestMetadata should accept plaintext endpoint with opt-in, but got error: %v", err)
+	}
+	if md["authorization"] != "Bearer test-token" {
+		t.Errorf("got %q, want %q", md["authorization"], "Bearer test-token")
 	}
 }

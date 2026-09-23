@@ -37,7 +37,7 @@ Ten components carry the security-relevant behavior; each is a "trust boundary" 
 | **I** | Ollama embedding integration | Internal-network-trust, no auth | `Iverson.Embeddings/EmbeddingService.cs` |
 | **J** | Deployment/network posture (compose vs. kind/cloud) | Perimeter | `docker-compose.yml`, `deploy/helm/iverson/templates/networkpolicies.yaml`, `charts/api/templates/ingress.yaml` |
 
-Four Authentik OAuth2 client audiences are configured as valid for the primary JWT scheme (`Authentication:ValidAudiences`, `deploy/helm/iverson/charts/api/templates/deployment.yaml:117-128`): `human-oidc-client` (the human-facing web app), `loadtest-client`, `webtest-client`, and `admin-automation-client`. A JWT for **any** of these four is treated identically by every RPC's authentication check — the only differentiation after that point is row/field-level, via the separate `x-acting-user-authorization` header and a fifth client (`loadtest-human`) scoped to that second JWT scheme.
+Up to four Authentik OAuth2 client audiences are configured as valid for the primary JWT scheme (`Authentication:ValidAudiences`, `deploy/helm/iverson/charts/api/templates/deployment.yaml:117-128`): `human-oidc-client` (the human-facing web app) and `admin-automation-client` are always configured; `loadtest-client` and `webtest-client` are configured only when `global.provisionTestIdentities` is set (true on the `values-local`/`values-laptop` profiles, false elsewhere), since only then does an Authentik provider actually issue tokens for them. A JWT for any of the audiences actually configured is treated identically by every RPC's authentication check — the only differentiation after that point is row/field-level, via the separate `x-acting-user-authorization` header and a fifth client (`loadtest-human`) scoped to that second JWT scheme, itself gated the same way: on non-test profiles `Authentication:ActingUser:ValidAudiences` is empty, so acting-user propagation has no configured audience there by design.
 
 ## 4. Threat actors
 
@@ -114,7 +114,7 @@ Four Authentik OAuth2 client audiences are configured as valid for the primary J
 - **Residual risk**: Low — this element is a model of what A should look like, not a gap itself.
 
 ### H. HTTP health/metrics endpoints
-- **Information disclosure**: Prometheus scrape and `/health`/`/probe/*` are `AllowAnonymous` by design; metrics could reveal operational details (queue depths, error rates) to an unauthenticated observer, but this is a conventional, low-sensitivity tradeoff for operability, not a distinct finding.
+- **Information disclosure**: Prometheus scrape and `/health` are `AllowAnonymous` by design; metrics could reveal operational details (queue depths, error rates) to an unauthenticated observer, but this is a conventional, low-sensitivity tradeoff for operability, not a distinct finding. (`/probe/*` was removed in the CSR remediation branch's Task 1 and no longer exists.)
 - **Denial of service**: unauthenticated endpoints are a nonzero DoS surface but a standard one (rate-limiting/ingress-level concern, not application-specific).
 - **Residual risk**: Low, accepted by design.
 

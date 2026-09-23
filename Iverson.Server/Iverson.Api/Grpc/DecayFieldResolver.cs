@@ -82,4 +82,35 @@ internal static class DecayFieldResolver
         var ageDays = (now - timestamp).TotalDays;
         return Math.Min(1.0, Math.Pow(0.5, ageDays / halfLifeDays));
     }
+
+    /// <summary>
+    /// Sums a stored "yyyy-MM:count;…" series into a decayed count against <paramref name="now"/>,
+    /// using the same 0.5^(age/halfLife) curve as ComputeDecay. Bucket age is measured from the
+    /// bucket's START; the constant offset that introduces is absorbed by RecencyBoost and does not
+    /// affect ranking. Any malformed entry abandons the WHOLE series (returns 0.0) rather than
+    /// yielding a confidently wrong partial sum.
+    /// </summary>
+    internal static double ComputeRecencySum(string? series, DateTimeOffset now, double halfLifeDays)
+    {
+        if (string.IsNullOrEmpty(series)) return 0.0;
+
+        var sum = 0.0;
+        foreach (var entry in series.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var sep = entry.IndexOf(':');
+            if (sep <= 0) return 0.0;
+
+            if (!DateTime.TryParseExact(
+                    entry[..sep], "yyyy-MM", CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var bucketStart))
+                return 0.0;
+
+            if (!long.TryParse(entry[(sep + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var count))
+                return 0.0;
+
+            var ageDays = (now - new DateTimeOffset(bucketStart, TimeSpan.Zero)).TotalDays;
+            sum += count * Math.Min(1.0, Math.Pow(0.5, ageDays / halfLifeDays));
+        }
+        return sum;
+    }
 }

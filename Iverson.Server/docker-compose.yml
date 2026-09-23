@@ -5,10 +5,12 @@
 # This file defines a complete Iverson stack for local development, including
 # several services with intentionally static, hardcoded default credentials:
 #   - PostgreSQL: user/password = iverson/iverson
-#   - Authentik: admin password = dev-admin-password, bootstrap token = dev-bootstrap-token-0123456789
+#   - Authentik: admin password and bootstrap token are generated per-checkout, required via
+#     ${AUTHENTIK_BOOTSTRAP_PASSWORD:?...} / ${AUTHENTIK_BOOTSTRAP_TOKEN:?...} — run
+#     scripts/generate-compose-secrets.sh first
 #   - Service OAuth2 client secrets (see deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml)
-#   - Qdrant: API key = dev-only-not-for-production-qdrant-key-0123456789 (shared by the qdrant
-#     and iverson-api services below)
+#   - Qdrant: API key is generated per-checkout, required via ${QDRANT__SERVICE__API_KEY:?...}
+#     (shared by the qdrant and iverson-api services below) — run scripts/generate-compose-secrets.sh first
 #   - And other dev-convenience values marked dev-only-not-for-production
 #
 # THIS DOCKER-COMPOSE STACK MUST NEVER BE EXPOSED BEYOND LOCALHOST OR USED IN:
@@ -35,7 +37,7 @@ services:
       POSTGRES_PASSWORD: iverson
       POSTGRES_DB: iverson
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./deploy/postgres/init-authentik-db.sql:/docker-entrypoint-initdb.d/init-authentik-db.sql:ro
@@ -50,8 +52,8 @@ services:
     container_name: iverson-starrocks
     restart: unless-stopped
     ports:
-      - "8030:8030"   # FE HTTP / admin
-      - "9030:9030"   # FE MySQL query port
+      - "127.0.0.1:8030:8030"   # FE HTTP / admin
+      - "127.0.0.1:9030:9030"   # FE MySQL query port
     volumes:
       - starrocks_data:/data/deploy
     healthcheck:
@@ -82,6 +84,8 @@ services:
   # exists. `GRANT user_admin TO 'iverson_app'@'%'` is likewise required: that same method runs
   # `SET ROLE user_admin` on its connection, and the app's StarRocks connection string below
   # authenticates as iverson_app (matching the chart's api/worker deployments), not root.
+  # The trailing ALTER USER ... SET PROPERTIES line (CSR finding #6, defense-in-depth) is
+  # likewise carried over from the chart job — see its comment there for the rationale.
   starrocks-init:
     image: mysql:8.0
     container_name: iverson-starrocks-init
@@ -100,6 +104,7 @@ services:
           GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
           GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_app'@'%';
           GRANT user_admin TO 'iverson_app'@'%';
+          ALTER USER 'iverson_app' SET PROPERTIES ('session.query_timeout' = '180', 'session.exec_mem_limit' = '4294967296');
         "
     restart: "no"
 
@@ -108,11 +113,11 @@ services:
     container_name: iverson-qdrant
     restart: unless-stopped
     environment:
-      QDRANT__SERVICE__API_KEY: "dev-only-not-for-production-qdrant-key-0123456789"
+      QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
       QDRANT__SERVICE__JWT_RBAC: "true"
     ports:
-      - "6333:6333"   # REST API
-      - "6334:6334"   # gRPC
+      - "127.0.0.1:6333:6333"   # REST API
+      - "127.0.0.1:6334:6334"   # gRPC
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
@@ -126,7 +131,7 @@ services:
     container_name: iverson-ollama
     restart: unless-stopped
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -158,7 +163,7 @@ services:
     profiles: ["reranker"]
     command: ["--model-id", "${RERANKER_MODEL_ID:-cross-encoder/ms-marco-MiniLM-L-6-v2}", "--auto-truncate"]
     ports:
-      - "8090:80"
+      - "127.0.0.1:8090:80"
     volumes:
       - reranker_models:/data
 
@@ -179,7 +184,7 @@ services:
     # The default here is TEI's own, so every bge arm is unchanged.
     command: ["--model-id", "${EMBED_MODEL_ID:-BAAI/bge-base-en-v1.5}", "--auto-truncate", "--max-batch-tokens", "${TEI_MAX_BATCH_TOKENS:-16384}"]
     ports:
-      - "8091:80"
+      - "127.0.0.1:8091:80"
     volumes:
       - tei_models:/data
     healthcheck:
@@ -207,7 +212,7 @@ services:
       - HF_HUB_DISABLE_XET=1
     shm_size: 1g
     ports:
-      - "8092:80"
+      - "127.0.0.1:8092:80"
     volumes:
       - tgi_models:/data
     healthcheck:
@@ -236,7 +241,7 @@ services:
     depends_on:
       - zookeeper
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -263,9 +268,9 @@ services:
     environment:
       - COLLECTOR_OTLP_ENABLED=true
     ports:
-      - "16686:16686"  # Jaeger UI
-      - "4317:4317"    # OTLP gRPC (traces + logs)
-      - "4318:4318"    # OTLP HTTP
+      - "127.0.0.1:16686:16686"  # Jaeger UI
+      - "127.0.0.1:4317:4317"    # OTLP gRPC (traces + logs)
+      - "127.0.0.1:4318:4318"    # OTLP HTTP
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:14269/health || exit 1"]
       interval: 10s
@@ -280,7 +285,7 @@ services:
       - ./deploy/prometheus/prometheus.local.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready || exit 1"]
       interval: 10s
@@ -328,7 +333,7 @@ services:
     entrypoint: ["python", "-m", "lifecycle.migrate"]
     restart: "no"
     environment:
-      AUTHENTIK_SECRET_KEY: "dev-only-not-for-production-use-0123456789abcdef"
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?run scripts/generate-compose-secrets.sh first}
       AUTHENTIK_REDIS__HOST: redis
       AUTHENTIK_POSTGRESQL__HOST: postgres
       AUTHENTIK_POSTGRESQL__NAME: authentik
@@ -346,19 +351,26 @@ services:
     restart: unless-stopped
     command: server
     environment:
-      AUTHENTIK_SECRET_KEY: "dev-only-not-for-production-use-0123456789abcdef"
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?run scripts/generate-compose-secrets.sh first}
       AUTHENTIK_REDIS__HOST: redis
       AUTHENTIK_POSTGRESQL__HOST: postgres
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: authentik
       AUTHENTIK_BOOTSTRAP_EMAIL: admin@iverson.local
-      AUTHENTIK_BOOTSTRAP_PASSWORD: dev-admin-password
-      AUTHENTIK_BOOTSTRAP_TOKEN: dev-bootstrap-token-0123456789
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?run scripts/generate-compose-secrets.sh first}
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:?run scripts/generate-compose-secrets.sh first}
       # authentik-migrate owns migrations; this role must never run them concurrently.
       AUTHENTIK_SKIP_MIGRATIONS: "true"
+      IVERSON_LOADTEST_CLIENT_SECRET: ${IVERSON_LOADTEST_CLIENT_SECRET:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_WEBTEST_CLIENT_SECRET: ${IVERSON_WEBTEST_CLIENT_SECRET:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET: ${IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_SMOKE_TEST_PASSWORD: ${IVERSON_SMOKE_TEST_PASSWORD:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_BYPASS_PASSWORD: ${IVERSON_BYPASS_PASSWORD:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_ADMIN_ORCHESTRATOR_PASSWORD: ${IVERSON_ADMIN_ORCHESTRATOR_PASSWORD:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_ADMIN_ORCHESTRATOR_TOKEN: ${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
       - ./deploy/helm/iverson/charts/authentik/assets/fonts/fraunces-900.woff2:/web/dist/assets/fonts/Fraunces/fraunces-900.woff2:ro
@@ -382,17 +394,24 @@ services:
     restart: unless-stopped
     command: worker
     environment:
-      AUTHENTIK_SECRET_KEY: "dev-only-not-for-production-use-0123456789abcdef"
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?run scripts/generate-compose-secrets.sh first}
       AUTHENTIK_REDIS__HOST: redis
       AUTHENTIK_POSTGRESQL__HOST: postgres
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: authentik
       AUTHENTIK_BOOTSTRAP_EMAIL: admin@iverson.local
-      AUTHENTIK_BOOTSTRAP_PASSWORD: dev-admin-password
-      AUTHENTIK_BOOTSTRAP_TOKEN: dev-bootstrap-token-0123456789
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?run scripts/generate-compose-secrets.sh first}
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:?run scripts/generate-compose-secrets.sh first}
       # authentik-migrate owns migrations; this role must never run them concurrently.
       AUTHENTIK_SKIP_MIGRATIONS: "true"
+      IVERSON_LOADTEST_CLIENT_SECRET: ${IVERSON_LOADTEST_CLIENT_SECRET:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_WEBTEST_CLIENT_SECRET: ${IVERSON_WEBTEST_CLIENT_SECRET:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET: ${IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_SMOKE_TEST_PASSWORD: ${IVERSON_SMOKE_TEST_PASSWORD:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_BYPASS_PASSWORD: ${IVERSON_BYPASS_PASSWORD:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_ADMIN_ORCHESTRATOR_PASSWORD: ${IVERSON_ADMIN_ORCHESTRATOR_PASSWORD:?run scripts/generate-compose-secrets.sh first}
+      IVERSON_ADMIN_ORCHESTRATOR_TOKEN: ${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
     depends_on:
@@ -432,15 +451,20 @@ services:
     restart: unless-stopped
     user: "1000:1000"
     ports:
-      - "8080:8080"
-      - "8081:8081"
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
+      - ConnectionStrings__Postgres=Host=postgres;Port=5432;Database=iverson;Username=iverson;Password=iverson
       - Otel__Endpoint=http://jaeger:4317
       - Embeddings__BaseUrl=http://tei-embed:80
-      # MMR lambda; 0.70 is VectorRankingOptions' default. The reranker evaluation's A0'/A3 arms run
-      # the API at 1.00 (spec §7.2):   VECTOR_RANKING_LAMBDA=1.00 docker compose up -d iverson-api
-      - VectorRanking__Lambda=${VECTOR_RANKING_LAMBDA:-0.70}
+      # MMR lambda per endpoint; these match VectorRankingOptions' defaults, set by the Tier 1 gate
+      # (docs/plans/2026-09-GATE-tier1-defaults.md rule 7.2): SearchSimilar 1.00, SearchChunks 0.70.
+      # Override both to sweep, e.g.
+      #   VECTOR_RANKING_LAMBDA_SIMILAR=0.85 VECTOR_RANKING_LAMBDA_CHUNKS=0.85 docker compose up -d --no-deps iverson-api
+      - VectorRanking__LambdaSimilar=${VECTOR_RANKING_LAMBDA_SIMILAR:-1.00}
+      - VectorRanking__LambdaChunks=${VECTOR_RANKING_LAMBDA_CHUNKS:-0.70}
+      - VectorRanking__SimilarViaChunksTypes__0
       # Must agree with tei-embed's served model (its --model-id, EMBED_MODEL_ID) and with the five
       # conformance fixtures' declared model: this is the deployment default types register under.
       # A mismatch fails loudly at first initialisation — the API's /info identity guard.
@@ -452,8 +476,8 @@ services:
       # deployment.yaml): connect as iverson_app, the user starrocks-init provisions, not root —
       # EngagementRepository.EnsureTenantProvisionedAsync's `SET ROLE user_admin` depends on
       # authenticating as the user that role was granted to.
-      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;AllowPublicKeyRetrieval=true;
-      - Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789
+      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
+      - Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ExternalIssuer=http://authentik.iverson.local/application/o/iverson-api/
       - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
@@ -469,21 +493,11 @@ services:
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=http://authentik-server:9000
-      - Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token
+      - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
-      # Iverson.AdminUI's Vite dev server (npm run dev) runs at localhost:5173
-      # (Iverson.AdminUI/README.md) and is not proxied -- every fetch to /admin,
-      # /health, /v1/traces from it is cross-origin. Without this, CORS never
-      # activates (Program.cs registers no policy when AdminConsole:Origin is
-      # empty) and the browser blocks every one of those calls.
-      - AdminConsole__Origin=http://localhost:5173
-      # /admin/console/metrics (Task 7) proxies Prometheus's HTTP API. The prometheus
-      # service below scrapes iverson-api/iverson-worker (deploy/prometheus/prometheus.local.yml)
-      # and is reachable from api at its compose service name and its own query port 9090 --
-      # without this, the endpoint reports "notDeployed" even though Prometheus is running.
-      - Prometheus__BaseUrl=http://prometheus:9090
+      - Tenancy__SeedLegacyTenants=true
     # Kestrel does not begin listening until Program.cs's startup block has finished — the
-    # bootstrap DDL (EnsureRuntimeRoleAsync, the plumbing-table EnsureTableAsync calls, and every
+    # bootstrap DDL (EnsureRolesAsync, the plumbing-table EnsureTableAsync calls, and every
     # ApplySchemaAsync) is awaited BEFORE app.Run(). A successful TCP connect to 8080 is therefore
     # a precise "this replica's bootstrap DDL is complete" signal, which is exactly what
     # iverson-worker's depends_on needs. A bash /dev/tcp redirect rather than curl/wget: the
@@ -539,6 +553,7 @@ services:
       # IConfiguration under the literal key "WORKLOAD_ROLE" — the first key Program.cs checks.
       - WORKLOAD_ROLE=worker
       - Otel__Endpoint=http://jaeger:4317
+      - ConnectionStrings__Postgres=Host=postgres;Port=5432;Database=iverson;Username=iverson;Password=iverson
       - Embeddings__BaseUrl=http://tei-embed:80
       - Embeddings__ModelId=${BENCH_EMBED_MODEL:-BAAI/bge-base-en-v1.5}
       - Enrichment__BaseUrl=http://ollama:11434
@@ -548,8 +563,8 @@ services:
       # deployment.yaml): connect as iverson_app, the user starrocks-init provisions, not root —
       # EngagementRepository.EnsureTenantProvisionedAsync's `SET ROLE user_admin` depends on
       # authenticating as the user that role was granted to.
-      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;AllowPublicKeyRetrieval=true;
-      - Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789
+      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
+      - Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ExternalIssuer=http://authentik.iverson.local/application/o/iverson-api/
       - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
@@ -560,8 +575,9 @@ services:
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=http://authentik-server:9000
-      - Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token
+      - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
+      - Tenancy__SeedLegacyTenants=true
     depends_on:
       # The same backing-service conditions iverson-api uses...
       postgres:
@@ -586,7 +602,7 @@ services:
       # one. Both roles run the identical startup block (it sits outside Program.cs's
       # `workloadRole == "api"` guard), and that block is genuinely concurrency-safe by design —
       # every statement is CREATE/ALTER ... IF [NOT] EXISTS or ON CONFLICT DO NOTHING, and the two
-      # CREATE-then-catch paths (EnsureRuntimeRoleAsync, the RLS policy) both swallow SQLSTATE
+      # CREATE-then-catch paths (EnsureRolesAsync, the RLS policy) both swallow SQLSTATE
       # 42710 with an explicit "another replica created it concurrently" comment. Helm already
       # runs api x2 plus a worker against one database on that basis.
       #

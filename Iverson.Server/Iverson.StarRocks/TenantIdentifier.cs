@@ -6,7 +6,7 @@ namespace Iverson.StarRocks;
 
 public static class TenantIdentifier
 {
-    private static readonly Regex AllowedPattern = new("^(?!.*--)([A-Za-z0-9_-]{1,52})$", RegexOptions.Compiled);
+    private static readonly Regex AllowedPattern = new(@"\A(?!.*--)([A-Za-z0-9_-]{1,52})\z", RegexOptions.Compiled);
 
     public static bool IsValid(string tenantId) => AllowedPattern.IsMatch(tenantId);
 

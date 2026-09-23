@@ -1,21 +1,98 @@
+{{/*
+Mirror the security-header block admin-ui's nginx already serves, at the Ingress
+layer, for the controller classes that support it — see charts/admin-ui/templates/
+ingress.yaml for the per-class rationale. The nginx `allow-snippet-annotations`
+controller setting is not external to this repo on the kind profile — see that
+file's comment — and the AGIC "iverson-security-headers" rewrite rule set is not
+provisioned anywhere, so that annotation is opt-in via `ingress.securityHeadersRuleSet`
+(see the admin-ui template and values.yaml). This Ingress serves gRPC, which no
+browser renders as a document, so the mirror's value here is materially lower than
+on the admin-ui Ingress — browser-enforced headers like frame-ancestors and
+X-Frame-Options have no audience on a gRPC response. It is still applied uniformly
+for consistency with the admin-ui Ingress and because the same channel (this API)
+is also reachable from the browser via grpc-web fetches, where CSP connect-src
+still matters.
+*/}}
+{{- $oidcOrigin := printf "%s://authentik.%s" .Values.global.externalScheme .Values.global.ingressHost }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Release.Name }}-api
   annotations:
-    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if eq .Values.ingress.className "nginx" }}
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "Referrer-Policy: no-referrer";
+      more_set_headers "Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' {{ $oidcOrigin }}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'";
+      more_set_headers "Permissions-Policy: camera=(), microphone=(), geolocation=()";
+      {{- if eq .Values.global.externalScheme "https" }}
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+      {{- end }}
+    {{- else if and (eq .Values.ingress.className "azure-application-gateway") .Values.ingress.securityHeadersRuleSet }}
+    appgw.ingress.kubernetes.io/rewrite-rule-set: {{ .Values.ingress.securityHeadersRuleSet | quote }}
+    {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className | quote }}
+{{- /* Templates directly off global.ingressHost (not a separate ingress.host value) —
+   CSR round-3 finding #11: a duplicated api.ingress.host used to exist here and could
+   drift from global.ingressHost with no enforcement. admin-ui's Ingress template
+   already followed this single-source-of-truth pattern; api's now matches it. */}}
 {{- if .Values.ingress.tlsSecretName }}
   tls:
-    - hosts: [{{ .Values.ingress.host | quote }}]
+    - hosts: [{{ .Values.global.ingressHost | quote }}]
       secretName: {{ .Values.ingress.tlsSecretName | quote }}
 {{- end }}
   rules:
-    - host: {{ .Values.ingress.host | quote }}
+    - host: {{ .Values.global.ingressHost | quote }}
       http:
         paths:
-          - path: /
+          - path: /iverson.ObjectMappingService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /iverson.ObjectPersistenceService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /iverson.ObjectRetrievalService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /iverson.ObjectSearchService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /iverson.TenantLifecycleGrpcService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /iverson.TenantAdminGrpcService
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8080
+          - path: /v1/traces
             pathType: Prefix
             backend:
               service:

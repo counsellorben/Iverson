@@ -13,13 +13,18 @@ corpus, and the search endpoints would silently return nothing for a wrong id). 
 fixed; the vector DIMENSION is not -- it is probed from the embedding backend at --embed-url
 at startup (768 for nomic-embed-text, 384 for snowflake-arctic-embed:s), never hard-coded:
 
-    object collection   {object-collection}   default benchmark_documents_tenant_bypass
+    object collection   {object-collection}   default benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk
       vectors: body_vector, body_centroid -- both {probed dimension}-dim, Cosine
       payload: key, docId, title, body, ownerId, __TenantId
 
-    chunks collection   {chunks-collection}   default benchmark_documents_chunks_tenant_bypass
+    chunks collection   {chunks-collection}   default benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk
       vectors: body_vector -- {probed dimension}-dim, Cosine
       payload: text, parent_id, field ("Body"), chunk_index (a STRING), ownerId
+
+    (CSR finding #9, 2026-09: the server's collection-naming rule now appends a SHA-256
+    fingerprint of the tenant id, so these defaults carry that suffix -- see DEFAULT_OBJECT_COLLECTION
+    below. The reference points described next still live in the OLD, unsuffixed collection names
+    until an alias or re-ingest addresses that.)
 
 A run's VECTORS are model- and prefix-dependent, even where the point ids are not: --model
 selects the document task prefix resolved from its family (ingest-contract.json's
@@ -45,6 +50,11 @@ costing ~34s/document to reproduce. --drop deletes and recreates a collection em
 run --drop against those two collection names outside of the plan's Task 5 (which does so
 deliberately, after the reference points have already been used to verify this script).
 Point --object-collection/--chunks-collection at throwaway names to exercise --drop.
+
+QDRANT_API_KEY is read from the QDRANT__SERVICE__API_KEY environment variable at import time
+(CSR round-7 finding F10 -- it used to be a hardcoded dev literal); every invocation below needs
+it sourced first, e.g.:
+    set -a; . Iverson.Server/.env; set +a
 
 Usage:
     python3 Iverson.Server/Iverson.LoadTest/scripts/ingest.py \\
@@ -137,8 +147,9 @@ from datetime import datetime, timezone
 
 # Read once at import time, resolved relative to this script's own directory so the script
 # works regardless of the caller's cwd. This is the single source of truth for chunk-window
-# sizing, collection naming, distance, and embedding document prefixes -- generated out of the
-# C# write path and gated by IngestContractTests, which is proven to fail on drift. A local
+# sizing, collection naming, distance, embedding document and query prefixes, and per-family
+# document/query composition goldens -- generated out of the C# write path and gated by
+# IngestContractTests, which is proven to fail on drift. A local
 # file read is import-safe offline (no network call), unlike everything below the "Qdrant REST"
 # and "Embedding backend" sections.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -146,7 +157,7 @@ with open(os.path.join(_SCRIPT_DIR, "ingest-contract.json"), encoding="utf-8") a
     CONTRACT = json.load(_contract_f)
 
 QDRANT_URL = "http://localhost:6333"
-QDRANT_API_KEY = "dev-only-not-for-production-qdrant-key-0123456789"
+QDRANT_API_KEY = os.environ["QDRANT__SERVICE__API_KEY"]
 DEFAULT_EMBED_URL = "http://localhost:8091"
 
 # Generous rather than tight: per-embed latency runs 5-14s under load (see the plan's own
@@ -173,31 +184,39 @@ CHUNKS_PAYLOAD_INDEXES = ["field", "ownerId", "parent_id"]
 OWNER_ID = "8f5c3da2e5ecbad46e1dab4890c109a4826919be420f5d7a3d0029a9fbff273e"
 TENANT_ID = "tenant_bypass"
 
-# Reconstructed from the contract's collectionNaming template ("{base}{suffix}_{tenant}") and
-# TENANT_ID above. Must reproduce the two literal names the module docstring calls out as
-# irreplaceable -- benchmark_documents_tenant_bypass / benchmark_documents_chunks_tenant_bypass
-# -- exactly; a silently different name would point the benchmark at a collection that does not
-# exist.
+# CSR finding #9 (2026-09) made the tenant segment of the server's collection-naming rule a
+# SHA-256 fingerprint of the tenant id (mirrors Iverson.StarRocks.TenantIdentifier) rather than the
+# tenant id substituted verbatim, so this script can no longer TEMPLATE its way to the physical
+# name the way it once did -- the contract now emits the already-resolved names for the one
+# tenant id this script actually uses (knownTenantId) instead of a format string.
+#
+# CONSEQUENCE FOR THE EXISTING REFERENCE COLLECTIONS: the physical names below are no longer
+# benchmark_documents_tenant_bypass / benchmark_documents_chunks_tenant_bypass -- they now carry a
+# fingerprint suffix. The irreplaceable C#-written reference points (450 + 554 points, ~34s/doc to
+# reproduce) documented in this module's docstring still live in the OLD collections and are, until
+# addressed, unreachable under the new expected names. Point a Qdrant collection ALIAS (zero data
+# movement -- PUT /collections/aliases) from each new name to its old physical collection before
+# relying on --resume / any non---drop path against them. Do not re-ingest to "fix" this cheaply;
+# that is exactly the cost these collections exist to avoid paying twice.
 _naming = CONTRACT["collectionNaming"]
-DEFAULT_OBJECT_COLLECTION = _naming["template"].format(
-    base=_naming["base"], suffix=_naming["objectSuffix"], tenant=TENANT_ID
+assert _naming["knownTenantId"] == TENANT_ID, (
+    f"contract's knownTenantId {_naming['knownTenantId']!r} != this script's TENANT_ID "
+    f"{TENANT_ID!r} -- the contract was regenerated against a different benchmark tenant than "
+    "this script assumes"
 )
-DEFAULT_CHUNKS_COLLECTION = _naming["template"].format(
-    base=_naming["base"], suffix=_naming["chunksSuffix"], tenant=TENANT_ID
-)
+DEFAULT_OBJECT_COLLECTION = _naming["objectCollectionForKnownTenant"]
+DEFAULT_CHUNKS_COLLECTION = _naming["chunksCollectionForKnownTenant"]
 
-# The paragraph above states a requirement; these enforce it. Without them, a change to the
-# contract's base/template/suffixes (or to TENANT_ID) would silently rename the defaults, and the
-# next run would create two brand-new empty collections and report a "successful" ingest the
-# benchmark then queries nothing out of. Written as literals on purpose -- deriving the expected
-# value from the same contract fields would be a tautology.
-assert DEFAULT_OBJECT_COLLECTION == "benchmark_documents_tenant_bypass", (
+# Written as literals on purpose -- deriving the expected value from the same contract field would
+# be a tautology. A change here means the C# fingerprinting algorithm changed; update the alias
+# (or re-ingest) before trusting a run against the reference collections.
+assert DEFAULT_OBJECT_COLLECTION == "benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk", (
     f"default object collection derived from the contract as {DEFAULT_OBJECT_COLLECTION!r}, "
-    "not benchmark_documents_tenant_bypass"
+    "not benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk"
 )
-assert DEFAULT_CHUNKS_COLLECTION == "benchmark_documents_chunks_tenant_bypass", (
+assert DEFAULT_CHUNKS_COLLECTION == "benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk", (
     f"default chunks collection derived from the contract as {DEFAULT_CHUNKS_COLLECTION!r}, "
-    "not benchmark_documents_chunks_tenant_bypass"
+    "not benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk"
 )
 
 # Any fixed UUID works as the uuid5 namespace -- the only requirement is that it never changes
@@ -419,46 +438,63 @@ def document_prefix_for(model_id):
         family(model_id), CONTRACT["embedding"]["defaultDocumentPrefix"])
 
 
+def query_prefix_for(model_id):
+    return CONTRACT["embedding"]["queryPrefixes"].get(
+        family(model_id), CONTRACT["embedding"]["defaultQueryPrefix"])
+
+
 def verify_contract(model_id, *, require_known_family=False):
-    """Replays the contract's golden document-composition case for model_id's family by
-    composing that case's own "text" through this script's own document_prefix_for and
-    comparing against its "composed" -- the same rule Task 1 implements in C#, read from the
-    same file the C# side generated. Composing from the golden's own text (rather than, say,
-    recovering the input by stripping the prefix back off "composed") is what makes this a
-    cross-language check instead of a tautology. Falls back to the "__default__" golden case
-    for a family the contract doesn't carry, so an unrecognized --model still verifies (against
-    the empty-prefix default) instead of crashing. Exits non-zero on mismatch.
+    """Replays the contract's golden document- AND query-composition cases for model_id's
+    family, one pass over both sides, by composing each case's own "text" through this
+    script's own document_prefix_for / query_prefix_for and comparing against its "composed"
+    -- the same rule Task 1 implements in C#, read from the same file the C# side generated.
+    Composing from the golden's own text (rather than, say, recovering the input by stripping
+    the prefix back off "composed") is what makes this a cross-language check instead of a
+    tautology, on both sides alike. Falls back to the "__default__" golden case for a family
+    the contract doesn't carry, so an unrecognized --model still verifies (against the
+    empty-prefix default) instead of crashing. Exits non-zero on mismatch, naming which side
+    (document or query) diverged -- a document mismatch implicates the ingest write path, a
+    query mismatch implicates the search path and anything embedding queries Python-side.
 
     Then delegates to _verify_algorithm_goldens(), which replays the model-INDEPENDENT goldens
     (chunking, point ids, centroid) -- see its own docstring.
 
     require_known_family=False (main()'s default) is deliberately permissive: a real ingest
     against an unrecognized model must still be able to run. But permissive alone makes this
-    unfalsifiable as a check on family() itself -- document_prefix_for(model_id) and this
-    function's own fam = family(model_id) call the SAME family() on the SAME input, so if
-    family() is broken (e.g. never strips the tag, or strips the wrong side), the wrong fam
-    string is simply absent from BOTH documentPrefixes and golden, and both sides fall back to
-    the same trivially-true "__default__" identity (composed == text, no prefix) for any
-    garbage family string -- a broken family() coasts through undetected. require_known_family
-    closes that: Step 7's harness passes True for tagged ids whose family IS a real contract
-    key, so a family() that stops stripping the tag (or strips the wrong side) produces a fam
-    string that is NOT a real key and this rejects it outright, before it ever reaches the
-    identity-masking fallback."""
-    prefix = document_prefix_for(model_id)
+    unfalsifiable as a check on family() itself -- document_prefix_for(model_id) /
+    query_prefix_for(model_id) and this function's own fam = family(model_id) call the SAME
+    family() on the SAME input, so if family() is broken (e.g. never strips the tag, or strips
+    the wrong side), the wrong fam string is simply absent from BOTH prefix tables and both
+    goldens, and every side falls back to the same trivially-true "__default__" identity
+    (composed == text, no prefix) for any garbage family string -- a broken family() coasts
+    through undetected. require_known_family closes that: Step 7's harness passes True for
+    tagged ids whose family IS a real contract key, so a family() that stops stripping the tag
+    (or strips the wrong side) produces a fam string that is NOT a real key and this rejects it
+    outright, on either side, before it ever reaches the identity-masking fallback. The two
+    goldens carry identical key sets by construction (both loop EmbeddingPrefixes.Table
+    C#-side), so requiring the family in both goldens adds no detection power over requiring it
+    in one -- it is symmetry, and makes this fail loudly, on every run, rather than pass silently,
+    if the key sets ever stop matching."""
     fam = family(model_id)
-    golden = CONTRACT["golden"]["documentComposition"]
-    if require_known_family and fam not in golden:
-        sys.exit(
-            f"contract verification failed for model '{model_id}': family '{fam}' is not a "
-            f"known key in golden.documentComposition -- family() may be broken"
-        )
-    case = golden.get(fam, golden["__default__"])
-    composed = prefix + case["text"]
-    if composed != case["composed"]:
-        sys.exit(
-            f"contract verification failed for model '{model_id}' (family '{fam}'): "
-            f"resolved prefix {prefix!r} composed {composed!r}, expected {case['composed']!r}"
-        )
+    for side, prefix_for, golden_key in (
+        ("document", document_prefix_for, "documentComposition"),
+        ("query", query_prefix_for, "queryComposition"),
+    ):
+        prefix = prefix_for(model_id)
+        golden = CONTRACT["golden"][golden_key]
+        if require_known_family and fam not in golden:
+            sys.exit(
+                f"contract verification failed for model '{model_id}' ({side} side): family "
+                f"'{fam}' is not a known key in golden.{golden_key} -- family() may be broken"
+            )
+        case = golden.get(fam, golden["__default__"])
+        composed = prefix + case["text"]
+        if composed != case["composed"]:
+            sys.exit(
+                f"contract verification failed for model '{model_id}' (family '{fam}', {side} "
+                f"side): resolved prefix {prefix!r} composed {composed!r}, expected "
+                f"{case['composed']!r}"
+            )
 
     _verify_algorithm_goldens()
 

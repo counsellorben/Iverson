@@ -61,6 +61,7 @@ import {
     getKeywordsFields,
     getLargeFields,
     getMetadataFields,
+    getPopularitySignalFields,
     getPropertyDescriptions,
     getRelations,
     getRelationsWithFactory,
@@ -243,6 +244,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const embeddingFields = new Set(getEmbeddingFields(cls));
     const chunkFieldsByName = new Map(getChunkFields(cls).map(c => [c.field, c]));
     const metadataFields = new Set(getMetadataFields(cls));
+    const popularitySignalFields = new Set(getPopularitySignalFields(cls));
     const summaryFields = new Set(getSummaryFields(cls));
     const keywordsFields = new Set(getKeywordsFields(cls));
     const extractedByField = new Map(getExtractedFields(cls).map(e => [e.field, e]));
@@ -322,10 +324,11 @@ export function describeEntity(cls: Function): TypeDescriptor {
                     '@IversonGuid() is scalar-only. Use @IversonArray(ClrType.CLR_GUID) to declare a UUID array column.',
                 );
             }
-            // design:type is only populated when the consumer's build emits decorator metadata
-            // (tsc with emitDecoratorMetadata); under esbuild-based test tooling it is undefined,
-            // so fall back to the runtime type of the field's own initializer, mirroring the
-            // Array.isArray(...) fallback `looksArray` already uses above for the same reason.
+            // design:type is populated whenever the build emits decorator metadata: tsc with
+            // emitDecoratorMetadata, or Oxc-based builds (like this repo's vitest) with
+            // oxc.decorator.emitDecoratorMetadata enabled. The fallback below exists for builds
+            // that don't emit metadata (e.g. esbuild-based consumer builds, or Oxc with
+            // emitDecoratorMetadata off), which remain supported.
             const runtimeType = typeof instance[fieldName];
             // When design:type is unavailable and the field has no initializer (runtimeType
             // 'undefined'), the underlying type is genuinely unknown at this point — accept
@@ -374,6 +377,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
             searchKeyOrder: searchKeysByField.get(fieldName) ?? 0,
             isLargeField,
             isMetadata: metadataFields.has(fieldName),
+            isPopularitySignal: popularitySignalFields.has(fieldName),
             description: propertyDescriptions[fieldName] ?? '',
             isSummaryTarget: summaryFields.has(fieldName),
             isKeywordsTarget: keywordsFields.has(fieldName),
@@ -402,6 +406,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
             searchKeyOrder: 0,
             isLargeField: false,
             isMetadata: false,
+            isPopularitySignal: false,
             description: '',
             isSummaryTarget: false,
             isKeywordsTarget: false,
@@ -428,6 +433,14 @@ export function describeEntity(cls: Function): TypeDescriptor {
         // which is exactly what the other four clients send by omitting it.
         tenantField: '',
         description: getTypeDescription(cls),
+        // Document-template chunking (proto fields 7-10) has no TypeScript decorator yet — no
+        // client-facing @IversonDocument() exists in this package. Sent at the proto-documented
+        // "not declared" defaults (empty/0/false), identical to what any other client predating
+        // this proto field already sends.
+        documentTemplate: '',
+        documentMaxTokens: 0,
+        documentOverlap: 0,
+        documentContextual: false,
     };
 }
 
@@ -807,10 +820,33 @@ export class IversonClient {
     constructor(
         host: string = 'localhost',
         port: number = 5000,
-        useTls: boolean = false,
+        useTls: boolean = true,
         callCredentials?: grpc.CallCredentials,
         actingUserToken?: ActingUserToken,
+        allowInsecureCredentials: boolean = false,
     ) {
+        // grpc-js has no built-in guard here: CallCredentials are attached per-call as
+        // CallOptions.credentials (see callUnary/openStream above), so its own
+        // composition-time security-level check — the one createFromChannelCredentials's
+        // CallCredentials.compose path enforces — never runs. Without this explicit,
+        // named opt-in, a Bearer token would otherwise ride a plaintext channel in the
+        // clear. Pass allowInsecureCredentials=true only for a known-local, non-TLS
+        // endpoint (mirrors the .NET reference's allowInsecureChannelCallCredentials).
+        //
+        // actingUserToken is included in this check (CSR round-3 finding #4): it travels as
+        // per-call metadata (see resolveActingUserMetadata above), not as grpc.CallCredentials,
+        // so it was invisible to the original callCredentials-only condition — a caller could
+        // combine useTls=false with only an acting-user token (no service CallCredentials) and
+        // it would pass silently, sending the acting-user Bearer token in the clear.
+        if (!useTls && (callCredentials !== undefined || actingUserToken !== undefined) && !allowInsecureCredentials) {
+            throw new Error(
+                'Refusing to attach CallCredentials or an acting-user token to a plaintext ' +
+                '(useTls=false) channel without an explicit allowInsecureCredentials=true ' +
+                'opt-in. Pass allowInsecureCredentials=true only for a known-local, non-TLS ' +
+                'endpoint.',
+            );
+        }
+
         const address = `${host}:${port}`;
         const credentials = useTls
             ? grpc.credentials.createSsl()

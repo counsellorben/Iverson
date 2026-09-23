@@ -40,7 +40,21 @@ public static class MaxPassageAggregator
     public static ChunkAggregation Aggregate(
         IEnumerable<(string ParentKey, double Score)> chunks,
         IReadOnlyDictionary<string, string> keyMap,
-        int limit)
+        int limit) =>
+        Aggregate(chunks, keyMap, limit, beta: 0);
+
+    /// <summary>
+    /// Same aggregation, scoring each document via <see cref="DocumentRanking.CollapseByDocIdWithTail"/>
+    /// instead of plain max-passage — the tail-sum credit for a document's next-best chunks (spec §2).
+    /// Key-map resolution and unresolved-parent handling live once here; the 3-arg overload above
+    /// delegates to this one at <c>beta: 0</c>, which reaches <see cref="DocumentRanking.CollapseByDocId"/>
+    /// through that method's own short-circuit rather than duplicating it.
+    /// </summary>
+    public static ChunkAggregation Aggregate(
+        IEnumerable<(string ParentKey, double Score)> chunks,
+        IReadOnlyDictionary<string, string> keyMap,
+        int limit,
+        double beta)
     {
         var resolved   = new List<(string DocId, double Score)>();
         var unresolved = new List<string>();
@@ -53,7 +67,7 @@ public static class MaxPassageAggregator
                 unresolved.Add(parentKey);
         }
 
-        return new ChunkAggregation(DocumentRanking.CollapseByDocId(resolved, limit), unresolved);
+        return new ChunkAggregation(DocumentRanking.CollapseByDocIdWithTail(resolved, limit, beta), unresolved);
     }
 
     public static WinningChunkAggregation Aggregate(

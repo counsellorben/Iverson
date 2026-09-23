@@ -28,6 +28,8 @@
 //
 //	`iverson_desc:"Human-readable description"`
 //	`iverson_meta:"true"`  — denormalized onto chunk points for chunk-search filtering
+//	`iverson_popularity_signal:"true"` — the UTC-datetime field recording when an
+//	                               interaction happened; exactly one per entity
 //	`iverson_summary:"true"`     — marks the field as the ingest-time summary target
 //	`iverson_keywords:"true"`    — marks the field as the ingest-time keywords target
 //	`iverson_extract:"<hint>"`   — marks the field as an extraction target; the tag
@@ -83,6 +85,12 @@ const DescriptionTagKey = "iverson_desc"
 // MetadataTagKey is the struct tag key marking a field as metadata. Like
 // DescriptionTagKey it is independent of TagKey, so it composes with any kind.
 const MetadataTagKey = "iverson_meta"
+
+// PopularitySignalTagKey is the struct tag key marking the UTC-datetime field that
+// records when an interaction happened: `iverson_popularity_signal:"true"`. Like
+// MetadataTagKey it is independent of TagKey. Exactly one field per entity may carry
+// this; two fail schema registration.
+const PopularitySignalTagKey = "iverson_popularity_signal"
 
 // SummaryTagKey is the struct tag key marking a field as the summary
 // enrichment target. Independent of TagKey.
@@ -177,6 +185,10 @@ type FieldMeta struct {
 	// Metadata reports whether the field carries `iverson_meta:"true"`.
 	// Independent, so it composes with search_key, large_field, and the rest.
 	Metadata bool
+	// PopularitySignal reports whether the field carries
+	// `iverson_popularity_signal:"true"`. Independent, so it composes with
+	// search_key, large_field, and the rest.
+	PopularitySignal bool
 	// IsSummaryTarget reports whether the field carries `iverson_summary:"true"`.
 	IsSummaryTarget bool
 	// IsKeywordsTarget reports whether the field carries `iverson_keywords:"true"`.
@@ -271,6 +283,7 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		}
 		fm.Description = sf.Tag.Get(DescriptionTagKey)
 		fm.Metadata = sf.Tag.Get(MetadataTagKey) == "true"
+		fm.PopularitySignal = sf.Tag.Get(PopularitySignalTagKey) == "true"
 		fm.IsSummaryTarget = sf.Tag.Get(SummaryTagKey) == "true"
 		fm.IsKeywordsTarget = sf.Tag.Get(KeywordsTagKey) == "true"
 

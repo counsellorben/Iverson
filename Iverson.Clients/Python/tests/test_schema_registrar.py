@@ -57,6 +57,13 @@ class RegDescribedArticle:
 
 
 @iverson_entity
+class RegInteraction:
+    id: str = iverson_key()
+    interacted_at: datetime = iverson_field(popularity_signal=True)
+    plain: datetime = None
+
+
+@iverson_entity
 class RegAuthor:
     id: str = iverson_key()
     name: str = None
@@ -545,6 +552,12 @@ class TestMetadataAndDescription:
         assert props["WordCount"].is_metadata is False
         assert props["WordCount"].description == ""
         assert props["Language"].description == ""
+
+    def test_popularity_signal_flagged_only_on_marked_field(self):
+        props = {p.name: p for p in register_request(RegInteraction).root_type.properties}
+        assert props["InteractedAt"].is_popularity_signal is True
+        assert props["Id"].is_popularity_signal is False
+        assert props["Plain"].is_popularity_signal is False
 
 
 class TestEnrichmentTargets:

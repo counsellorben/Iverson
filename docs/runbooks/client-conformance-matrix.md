@@ -23,7 +23,10 @@ For a docker-compose stack:
 
 ```bash
 export IVERSON_CLIENT_ID=dev-iverson-loadtest-client-id
-export IVERSON_CLIENT_SECRET=dev-only-not-for-production-loadtest-secret-0123456789
+# The loadtest client secret is randomly generated per docker-compose stack by
+# scripts/generate-compose-secrets.sh (CSR round-4 finding #8) — read it out of
+# Iverson.Server/.env's IVERSON_LOADTEST_CLIENT_SECRET.
+export IVERSON_CLIENT_SECRET="$(grep IVERSON_LOADTEST_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)"
 export IVERSON_TOKEN_ENDPOINT=http://localhost:9000/application/o/token/
 export IVERSON_CLIENT_SCOPE="schema_admin tenant_id_loadtest"
 ```

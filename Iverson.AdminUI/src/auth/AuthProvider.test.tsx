@@ -3,36 +3,47 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const signinRedirect = vi.fn();
 const useAuthMock = vi.fn();
+const capturedOidcProps: Record<string, unknown>[] = [];
 
 let capturedProviderProps: Record<string, unknown> | null = null;
 
 vi.mock("react-oidc-context", () => ({
   useAuth: () => useAuthMock(),
-  // Captures the settings `AuthProvider` hands to react-oidc-context. These settings ARE the
-  // security behaviour — there is no other code path that revokes a token or scrubs the
-  // authorization code out of the URL — so the tests below assert on what gets passed, not on
-  // a helper that something might have forgotten to wire up.
-  AuthProvider: (props: { children: React.ReactNode }) => {
-    capturedProviderProps = props as unknown as Record<string, unknown>;
-    return <>{props.children}</>;
+  AuthProvider: (props: { children?: React.ReactNode }) => {
+    capturedOidcProps.push(props);
+    return props.children;
   },
 }));
 
-import { AuthGate, AuthProvider, onSigninCallback } from "./AuthProvider";
-import { requestTokenRenewal, setTokenRenewer } from "../api/client";
+import { AuthGate, AuthProvider } from "./AuthProvider";
 
-function renderProviderAndCaptureSettings(): Record<string, unknown> {
-  capturedProviderProps = null;
-  render(
-    <AuthProvider>
-      <div>App</div>
-    </AuthProvider>
-  );
-  if (capturedProviderProps === null) {
-    throw new Error("AuthProvider did not render the OIDC provider");
-  }
-  return capturedProviderProps;
-}
+describe("AuthProvider", () => {
+  beforeEach(() => {
+    capturedOidcProps.length = 0;
+  });
+
+  it("does not request the offline_access scope, so no refresh token is ever issued or stored", () => {
+    render(
+      <AuthProvider>
+        <div>child</div>
+      </AuthProvider>
+    );
+
+    expect(capturedOidcProps).toHaveLength(1);
+    const scope = capturedOidcProps[0].scope as string;
+    expect(scope.split(" ")).not.toContain("offline_access");
+  });
+
+  it("disables automaticSilentRenew, since a hidden-iframe renewal would be blocked by the CSP anyway", () => {
+    render(
+      <AuthProvider>
+        <div>child</div>
+      </AuthProvider>
+    );
+
+    expect(capturedOidcProps[0].automaticSilentRenew).toBe(false);
+  });
+});
 
 describe("AuthGate", () => {
   beforeEach(() => {

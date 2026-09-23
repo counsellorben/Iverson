@@ -198,6 +198,9 @@ public sealed class SchemaRegistrar(
         if (prop.GetCustomAttribute<IversonMetadataAttribute>() is not null)
             descriptor.IsMetadata = true;
 
+        if (prop.GetCustomAttribute<IversonPopularitySignalAttribute>() is not null)
+            descriptor.IsPopularitySignal = true;
+
         if (prop.GetCustomAttribute<IversonSummaryAttribute>() is not null)
             descriptor.IsSummaryTarget = true;
 

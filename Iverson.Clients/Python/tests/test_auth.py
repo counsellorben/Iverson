@@ -1,8 +1,12 @@
 from unittest.mock import MagicMock
+import http.server
+import threading
 
 import grpc
+import pytest
 
 from iverson_client import IversonClient, IversonClientCredentials
+from iverson_client.auth import _CachedTokenProvider
 from iverson_client.annotations import iverson_entity, iverson_key
 from iverson_client.generated import object_mapping_pb2 as mapping_pb
 from iverson_client.generated import object_retrieval_pb2 as retrieval_pb
@@ -29,10 +33,103 @@ def test_client_with_credentials_uses_secure_channel(monkeypatch):
     IversonClient(
         host="localhost",
         port=5000,
+        use_tls=False,
         credentials=IversonClientCredentials("id", "secret", "http://localhost:9000/application/o/token/"),
+        allow_insecure_credentials=True,
     )
 
     assert captured["address"] == "localhost:5000"
+
+
+def test_client_with_credentials_and_plaintext_raises_without_opt_in():
+    """Closes CSR finding #10: combining use_tls=False with credentials must fail loudly at
+    construction rather than silently substituting grpc.local_channel_credentials() (NOT real
+    TLS/encryption) to satisfy grpcio's security-level check while the Bearer token rides the
+    channel in the clear."""
+    with pytest.raises(ValueError):
+        IversonClient(
+            host="localhost",
+            port=5000,
+            use_tls=False,
+            credentials=IversonClientCredentials(
+                "id", "secret", "http://localhost:9000/application/o/token/"
+            ),
+        )
+
+
+def test_client_with_credentials_and_plaintext_succeeds_with_opt_in(monkeypatch):
+    """The matching positive leg: the same combination succeeds once the caller has explicitly
+    set allow_insecure_credentials=True, mirroring the conformance driver's and sample's
+    deliberate dev/test use of a plaintext channel with credentials."""
+    monkeypatch.setattr(
+        "iverson_client.core.mapping_grpc.ObjectMappingServiceStub", lambda channel: object()
+    )
+
+    client = IversonClient(
+        host="localhost",
+        port=5000,
+        use_tls=False,
+        credentials=IversonClientCredentials(
+            "id", "secret", "http://localhost:9000/application/o/token/"
+        ),
+        allow_insecure_credentials=True,
+    )
+
+    assert client is not None
+
+
+def test_client_with_plaintext_token_endpoint_raises_without_opt_in():
+    """Closes CSR finding #2: credentials with a plaintext (http://) token endpoint must
+    be rejected without an explicit allow_insecure_credentials=True opt-in, even if the
+    channel itself is TLS-encrypted."""
+    with pytest.raises(ValueError, match="non-https token endpoint"):
+        IversonClient(
+            host="localhost",
+            port=5000,
+            use_tls=True,
+            credentials=IversonClientCredentials(
+                "id", "secret", "http://localhost:9000/application/o/token/"
+            ),
+        )
+
+
+def test_client_with_plaintext_token_endpoint_succeeds_with_opt_in(monkeypatch):
+    """The matching positive leg: a plaintext token endpoint succeeds once the caller
+    has explicitly set allow_insecure_credentials=True."""
+    monkeypatch.setattr(
+        "iverson_client.core.mapping_grpc.ObjectMappingServiceStub", lambda channel: object()
+    )
+
+    client = IversonClient(
+        host="localhost",
+        port=5000,
+        use_tls=True,
+        credentials=IversonClientCredentials(
+            "id", "secret", "http://localhost:9000/application/o/token/"
+        ),
+        allow_insecure_credentials=True,
+    )
+
+    assert client is not None
+
+
+def test_client_with_https_token_endpoint_succeeds_without_opt_in(monkeypatch):
+    """An https token endpoint should always be allowed, without requiring
+    allow_insecure_credentials=True."""
+    monkeypatch.setattr(
+        "iverson_client.core.mapping_grpc.ObjectMappingServiceStub", lambda channel: object()
+    )
+
+    client = IversonClient(
+        host="localhost",
+        port=5000,
+        use_tls=True,
+        credentials=IversonClientCredentials(
+            "id", "secret", "https://localhost:9000/application/o/token/"
+        ),
+    )
+
+    assert client is not None
 
 
 def test_client_with_use_tls_and_credentials_uses_ssl_channel_credentials(monkeypatch):
@@ -75,7 +172,7 @@ def test_client_with_use_tls_and_credentials_uses_ssl_channel_credentials(monkey
         host="prod.example.com",
         port=5000,
         use_tls=True,
-        credentials=IversonClientCredentials("id", "secret", "http://localhost:9000/application/o/token/"),
+        credentials=IversonClientCredentials("id", "secret", "https://localhost:9000/application/o/token/"),
     )
 
     # use_tls=True must select ssl_channel_credentials as the base, not the
@@ -84,11 +181,14 @@ def test_client_with_use_tls_and_credentials_uses_ssl_channel_credentials(monkey
     assert captured["base_creds"] is not local_sentinel
 
 
-def test_client_without_use_tls_and_credentials_uses_local_channel_credentials(monkeypatch):
-    """Preserves today's default behavior: use_tls=False (the default) while the composite-
-    channel-credentials branch is entered (now via credentials=, see the sibling test above
-    for why the entry point moved) must still use local_channel_credentials() as the base,
-    since grpcio rejects CallCredentials on a bare insecure_channel."""
+def test_client_without_use_tls_and_credentials_uses_ssl_channel_credentials(monkeypatch):
+    """Pins the new default: use_tls now defaults to True, so a client built with no
+    use_tls= at all — while the composite-channel-credentials branch is entered (via
+    credentials=, see the sibling test above for why the entry point moved) — must use
+    ssl_channel_credentials() as the base, exactly like passing use_tls=True explicitly.
+    Before this change the default was False and this same construction used
+    local_channel_credentials() (unencrypted); that plaintext-by-default behavior is what
+    this task removes."""
     captured = {}
     ssl_sentinel = object()
     local_sentinel = object()
@@ -118,18 +218,35 @@ def test_client_without_use_tls_and_credentials_uses_local_channel_credentials(m
     IversonClient(
         host="localhost",
         port=5000,
-        credentials=IversonClientCredentials("id", "secret", "http://localhost:9000/application/o/token/"),
+        credentials=IversonClientCredentials("id", "secret", "https://localhost:9000/application/o/token/"),
     )
 
-    assert captured["base_creds"] is local_sentinel
-    assert captured["base_creds"] is not ssl_sentinel
+    assert captured["base_creds"] is ssl_sentinel
+    assert captured["base_creds"] is not local_sentinel
+
+
+def test_client_with_acting_user_token_and_plaintext_raises_without_opt_in():
+    """Closes CSR round-3 finding #4: acting_user_token travels as per-call metadata, not
+    CallCredentials, so it was invisible to the original `if credentials is not None` guard —
+    a caller could combine use_tls=False with only an acting-user token (no service
+    credentials) and it would pass silently, sending the acting-user Bearer token in the
+    clear. Must fail loudly at construction, exactly like the credentials= case above."""
+    with pytest.raises(ValueError):
+        IversonClient(
+            host="localhost",
+            port=5000,
+            use_tls=False,
+            acting_user_token="user-token-123",
+        )
 
 
 def test_client_with_acting_user_token_only_uses_insecure_channel(monkeypatch):
     """As of the acting-user-identity-parity initiative, acting_user_token no longer rides
     channel credentials (it is now per-call metadata via _acting_user_metadata()), so
     constructing IversonClient with only acting_user_token (no base credentials) must fall
-    through to the plain insecure_channel path, exactly like constructing with neither."""
+    through to the plain insecure_channel path, exactly like constructing with neither.
+    Requires the explicit allow_insecure_credentials=True opt-in (CSR round-3 finding #4):
+    without it this same construction now raises, see the sibling test above."""
     captured = {}
 
     def fake_insecure_channel(address):
@@ -145,7 +262,13 @@ def test_client_with_acting_user_token_only_uses_insecure_channel(monkeypatch):
         "iverson_client.core.mapping_grpc.ObjectMappingServiceStub", lambda channel: object()
     )
 
-    client = IversonClient(host="localhost", port=5000, acting_user_token="user-token-123")
+    client = IversonClient(
+        host="localhost",
+        port=5000,
+        use_tls=False,
+        acting_user_token="user-token-123",
+        allow_insecure_credentials=True,
+    )
 
     assert captured["address"] == "localhost:5000"
     assert client._acting_user_token == "user-token-123"
@@ -188,7 +311,13 @@ def test_get_schema_sends_exactly_one_acting_user_metadata_entry(monkeypatch):
         "iverson_client.core.grpc.metadata_call_credentials", fake_metadata_call_credentials
     )
 
-    client = IversonClient(host="localhost", port=1, acting_user_token="user-token-123")
+    client = IversonClient(
+        host="localhost",
+        port=1,
+        use_tls=False,
+        acting_user_token="user-token-123",
+        allow_insecure_credentials=True,
+    )
     client._mapping_stub = MagicMock()
     client._mapping_stub.GetSchema.return_value = mapping_pb.GetSchemaResponse(types=[])
 
@@ -217,7 +346,13 @@ def test_coordinator_call_sends_exactly_one_acting_user_metadata_entry(monkeypat
         "iverson_client.core.grpc.metadata_call_credentials", fake_metadata_call_credentials
     )
 
-    client = IversonClient(host="localhost", port=1, acting_user_token="user-token-123")
+    client = IversonClient(
+        host="localhost",
+        port=1,
+        use_tls=False,
+        acting_user_token="user-token-123",
+        allow_insecure_credentials=True,
+    )
     coordinator = client.coordinator(CoordSchemaEntity)
     coordinator._retrieval = MagicMock()
     coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
@@ -247,7 +382,13 @@ def test_client_with_empty_string_acting_user_token_still_emits_the_header(monke
         "iverson_client.core.grpc.metadata_call_credentials", fake_metadata_call_credentials
     )
 
-    client = IversonClient(host="localhost", port=1, acting_user_token="")
+    client = IversonClient(
+        host="localhost",
+        port=1,
+        use_tls=False,
+        acting_user_token="",
+        allow_insecure_credentials=True,
+    )
     client._mapping_stub = MagicMock()
     client._mapping_stub.GetSchema.return_value = mapping_pb.GetSchemaResponse(types=[])
 
@@ -263,7 +404,7 @@ def test_client_with_empty_string_acting_user_token_still_emits_the_header(monke
 def test_get_schema_builds_request_and_converts_response():
     """get_schema must forward trace_id verbatim in the request and return the
     response's types unmodified — not just echo whatever the mock happens to hold."""
-    client = IversonClient(host="localhost", port=1)
+    client = IversonClient(host="localhost", port=1, use_tls=False)
     client._mapping_stub = MagicMock()
 
     field = mapping_pb.SchemaField(
@@ -295,3 +436,27 @@ def test_get_schema_builds_request_and_converts_response():
     assert returned_field.clr_type == mapping_pb.CLR_STRING
     assert returned_field.is_search_key is True
     assert returned_field.search_key_order == 2
+
+
+def test_get_token_does_not_follow_a_redirect():
+    class RedirectingHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(302)
+            self.send_header("Location", "http://evil.invalid/steal")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), RedirectingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        provider = _CachedTokenProvider(
+            IversonClientCredentials("id", "secret", f"http://127.0.0.1:{port}/token")
+        )
+        with pytest.raises(RuntimeError, match="HTTP 302"):
+            provider.get_token()
+    finally:
+        server.shutdown()

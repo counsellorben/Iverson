@@ -2,9 +2,8 @@
 
 **Why:** authentication is a hard cutover the moment this ships — there is no permissive/warn-only
 rollout window (see `docs/superpowers/plans/2026-07-11-grpc-and-admin-authentication-implementation-plan.md`'s
-Global Constraints). Every existing caller must already hold a valid token before this deploys, and
-a fresh install has a real two-pass convergence requirement that isn't obvious from the chart alone.
-Both are captured here so they outlive the plan document.
+Global Constraints). Every existing caller must already hold a valid token before this deploys.
+That precondition, plus a few operational gotchas, is captured here so it outlives the plan document.
 
 ## Precondition: every existing caller needs a token before you deploy
 
@@ -17,25 +16,37 @@ There is no grace period. Confirm before deploying:
 - Any human operator who needs `/admin/*` access is already a member of Authentik's `operators` Group
   (Task 10 Step 9 — this part has no automated coverage; see below).
 
-## The two-pass `helm upgrade` requirement on a fresh install
+## FIXED (CSR round-3 finding #15): a fresh install no longer needs a two-pass `helm upgrade`
 
-On a genuinely fresh install, the 4 new OAuth2-client Secrets
-(`secret-service-clients.yaml`) and the templated blueprint ConfigMap
-(`blueprints-configmap-service-clients.yaml`) render in the **same** Helm pass. The blueprint's
-`{{ if $secret }}...{{ else }}{{ randAlphaNum ... }}{{ end }}` fallback can't see a Secret that's
-being created in the same pass — `lookup` returns empty — so it mints its own random
-`client_id`/`client_secret`, independent from (and different from) what actually lands in the
-Secrets. Since the API's `Authentication:ValidAudiences` env vars are sourced from those same
-Secrets, the `aud` claim Authentik issues (from the blueprint's fallback) won't match what the API
-validates against, until a second pass converges them:
+Historically, on a genuinely fresh install, the 10 OAuth2-client/user/token Secrets
+(`charts/authentik/templates/secret-service-clients.yaml`) and the templated blueprint carrying
+the same 10 credentials into Authentik (formerly a separate
+`blueprints-secret-service-clients.yaml` file) rendered in the **same** Helm pass, each with its
+own independent `{{ if $existing }}...{{ else }}{{ randAlphaNum ... }}{{ end }}` fallback. Neither
+side's `lookup` could see a Secret the other side was creating in that same pass, so each minted
+its own independent random value for what was supposed to be one shared credential — the `aud`
+claim Authentik issued (from the blueprint's fallback) didn't match what the API validated against
+(from the Secret's fallback) until a second `helm upgrade` converged both sides via `lookup` now
+finding the real, already-created Secret.
+
+This is fixed: the two files were merged into one (`secret-service-clients.yaml`), which computes
+each of the 10 credential values exactly once and has both the real Secrets and the blueprint's
+embedded YAML reference that same computed value — there is no longer a second independent
+`randAlphaNum` draw to diverge from the first. Verified by rendering the merged template (both the
+"no existing Secret" first-install branch and the "Secret already exists" branch, the latter
+against a live cluster) and confirming all 13 credential values (10 Secrets, 3 of which carry
+both a client-id and a client-secret) are byte-identical between the emitted Secrets and the
+blueprint's `stringData` on the very first `helm install` — no second pass needed
+for these credentials specifically. (This was verified at the template-rendering level, not via a
+full live multi-service `helm install` against a fully-provisioned cluster with CNPG/Strimzi/
+StarRocks operators installed — the bug and its fix both live entirely in what value a template
+computes, which template-level verification covers directly.)
+
+A single `helm upgrade --install` now converges on the first pass:
 
 ```bash
-helm upgrade --install iverson . -f values-<env>.yaml -n iverson --create-namespace   # pass 1
-helm upgrade iverson . -f values-<env>.yaml -n iverson                                # pass 2
+helm upgrade --install iverson . -f values-<env>.yaml -n iverson --create-namespace
 ```
-
-Pass 1 is *expected* to leave the deployment in a mismatched state — this is not a failure, don't
-debug it, just run pass 2.
 
 ## Confirming the blueprint actually applied
 
@@ -60,13 +71,15 @@ If still `False` after ~2 minutes, force a re-scan rather than waiting indefinit
 kubectl -n <ns> rollout restart deployment/<release>-authentik-worker
 ```
 
-## A Deployment's pods may need a restart even after the Secrets converge
+## A Deployment's pods may need a restart if a Secret's value changes after pods exist
 
 `secretKeyRef`-sourced env vars (like `Authentication:ValidAudiences`) are resolved **once, at pod
 creation** — Kubernetes does not live-update a running container's environment when the backing
 Secret's data changes later (see `docs/runbooks/kind-cluster-troubleshooting.md`'s §5.2 for the full
-mechanics). If the `iverson-api` Deployment's pods were created during pass 1 (before the Secrets held
-their final converged values), pass 2 updating the Secret content alone is not enough:
+mechanics). This no longer happens on a fresh install for the 10 credentials covered by the fix
+above (their value is stable from the first `helm install`), but it still applies any time one of
+those Secrets is rotated by hand after the `iverson-api` Deployment's pods already exist — updating
+the Secret's content alone is not enough:
 
 ```bash
 kubectl -n <ns> rollout restart deployment/<release>-api

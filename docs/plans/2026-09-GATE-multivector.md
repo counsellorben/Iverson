@@ -603,3 +603,218 @@ recreated on defaults. Qdrant now holds only the pre-existing collections
 `vector_docs_tenant_bypass`, `vector_docs_chunks_tenant_bypass`). Every snapshot this task created was
 downloaded and then deleted server-side. Every compose action was a single-service `--no-deps` form;
 no tier-wide `up`, no `stack.py`, no `down`.
+
+---
+
+# Amendment 2026-09-10 — the re-run with both asymmetries removed
+
+**Design:** `docs/specs/2026-09-10-multivector-rerun-design.md` (approved, executed 2026-09-10).
+**Harness:** `Iverson.Server/Iverson.LoadTest/scripts/multivector.py` at main `b15b040`.
+**Run directories:** `scifact-gte-mvrerun-2026-09-10/` (gated) and
+`scifact-gte-mvrerun-ef100-2026-09-10/` (diagnostic, not gated).
+
+This amendment settles the remediation note above — "a re-attempt must equalise index state" — and
+the over-fetch question beside it. Both were equalised. **The NO-GO stands, and stands harder.**
+
+## What was run
+
+The three gte snapshots were restored side-by-side under alias names (`mvrerun_objects`,
+`mvrerun_chunks`, `mvrerun_multivector`); no live collection was touched, and the second destructive
+restore of the original protocol was dropped entirely. The restore reproduced the gate's box state
+exactly, asymmetry 1 included: `mvrerun_chunks` came back at **16,678 of 19,967** indexed, the same
+number `runs/raw-latency.json` recorded in September. `PATCH optimizers_config.indexing_threshold: 1`
+then took it to 19,967/19,967, and `mvrerun_multivector` was already 5,183/5,183.
+
+## The gated result (arm at the corpus-fraction-matched beam, `hnsw_ef` 65)
+
+| # | Criterion | Deciding number | Threshold | |
+|---|---|---|---|---|
+| 1 | nDCG@10 delta 95 % CI lower bound | **−0.0400** (delta −0.0205, CI [−0.0400, −0.0010], perm p 0.0398) | must be > −0.02 | **FAIL** |
+| 2 | R@50 delta 95 % CI lower bound | **−0.0724** (delta −0.0467, CI [−0.0724, −0.0209], perm p 0.0004) | must be > −0.02 | **FAIL** |
+| 3 | p95 latency ratio | **0.72×** (17.748 ms ÷ 24.647 ms) | must be ≤ 1.25× | **PASS** |
+
+### Verdict: **NO-GO — unchanged, and now significant on both quality criteria**
+
+Absolute: control nDCG@10 0.7137 / R@50 0.9467 / AP 0.6799; arm 0.6932 / 0.9000 / 0.6597.
+Holm corrects at m = 1 (one non-baseline run in the directory), so `p_adj` equals the raw
+permutation p. Compared against the original's **raw** permutation p, nDCG@10 moved from
+p 0.1210 (not significant) to p 0.0398, and R@50 from p 0.0108 to p 0.0004.
+
+## Asymmetry 1 was real but inert — this is the amendment's main finding
+
+The re-run at the arm's default-equivalent beam (`--mv-hnsw-ef 100`) differs from the original run in
+exactly one respect: the control is now fully HNSW-indexed instead of 16 % exact-searched. It
+reproduces the original gate **to four decimal places on every reported statistic**:
+
+| Measure | Original (control 16,678/19,967) | Re-run at ef 100 (control 19,967/19,967) |
+|---|---|---|
+| nDCG@10 delta / CI / perm p | −0.0140 / [−0.0312, +0.0032] / 0.1210 | −0.0140 / [−0.0312, +0.0032] / 0.1210 |
+| R@50 delta / CI / perm p | −0.0300 / [−0.0515, −0.0085] / 0.0108 | −0.0300 / [−0.0515, −0.0085] / 0.0108 |
+| queries changed (nDCG@10 / R@50) | 18 / 11 of 300 | 18 / 11 of 300 |
+
+The arm's run file is **byte-identical** across the two, as it must be: at `limit` 50 an explicit
+`hnsw_ef` 100 and Qdrant's default `max(limit, ef_construct)` = 100 are the same request.
+
+The control's run file is *not* byte-identical — **648 of 15,000 TREC rows changed** (4.3 %) — yet its
+aggregate scores are unchanged to six decimal places (nDCG@10 0.713733, R@50 0.946667, AP 0.679931,
+identical in both). Every row the index change moved involved a document outside the qrels. Searching
+that 3,289-vector segment exactly rather than through HNSW at a beam of 250 reshuffles the
+qrels-irrelevant tail and nothing else.
+
+**So the bias this gate flagged as its first remediation item does not move the verdict at all.** It
+was correctly identified as a bias and wrongly assumed to be a consequential one. A beam of 250 over a
+3,289-vector segment is already near-exhaustive; there was no recall left on the table for exact
+search to find.
+
+## Asymmetry 2 was the consequential one, and correcting it costs the arm
+
+Lowering the arm's beam from its default 100 to the corpus-fraction-matched 65 is what moved the
+numbers — from −0.0140 to −0.0205 on nDCG@10, and from −0.0300 to −0.0467 on R@50. That direction was
+anticipated by the design (§3.4 item 1) but not its size.
+
+The exactness probe (`scifact-gte-mvrerun-2026-09-10/runs/probe.json`, 39 queries = 30 bulk + the 11
+whose R@50 moved originally) explains it, and shows the two arms are **not** comparably approximate at
+their operating beams:
+
+| Arm | Operating point | Rankings differing from it |
+|---|---|---|
+| Control (chunks, `limit` 250) | `hnsw_ef` 250 | default 0/39, 500 → 8/39, 1000 → 10/39, 4000 → 10/39 |
+| Arm (multivector, `limit` 50) | `hnsw_ef` 65 | 100 → 36/39, 250 → 39/39, 1000 → 39/39 |
+
+The control is mildly approximate and saturates by `hnsw_ef` 1000 (26 % of queries move, then stop
+moving). The arm is steeply approximate: nearly every query's ranking changes for a beam step from 65
+to 100. **MaxSim over multi-row points is far more beam-sensitive than named-vector search over the
+same corpus**, which is a property of the layout, not of this experiment's parameter choice.
+
+That asymmetry cuts both ways and the amendment should not overclaim. The corpus-fraction invariant
+is *a* defensible equalisation, not the only one; matching absolute beams (`hnsw_ef` 250) or document
+candidates reached (~165) would each have set it higher, and the arm's steep beam-sensitivity means a
+higher beam would have scored better. What the two runs together establish is the part that does not
+depend on the choice:
+
+- At `hnsw_ef` 100 — the arm's own default, the most favourable setting anyone proposed, with the
+  control's advantage removed — criteria 1 and 2 still **FAIL**.
+- At `hnsw_ef` 65 — corpus-fraction matched — they fail by more.
+
+**There is no beam setting in evidence at which the layout passes**, and the one direction that might
+help it (raising the beam) is also the direction that erodes criterion 3, the only criterion it wins.
+
+## What is settled, and what is not
+
+Settled by execution — the four assumptions the design deferred:
+
+- **A1 — true.** Qdrant restores a snapshot into the collection named in the URL path. Alias names
+  work; the overwrite-and-restore-back fallback was never needed. Counts came back 5,183 / 19,967 /
+  5,183 exactly.
+- **A9 — true.** `PATCH optimizers_config` converged `indexed_vectors_count` to `points_count` on both
+  collections within one poll.
+- **A22 — true.** gte-modernbert-base was still cached in the `tei_models` volume; the swap took
+  seconds with no download.
+- **A23 — true.** The explicit-`hnsw_ef` rule holds on the `max_sim` path. Probe step 0: `hnsw_ef` 65
+  differs from the default on **36 of 39** queries (bar was ≥ 1), positive control 39/39.
+
+Not settled, and not attempted:
+
+- Whether the arm's ranking is still moving above `hnsw_ef` 1000. The probe records differences from
+  each arm's operating point only, so arm-250-vs-arm-1000 cannot be recovered from `probe.json`.
+- Anything about adoption. The argmax/round-trip costs in "Scope limits carried forward" are
+  untouched, and a NO-GO does not need them.
+- The long-document question, unchanged: this remains a layout verdict at 512/448 on SciFact.
+
+## Box state at close
+
+The three `mvrerun_*` collections were deleted; nothing else on the Qdrant side was created or
+modified, and no live collection was read from or written to at any point. `tei-embed` was recreated
+on `BAAI/bge-base-en-v1.5` at 16384 from a shell with neither `BENCH_EMBED_MODEL` nor
+`TEI_MAX_BATCH_TOKENS` set. Every compose action was a single-service `--no-deps --force-recreate` on
+`tei-embed`; no tier-wide `up`, no `stack.py`, no `down`. `iverson-api` and `iverson-worker` were
+never touched — both gated arms are raw Qdrant. `scifact-gte-2026-09-06/runs/` was read but never
+written.
+
+---
+
+# Amendment 2026-09-10 (second) — the ceiling: the two layouts are the same function
+
+Asked whether the re-run should proceed at a larger beam. It should not, and the reason retires the
+question permanently rather than answering it.
+
+**Run directory:** `scifact-gte-mvrerun-exact-2026-09-10/`. **Harness:** `--mv-exact`, added at
+`c8ae71b`.
+
+## A larger beam was never the lever
+
+Exact search is not "a very large `hnsw_ef`". Measured over 20 queries against
+`mvrerun_multivector` at `limit` 50:
+
+| Configuration | Top-50 rankings identical to `params.exact` |
+|---|---|
+| `hnsw_ef` 65 (the gated arm) | 0 / 20 |
+| `hnsw_ef` 4000 | 11 / 20 |
+| `hnsw_ef` 100000 (≫ the collection's 5,183 points) | 11 / 20 |
+
+`hnsw_ef` 4000 and 100000 return the identical ranking as each other and both still differ from exact
+on 9 of 20. **HNSW over `max_sim` points has an approximation floor that beam width does not close** —
+raising the beam past ~4000 buys nothing at all. Any "run it at a bigger beam" plan tops out here,
+well short of the arm's real ceiling.
+
+## The ceiling is the control, exactly
+
+Running the arm with `params.exact` (full scan) against the control unchanged:
+
+| # | Criterion | Deciding number | Threshold | |
+|---|---|---|---|---|
+| 1 | nDCG@10 delta 95 % CI lower bound | **+0.0000** (delta +0.0000, CI [+0.0000, +0.0000], 0/300 queries changed) | must be > −0.02 | **PASS** |
+| 2 | R@50 delta 95 % CI lower bound | **+0.0000** (delta +0.0000, CI [+0.0000, +0.0000], 0/300 queries changed) | must be > −0.02 | **PASS** |
+| 3 | p95 latency ratio | **1.05×** (22.6 ms ÷ 21.4 ms) | must be ≤ 1.25× | **PASS** |
+
+Absolute scores are identical on both arms: nDCG@10 0.7137, R@50 0.9467, AP 0.6799.
+
+**All three criteria pass — by tying, not by winning.** And the tie is not a coincidence of this
+corpus. MaxSim scores a document as the max cosine over its chunk rows; the control retrieves chunks
+and collapses by parent taking the max. *These are the same function.* Comparing the two run files
+row by row (ignoring the run-label column): 243 of 300 queries have an identical top-50 in order, in
+set, and in score — **maximum score difference 0.000e+00, bit-identical**. The 57 that differ are
+those where the control's 250-chunk budget or its HNSW truncates a document the full scan reaches,
+and on every one of them the difference involves only qrels-irrelevant documents, which is why all
+three aggregate metrics agree to four decimals and `report.py` reports 0/300 queries changed.
+
+## What this means for the verdict
+
+The multivector layout is not a different retrieval method. It is the same max-passage-collapse
+scoring, computed over a different index. It therefore **cannot beat the control on quality at any
+setting** — its best possible outcome is the exact tie above.
+
+Every negative delta this gate has ever measured is HNSW approximation error over the `max_sim`
+graph, not layout quality:
+
+| Configuration | nDCG@10 delta | R@50 delta | Criteria 1 & 2 |
+|---|---|---|---|
+| `hnsw_ef` 65 (corpus-fraction matched) | −0.0205 | −0.0467 | FAIL |
+| `hnsw_ef` 100 (arm default; reproduces the original gate) | −0.0140 | −0.0300 | FAIL |
+| `params.exact` (ceiling) | +0.0000 | +0.0000 | PASS (tie) |
+
+So the layout buys nothing and costs an index. The exact configuration that passes is a full scan,
+which is only affordable here because the corpus is small (5,183 points / 19,967 rows — the scan is
+comparable work to the control's HNSW search over the same 19,967 vectors, hence the 1.05× ratio).
+That ratio is a property of a 5k-document corpus and does not survive scaling; the HNSW
+configurations, which do scale, are exactly the ones that lose.
+
+### Verdict: **NO-GO stands.** Not because the layout loses on merit, but because its ceiling is a tie
+### with the thing it would replace, reachable only by abandoning the index that motivated it.
+
+This supersedes the "over-fetch question" in the remediation notes above and the first amendment's
+"no beam setting in evidence passes". The sharper statement: **no beam setting can pass, because the
+beam is only ever recovering ground toward a ceiling that is the control itself.**
+
+## Caveats on this amendment
+
+- The three criteria were pre-specified for a *deployable* configuration. Exact search is not one, and
+  reporting it as a PASS is a ceiling measurement, not a recommendation. Nothing here should be read
+  as "adopt the multivector layout with exact search."
+- Criterion 3's ratio carries real box noise: the identical control run measured p95 24.6 / 20.0 /
+  21.4 ms across the three sessions (≈23 % spread). The exact arm's 1.05× sits inside that noise
+  band, so read it as "roughly parity", not as a precise figure. It is nowhere near 1.25× either way.
+- The control's run file is not byte-stable across restore sessions (its qrels-irrelevant tail
+  reshuffles), but its aggregate scores were 0.7137 / 0.9467 / 0.6799 in all three runs.
+- Scores were compared after collapsing each arm through the same `collapse_by_doc`, so the
+  bit-identity claim is about the collapsed document scores, not about raw Qdrant point scores.

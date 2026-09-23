@@ -74,6 +74,7 @@ spec:
                 GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
                 GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_app'@'%';
                 GRANT user_admin TO 'iverson_app'@'%';
+                ALTER USER 'iverson_app' SET PROPERTIES ('session.query_timeout' = '180', 'session.exec_mem_limit' = '4294967296');
               "
               # StarRocks' GRANT dialect isn't MySQL's: DDL privileges (CREATE TABLE/DROP/ALTER)
               # are scoped ON DATABASE, not ON db.*, and CREATE must be written as the two-word
@@ -90,3 +91,14 @@ spec:
               # checks the privilege before checking whether the database already exists,
               # so this failed on literally every schema registration even though the
               # database this job already created was right there.
+              # CSR finding #6 (defense-in-depth): session.query_timeout/session.exec_mem_limit
+              # cap how long a query may run and how much memory it may use PER QUERY PER BE,
+              # cluster-side, as a backstop behind the app-layer output caps in
+              # EngagementQueryLimitOptions (page size, aggregation size, GROUP BY/pipeline
+              # limit) — those bound what a request may ASK FOR; these bound what StarRocks
+              # will actually spend answering it even if some future caller reaches this user
+              # without going through the app-layer checks. ALTER USER ... SET PROPERTIES
+              # (session.* form) requires StarRocks >= 3.3.3; this chart pins 4.1.1. Values
+              # are per-connection session defaults for this user, not global settings — every
+              # other tenant/service is unaffected. Idempotent like the GRANTs above: reapplied
+              # on every post-install/post-upgrade run of this job.

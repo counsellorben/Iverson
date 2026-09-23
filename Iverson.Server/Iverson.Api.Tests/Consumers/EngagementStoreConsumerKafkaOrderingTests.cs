@@ -41,6 +41,7 @@ public sealed class KafkaOrderingContainerFixture : IAsyncLifetime
 /// against a real broker — not achievable meaningfully against the old 3-topic layout, which is
 /// itself evidence of the gap this closes.
 /// </summary>
+[Trait("Category", "Integration")]
 [Collection(ContainerCollection.Name)]
 public sealed class EngagementStoreConsumerKafkaOrderingTests(KafkaOrderingContainerFixture fixture)
     : IClassFixture<KafkaOrderingContainerFixture>
@@ -106,7 +107,7 @@ public sealed class EngagementStoreConsumerKafkaOrderingTests(KafkaOrderingConta
         // mandatory regardless of OwnerField, so FetchByKeyAsync must still be stubbed to return
         // a row carrying the tenant value.
         var entities = Substitute.For<IEntityRepository>();
-        entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                 .Returns("""{"Name":"Alice","TenantId":"tenant-a"}""");
         var sut = new EngagementStoreConsumer(consumer, sr, registry, entities, NullLogger<EngagementStoreConsumer>.Instance);
 

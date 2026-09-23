@@ -659,4 +659,80 @@ public class SchemaBuilderTests
         descriptor.DocumentTemplate.Should().BeNull();
         descriptor.DocumentTemplateSource.Should().BeNull();
     }
+
+    [Fact]
+    public void BuildDescriptor_MapsSinglePopularitySignalProperty_ToPopularitySignalColumn()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Comment" };
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",        ClrType = ClrType.ClrGuid,     IsKey = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "PostedAt",  ClrType = ClrType.ClrDatetime, IsPopularitySignal = true });
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        descriptor.PopularitySignalColumn.Should().Be("PostedAt");
+    }
+
+    [Fact]
+    public void BuildDescriptor_LeavesPopularitySignalColumnNull_WhenNoPropertyIsMarked()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Comment" };
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "PostedAt", ClrType = ClrType.ClrDatetime });
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        descriptor.PopularitySignalColumn.Should().BeNull();
+    }
+
+    [Fact]
+    public void BuildDescriptor_Throws_WhenMultiplePropertiesCarryPopularitySignal()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Comment" };
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",        ClrType = ClrType.ClrGuid,     IsKey = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "PostedAt",  ClrType = ClrType.ClrDatetime, IsPopularitySignal = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "EditedAt",  ClrType = ClrType.ClrDatetime, IsPopularitySignal = true });
+
+        var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*PostedAt*EditedAt*");
+    }
+
+    [Fact]
+    public void BuildDescriptor_Throws_WhenPopularitySignalPropertyIsNotDatetime()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Comment" };
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",         ClrType = ClrType.ClrGuid,   IsKey = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "InteractedAt", ClrType = ClrType.ClrString, IsPopularitySignal = true });
+
+        var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*InteractedAt*");
+    }
 }

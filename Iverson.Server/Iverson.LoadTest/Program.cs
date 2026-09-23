@@ -1,3 +1,4 @@
+using System.Globalization;
 using Dapper;
 using Grpc.Core;
 using Grpc.Net.Client;
@@ -24,6 +25,15 @@ if (flags.Target is not ("containers" or "kind"))
     return 1;
 }
 
+// Commands that provision a tenant, register schemas, AND (the same set, by inspection) are the
+// only ones whose DI graph ever resolves ActingUserIdentities (DirectSeeder, WritePathScenario /
+// KindWritePathScenario, ReadPathScenario, BenchmarkIngestScenario, BenchmarkQueryScenario all take
+// it as a constructor dependency; clear-data, benchmark-aggregate, acting-user-smoke-test, and
+// --help do not). Computed early so it can also gate the acting-user password requirement below --
+// commands outside this set (notably --help) must keep working with neither password env var set.
+var needsTenantAndSchema = command is "seed" or "write-path" or "read-path" or "all"
+    or "benchmark-ingest" or "benchmark-query";
+
 var grpcUrl       = Env("IVERSON_GRPC_URL",        "http://localhost:8080");
 var clientId      = Environment.GetEnvironmentVariable("IVERSON_CLIENT_ID");
 var clientSecret  = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SECRET");
@@ -40,9 +50,16 @@ var actingUserHostHeader = Environment.GetEnvironmentVariable("IVERSON_ACTING_US
 var actingUserClientId    = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_CLIENT_ID")    ?? "dev-iverson-loadtest-human-client-id";
 var actingUserRedirectUri = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_REDIRECT_URI") ?? "http://localhost/placeholder-callback";
 var actingUserUsername = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_USERNAME") ?? "iverson-acting-user-smoke-test";
-var actingUserPassword = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_PASSWORD") ?? "dev-only-not-for-production-smoke-test-password-0123456789";
+// RequireEnv only when the command actually needs it (needsTenantAndSchema, above) -- --help and
+// passwordless commands (clear-data, benchmark-aggregate, acting-user-smoke-test) must keep working
+// with neither IVERSON_ACTING_USER_PASSWORD nor IVERSON_ACTING_USER_BYPASS_PASSWORD set.
+var actingUserPassword = needsTenantAndSchema
+    ? RequireEnv("IVERSON_ACTING_USER_PASSWORD")
+    : Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_PASSWORD") ?? "";
 var actingUserBypassUsername = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_USERNAME") ?? "iverson-loadtest-bypass-user";
-var actingUserBypassPassword = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_PASSWORD") ?? "dev-only-not-for-production-bypass-password-0123456789";
+var actingUserBypassPassword = needsTenantAndSchema
+    ? RequireEnv("IVERSON_ACTING_USER_BYPASS_PASSWORD")
+    : Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_PASSWORD") ?? "";
 var tenantProvisionId   = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ID") ?? "iverson-loadtest-dynamic";
 var tenantAdminUsername = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_USERNAME") ?? "iverson-loadtest-tenant-admin";
 var tenantAdminEmail    = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_EMAIL") ?? "iverson-loadtest-tenant-admin@iverson.local";
@@ -85,9 +102,6 @@ var clientCredentials = clientId is not null && clientSecret is not null && toke
     ? new IversonClientCredentials(clientId, clientSecret, tokenEndpoint, clientScope, HostHeader: actingUserHostHeader)
     : null;
 
-var needsTenantAndSchema = command is "seed" or "write-path" or "read-path" or "all"
-    or "benchmark-ingest" or "benchmark-query";
-
 ActingUserTokenProvider? tenantAdminTokenProvider = null;
 if (needsTenantAndSchema && clientCredentials is not null)
 {
@@ -97,7 +111,7 @@ if (needsTenantAndSchema && clientCredentials is not null)
         var adminToken = await MintClientCredentialsTokenAsync(clientCredentials);
         await EnsureTenantProvisionedAsync(
             grpcUrl, adminToken, tenantProvisionId, "Iverson LoadTest (dynamic)",
-            tenantAdminUsername, tenantAdminEmail, tenantAdminPassword);
+            tenantAdminUsername, tenantAdminEmail);
 
         var tenantAdminLoggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
         tenantAdminTokenProvider = new ActingUserTokenProvider(new AuthentikFlowExecutorClient(
@@ -126,6 +140,7 @@ var services = new ServiceCollection()
     .AddIversonClient(
         grpcUrl, clientCredentials,
         tenantAdminTokenProvider is not null ? () => tenantAdminTokenProvider.GetTokenAsync() : null,
+        allowInsecureChannelCallCredentials: true,
         entityAssemblies: [typeof(BenchmarkArticle).Assembly])
     .AddSingleton(config)
     .AddSingleton(kafkaOptions)
@@ -146,6 +161,7 @@ var services = new ServiceCollection()
     .AddSingleton<ReadPathScenario>()
     .AddSingleton<BenchmarkIngestScenario>()
     .AddSingleton<BenchmarkQueryScenario>()
+    .AddSingleton<BenchmarkAggregateScenario>()
     .BuildServiceProvider();
 
 if (needsTenantAndSchema)
@@ -191,6 +207,9 @@ switch (command)
         break;
     case "benchmark-query":
         await services.GetRequiredService<BenchmarkQueryScenario>().RunAsync(flags);
+        break;
+    case "benchmark-aggregate":
+        await services.GetRequiredService<BenchmarkAggregateScenario>().RunAsync(flags);
         break;
     case "all":
         await services.GetRequiredService<DirectSeeder>().RunAsync(flags);
@@ -238,6 +257,10 @@ switch (command)
               benchmark-query   Run SearchSimilar and SearchChunks over the ingested corpus's queries,
                                 aggregate chunk results to documents (max-passage), and write one
                                 TREC run file per RPC into --output-dir
+              benchmark-aggregate  Replay a benchmark-query run's raw chunk-hit dump (--hits-path) through
+                                the aggregator offline at a chosen --beta, writing <config-label>.chunks.trec
+                                and <config-label>.meta.json into --output-dir without re-querying the
+                                vector store
 
             Options:
               --force-reseed         Truncate and re-seed even if data already present
@@ -260,6 +283,8 @@ switch (command)
                                      benchmark-query reads it from
               --config-label <name> Label identifying one of the sweep's eight configurations,
                                      used by benchmark-query when naming its run file
+              --chunk-budget-multiplier <n>  benchmark-query only: SearchChunks top_k = 50 × n
+                                     (default 5; 11 for FreshStack's 10.79 chunks/doc)
               --rerank-url <url>    benchmark-query only: rescore each query's 50 max-passage documents
                                      with a TEI cross-encoder at this base URL (e.g. http://127.0.0.1:8090)
                                      before writing the chunks run file. Omitted = today's control path.
@@ -268,6 +293,18 @@ switch (command)
               --rerank-input <mode> winning-chunk (default) scores each document through its winning chunk;
                                      document scores it through its full beir/corpus.jsonl text (title +
                                      abstract). Requires --rerank-url.
+              --hits-path <file>    benchmark-aggregate only: path to a benchmark-query run's
+                                     <config-label>.chunks.hits.tsv dump to replay
+              --beta <n>             benchmark-aggregate only: tail-sum weight passed to the aggregator
+                                     (default 0, which reproduces today's max-passage ranking exactly).
+                                     Must be finite and >= 0.
+              --scores-path <file>  benchmark-aggregate only, opt-in: also write every document's
+                                     augmented score at this --beta, UNTRUNCATED (no top-50 cut) and at
+                                     full round-trippable precision, as `queryId<TAB>docId<TAB>score`.
+                                     Spec §6's ordering check differences score_beta - score_0 over the
+                                     beta arm's top 50, many of which have no score_0 at all in a
+                                     top-50 truncated, F6-formatted run file. Omitting the flag changes nothing:
+                                     <config-label>.chunks.trec is byte-identical either way.
             """);
         break;
 }
@@ -276,6 +313,17 @@ return 0;
 
 static string Env(string key, string def) =>
     Environment.GetEnvironmentVariable(key) ?? def;
+
+// CSR round-4 finding #8 follow-up: these two acting-user passwords used to default to the same
+// literal the docker-compose Authentik blueprint hardcoded, so the default "just worked" against a
+// fresh stack. That blueprint value is now randomly generated per stack by
+// scripts/generate-compose-secrets.sh, so a stale literal default here would silently authenticate
+// with the wrong password and fail with a confusing 401 instead of a clear error.
+static string RequireEnv(string key) =>
+    Environment.GetEnvironmentVariable(key) ?? throw new InvalidOperationException(
+        $"Missing required environment variable '{key}' -- the docker-compose stack's Authentik " +
+        "dev-only passwords are now randomly generated per stack by scripts/generate-compose-secrets.sh; " +
+        "read the value out of Iverson.Server/.env.");
 
 static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentials creds)
 {
@@ -302,7 +350,7 @@ static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentia
 
 static async Task EnsureTenantProvisionedAsync(
     string grpcUrl, string adminToken, string tenantId, string displayName,
-    string adminUsername, string adminEmail, string adminPassword)
+    string adminUsername, string adminEmail)
 {
     using var channel = GrpcChannel.ForAddress(grpcUrl);
     var client = new TenantLifecycleGrpcService.TenantLifecycleGrpcServiceClient(channel);
@@ -312,13 +360,17 @@ static async Task EnsureTenantProvisionedAsync(
     if (existing.Tenants.Any(t => t.TenantId == tenantId))
         return;
 
+    // No password param here by design (CSR round-2 finding #4 proto cleanup): CreateTenant
+    // already ignored an incoming admin_initial_password before that field was removed from the
+    // proto entirely, so this was never a live provisioning path — the tenant admin's actual
+    // password/login below (AuthentikFlowExecutorClient) is a separate, pre-existing mechanism
+    // unaffected by this cleanup.
     await client.CreateTenantAsync(new CreateTenantRequest
     {
-        TenantId             = tenantId,
-        DisplayName          = displayName,
-        AdminUsername        = adminUsername,
-        AdminEmail           = adminEmail,
-        AdminInitialPassword = adminPassword,
+        TenantId      = tenantId,
+        DisplayName   = displayName,
+        AdminUsername = adminUsername,
+        AdminEmail    = adminEmail,
     }, headers);
 }
 
@@ -401,6 +453,10 @@ public sealed class CommandFlags
     public string RerankUrl   { get; init; } = "";
     public string RerankModel { get; init; } = "";
     public string RerankInput { get; init; } = RerankInputs.WinningChunkFlag;
+    public int    ChunkBudgetMultiplier { get; init; } = 5;
+    public string HitsPath    { get; init; } = "";
+    public string ScoresPath  { get; init; } = "";
+    public double Beta        { get; init; }
 
     public static CommandFlags Parse(string[] args) => new()
     {
@@ -417,6 +473,10 @@ public sealed class CommandFlags
         RerankUrl   = StrFlag(args, "--rerank-url",   ""),
         RerankModel = StrFlag(args, "--rerank-model", ""),
         RerankInput = StrFlag(args, "--rerank-input", RerankInputs.WinningChunkFlag),
+        ChunkBudgetMultiplier = IntFlag(args, "--chunk-budget-multiplier", 5),
+        HitsPath    = StrFlag(args, "--hits-path",   ""),
+        ScoresPath  = StrFlag(args, "--scores-path", ""),
+        Beta        = DblFlag(args, "--beta",        0),
     };
 
     private static int    IntFlag(
@@ -439,5 +499,21 @@ public sealed class CommandFlags
         return i >= 0 && i + 1 < a.Length
             ? a[i + 1]
             : d;
+    }
+
+    private static double DblFlag(
+        string[] a,
+        string f,
+        double d)
+    {
+        var raw = StrFlag(a, f, "");
+        // NumberStyles.Float ONLY -- deliberately NOT double.Parse(raw, CultureInfo) , whose implied
+        // style is Float | AllowThousands. Under InvariantCulture the comma is the GROUP separator, so
+        // "--beta 0,003" (a plausible typo, and correct in most European locales) parsed as 3.0 and
+        // produced a well-formed run file ~84x above the gate document's binding upper bound. With
+        // AllowThousands off it throws instead.
+        return string.IsNullOrEmpty(raw)
+            ? d
+            : double.Parse(raw, NumberStyles.Float, CultureInfo.InvariantCulture);
     }
 }

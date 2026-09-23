@@ -86,11 +86,11 @@ public class DocumentRerenderQueueWorkerTests
         var row = EntityRow();
         _queue.PollAsync(Arg.Any<int>(), Arg.Any<int>()).Returns([row]);
         _queue.CountExhaustedAsync(Arg.Any<int>()).Returns(0);
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey).Returns((string?)null);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey, Arg.Any<EntityAccess>()).Returns((string?)null);
 
         await BuildSut().TickAsync(CancellationToken.None);
 
-        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey);
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey, Arg.Any<EntityAccess>());
         await _events.DidNotReceiveWithAnyArgs().ProduceAsync(default!, default!, Arg.Any<EntityEvent>());
         await _queue.Received(1).DeleteRowAsync(row.Id);
     }
@@ -103,7 +103,7 @@ public class DocumentRerenderQueueWorkerTests
         _queue.PollAsync(Arg.Any<int>(), Arg.Any<int>()).Returns([row]);
         _queue.CountExhaustedAsync(Arg.Any<int>()).Returns(0);
         const string currentJson = """{"Id":"11111111-0000-0000-0000-000000000001","Title":"current"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey).Returns(currentJson);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey, Arg.Any<EntityAccess>()).Returns(currentJson);
 
         EntityEvent? published = null;
         await _events.ProduceAsync(EntityTopics.Events, EntityKey, Arg.Do<EntityEvent>(e => published = e));
@@ -124,7 +124,7 @@ public class DocumentRerenderQueueWorkerTests
         var row = EntityRow();
         _queue.PollAsync(Arg.Any<int>(), Arg.Any<int>()).Returns([row]);
         _queue.CountExhaustedAsync(Arg.Any<int>()).Returns(0);
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey).Returns("""{"Id":"x"}""");
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey, Arg.Any<EntityAccess>()).Returns("""{"Id":"x"}""");
 
         EntityEvent? published = null;
         await _events.ProduceAsync(EntityTopics.Events, EntityKey, Arg.Do<EntityEvent>(e => published = e));
@@ -145,7 +145,7 @@ public class DocumentRerenderQueueWorkerTests
         var row = EntityRow(attempts: 2);
         _queue.PollAsync(Arg.Any<int>(), Arg.Any<int>()).Returns([row]);
         _queue.CountExhaustedAsync(Arg.Any<int>()).Returns(0);
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey).Returns("""{"Id":"x"}""");
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey, Arg.Any<EntityAccess>()).Returns("""{"Id":"x"}""");
         _events.ProduceAsync(EntityTopics.Events, EntityKey, Arg.Any<EntityEvent>())
             .Returns<Task>(_ => throw new InvalidOperationException("kafka down"));
 
@@ -215,7 +215,7 @@ public class DocumentRerenderQueueWorkerTests
             new KeyedTenantRow("key-1", "tenant-a"),
             new KeyedTenantRow("key-2", "tenant-b"),
         };
-        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "cursor-0", Arg.Any<int>())
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "cursor-0", Arg.Any<int>(), Arg.Any<EntityAccess>())
             .Returns(page);
 
         var opts = new DocumentRerenderOptions { MaxAttempts = 5, BatchSize = 100, PageSize = 500 };
@@ -226,7 +226,11 @@ public class DocumentRerenderQueueWorkerTests
             _queue.EnqueueEntityAsync("tenant-a", TypeName, "key-1");
             _queue.EnqueueEntityAsync("tenant-b", TypeName, "key-2");
         });
-        await _entities.Received(1).FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "cursor-0", 500);
+        // CSR round-3 #5: a type-level re-render row means "every entity of this type, across
+        // every tenant" — the page read must name that exemption, not inherit it from the
+        // connection's role.
+        await _entities.Received(1).FetchKeysAndTenantsPagedAsync(
+            Arg.Any<TableSchema>(), "cursor-0", 500, EntityAccess.CrossTenantMaintenance);
     }
 
     [Fact]
@@ -239,7 +243,7 @@ public class DocumentRerenderQueueWorkerTests
 
         var opts = new DocumentRerenderOptions { MaxAttempts = 5, BatchSize = 100, PageSize = 500 };
         // Short page: fewer rows than PageSize.
-        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), Arg.Any<string?>(), Arg.Any<int>())
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), Arg.Any<string?>(), Arg.Any<int>(), Arg.Any<EntityAccess>())
             .Returns([new KeyedTenantRow("key-1", "tenant-a")]);
 
         await BuildSut(opts).TickAsync(CancellationToken.None);
@@ -258,7 +262,7 @@ public class DocumentRerenderQueueWorkerTests
 
         var opts = new DocumentRerenderOptions { MaxAttempts = 5, BatchSize = 100, PageSize = 2 };
         // Full page: exactly PageSize rows.
-        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), Arg.Any<string?>(), 2)
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), Arg.Any<string?>(), 2, Arg.Any<EntityAccess>())
             .Returns([new KeyedTenantRow("key-1", "tenant-a"), new KeyedTenantRow("key-2", "tenant-b")]);
 
         await BuildSut(opts).TickAsync(CancellationToken.None);
@@ -280,9 +284,9 @@ public class DocumentRerenderQueueWorkerTests
         _queue.PollAsync(Arg.Any<int>(), Arg.Any<int>()).Returns([typeRow, entityRow]);
         _queue.CountExhaustedAsync(Arg.Any<int>()).Returns(0);
 
-        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), Arg.Any<string?>(), Arg.Any<int>())
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), Arg.Any<string?>(), Arg.Any<int>(), Arg.Any<EntityAccess>())
             .Returns<IEnumerable<KeyedTenantRow>>(_ => throw new InvalidOperationException("db unreachable"));
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey).Returns("""{"Id":"x"}""");
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), EntityKey, Arg.Any<EntityAccess>()).Returns("""{"Id":"x"}""");
 
         // Must not throw.
         var act = () => BuildSut().TickAsync(CancellationToken.None);

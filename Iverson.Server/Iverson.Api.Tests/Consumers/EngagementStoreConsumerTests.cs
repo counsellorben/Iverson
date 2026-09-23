@@ -48,7 +48,7 @@ public class EngagementStoreConsumerTests
         // used for mandatory tenant re-derivation (HandleUpsertAsync fetches this row before
         // ever reaching the owner-field logic, which is null for AuthorSchema()'s
         // BypassAuthorization()).
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"Name":"Alice","TenantId":"tenant-a"}""");
 
         _registry = new SchemaRegistry(
@@ -287,7 +287,7 @@ public class EngagementStoreConsumerTests
 
         const string forgedOwner = "Forged";
         const string realOwner   = "RealOwner";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns($$"""{"Name":"{{realOwner}}","TenantId":"tenant-a"}""");
 
         var ev = new EntityEvent(
@@ -342,7 +342,7 @@ public class EngagementStoreConsumerTests
         await act.Should().NotThrowAsync();
         await _sr.Received(1).UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
         // One authoritative-row read, for the tenant; no owner value to re-derive.
-        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
@@ -363,7 +363,7 @@ public class EngagementStoreConsumerTests
         };
         await _registry.RegisterAsync(schema);
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"TenantId":"tenant-a"}""");
 
         var ev = new EntityEvent(
@@ -413,18 +413,18 @@ public class EngagementStoreConsumerTests
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         capturedJson.Should().Be(ev.PayloadJson);
-        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
     }
 
     [Fact]
-    public async Task HandleUpsert_WithNoAuthoritativeTenantValue_SkipsProvisioningAndUpsert()
+    public async Task HandleUpsert_WithNoAuthoritativeTenantValue_ThrowsPoisonWithoutProvisioningOrUpsert()
     {
-        // Fail-closed: if the authoritative row carries no tenant value at all, the whole event
-        // must be dropped before ever calling EnsureTenantProvisionedAsync or UpsertAsync — a
-        // missing/forged tenant value must never provision or write to any tenant database.
+        // A present authoritative row with no tenant value is an invariant violation (every write
+        // path stamps the tenant), so it dead-letters rather than dropping silently — and it must
+        // never provision or write to any tenant database on the way.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
                  .Returns("""{"Name":"Alice"}""");
 
         var ev = new EntityEvent(
@@ -437,13 +437,37 @@ public class EngagementStoreConsumerTests
             OccurredAt:    DateTimeOffset.UtcNow,
             TargetStores:  StoreTarget.Engagement);
 
-        await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        var act = () => BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
+        await act.Should().ThrowAsync<PoisonMessageException>();
         await _sr.DidNotReceive().EnsureTenantProvisionedAsync(Arg.Any<string>(), Arg.Any<EngagementTableSchema>());
         await _sr.DidNotReceive().UpsertAsync(
             Arg.Any<EngagementTableSchema>(),
             Arg.Any<string>(),
             Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task HandleDelete_WithJsonNullTenantInSnapshot_ThrowsPoisonAndDoesNotDelete()
+    {
+        // JsonElement.ToString() of a JSON null is "", which the old inline read passed through as
+        // tenant "" and deleted under. A null tenant in the snapshot is an invariant violation.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Deleted,
+            TypeName:      "Author",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   """{"TenantId":null}""",
+            TraceId:       "trace-null-tenant-delete",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Engagement);
+
+        var act = () => BuildSut().HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().ThrowAsync<PoisonMessageException>();
+        await _sr.DidNotReceiveWithAnyArgs().DeleteAsync(default!, default!, default!, default!);
     }
 
     [Fact]

@@ -511,6 +511,244 @@ public class SchemaRegistryTests
         _logs.Entries.Should().NotContain(e => e.Level == LogLevel.Error);
     }
 
+    // ── CSR #13: identifier/key-type validation re-applied on rehydration ──────────────────────
+    // LoadAsync rehydrates straight from Postgres JSON, bypassing SchemaRegistrationOrchestrator's
+    // registration-time identifier/key-type guards entirely — a row written before those guards
+    // existed (or one that reached storage some other way) could carry a DDL-unsafe identifier or
+    // a key column that isn't actually a UUID. Both must be caught here too, not admitted silently.
+
+    [Fact]
+    public async Task LoadAsync_DescriptorWithInvalidTypeNameIdentifier_IsSkippedAndLogsError()
+    {
+        var badSchema = SchemaFixtures.ArticleSchema() with { TypeName = "Article; DROP TABLE x;--" };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article; DROP TABLE x;--", SerializeAsRegistryWould(badSchema))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article; DROP TABLE x;--").Should().BeFalse(
+            "a type name that fails SchemaRegistrationOrchestrator's own identifier pattern must never be admitted on rehydration");
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("failed identifier/key-type validation on rehydration"));
+    }
+
+    [Fact]
+    public async Task LoadAsync_DescriptorWithNonUuidKeyColumn_IsSkippedAndLogsError()
+    {
+        var badSchema = SchemaFixtures.ArticleSchema() with
+        {
+            KeyColumn = new ColumnDescriptor("Id", "TEXT", false)
+        };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(badSchema))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse(
+            "a key column whose SQL type is not UUID must never be admitted on rehydration");
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("failed identifier/key-type validation on rehydration") &&
+            e.Message.Contains("Article"));
+    }
+
+    [Fact]
+    public async Task LoadAsync_DescriptorWithInvalidScalarColumnIdentifier_IsSkippedAndLogsError()
+    {
+        // The other two clauses (TypeName, KeyColumn.SqlType) are covered above; this and the FK
+        // test below cover the two ScalarColumns/FkColumns identifier clauses that were previously
+        // untested — Finding #6 of the round-4 whole-branch review.
+        var badSchema = SchemaFixtures.ArticleSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title; DROP TABLE x;--", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("AuthorId", "uuid", false)
+            ]
+        };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(badSchema))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse(
+            "a scalar column name that fails SchemaRegistrationOrchestrator's own identifier pattern must never be admitted on rehydration");
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("failed identifier/key-type validation on rehydration") &&
+            e.Message.Contains("Article"));
+    }
+
+    [Fact]
+    public async Task LoadAsync_DescriptorWithInvalidFkColumnIdentifier_IsSkippedAndLogsError()
+    {
+        var badSchema = SchemaFixtures.ArticleSchema() with
+        {
+            FkColumns = [new ForeignKeyDescriptor("AuthorId; DROP TABLE x;--", "Author")]
+        };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(badSchema))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse(
+            "an FK column name that fails SchemaRegistrationOrchestrator's own identifier pattern must never be admitted on rehydration");
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("failed identifier/key-type validation on rehydration") &&
+            e.Message.Contains("Article"));
+    }
+
+    // The TenantColumn VALUE is interpolated raw into SQL identifiers — the RLS policy DDL every
+    // startup re-applies (PostgresSchemaManager), EntityRepository's tenant select, and every
+    // StarRocks tenant predicate — so a stored value that is not itself one of the validated
+    // ScalarColumns must pass the same identifier check. Not pinned to the reserved "__TenantId":
+    // legacy client-declared tenant columns (LoadAsync_RowCarryingATenantColumn_IsAdmitted) stay
+    // admitted.
+    [Fact]
+    public async Task LoadAsync_DescriptorWithInvalidTenantColumnIdentifier_IsSkippedAndLogsError()
+    {
+        var badSchema = SchemaFixtures.ArticleSchema() with { TenantColumn = "TenantId\" = '' OR true; --" };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(badSchema))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse(
+            "a tenant column name that fails SchemaRegistrationOrchestrator's own identifier pattern must never be admitted on rehydration");
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("failed identifier/key-type validation on rehydration") &&
+            e.Message.Contains("Article"));
+    }
+
+    // Positive control mirroring LoadAsync_RowCarryingATenantColumn_IsAdmitted above: a
+    // capitalization-only difference from the canonical "UUID" (what every real fixture in this
+    // suite — and legacy rows predating a naming cleanup — would carry) must still be admitted;
+    // the check's intent is catching a genuinely wrong SQL type, not policing letter case.
+    [Fact]
+    public async Task LoadAsync_KeyColumnSqlTypeDiffersOnlyByCase_IsStillAdmitted()
+    {
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            KeyColumn = new ColumnDescriptor("Id", "uuid", false)
+        };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(schema))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeTrue();
+        _logs.Entries.Should().NotContain(e => e.Level == LogLevel.Error);
+    }
+
+    // The positive control the identifier tests above lacked: every hand-built fixture in this file
+    // names its tenant column "TenantId", but SchemaBuilder appends the SERVER-OWNED "__TenantId"
+    // column to every real descriptor's ScalarColumns — and "__TenantId" fails the identifier
+    // pattern. Built by the real SchemaBuilder so the stored row has exactly the production shape;
+    // without the tenant-column exemption, every registered schema is skipped on reload.
+    [Fact]
+    public async Task LoadAsync_DescriptorBuiltBySchemaBuilder_WithServerOwnedTenantColumn_IsAdmitted()
+    {
+        var typeDesc = new Iverson.Client.Contracts.TypeDescriptor { TypeName = "Article" };
+        typeDesc.Properties.Add(new Iverson.Client.Contracts.PropertyDescriptor
+            { Name = "Id", ClrType = Iverson.Client.Contracts.ClrType.ClrGuid, IsKey = true });
+        typeDesc.Properties.Add(new Iverson.Client.Contracts.PropertyDescriptor
+            { Name = "Title", ClrType = Iverson.Client.Contracts.ClrType.ClrString });
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, Substitute.For<Iverson.Embeddings.IEmbeddingService>());
+        descriptor.ScalarColumns.Select(c => c.Name).Should().Contain("__TenantId",
+            "the precondition this test exists for: production descriptors carry the server-owned tenant column");
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(descriptor))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeTrue(
+            "a descriptor exactly as SchemaBuilder produces it must survive rehydration");
+        _logs.Entries.Should().NotContain(e => e.Level == LogLevel.Error);
+    }
+
+    // The two tests below pin the exemption above to the FIXED reserved name. Each carries exactly
+    // one offending scalar column, so a weakened exemption admits the row and fails the test:
+    // matching the row's own tenantColumn value would let a tampered row exempt an arbitrary
+    // (DDL-unsafe) column, and matching any "__"-prefixed name would exempt names the server never owns.
+    [Fact]
+    public async Task LoadAsync_ScalarColumnNamedAfterTheRowsOwnTenantColumn_IsStillSkipped()
+    {
+        var tampered = SchemaFixtures.ArticleSchema() with
+        {
+            TenantColumn  = "Bad; DROP TABLE x;--",
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Bad; DROP TABLE x;--", "text", false)
+            ]
+        };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(tampered))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse(
+            "only the fixed reserved tenant column name is exempt, never whatever the row claims its tenant column is");
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("failed identifier/key-type validation on rehydration"));
+    }
+
+    [Fact]
+    public async Task LoadAsync_UnderscorePrefixedScalarColumnOtherThanTheReservedTenantColumn_IsStillSkipped()
+    {
+        var tampered = SchemaFixtures.ArticleSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("__Other", "text", false)
+            ]
+        };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(tampered))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse(
+            "the exemption covers the reserved tenant column only, not every underscore-prefixed name");
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("failed identifier/key-type validation on rehydration"));
+    }
+
     // Serializes exactly as SchemaRegistry.RegisterAsync does, so the fixtures above are real
     // _iverson_schema rows minus/with the one key under test rather than hand-written JSON that
     // could drift from the shape LoadAsync actually meets.

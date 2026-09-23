@@ -9,9 +9,12 @@ manage tenants, view storage, and inspect performance data via Iverson.Api.
 - Node.js 20+ and npm
 - The rest of the Iverson stack running locally — this app talks to
   Iverson.Api and redirects to Authentik for login, so both need to be up
-  first. From `Iverson.Server/`:
+  first. From the repo root, generate the compose stack's dev secrets, then
+  from `Iverson.Server/`:
 
   ```bash
+  ./scripts/generate-compose-secrets.sh
+  cd Iverson.Server
   docker compose build iverson-api
   docker compose up -d
   ```
@@ -22,9 +25,8 @@ manage tenants, view storage, and inspect performance data via Iverson.Api.
 - At least one human user in the `operators` Authentik group to log in with —
   see [Creating a human user and granting operator access](../docs/user-management-and-security.md#creating-a-human-user-and-granting-operator-access)
   if you don't have one yet. (Bootstrap admin login for compose:
-  `admin@iverson.local` / `dev-admin-password`.) For compose, one is already
-  seeded: `iverson-loadtest-bypass-user` / `dev-only-not-for-production-bypass-password-0123456789`
-  belongs to `operators` out of the box (`blueprints/compose-only/service-clients.yaml`).
+  `admin@iverson.local` / the `AUTHENTIK_BOOTSTRAP_PASSWORD` value generated
+  into `.env` by `scripts/generate-compose-secrets.sh`.)
 
 ## Running locally
 

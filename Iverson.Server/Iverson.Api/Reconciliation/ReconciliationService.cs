@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using Iverson.Api.Schema;
 using Iverson.Events;
 using Iverson.Sql;
@@ -28,30 +27,44 @@ internal sealed class ReconciliationService(
         var schema = registry.Get(typeName);
         if (schema is null) return null;
 
-        var rowJsons = await entities.FetchAllAsync(SchemaBuilder.ToTableSchema(schema));
-
+        var tableSchema = SchemaBuilder.ToTableSchema(schema);
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
         var traceId = Activity.Current?.TraceId.ToString() ?? string.Empty;
         var count = 0;
+        string? afterKey = null;
 
-        foreach (var rowJson in rowJsons)
+        // Cross-tenant by design: an admin reconcile of a type re-projects EVERY tenant's rows
+        // of that type back through the fan-out pipeline. Paginated (not FetchAllAsync) so the
+        // whole table is never held in memory at once; the loop observes `ct` itself so a client
+        // disconnect actually stops the work (passing the token alone stops nothing, since none
+        // of FetchKeysAndTenantsPagedAsync/FetchManyByKeysAsync/ProduceAsync accepts one).
+        while (!ct.IsCancellationRequested)
         {
-            var key = ExtractKey(rowJson, schema.KeyColumn.Name);
-            if (string.IsNullOrEmpty(key)) continue;
+            var page = (await entities.FetchKeysAndTenantsPagedAsync(
+                tableSchema, afterKey, BatchSize, EntityAccess.CrossTenantMaintenance)).ToList();
+            if (page.Count == 0) break;
 
-            await events.ProduceAsync(
-                EntityTopics.Events,
-                key,
-                new EntityEvent(
-                    EntityEventType.Updated,
-                    typeName,
-                    key,
-                    rowJson,
-                    traceId,
-                    "1",
-                    DateTimeOffset.UtcNow,
-                    targetStores));
-            count++;
+            var rows = (await entities.FetchManyByKeysAsync(
+                tableSchema, page.Select(p => p.Key).ToList(), EntityAccess.CrossTenantMaintenance)).ToList();
+
+            foreach (var row in rows)
+            {
+                await events.ProduceAsync(
+                    EntityTopics.Events,
+                    row.Key,
+                    new EntityEvent(
+                        EntityEventType.Updated,
+                        typeName,
+                        row.Key,
+                        row.Data,
+                        traceId,
+                        "1",
+                        DateTimeOffset.UtcNow,
+                        targetStores));
+                count++;
+            }
+
+            afterKey = page[^1].Key;
         }
 
         logger.LogInformation("[Reconcile] Re-projected {Count} {Type} records to Kafka", count, typeName.SanitizeForLog());
@@ -97,7 +110,10 @@ internal sealed class ReconciliationService(
             return;
         }
 
-        var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), row.EntityKey);
+        // Cross-tenant by design: the queue row records a type and key, not a tenant — the
+        // replay has to reach whichever tenant's row failed to publish.
+        var rowJson = await entities.FetchByKeyAsync(
+            SchemaBuilder.ToTableSchema(schema), row.EntityKey, EntityAccess.CrossTenantMaintenance);
 
         if (rowJson is null)
         {
@@ -186,7 +202,9 @@ internal sealed class ReconciliationService(
         if (attempts >= MaxAttempts)
             logger.LogCritical(
                 "[Reconciliation] Giving up on type={Type} key={Key} after {Attempts} attempts — " +
-                "requires manual POST /admin/reconcile/{Type}. Last error: {Error}",
+                "requires a manual in-cluster HTTP/2 POST (e.g. curl --http2-prior-knowledge) to " +
+                "/admin/reconcile/{Type} (kubectl port-forward or exec — not reachable via the ingress). " +
+                "Last error: {Error}",
                 row.TypeName,
                 row.EntityKey,
                 attempts,
@@ -195,18 +213,4 @@ internal sealed class ReconciliationService(
     }
 
     private Task DeleteQueueRowAsync(Guid id) => queue.DeleteRowAsync(id);
-
-    private static string? ExtractKey(string rowJson, string keyColumn)
-    {
-        using var doc = JsonDocument.Parse(rowJson);
-        if (doc.RootElement.TryGetProperty(keyColumn, out var keyEl))
-            return keyEl.GetString();
-
-        var camel = char.ToLowerInvariant(keyColumn[0]) + keyColumn[1..];
-        return doc.RootElement.TryGetProperty(
-            camel,
-            out var camelEl)
-                ? camelEl.GetString()
-                : null;
-    }
 }

@@ -1,0 +1,2 @@
+global:
+  ingressHost: "iverson-ci-test.example.org"

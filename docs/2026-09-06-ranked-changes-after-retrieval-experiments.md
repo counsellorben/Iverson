@@ -1,0 +1,322 @@
+# Changes needed after the retrieval experiments — ranked choices
+
+> **Status: living index + decision record. Index (§0) reconciled 2026-09-15.** §0 is the durable half and
+> is kept current — see §0 below for the rule on what counts as a gate document. The tiered items below are
+> decision content and expire as they are settled; a settled item collapses to its verdict and a pointer to
+> the gate that settled it.
+
+Supersedes `docs/2026-08-28-proposed-code-changes-from-retrieval-experiments.md`, which was written while
+ArguAna was still running and lists four items that have since shipped. This document originated against
+local main at `9eb99f7` (2026-09-06) and has been kept current since; §0 is reconciled against whatever gate
+documents exist under `docs/plans/*GATE*.md` at the time it is read — currently eleven. Nothing here has been
+through `thorough-brainstorming`; each item is the input to that, not a substitute for it.
+
+The experiments this closes out are the ones scored on top-k relevance metrics (nDCG@10, R@50, AP) through
+the `Iverson.LoadTest` benchmark harness: the prefix and title work, the chunk-window ablation, the
+centroid / fusion-weight / decay sweeps, the MMR λ sweeps, the reranker Phase 1 and its document-input
+trial, the embedding migration Phases 1 and 2 (including the enrichment-backend gate), and the multivector
+layout experiment.
+
+Items are ranked by **strength of evidence × production impact ÷ cost**. Each item lists its choices with
+the recommended one first. "Choice" means a real either/or that a spec would have to pick; where the
+evidence already decides, the item says so and the choice is only whether to act now.
+
+---
+
+## 0. Where things stand
+
+§0 is the durable half and is kept current: one row per gate document matching `docs/plans/*GATE*.md`, plus
+any non-gated work that produced a verdict. When a gate lands, its row is added there — the glob is
+deliberately loose (not `docs/plans/2026-09-GATE-*.md`) so a gate landing under a later month's date prefix
+still counts.
+
+| Experiment | Verdict | What shipped | Record |
+|---|---|---|---|
+| Task prefixes + title composition (nomic) | +0.0134 nDCG@10, not significant | model-conditional prefix table (`EmbeddingPrefixes`), empty for models that need none | `centroid-weighting-proposal.md`, `project-nomic-embedding-task-prefixes` |
+| Chunk window 512/448 chars | best of the ablation at 512/448, **and the shipped 2048/1792 default has since been measured and passed** (rule 7.1, 2026-09-07) | nothing shipped, by decision | `2026-09-GATE-embedding-migration.md` §"512/448 window ruling" |
+| Centroid weight 0.333 → 0.500 | +0.0037…+0.0089 nDCG@10 on FreshStack (Holm-significant), −0.0005 n.s. on NFCorpus, −0.0082 significant on SciFact | triple B `0.45/0.45/0.10` shipped as `VectorRankingOptions` defaults; all five ranking constants are bound configuration | `centroid-weighting-proposal.md` §"Decision 2026-08-31" |
+| Request-scaled centroid weighting (schedule on chunks/doc) | **refuted** — the optimum tracked prefix misconfiguration, not density | nothing (design rejected) | same, §"The chunks-per-document schedule, tested directly and refuted" |
+| MMR λ 0.70 → 1.00 | `SearchChunks` neutral to four decimals; `SearchSimilar` pays 9 % (NFCorpus) and 12.8 % (FreshStack) of R@50 — replicated | nothing; λ is configurable (`VectorRanking__Lambda`) but one value serves both RPCs | same, §"The MMR finding" |
+| Reranker Phase 1 (ms-marco MiniLM, bge-reranker-base) + A4 document input | **GATE FAILED**: +0.0082 n.s.; bge-reranker-base −0.1126 significantly worse; A4 −0.0050 n.s. | harness only (`reranker` compose profile, `TeiRerankClient`); no server change | `2026-09-GATE-reranker-phase1.md` |
+| Embedding migration Phase 1 (TEI bge-base / bge-small vs nomic) | **PASS for bge-base** (+0.0492 nDCG@10, p_adj 0.0010; NFCorpus +0.0185 significant); bge-small FAIL by 0.0028 on the R@50 bound | TEI `/v1/embeddings` route, `/info` identity guard, per-model base URLs | `2026-09-GATE-embedding-migration.md` |
+| Embedding migration Phase 2 (ship bge-base; TGI for enrichment) | embedding switch shipped; **enrichment gate FAILED** → Phase C′ | bge-base is the default everywhere (compose, Helm `activeEmbeddingModel`, code); `tei-embed` is a default service; nomic dropped; Ollama stays for enrichment (`qwen2.5:3b`); `tgi` profile-gated | `2026-09-GATE-enrichment-backend.md` |
+| Multivector layout (one MaxSim point per doc, gte-modernbert-base) | **NO-GO, closed 2026-09-10 after a full re-run.** Both asymmetries removed: index state was inert (reproduced the original to 4 decimals), budget equalisation made the arm worse. At `params.exact` the arm ties the control exactly (Δ +0.0000, 0/300 changed) because MaxSim and max-passage collapse are the same function | `multivector.py` harness script (`--mv-hnsw-ef`, `--mv-exact`, `probe`); `TEI_MAX_BATCH_TOKENS` templated on `tei-embed` | `2026-09-GATE-multivector.md` + its two 2026-09-10 amendments |
+| Tier 1 retrieval defaults | Rule 7.1 **PASS**, chunk-window default STANDS; Rule 7.2 λ split per endpoint; Rule 7.3 FIRES → follow-up | `LambdaSimilar` 1.00 / `LambdaChunks` 0.70; the `.chunks.diversity.json` sidecar. Chunk-window defaults unchanged by decision | `2026-09-GATE-tier1-defaults.md` |
+| `SearchSimilar` centroid retrieval (rule 7.3 follow-up) | **FAIL** — head retrieval stands, `SimilarRetrievalVector` deleted; reconciled in the 2026-09-08 amendment | nothing; Task 1's wiring reverted | `2026-09-GATE-similar-centroid.md` |
+| Chunk-coverage signal, Phase 1 | **Phase 2 warranted** — 85.0 % of top-50 slots carry a tail; β calibrated | harness only (`beta_invariant.py` and the β ladder) | `2026-09-GATE-chunk-coverage.md` |
+| Chunk-coverage signal, Phase 2 | **NO β QUALIFIES** — all five arms negative and monotone on nDCG@10; the top three are Holm-significant (p_adj 0.0010), not a null | nothing | `2026-09-GATE-chunk-coverage-phase2.md` |
+| Aspect-coverage oracle ceiling (α-nDCG@10, FreshStack-2048) | **GO** — G − R = **+0.0609** α-nDCG@10, 95 % CI [+0.0541, +0.0678], Holm p_adj 0.0006; clears the pre-registered 0.02 bar by ~3×. A − R = +0.0570 (93.5 % of the ceiling, derived: 0.056955 / 0.060947) is reported and does not gate; R − B = +0.3364 is context. A ceiling, not a realised gain — it licenses designing a term, not shipping one | harness only (`aspect_oracle.py`); no server change | `2026-09-GATE-aspect-coverage-oracle.md` |
+| Family 2 vector-aspect screen (chunk-vector spread vs aspect count, FreshStack-2048) | **FAIL** — no candidate beats the `n_chunks` null (ρ = +0.0714) on the pre-registered 2,733-pair / 610-query primary: `residual_spread` +0.0578 (diff **−0.0136**), `greedy_cover`(τ=0.90) +0.0732 (+0.0017), `effective_rank` +0.0727 (+0.0012); all three CIs on the difference contain zero and all three Holm p_adj = 1.0000. The strong candidate failed, not just the two count-bounded ones. Reconstruction clean at 9,184/9,184 rows, 0 unmatched / 0 ambiguous / 0 duplicate | harness only (`aspect_vectors.py`), plus `queryPrefixes` / `defaultQueryPrefix` in the ingest contract and `ingest.query_prefix_for()`; no server behaviour change | `2026-09-GATE-family2-vector-aspect-screen.md` |
+| Relation-popularity signal (citation count as a query-independent prior, SciFact-2048 `SearchSimilar`) | **NO-GO, closed 2026-09-15.** Four scorings — lifetime count, document-age normalisation (`count / age`), the shipped decay (`count + RecencyBoost·D`, full validator-legal grid), and the two combined — measured offline over the full W range. Age normalisation separates significantly better than the lifetime count (paired AUC +0.0181, p 0.0014); **none improves nDCG@10 at any W** (largest +0.0068, CI [−0.0022, +0.0157]); the pre-registered W costs −0.1500 | nothing new; the signal shipped earlier (`b32f870`) stays off by default. Harness only: `fetch_citations.py`, `fetch_citation_dates.py`, `popularity_triage.py`, `popularity_rerank.py`, `popularity_decay.py`, `popularity_combined.py` | `2026-09-GATE-relation-popularity.md` |
+
+The rows above finalized before 2026-09-07 — prefixes, the chunk-window ablation itself, centroid weight,
+request-scaled centroid, MMR λ, reranker Phase 1, embedding migration Phases 1 and 2, and the multivector
+layout — were all measured at the **512/448-character window on SciFact**, with NFCorpus and FreshStack as
+secondary corpora. That was the evidence gap item 1 closed. The seven rows added since were measured at the
+shipped window instead: Tier 1 retrieval defaults ran `sci-2048`, `fs-2048` and `fs-512`; `SearchSimilar`
+centroid retrieval ran the two FreshStack arms (`fs-2048`, `fs-512`); both chunk-coverage phases, the
+aspect-coverage oracle and the family 2 vector-aspect screen ran `fs2048` only; the relation-popularity
+measurement ran `sci-2048`'s `SearchSimilar` run only.
+
+---
+
+## Tier 1 — production defaults the evidence had not yet covered, now closed
+
+### 1. Chunk window under the shipped model — CLOSED 2026-09-07
+
+Rule 7.1 PASS on both halves; the chunk-window default STANDS. Before this gate, every scored number in
+this campaign sat at the 512/448-character window on SciFact (NFCorpus and FreshStack secondary) — see §0
+above. Rule 7.1 is what extended coverage to the shipped 2048/1792 window (`sci-2048` vs bge-base;
+`fs-2048` vs `fs-512`) and confirmed parity, closing that gap. Spec §3.4 was not executed: the five client
+attribute defaults stay at 512 tokens / 64 overlap. Record: `docs/plans/2026-09-GATE-tier1-defaults.md`
+
+### 2. λ split across `SearchSimilar` / `SearchChunks` — CLOSED 2026-09-07
+
+`LambdaSimilar` 1.00, `LambdaChunks` 0.70 shipped (`VectorRankingOptions.cs:24-25`). Record:
+`docs/plans/2026-09-GATE-tier1-defaults.md`
+
+⚠ This item called λ = 1.00 on `SearchChunks` a free win. It was an artifact of the harness's max-passage
+collapse, which reduces chunks to documents before scoring and so cannot see chunk-level MMR. Production
+`SearchChunks` returns the chunk list: at λ = 1.00 a request for ten chunks yields 5.2 distinct source
+documents instead of 7.2 on `fs-512`.
+
+### 3. `SearchSimilar` centroid via chunks — RESOLVED 2026-09-08
+
+`VectorRanking:SimilarViaChunksTypes` ships the operator-configurable alternative
+(`VectorRankingOptions.cs:30`); the rule 7.3 follow-up gated FAIL and was reconciled. Records:
+`docs/plans/2026-09-GATE-tier1-defaults.md`, `docs/plans/2026-09-GATE-similar-centroid.md`
+
+---
+
+**Tier 1 status: empty.** Every production default this campaign identified as unmeasured has now been
+measured. The fusion triple's A-vs-B choice (item 8) is a separate case — not unmeasured but *undecidable*
+here, since no corpus this project has can judge recency.
+
+---
+
+## Tier 2 — cheap re-measurements before a verdict is treated as final
+
+### 4. Multivector — CLOSED 2026-09-10
+
+NO-GO. The re-run removed both asymmetries and the layout is the same function as the control: at
+`params.exact` the arm ties it exactly. Record: `docs/plans/2026-09-GATE-multivector.md` and its two
+2026-09-10 amendments
+
+⚠ This item asserted both asymmetries biased the control upward. After index equalisation the **arm** held
+the larger corpus fraction (1.93 % vs 1.25 %), so the retrieval-budget asymmetry favoured the arm. The
+index-state asymmetry was real and inert — equalising it reproduced the original gate to four decimal
+places.
+
+Do not propose another multivector variant without first showing it computes a *different* scoring function
+from max-passage collapse. Sum-of-rows, top-k-rows or a learned aggregation would be new questions; beam,
+index state, and retrieval budget are not.
+
+### 5. bge-small: failed by 0.0028 at n = 300, with an 8.71× ingest speed-up on the table
+
+**What the gate recorded.** nDCG@10 +0.0070 (passes), R@50 CI lower bound −0.0228 against a −0.02 margin
+(fails). The minimum detectable effect at 80 % power was ~0.035, so the miss is within the resolution of a
+300-query sample. Ingest was 8.71× faster than nomic on this box; 384 dims halve Qdrant memory.
+
+**Choices, ranked.**
+
+1. **Leave closed unless ingest throughput becomes the binding constraint for a deployment.** The rule was
+   applied as written; the model is measurably not better on quality and the only argument for it is cost.
+2. **Reopen with a pooled sample** (SciFact + NFCorpus queries under one paired test, or a larger BEIR
+   corpus) if a laptop or edge profile needs the 384-dim footprint. The Phase 1 snapshots for M2 exist
+   (`scifact-bge-small-qdrant-snapshots/`), so SciFact costs nothing to re-score; NFCorpus would need an
+   ingest (~1 h at bge-small).
+3. **Adopt for the laptop profile only.** Two models in production means two collection shapes and two
+   identity guards; not worth it on a near-miss.
+
+### 15. A coverage term that is not a chunk count in disguise
+
+Phase 2 rejected `max_chunk + β·Σ(next 3)`, but its tail term correlates with tail *count* at 0.9970 over
+all 172,704 pooled pairs, and because β multiplies the whole term the degeneracy is β-invariant. What was
+falsified is count-weighted promotion of multi-chunk documents; a coverage term whose value does not
+collapse onto the count is untested. FreshStack-2048 and its snapshots are on disk and `beta_invariant.py`
+is built, so the open work is a term, not an instrument. Record this explicitly so the Phase 2 result is
+not mis-cited as "coverage was tried and failed" — a misreading `docs/plans/2026-09-GATE-chunk-coverage-phase2.md`
+itself warns against. `docs/plans/2026-09-GATE-aspect-coverage-oracle.md` has since measured that headroom
+directly and returned **GO** (G − R = +0.0609, 95 % CI [+0.0541, +0.0678]).
+
+**CLOSED 2026-09-13 — the headroom is real, no signal yet screened reaches it, and a term that did would be undetectable.** That gate's 2026-09-13
+amendment records four offline probes: chunk-score-derived signals proxy the oracle's per-document aspect
+count at ρ ≤ 0.0790 over 2,733 relevant pairs (a scalar score per chunk cannot say *which* part of the
+query a chunk answered); FreshStack ships no nugget text, so a query-decomposition term has no offline
+validation path; MMR moves α-nDCG@10 by 0.0027 across its whole λ range, with λ = 1.00 (MMR off) tying
+λ = 0.70, so retuning the shipped diversity mechanism on the diversity metric is dead; and the
+oracle→realised conversion reproduces at 3.63 %, which puts a realised term at ≈ +0.002 against a measured
+MDE of 0.0097 — which applies whatever signal a term is built on, and remains the leg this closure rests on.
+
+**Family 2 (chunk-vector-derived aspect coverage) has since been screened, and FAILED** —
+`docs/plans/2026-09-GATE-family2-vector-aspect-screen.md`, 2026-09-13. It was screened live, against the
+chunk and centroid vectors served from Qdrant and 610 query embeddings from TEI, over the same 2,733-pair /
+610-query population. **No candidate beats the `n_chunks` null (ρ = +0.0714):** `residual_spread` +0.0578
+(difference **−0.0136**), `greedy_cover`(τ = 0.90) +0.0732 (+0.0017), `effective_rank` +0.0727 (+0.0012);
+every 95 % CI on the difference contains zero and every Holm-adjusted p is 1.0000, over a 10,000-resample
+bootstrap of queries. The failure is the **strong** form: `residual_spread` is not bounded by the chunk
+count (ρ +0.4087 with it, against +0.9493 for `greedy_cover`, which is numerically equal to `n_chunks` on
+88.8 % of pairs), it is the candidate that encodes the "project the query out" argument directly, and its point
+estimate fell below the null rather than tying it — though the difference is not distinguishable from
+zero (95 % CI [−0.0593, +0.0330]). The best family-2 candidate (+0.0732) also fails to beat the
+best score-derived signal (`spread`, +0.0790) on the identical population: the vectors bought nothing over
+the scalars. The whole ρ(τ) curve is published in that gate, and τ = 0.90 is the argmax of the primary
+curve, so no post-hoc τ rescues it. The reconstruction underpinning all of it was clean — 9,184 of 9,184
+recorded fused scores assigned to exactly one chunk, 0 unmatched / 0 ambiguous / 0 duplicate — which is
+also the live confirmation that the fusion weights were **equal** (not, as that spec over-claimed, that
+they were 0.45/0.45: the fusion divides by their sum, so any equal pair is indistinguishable).
+
+**The signal search over this family is therefore no longer open, but it is not exhaustive over all
+families.** Three definitions of chunk-vector spread were tested on one corpus under one model; a
+different definition of "distinct aspect" is not refuted. Reopen on nugget text, a larger
+subtopic-labelled corpus that lifts the MDE below the predicted effect, or a new definition of aspect
+coverage that is not a spread of matched chunk vectors.
+
+---
+
+## Tier 3 — closed by the evidence; no production change
+
+### 6. Reranking
+
+Cross-encoder reranking of the winning chunk (ms-marco MiniLM-L6) gained +0.0082 n.s.; bge-reranker-base was
+significantly worse (−0.1126); feeding the full document instead of the chunk was worse again (−0.0050 n.s.).
+The oracle headroom (+0.21) did not convert because the shipped fusion is already at the MiniLM-CE ceiling.
+**Choice:** close. Keep `TeiRerankClient` and the `reranker` compose profile as harness tooling (they cost
+nothing when off); do not carry a reranker into the server. Revisit only with a stronger cross-encoder on a
+GPU host, where the latency budget the spec allowed (120 s per batch) is not the constraint.
+
+### 7. gte-modernbert-base
+
+Not distinguishable from bge-base on SciFact (nDCG@10 −0.0129, R@50 +0.0173, AP −0.0019, all n.s.) at 1.30×
+the ingest cost, and it needs `TEI_MAX_BATCH_TOKENS=4096` to start on a 9 GB box. **Choice:** stay on
+bge-base. The templated `--max-batch-tokens` on `tei-embed` stays (default unchanged) because it is what lets
+the harness try the next 8k-context model without a compose edit.
+
+### 8. Request-scaled centroid weighting and the fusion triple
+
+The chunks-per-document schedule was refuted; a single constant (`w = 0.500`, triple B) generalised across a
+3.4× density range. The centroid-absent branch was never exercised by any captured row and stays analytic;
+A vs B on real timestamps cannot be decided by any corpus this project has. **Choice:** no change. The five
+constants are configuration, so a deployment with a recency-judged corpus can move them without a release.
+
+### 9. Multi-property vector search
+
+Costed 2026-08-26 and deferred: a proto change across five clients, an authorization fork (reject vs drop
+unauthorised properties), and a second uncalibrated fusion stacked on the first. Not a BEIR lever.
+**Choice:** stays deferred on the grounds that still hold — the proto change across five clients, the
+authorization fork, and the second uncalibrated fusion. The previously stated blocker, item 2's diversity
+measurement, was met on 2026-09-07 (α-nDCG@10 swept on both FreshStack arms); when this item is picked up
+it needs its own spec.
+
+
+### 17. Relation-popularity signal — CLOSED 2026-09-15
+
+NO-GO on SciFact. Record: `docs/plans/2026-09-GATE-relation-popularity.md` (Phase 0, the smoke cell, the decayed arm,
+the combined screen, and the close-out). No scoring of citation popularity improves nDCG@10 at any fusion weight;
+document-age normalisation is the only one that even separates significantly better than the lifetime count, and
+recency adds nothing on top of it.
+
+**Choice:** keep the shipped signal (`b32f870`) off by default rather than remove it. The evidence is off-domain for
+the feature's purpose — SciFact relevance is evidential, which a query-independent prior cannot predict, and the
+baseline is near its ceiling — and removal would be manual surgery through nine files later hardened by the CSR
+remediation, since a revert conflicts. Its cost while off is near zero. Before it is ever enabled, the sweep fault abort
+must be on main and `RecencyBoost` must be bounded; both are recorded in the gate doc's close-out.
+
+Do not re-propose citation-count scorings on SciFact: lifetime, per-year, decayed, or combinations. A new question
+needs a corpus where relevance plausibly tracks engagement. Document-age normalisation is not expressible by the
+server (`PopularityFor` never divides by document age, and `WDecay` is inert without a date property), so trying it
+anywhere would need new server work.
+
+---
+
+## Tier 4 — follow-ups the gates left open, and housekeeping
+
+### 10. Enrichment backend (Phase C′)
+
+- **Cloud 3B measurement** — Ben's call. `enrich_bench.py` and the profile-gated `tgi` service are reusable
+  as-is on a `c7i.2xlarge`-class AMX node; this box cannot host the 3B model.
+- **`MaxSourceChars = 8_000`** in `EnrichmentConsumer` was sized for Ollama's 4,096-token head-first
+  truncation. Choices: keep (matches the backend that stayed); make it configuration alongside
+  `EnrichmentServiceOptions` so a TGI deployment with a larger context can raise it; or derive it from the
+  backend's reported context length. Recommended: keep until a second backend actually ships.
+- `README.md` (lines 20, 64, 98) and `Iverson.Server/docs/security/tma.md` (§I) still describe embeddings as
+  Ollama/nomic. A documentation pass is owed; the tma entry also needs a TEI row.
+
+### 11. `SearchChunks.top_k` counts chunks and the server does not dedupe by parent
+
+A caller who wants N documents must over-request and collapse client-side, exactly as the harness does
+(`ChunkBudgetMultiplier = 5`). No client documentation says so. **Choices:** document it in the client standard
+and each client's search docs (recommended, cheap); add a document-level `top_k` option to the proto (five
+languages, a new spec); do nothing. Item 4's re-run makes this sharper than a mechanism note: retrieving
+chunks and collapsing by parent on the max IS max-passage scoring, proven bit-identical to exact MaxSim on 243
+of 300 queries, so the only thing that degrades a caller's document-level recall is truncating the chunk list
+too early. Over-request and collapse is not a workaround; it is the scoring function.
+
+### 12. Stale and contradictory documents
+
+- `docs/specs/2026-08-29-empty-chunk-guard-design.md` and its plan specify an `ArgumentException` inside the
+  generator; what shipped (`c4eb11c`) is a typed `EmptyEmbeddingInputException` from `EmbeddingService`.
+  Executing either document would undo the shipped design. **Add a superseded banner to both** — the sharpest
+  item in this tier.
+- `docs/2026-08-28-proposed-code-changes-from-retrieval-experiments.md` — superseded by this document; a
+  status line pointing here was added alongside this file.
+- `docs/centroid-weighting-proposal.md:795` still says the stale-image incident is "unaddressed in the
+  harness"; build identity has shipped in every run sidecar since 2026-08-31.
+
+### 13. Branches and worktrees left by the experiments
+
+| Ref | State | Recommendation |
+|---|---|---|
+| `centroid-ablation` (worktree `.worktrees/embedding-prefixes-and-title`) | 9 ahead; arctic prefixes and the empty-window drop are superseded by main; `--exclude-self` for ArguAna (`c733098`) is not on main | cherry-pick `c733098` if ArguAna is ever re-run (its 1,298 self-matching queries need it), then delete the worktree and branch |
+| `tier1-retrieval-defaults` (worktree `.worktrees/tier1-retrieval-defaults`) | fully merged (0 ahead); the work landed on main 2026-09-07 but the worktree and branch are still present | `git worktree remove .worktrees/tier1-retrieval-defaults && git branch -d tier1-retrieval-defaults` |
+| `chunk-size-512-experiment` | 6 ahead; harness-side 512-char chunking and the ingest-contract generator, most of it since re-landed on main | item 1 was decided 2026-09-07, so the condition is met — delete now; nothing on it is the production default change |
+| `benchmark-exclude-self` | 2 ahead | same content as the `centroid-ablation` cherry-pick; delete once one of them lands |
+| `embedding-prefixes-and-title` | 5 ahead; its content reached main by other commits | delete |
+| `decay-share-triple-b` | 1 ahead, redundant (same content under a different hash) | `git branch -D` |
+| `bump-ollama-0.12.11`, `retrieval-quality-benchmark`, `single-chunk-field`, `model-conditional-embedding-prefixes`, `test-container-serialization`, `worktree-embedding-model-configuration` | fully merged | `git branch -d` |
+
+### 14. Operational hazards recorded during the experiments, worth a line in the runbook
+
+- `tei-embed` is a default service whose model comes only from `EMBED_MODEL_ID` in the invoking shell; any
+  `docker compose up` that touches it from a shell without the variable recreates it on bge-base, and the
+  api/worker `/info` guards then fail against a non-default model. Harmless in production (bge-base is the
+  default), fatal mid-experiment.
+- Ten of the running containers have a `working_dir` label pointing at a path that no longer exists (verified
+  2026-09-10 via `podman inspect --format '{{.Name}} :: {{index .Config.Labels
+  "com.docker.compose.project.working_dir"}}'`):
+
+  | Container | Vanished working_dir |
+  |---|---|
+  | `iverson-qdrant`, `iverson-redis`, `iverson-kafka`, `iverson-zookeeper`, `iverson-jaeger`, `iverson-authentik-migrate` | `/home/ben/repositories/Iverson-tenant/Iverson.Server` |
+  | `iverson-ollama-init`, `iverson-tgi` | `.worktrees/embedding-migration-phase2/Iverson.Server` |
+  | `iverson-reranker` | `.worktrees/reranker-phase1/Iverson.Server` |
+  | `iverson-api` | `.worktrees/chunk-coverage-phase2/Iverson.Server` |
+
+  `iverson-qdrant` matters most — it holds every benchmark collection. `iverson-api`'s composite is not
+  reproducible from a deleted worktree, so it cannot simply be recreated in place. Safe, created from main's
+  path (`/home/ben/repositories/Iverson/Iverson.Server`): `iverson-postgres`, `iverson-authentik-server`,
+  `iverson-authentik-worker`, `iverson-ollama`, `iverson-prometheus`, `iverson-tei-embed`, `iverson-worker`.
+  Only single-service `--no-deps` actions are safe until the stack is recreated from main deliberately.
+- Qdrant's `wait=true` covers the write, not the optimizer; a fresh collection is exact-searched until the
+  indexer finishes, and a collection can sit green with a sub-threshold segment forever. Any latency or recall
+  comparison between two collections must check `indexed_vectors_count == points_count` on both.
+
+### 16. `benchmark-query`'s run sidecar records no λ
+
+Attesting which λ a past run used needs a four-part reconstruction: descending-order violation counts,
+distinct-parent means against the spec's table, rank-1 identity across queries, and MVID equality. A λ
+field in the sidecar retires all of it.
+
+---
+
+## What this document does not propose
+
+- **Changing the fusion triple or removing the centroid.** Removing it costs −0.0263 nDCG@10 on FreshStack
+  (Holm-significant); raising it further is significantly worse on SciFact.
+- **Changing the production embedding model again.** bge-base beat nomic by the widest margin in the project's
+  history and matched gte; the next candidate is the one that can be served at 8k context on this box, and
+  none was found.
+- **Adding bpref or other judged-negative measures to the default report.** BEIR qrels contain no `rel = 0`
+  rows, so bpref reduces to recall there; it is meaningful only on FreshStack.
+- **Request-shape changes to `SearchSimilarRequest` / `SearchChunksRequest`** beyond item 11's documentation.
+  No evidence supports a caller-set ranking knob, and a bad caller choice degrades ranking with no error.

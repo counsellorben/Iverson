@@ -119,7 +119,7 @@ def test_driver_schema_catalog_client_reproduces_every_attribute_the_base_constr
     subclass is correctly updated — only when it is not.
     """
     # localhost:1 is never dialed: grpc channels connect lazily and no RPC is issued here.
-    base = IversonClient(host="localhost", port=1)
+    base = IversonClient(host="localhost", port=1, use_tls=False)
     driver_channel = grpc.insecure_channel("localhost:1")
     try:
         driver_client = _DriverSchemaCatalogClient(driver_channel)

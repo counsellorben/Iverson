@@ -2,25 +2,9 @@
 # and modules/cluster-gcp's fixed naming exactly (see Tasks 2 and 5 of this plan).
 # No separate ingress controller to install — GKE's built-in GCE ingress class is used directly.
 
-# modules/cluster-gcp's VPC subnet CIDR covers the kubelet (node IPs) but NOT the
-# GCE ingress: className is "gce" (below) with VPC-native networking and Dataplane
-# V2 enabled (modules/cluster-gcp/main.tf), so GKE Ingress uses container-native
-# load balancing — the GCLB and its health checks connect straight to pod IPs from
-# Google's own fixed ranges, never from the node subnet. 130.211.0.0/22 and
-# 35.191.0.0/16 are those fixed GCLB/health-check ranges (documented by Google for
-# every GCP project; not specific to this VPC) and must be listed alongside the
-# node subnet or every request through the GCE ingress is dropped and the backend
-# health check never passes. AWS/Azure don't need this: their load balancers connect
-# from inside the VPC/VNet the node-subnet CIDR already covers. See values.yaml's
-# networkPolicy comment for why every profile sets this.
-networkPolicy:
-  clusterCidrs: ["10.2.0.0/20", "130.211.0.0/22", "35.191.0.0/16"]
-
-# Keep in lockstep with api.ingress.host below — see values.yaml's global.ingressHost
-# comment for why this is a separate key instead of a single source of truth.
 global:
   ingressHost: "iverson.example.com"
-  prometheusEnabled: true   # single source of truth — see values.yaml's comment on this flag
+  externalScheme: "https"
 
 postgres:
   storageClassName: "iverson-postgres"
@@ -96,7 +80,6 @@ api:
   ingress:
     className: "gce"
     annotations: {}
-    host: "iverson.example.com"
     # GCE ingress terminates TLS from a standard Kubernetes Secret
     # referenced via the Ingress's tls: block, same as Azure above — replace
     # with a real cert-manager-issued Secret name for the real host before
@@ -165,14 +148,7 @@ authentik:
     tlsSecretName: "iverson-authentik-tls"
 
 adminUi:
-  # https, matching authentik.ingress above — that Ingress sets tlsSecretName, so it
-  # renders a tls: block and the GCE ingress terminates TLS for authentik.iverson.example.com.
-  # This console is itself an https:// page (adminUi.ingress below sets tlsSecretName
-  # too), and an https:// page may not make OIDC calls to an http:// authority — the
-  # browser blocks them as mixed content and login never completes. Keep the scheme
-  # here in lockstep with authentik.ingress.tlsSecretName.
-  oidcAuthority: "https://authentik.iverson.example.com/application/o/iverson-api/"
-  apiBaseUrl: "https://admin-api.iverson.example.com"
+  apiBaseUrl: "https://iverson.example.com"
   ingress:
     className: "gce"
     annotations: {}

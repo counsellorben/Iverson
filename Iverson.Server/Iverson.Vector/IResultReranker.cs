@@ -4,7 +4,8 @@ public sealed record RerankCandidate(
     ulong    Id,
     double   BaseScore,
     float[]? Centroid,
-    double?  Decay);
+    double?  Decay,
+    double?  Popularity = null);
 
 public sealed record RerankedResult(ulong Id, double FusedScore);
 

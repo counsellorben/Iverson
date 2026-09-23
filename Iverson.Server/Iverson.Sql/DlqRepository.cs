@@ -9,10 +9,10 @@ public sealed class DlqRepository(
             $"""
             INSERT INTO "{tableName}"
                 ("Id", "SourceTopic", "ConsumerGroup", "MessageKey", "MessageValue",
-                 "ExceptionType", "ExceptionMessage", "Attempts", "FailedAt", "Replayed")
+                 "ExceptionType", "ExceptionMessage", "Attempts", "FailedAt", "Replayed", "TenantId")
             VALUES
                 (@Id, @SourceTopic, @ConsumerGroup, @MessageKey, @MessageValue,
-                 @ExceptionType, @ExceptionMessage, @Attempts, @FailedAt, false)
+                 @ExceptionType, @ExceptionMessage, @Attempts, @FailedAt, false, @TenantId)
             """,
             new
             {
@@ -24,14 +24,15 @@ public sealed class DlqRepository(
                 message.ExceptionType,
                 message.ExceptionMessage,
                 message.Attempts,
-                message.FailedAt
+                message.FailedAt,
+                message.TenantId
             });
 
     public Task<IEnumerable<DlqRow>> ListUnreplayedAsync(int limit) =>
         sql.QueryAsync<DlqRow>(
             $"""
             SELECT "Id", "SourceTopic", "ConsumerGroup", "MessageKey", "ExceptionType",
-                   "ExceptionMessage", "Attempts", "FailedAt", "Replayed"
+                   "ExceptionMessage", "Attempts", "FailedAt", "Replayed", "TenantId"
             FROM "{tableName}"
             WHERE "Replayed" = false
             ORDER BY "FailedAt" DESC
@@ -42,7 +43,7 @@ public sealed class DlqRepository(
     public Task<DlqReplayRow?> GetUnreplayedByIdAsync(Guid id) =>
         sql.QuerySingleOrDefaultAsync<DlqReplayRow>(
             $"""
-            SELECT "SourceTopic", "MessageKey", "MessageValue"
+            SELECT "SourceTopic", "MessageKey", "MessageValue", "TenantId"
             FROM "{tableName}"
             WHERE "Id" = @Id AND "Replayed" = false
             """,

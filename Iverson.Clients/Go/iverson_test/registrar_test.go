@@ -399,6 +399,38 @@ func TestSchemaRegistrar_MetadataAndDescriptions(t *testing.T) {
 	}
 }
 
+// ── popularity-signal registrar tests ──────────────────────────────────────────
+
+type interactionRecord struct {
+	Id           string `iverson_key:"true"`
+	InteractedAt string `iverson_popularity_signal:"true"`
+	Plain        string
+}
+
+func TestSchemaRegistrar_SetsIsPopularitySignal_OnAnnotatedField_AndLeavesOthersFalse(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, interactionRecord{})
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	req := mock.capturedReq
+
+	interactedAt := propByName(t, req, "InteractedAt")
+	if !interactedAt.IsPopularitySignal {
+		t.Error("expected InteractedAt IsPopularitySignal=true")
+	}
+
+	id := propByName(t, req, "Id")
+	if id.IsPopularitySignal {
+		t.Error("key field must not be marked popularity signal")
+	}
+
+	plain := propByName(t, req, "Plain")
+	if plain.IsPopularitySignal {
+		t.Error("expected Plain IsPopularitySignal=false")
+	}
+}
+
 func TestSchemaRegistrar_NoTypeDescriptionWhenInterfaceAbsent(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, undescribedArticle{})

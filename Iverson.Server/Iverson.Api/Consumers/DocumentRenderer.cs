@@ -110,7 +110,7 @@ public sealed class DocumentRenderer(SchemaRegistry registry, IEntityRepository 
         if (fkValue is null) return null;
 
         var rows = await entities.FetchManyByKeysAsync(
-            SchemaBuilder.ToTableSchema(targetSchema), [fkValue], tenantScoped: true, tenantId: tenantId);
+            SchemaBuilder.ToTableSchema(targetSchema), [fkValue], EntityAccess.ForTenant(tenantId));
         var match = rows.FirstOrDefault();
         return match is null ? null : JsonDocument.Parse(match.Data).RootElement.Clone();
     }
@@ -143,7 +143,7 @@ public sealed class DocumentRenderer(SchemaRegistry registry, IEntityRepository 
             if (keys.Count == 0) return [];
 
             var rows = await entities.FetchManyByKeysAsync(
-                targetTable, keys, tenantScoped: true, tenantId: tenantId);
+                targetTable, keys, EntityAccess.ForTenant(tenantId));
             return rows
                 .OrderBy(r => r.Key, StringComparer.Ordinal)
                 .Select(r => JsonDocument.Parse(r.Data).RootElement.Clone())
@@ -155,7 +155,7 @@ public sealed class DocumentRenderer(SchemaRegistry registry, IEntityRepository 
         if (ownKey is null) return [];
 
         var childRows = await entities.FetchByColumnAsync(
-            targetTable, relation.ForeignKey, ownKey, tenantScoped: true, tenantId: tenantId);
+            targetTable, relation.ForeignKey, ownKey, EntityAccess.ForTenant(tenantId));
         return childRows
             .Select(json => JsonDocument.Parse(json).RootElement.Clone())
             .OrderBy(el => ExtractString(el, targetSchema.KeyColumn.Name), StringComparer.Ordinal)

@@ -31,6 +31,16 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IEventProducer, KafkaProducer>();
 
+        services.AddSingleton<IAdminClient>(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
+            var adminConfig = new AdminClientConfig { BootstrapServers = options.BootstrapServers };
+            KafkaClientConfigFactory.ApplySecurity(adminConfig, options);
+            return new AdminClientBuilder(adminConfig).Build();
+        });
+
+        services.AddSingleton<IEventBrokerHealthCheck, KafkaBrokerHealthCheck>();
+
         services.AddSingleton<IEventConsumer>(sp =>
         {
             var options = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;

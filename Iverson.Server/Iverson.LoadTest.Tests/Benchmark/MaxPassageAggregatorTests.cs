@@ -121,4 +121,51 @@ public class MaxPassageAggregatorTests
         result.Ranked.Should().Equal(("d2", 0.8, "p2 best"), ("d1", 0.6, "p1 best"));
         result.UnresolvedParentKeys.Should().Equal("p3");
     }
+
+    [Fact]
+    public void Aggregate_ThreeArgOverload_EqualsFourArgOverloadAtBetaZero()
+    {
+        var chunks = new[]
+        {
+            ("key-1", 0.9),
+            ("key-1", 0.5),
+            ("key-1", 0.4),
+            ("key-2", 0.7),
+        };
+        var keyMap = new Dictionary<string, string> { ["key-1"] = "doc-1", ["key-2"] = "doc-2" };
+
+        var threeArg = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10);
+        var fourArg  = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10, beta: 0);
+
+        threeArg.Ranked.Should().Equal(fourArg.Ranked);
+        threeArg.UnresolvedParentKeys.Should().Equal(fourArg.UnresolvedParentKeys);
+    }
+
+    [Fact]
+    public void Aggregate_WithBeta_AppliesTailSumToResolvedChunks()
+    {
+        var chunks = new[]
+        {
+            ("key-1", 0.9),
+            ("key-1", 0.4),
+        };
+        var keyMap = new Dictionary<string, string> { ["key-1"] = "doc-1" };
+
+        var result = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10, beta: 1.0);
+
+        result.Ranked.Should().ContainSingle().Which.Should().Be(("doc-1", 0.9 + 0.4));
+        result.UnresolvedParentKeys.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Aggregate_WithBeta_UnresolvedParentStillExcludedAndReported()
+    {
+        var chunks = new[] { ("unknown-key", 0.99), ("key-1", 0.10), ("key-1", 0.05) };
+        var keyMap = new Dictionary<string, string> { ["key-1"] = "doc-1" };
+
+        var result = MaxPassageAggregator.Aggregate(chunks, keyMap, limit: 10, beta: 1.0);
+
+        result.Ranked.Should().ContainSingle().Which.Should().Be(("doc-1", 0.10 + 0.05));
+        result.UnresolvedParentKeys.Should().ContainSingle().Which.Should().Be("unknown-key");
+    }
 }

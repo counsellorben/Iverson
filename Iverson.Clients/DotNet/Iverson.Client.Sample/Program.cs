@@ -39,6 +39,7 @@ var services = new ServiceCollection()
             tokenEndpoint!,
             Scope: "admin schema_admin"),
         actingUserTokenProvider: () => Task.FromResult(actingUserToken),
+        allowInsecureChannelCallCredentials: true,
         entityAssemblies: [typeof(Article).Assembly])
     .BuildServiceProvider();
 

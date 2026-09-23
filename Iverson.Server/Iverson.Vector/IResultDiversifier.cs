@@ -10,5 +10,6 @@ public sealed record DiversifyCandidate(ulong Id, double Score, float[]? Diversi
 public interface IResultDiversifier
 {
     /// <param name="ranked">Candidates in fused-descending order, as <c>IResultReranker.Rerank</c> returns them.</param>
-    IReadOnlyList<RerankedResult> Diversify(IReadOnlyList<DiversifyCandidate> ranked, int topK);
+    /// <param name="lambda">MMR trade-off in [0,1]; 1.00 reduces to <c>Take(topK)</c> exactly.</param>
+    IReadOnlyList<RerankedResult> Diversify(IReadOnlyList<DiversifyCandidate> ranked, int topK, double lambda);
 }

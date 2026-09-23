@@ -13,6 +13,13 @@ from urllib.error import HTTPError
 import grpc
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # refuse the redirect; caller sees the original response/error
+
+_no_redirect_opener = urllib.request.build_opener(_NoRedirectHandler)
+
+
 @dataclass(frozen=True)
 class IversonClientCredentials:
     client_id: str
@@ -54,7 +61,7 @@ class _CachedTokenProvider:
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(request) as response:
+                with _no_redirect_opener.open(request) as response:
                     payload = json.loads(response.read())
             except HTTPError as e:
                 raise RuntimeError(f"Failed to acquire Iverson client token: HTTP {e.code}") from e

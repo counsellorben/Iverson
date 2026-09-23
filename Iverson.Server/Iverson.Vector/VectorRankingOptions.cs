@@ -14,5 +14,20 @@ public sealed class VectorRankingOptions
     public double WBase     { get; set; } = 0.45;
     public double WCentroid { get; set; } = 0.45;
     public double WDecay    { get; set; } = 0.10;
-    public double Lambda    { get; set; } = 0.70;
+
+    public double WPopularity { get; set; } = 0.0;
+
+    // MMR λ per endpoint, set by the Tier 1 gate (docs/plans/2026-09-GATE-tier1-defaults.md, rule 7.2).
+    // SearchSimilar: 1.00. No λ beat 0.70 on α-nDCG@10 on either FreshStack arm and λ=1.00 was not
+    // worse, so the rule's none-qualify clause applies; λ=1.00 also buys R@50 (+0.0506 fs-2048,
+    // +0.0518 fs-512, both significant) at no measurable diversity cost.
+    // SearchChunks: 0.70. SearchChunks returns the chunk list itself, so λ is caller-visible: λ=1.00
+    // costs 1.44 (fs-2048) and 1.97 (fs-512) distinct parents in the top 10, past the rule's 1.0 bar.
+    public double LambdaSimilar { get; set; } = 1.00;
+    public double LambdaChunks  { get; set; } = 0.70;
+
+    // Types whose SearchSimilar, for a chunked property, ranks documents by chunk retrieval with
+    // max-passage collapse instead of by the object vector. Empty by default. Enable per type after
+    // measuring the corpus: see docs/specs/2026-09-08-similar-via-chunks-design.md §1.
+    public List<string> SimilarViaChunksTypes { get; set; } = [];
 }

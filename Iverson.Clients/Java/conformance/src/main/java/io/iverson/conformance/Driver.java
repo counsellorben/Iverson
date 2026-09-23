@@ -167,7 +167,10 @@ public final class Driver {
 
         List<StepResult> steps = new ArrayList<>();
         try {
-            IversonClient client = new IversonClient(channel, credentials);
+            // This driver deliberately dials a plaintext h2c channel above — the accepted
+            // dev/test model — so it must explicitly defeat IversonClient's default guard
+            // against attaching CallCredentials to a plaintext channel.
+            IversonClient client = new IversonClient(channel, credentials, true);
 
             if (INTEROP_SCENARIO.equals(scenario)) {
                 switch (phase) {
@@ -634,7 +637,7 @@ public final class Driver {
                 parsedArgs.optional("--token-endpoint"),
                 parsedArgs.optional("--wrong-acting-token"),
                 parsedArgs.optional("--service-token"));
-            IversonClient wrongClient = new IversonClient(channel, wrongCredentials);
+            IversonClient wrongClient = new IversonClient(channel, wrongCredentials, true);
 
             // The update payload's tenant value no longer affects the outcome on THIS leg. It USED to: the
             // server once rejected an existing row's payload tenant that differed from the caller's claim as

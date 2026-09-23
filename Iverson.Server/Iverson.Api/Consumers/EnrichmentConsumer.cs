@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Google.Protobuf.WellKnownTypes;
+using Grpc.Core;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Embeddings;
@@ -38,6 +40,7 @@ public sealed class EnrichmentConsumer(
     IOutboxPublisher outboxPublisher,
     IRecordStoreTransactionRunner txRunner,
     IEnrichmentService enrichment,
+    IPayloadSizeValidator payloadSizeValidator,
     ILogger<EnrichmentConsumer> logger) : BackgroundService
 {
     private const string GroupId = "iverson.consumer.enrichment";
@@ -99,8 +102,11 @@ public sealed class EnrichmentConsumer(
         // re-enrich and every writeback would republish entity.updated — the loop breaker
         // inverted into unbounded re-enrichment.
         var tableSchema = SchemaBuilder.ToTableSchema(schema);
-        var rowJson = await entities.FetchByKeyAsync(tableSchema, ev.Key);
-        if (rowJson is null)
+        // Fails closed with PoisonMessageException when the row carries no tenant value: with a
+        // null tenant EnterTenantScopeAsync would set app.tenant_id to NULL, the targeted UPDATE
+        // would match zero rows, and recording a hash would mark the object enriched forever.
+        var row = await ProjectionTenantResolution.FetchAuthoritativeRowAsync(entities, schema, ev.Key, "[Enrichment]");
+        if (row is null)
         {
             logger.LogWarning(
                 "[Enrichment] No authoritative row for type={Type} key={Key} — skipping.",
@@ -108,36 +114,10 @@ public sealed class EnrichmentConsumer(
             return;
         }
 
-        JsonElement row;
-        try
-        {
-            using var doc = JsonDocument.Parse(rowJson);
-            row = doc.RootElement.Clone();
-        }
-        catch (JsonException ex)
-        {
-            logger.LogError(ex,
-                "[Enrichment] Malformed authoritative row JSON for type={Type} key={Key} — skipping.",
-                ev.TypeName.SanitizeForLog(), key);
-            return;
-        }
-
-        // Fail closed when the authoritative row carries no tenant value, and deliberately write
-        // NO state row: with a null tenant EnterTenantScopeAsync sets app.tenant_id to NULL, the
-        // RLS predicate fails closed and the targeted UPDATE would match zero rows — recording a
-        // hash anyway would mark the object enriched forever while it carried none of the
-        // enriched values.
-        var tenantValue = ExtractString(row, schema.TenantColumn);
-        if (tenantValue is null)
-        {
-            logger.LogWarning(
-                "[Enrichment] Skipped — no authoritative tenant value for type={Type} key={Key}; no state row written.",
-                ev.TypeName.SanitizeForLog(), key);
-            return;
-        }
+        var tenantValue = row.TenantId;
 
         // ── Step 2: hash source text + enrichment specification, and compare ──────
-        var sourceText = BuildSourceText(schema, row);
+        var sourceText = BuildSourceText(schema, row.Row);
         if (sourceText.Length > MaxSourceChars) sourceText = sourceText[..MaxSourceChars];
         var hash = ComputeHash(sourceText, schema.EnrichmentTargets);
 
@@ -175,22 +155,47 @@ public sealed class EnrichmentConsumer(
                 return;
             }
 
+            // Same size guard ObjectPersistenceGrpcService/ObjectMappingGrpcService apply to a
+            // client-supplied payload before it reaches StarRocks — this write-back is LLM-generated,
+            // not client-supplied, but it lands in the same StarRocks columns and is exactly as
+            // capable of overflowing them. Caught locally rather than left to the enclosing
+            // best-effort catch: that catch leaves no state row, so the object would retry forever,
+            // and at temperature 0 the model produces the identical oversized value every time —
+            // an infinite loop, not a transient failure that might succeed on retry.
+            try
+            {
+                var sizeCheckPayload = new Struct();
+                foreach (var (columnName, columnValue) in columns)
+                    sizeCheckPayload.Fields[columnName] = Value.ForString((string)columnValue!);
+                payloadSizeValidator.ValidateTextColumnSizes(sizeCheckPayload, schema);
+            }
+            catch (RpcException)
+            {
+                logger.LogWarning(
+                    "[Enrichment] Generated value(s) for {Type}:{Key} exceed the StarRocks column limit — " +
+                    "no writeback; state row recorded so this source text and specification are not retried.",
+                    schema.TypeName.SanitizeForLog(), ev.Key);
+                await txRunner.ExecuteInTransactionAsync(tx =>
+                    state.UpsertAsync(tx, tenantValue, schema.TypeName, ev.Key, hash, DateTimeOffset.UtcNow));
+                return;
+            }
+
             var outboxRowId = Guid.CreateVersion7();
 
             await txRunner.ExecuteInTransactionAsync(async tx =>
             {
-                // SET LOCAL ROLE iverson_runtime persists for the remainder of the
-                // transaction, and neither the enrichment-state table nor the outbox has a
-                // grant for that role — so tenant scope must be exited before either write.
-                // OutboxWriter.UpsertAndEnqueueOutboxAsync performs the identical sequence.
-                await tx.EnterTenantScopeAsync(tenantValue);
-                await entities.UpdateColumnsAsync(tx, tableSchema, ev.Key, columns);
-                await tx.ExitTenantScopeAsync();
+                // UpdateColumnsAsync enters and exits the tenant role itself. That matters here:
+                // SET LOCAL ROLE iverson_runtime persists for the remainder of the transaction,
+                // and neither the enrichment-state table nor the outbox has a grant for that role,
+                // so the two writes below must run after the reset. This used to be a hand-rolled
+                // Enter/Exit pair around the call — see EntityRepository.UpdateColumnsAsync.
+                await entities.UpdateColumnsAsync(
+                    tx, tableSchema, ev.Key, columns, EntityAccess.ForTenant(tenantValue));
 
                 await state.UpsertAsync(
                     tx, tenantValue, schema.TypeName, ev.Key, hash, DateTimeOffset.UtcNow);
                 await outboxWriter.EnqueueUpdateOutboxRowAsync(
-                    tx, outboxRowId, schema.TypeName, ev.Key, rowJson);
+                    tx, outboxRowId, schema.TypeName, ev.Key, row.Row.GetRawText());
             });
 
             // Re-fetch after commit rather than publishing the pre-generation snapshot with the
@@ -199,7 +204,8 @@ public sealed class EnrichmentConsumer(
             // and Qdrant and win over the client's own event — reintroducing on the publish path
             // exactly the clobber the targeted UPDATE removes from the write path.
             // ReconciliationService.ProcessOneAsync re-fetches before republishing for the same reason.
-            var publishJson = await entities.FetchByKeyAsync(tableSchema, ev.Key);
+            var publishJson = await entities.FetchByKeyAsync(
+                tableSchema, ev.Key, EntityAccess.ForTenant(tenantValue));
             if (publishJson is null)
             {
                 logger.LogWarning(
@@ -247,28 +253,7 @@ public sealed class EnrichmentConsumer(
         // ev.PayloadJson. Leaving the state row behind is not safe: a client-supplied key
         // (ObjectMappingGrpcService.cs:127-132) lets a delete-then-recreate of the same key
         // hash equal against the orphan row and be skipped forever.
-        JsonElement payload;
-        try
-        {
-            using var doc = JsonDocument.Parse(ev.PayloadJson);
-            payload = doc.RootElement.Clone();
-        }
-        catch (JsonException ex)
-        {
-            logger.LogError(ex,
-                "[Enrichment] Malformed delete payload JSON for type={Type} key={Key} — state row not removed.",
-                ev.TypeName.SanitizeForLog(), key);
-            return;
-        }
-
-        var tenantValue = ExtractString(payload, schema.TenantColumn);
-        if (tenantValue is null)
-        {
-            logger.LogWarning(
-                "[Enrichment] Dropped delete — no tenant value in payload for type={Type} key={Key}",
-                ev.TypeName.SanitizeForLog(), key);
-            return;
-        }
+        var tenantValue = ProjectionTenantResolution.TenantFromSnapshot(ev.PayloadJson, schema, ev.Key, "[Enrichment]");
 
         await state.DeleteAsync(tenantValue, schema.TypeName, ev.Key);
         logger.LogInformation(
@@ -290,21 +275,21 @@ public sealed class EnrichmentConsumer(
             {
                 case EnrichmentKind.Summary:
                     generated = await enrichment.GenerateAsync(
-                        string.Format(EnrichmentPrompts.Summary, sourceText), ct);
+                        string.Format(EnrichmentPrompts.Summary, EnrichmentPrompts.EscapeUntrustedText(sourceText)), ct);
                     break;
                 case EnrichmentKind.Keywords:
                     generated = await enrichment.GenerateAsync(
-                        string.Format(EnrichmentPrompts.Keywords, sourceText), ct);
+                        string.Format(EnrichmentPrompts.Keywords, EnrichmentPrompts.EscapeUntrustedText(sourceText)), ct);
                     break;
                 case EnrichmentKind.Extracted:
-                    // EnrichmentPrompts.Extraction carries a single {0} slot for the source text;
-                    // the per-target hint (mandatory for [IversonExtracted], enforced at
-                    // registration) is appended so the model knows what to pull out.
+                    // EnrichmentPrompts.Extraction carries two slots: {0} is the per-target hint
+                    // (mandatory for [IversonExtracted], enforced at registration), and {1} is the
+                    // source text. The hint is positioned ahead of the text so the model knows what
+                    // to pull out before reading the untrusted content.
                     try
                     {
                         generated = await enrichment.GenerateJsonAsync(
-                            string.Format(EnrichmentPrompts.Extraction, sourceText) +
-                            $"\n\nExtract specifically: {target.Hint}", ct);
+                            string.Format(EnrichmentPrompts.Extraction, target.Hint, EnrichmentPrompts.EscapeUntrustedText(sourceText)), ct);
                     }
                     catch (InvalidOperationException ex)
                     {

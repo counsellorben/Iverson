@@ -25,7 +25,7 @@ public sealed class ObjectRetrievalGrpcService(
         RetrievalRequest request,
         ServerCallContext context)
     {
-        logger.LogInformation("[Retrieval.Get] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key);
+        logger.LogInformation("[Retrieval.Get] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key.SanitizeForLog());
 
         var schema = registry.Get(request.TypeName);
         if (schema is null)
@@ -34,8 +34,7 @@ public sealed class ObjectRetrievalGrpcService(
         var rowJson = await _entities.FetchByKeyAsync(
             SchemaBuilder.ToTableSchema(schema),
             request.Key,
-            tenantScoped: true,
-            tenantId: actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
+            EntityAccess.ForTenant(actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
 
         if (rowJson is null)
             return new RetrievalResponse { Found = false, TraceId = request.TraceId };
@@ -101,11 +100,21 @@ public sealed class ObjectRetrievalGrpcService(
             return;
         }
 
+        foreach (var key in keys)
+        {
+            if (!Guid.TryParse(key, out _))
+                throw new RpcException(new Status(StatusCode.InvalidArgument, $"Key '{key}' is not a valid GUID."));
+        }
+
         var rows = await _entities.FetchManyByKeysAsync(
             SchemaBuilder.ToTableSchema(schema),
             keys,
-            tenantScoped: decision.TenantColumn is not null,
-            tenantId: decision.TenantValue);
+            // A type that declares no tenant column carries no RLS policy and no iverson_runtime
+            // grant, so a tenant-scoped read of it would be 42501, not a filtered read — and an
+            // unfiltered read of a type with no tenant column IS cross-tenant. Say so explicitly.
+            decision.TenantColumn is not null
+                ? EntityAccess.ForTenant(decision.TenantValue)
+                : EntityAccess.CrossTenantMaintenance);
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
 
         foreach (var key in keys)

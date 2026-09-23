@@ -18,10 +18,16 @@ public static class ServiceCollectionExtensions
         string? apiKey = null,
         string? certPath = null)
     {
-        if (apiKey is null)
+        if (string.IsNullOrWhiteSpace(apiKey))
         {
             throw new ArgumentException(
                 "Qdrant:ApiKey is required (used both as the admin API key and the JWT signing secret)",
+                nameof(apiKey));
+        }
+        if (System.Text.Encoding.UTF8.GetByteCount(apiKey) < 32)
+        {
+            throw new ArgumentException(
+                "Qdrant:ApiKey must be at least 32 bytes (used as an HMAC-SHA256 signing key)",
                 nameof(apiKey));
         }
 
@@ -62,28 +68,60 @@ public static class ServiceCollectionExtensions
 
     public static IServiceCollection AddVectorRanking(this IServiceCollection services, IConfiguration config)
     {
+        var section = config.GetSection(VectorRankingOptions.Section);
+        if (section["Lambda"] is not null)
+            throw new InvalidOperationException(
+                $"{VectorRankingOptions.Section}:Lambda is no longer read. Set " +
+                $"{VectorRankingOptions.Section}:LambdaSimilar and {VectorRankingOptions.Section}:LambdaChunks " +
+                "(env VectorRanking__LambdaSimilar / VectorRanking__LambdaChunks) instead.");
+
         var opts = new VectorRankingOptions();
-        config.GetSection(VectorRankingOptions.Section).Bind(opts);
+        section.Bind(opts);
 
         if (!double.IsFinite(opts.WBase) || !double.IsFinite(opts.WCentroid) ||
-            !double.IsFinite(opts.WDecay) || !double.IsFinite(opts.Lambda))
+            !double.IsFinite(opts.WDecay) || !double.IsFinite(opts.WPopularity) ||
+            !double.IsFinite(opts.LambdaSimilar) || !double.IsFinite(opts.LambdaChunks))
             throw new InvalidOperationException(
                 $"{VectorRankingOptions.Section}: every value must be finite " +
-                $"(WBase={opts.WBase}, WCentroid={opts.WCentroid}, WDecay={opts.WDecay}, Lambda={opts.Lambda}).");
+                $"(WBase={opts.WBase}, WCentroid={opts.WCentroid}, WDecay={opts.WDecay}, " +
+                $"WPopularity={opts.WPopularity}, LambdaSimilar={opts.LambdaSimilar}, " +
+                $"LambdaChunks={opts.LambdaChunks}).");
 
-        if (opts.WBase < 0 || opts.WCentroid < 0 || opts.WDecay < 0)
+        if (opts.WBase < 0 || opts.WCentroid < 0 || opts.WDecay < 0 || opts.WPopularity < 0)
             throw new InvalidOperationException(
                 $"{VectorRankingOptions.Section}: weights must be non-negative " +
-                $"(WBase={opts.WBase}, WCentroid={opts.WCentroid}, WDecay={opts.WDecay}).");
+                $"(WBase={opts.WBase}, WCentroid={opts.WCentroid}, WDecay={opts.WDecay}, " +
+                $"WPopularity={opts.WPopularity}).");
 
-        if (opts.WBase + opts.WCentroid + opts.WDecay <= 0)
+        if (opts.WBase > 1000000 || opts.WCentroid > 1000000 || opts.WDecay > 1000000 || opts.WPopularity > 1000000)
             throw new InvalidOperationException(
-                $"{VectorRankingOptions.Section}: at least one weight must be greater than zero; " +
-                "all-zero weights make every fused score NaN.");
+                $"{VectorRankingOptions.Section}: weights must be at most 1000000 " +
+                $"(WBase={opts.WBase}, WCentroid={opts.WCentroid}, WDecay={opts.WDecay}, " +
+                $"WPopularity={opts.WPopularity}). Weights matter only relative to one another, and " +
+                "larger values can overflow the fused score to NaN.");
 
-        if (opts.Lambda is < 0 or > 1)
+        if (opts.WBase <= 0)
             throw new InvalidOperationException(
-                $"{VectorRankingOptions.Section}:Lambda must be in [0,1] (was {opts.Lambda}).");
+                $"{VectorRankingOptions.Section}:WBase must be greater than zero (was {opts.WBase}). " +
+                "The base similarity score is the only signal every candidate carries, so a zero WBase " +
+                "leaves a candidate whose other present signals all weigh zero with a NaN fused score.");
+
+        if (opts.LambdaSimilar is < 0 or > 1)
+            throw new InvalidOperationException(
+                $"{VectorRankingOptions.Section}:LambdaSimilar must be in [0,1] (was {opts.LambdaSimilar}).");
+
+        if (opts.LambdaChunks is < 0 or > 1)
+            throw new InvalidOperationException(
+                $"{VectorRankingOptions.Section}:LambdaChunks must be in [0,1] (was {opts.LambdaChunks}).");
+
+        for (var i = 0; i < opts.SimilarViaChunksTypes.Count; i++)
+        {
+            var trimmed = opts.SimilarViaChunksTypes[i]?.Trim();
+            if (string.IsNullOrEmpty(trimmed))
+                throw new InvalidOperationException(
+                    $"{VectorRankingOptions.Section}:SimilarViaChunksTypes[{i}] is blank.");
+            opts.SimilarViaChunksTypes[i] = trimmed;
+        }
 
         services.AddSingleton(Options.Create(opts));
         services.AddSingleton<IResultReranker, ResultReranker>();

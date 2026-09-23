@@ -12,6 +12,7 @@ import {
     IversonEmbedding,
     IversonChunk,
     IversonMetadata,
+    IversonPopularitySignal,
     IversonDescription,
     IversonSummary,
     IversonKeywords,
@@ -375,6 +376,10 @@ describe('SchemaRegistrar', () => {
                 tenantId: string = '';
             }
 
+            // Delete design:type metadata to exercise the fallback branch when metadata is unavailable.
+            // Oxc now emits this metadata by default, so we delete it to verify the code path for
+            // builds that don't emit metadata (e.g. esbuild-based consumer builds).
+            Reflect.deleteMetadata('design:type', GuidKeyEntity.prototype, 'id');
             const stub = makeStub();
             const registrar = new SchemaRegistrar(stub, [GuidKeyEntity]);
             const req = registrar._buildRequest(GuidKeyEntity);
@@ -394,6 +399,7 @@ describe('SchemaRegistrar', () => {
                 tenantId: string = '';
             }
 
+            Reflect.deleteMetadata('design:type', GuidOnNumberEntity.prototype, 'wordCount');
             const stub = makeStub();
             const registrar = new SchemaRegistrar(stub, [GuidOnNumberEntity]);
             expect(() => registrar._buildRequest(GuidOnNumberEntity)).toThrow(/wordCount/);
@@ -425,6 +431,8 @@ describe('SchemaRegistrar', () => {
                 tenantId: string = '';
             }
 
+            // Explicit defineMetadata is redundant with Oxc's own emission under the current toolchain,
+            // but is kept because it makes the "metadata says X" premise explicit and toolchain-independent.
             Reflect.defineMetadata('design:type', String, GuidMetadataStringEntity.prototype, 'id');
 
             const stub = makeStub();
@@ -444,6 +452,8 @@ describe('SchemaRegistrar', () => {
                 tenantId: string = '';
             }
 
+            // Explicit defineMetadata is redundant with Oxc's own emission under the current toolchain,
+            // but is kept because it makes the "metadata says X" premise explicit and toolchain-independent.
             Reflect.defineMetadata('design:type', Number, GuidMetadataNumberEntity.prototype, 'wordCount');
 
             const stub = makeStub();
@@ -460,6 +470,7 @@ describe('SchemaRegistrar', () => {
                 tenantId: string = '';
             }
 
+            Reflect.deleteMetadata('design:type', GuidNoInitializerEntity.prototype, 'id');
             const stub = makeStub();
             const registrar = new SchemaRegistrar(stub, [GuidNoInitializerEntity]);
             const req = registrar._buildRequest(GuidNoInitializerEntity);
@@ -526,6 +537,24 @@ describe('_buildRequest — metadata and descriptions', () => {
         expect(props['Region'].isMetadata).toBe(true);
         expect(props['Title'].isMetadata).toBe(false);
         expect(props['Id'].isMetadata).toBe(false);
+    });
+
+    it('sets isPopularitySignal only on the marked property', () => {
+        @IversonEntity()
+        class RegInteraction {
+            @IversonKey()
+            id: string = '';
+
+            @IversonPopularitySignal()
+            interactedAt: Date = new Date();
+
+            plain: Date = new Date();
+        }
+
+        const { props } = propsOf(RegInteraction);
+        expect(props['InteractedAt'].isPopularitySignal).toBe(true);
+        expect(props['Id'].isPopularitySignal).toBe(false);
+        expect(props['Plain'].isPopularitySignal).toBe(false);
     });
 
     it('sets property descriptions, including on the key property', () => {
@@ -769,7 +798,7 @@ describe('IversonClient.getSchema', () => {
         );
         const stub = { getSchema, close: vi.fn() } as unknown as ObjectMappingServiceClient;
 
-        const client = new IversonClient('localhost', 0);
+        const client = new IversonClient('localhost', 0, false);
         (client as unknown as { _mappingClient: unknown })._mappingClient = stub;
 
         const types = await client.getSchema('trace-1');
@@ -786,5 +815,15 @@ describe('IversonClient.getSchema', () => {
         expect(capturedReq).toEqual({ traceId: 'trace-1' });
 
         client.close();
+    });
+});
+
+describe('toolchain configuration', () => {
+    it('the test toolchain emits design:type (oxc.decorator.emitDecoratorMetadata)', () => {
+        @IversonEntity()
+        class MetadataProbe {
+            @IversonKey() id: string = '';
+        }
+        expect(Reflect.getMetadata('design:type', MetadataProbe.prototype, 'id')).toBe(String);
     });
 });

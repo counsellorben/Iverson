@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+// tokenHTTPClient is a redirect-refusing HTTP client used for OAuth2 token requests.
+// It rejects any redirect responses to prevent credential leakage through open redirects.
+var tokenHTTPClient = &http.Client{
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
 type actingUserTokenKey struct{}
 
 // ActingUserMetadataKey is the gRPC metadata key carrying the acting-user's
@@ -38,6 +46,15 @@ type OAuth2ClientCredentials struct {
 	// deliberately forwarded so the server rejects it loudly rather than the
 	// client silently swallowing it into "no identity".
 	DefaultActingUserToken *string
+
+	// AllowInsecureCredentials is the explicit, named opt-in required to send
+	// this credential's Bearer token over a plaintext (non-TLS) channel.
+	// False by default: RequireTransportSecurity reports true, and grpc-go's
+	// own ClientConn.validateTransportCredentials refuses to Dial/NewClient at
+	// all when insecure transport credentials are combined with a PerRPCCredentials
+	// that requires transport security — the token never goes out in the clear.
+	// Set true only for a known-local, non-TLS endpoint (e.g. dev/test h2c).
+	AllowInsecureCredentials bool
 
 	mu        sync.Mutex
 	token     string
@@ -69,12 +86,15 @@ func (c *OAuth2ClientCredentials) GetRequestMetadata(ctx context.Context, _ ...s
 	return md, nil
 }
 
-// RequireTransportSecurity returns false: this repo's deployment is plaintext h2c with
-// no TLS anywhere in the stack — confirmed via grpc-go's http2_client.go getCallAuthData
-// that this still allows the credential through on a plaintext channel, unlike a
-// channel-construction-time TLS gate.
+// RequireTransportSecurity reports true unless AllowInsecureCredentials has been
+// explicitly set. Returning true here is what makes grpc-go's own guard bite: at
+// Dial/NewClient time, ClientConn.validateTransportCredentials refuses to build a
+// channel that combines insecure transport credentials with a PerRPCCredentials
+// that requires transport security, so the Bearer token can never ride a plaintext
+// channel by default. A caller that genuinely needs a local, non-TLS endpoint must
+// set AllowInsecureCredentials to true to defeat this guard deliberately.
 func (c *OAuth2ClientCredentials) RequireTransportSecurity() bool {
-	return false
+	return !c.AllowInsecureCredentials
 }
 
 func (c *OAuth2ClientCredentials) getToken(ctx context.Context) (string, error) {
@@ -83,6 +103,15 @@ func (c *OAuth2ClientCredentials) getToken(ctx context.Context) (string, error) 
 
 	if c.token != "" && time.Now().Before(c.expiresAt) {
 		return c.token, nil
+	}
+
+	if !c.AllowInsecureCredentials {
+		u, err := url.Parse(c.TokenEndpoint)
+		if err != nil || u.Scheme != "https" {
+			return "", fmt.Errorf(
+				"refusing to send OAuth2 client credentials to a non-https token endpoint %q "+
+					"without AllowInsecureCredentials=true", c.TokenEndpoint)
+		}
 	}
 
 	form := url.Values{}
@@ -99,7 +128,7 @@ func (c *OAuth2ClientCredentials) getToken(ctx context.Context) (string, error) 
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := tokenHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("requesting token: %w", err)
 	}
