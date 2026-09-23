@@ -2,6 +2,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { BrowserRouter } from "react-router";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+// This tsconfig carries no Node types; vitest runs on Node, where this global exists.
+declare const process: {
+  on(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+  off(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+};
+
 const useAuthMock = vi.fn();
 
 vi.mock("react-oidc-context", () => ({
@@ -65,23 +71,34 @@ describe("AppLayout logout", () => {
   });
 
   it("does not leave an unhandled rejection when the local fallback fails too", async () => {
+    // `window`'s "unhandledrejection" never fires under vitest + jsdom — an unhandled rejection
+    // reaches `process` instead — and a vi.fn-wrapped async function attaches its own settle
+    // handlers to the promise it returns, which marks the rejection handled regardless of
+    // whether AppLayout catches it. Both would make this test pass vacuously; see
+    // useSessionExpiry.test.tsx, which uses the same fix for the same reason.
     const unhandled = vi.fn();
-    window.addEventListener("unhandledrejection", unhandled);
+    process.on("unhandledRejection", unhandled);
 
     const signoutRedirect = vi.fn(async () => {
       throw new Error("revocation failed");
     });
-    const removeUser = vi.fn(async () => {
-      throw new Error("storage unavailable");
-    });
+    const failure = new Error("storage unavailable");
+    let removeUserCalls = 0;
+    const removeUser = () => {
+      removeUserCalls += 1;
+      return Promise.reject(failure);
+    };
     renderLayout({ signoutRedirect, removeUser });
 
-    screen.getByRole("button", { name: "Logout" }).click();
+    try {
+      screen.getByRole("button", { name: "Logout" }).click();
 
-    await waitFor(() => expect(removeUser).toHaveBeenCalledTimes(1));
-    await Promise.resolve();
-    expect(unhandled).not.toHaveBeenCalled();
-
-    window.removeEventListener("unhandledrejection", unhandled);
+      await waitFor(() => expect(removeUserCalls).toBe(1));
+      // One macrotask: Node reports an unhandled rejection once the microtask queue drains.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
 });

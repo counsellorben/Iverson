@@ -358,7 +358,12 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         var response = await factory.CreateClient().GetAsync("/health");
 
         using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        body.RootElement.GetProperty("checks").GetProperty("starrocks").ValueKind.Should().Be(
+        var hasStarRocks = body.RootElement.GetProperty("checks").TryGetProperty("starrocks", out var starRocks);
+        hasStarRocks.Should().BeTrue(
+            "main's /health collapses AuthPending into false; if it now emits \"authPending\", the "
+            + "follow-up against main has landed — restore the live-path titles of HealthStrip's "
+            + "authPending tests and update this assertion");
+        starRocks.ValueKind.Should().Be(
             JsonValueKind.False,
             "main's /health collapses AuthPending into false; if it now emits \"authPending\", the "
             + "follow-up against main has landed — restore the live-path titles of HealthStrip's "
