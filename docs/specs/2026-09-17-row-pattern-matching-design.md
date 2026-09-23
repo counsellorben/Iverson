@@ -211,13 +211,13 @@ missing from that list fails the image build (the test project is not needed the
 |---|---|
 | `PatternParser` | `pattern` string → syntax tree; resolves `subsets`; enforces the §1 grammar rules. |
 | `ExpressionParser` | `define`/`measures` strings → typed syntax trees; enforces the §2 context rules; exposes the set of referenced columns and `SIMILARITY` terms. |
-| `ProgramCompiler` | Syntax tree → instruction list (`MatchLabel`, `Split`, `Jump`, `Save`, `ExclusionStart`, `ExclusionEnd`, `MatchStart`, `MatchEnd`, `Done`). `Split` operand order encodes greedy versus reluctant preference; `PERMUTE` is expanded to alternation in lexicographic preference order. |
+| `ProgramCompiler` | Syntax tree → instruction list (`MatchLabel`, `Split`, `Jump`, `Save`, `ExclusionStart`, `ExclusionEnd`, `MatchStart`, `MatchEnd`, `Done`). `Split` operand order encodes greedy versus reluctant preference; `PERMUTE` is expanded to alternation in lexicographic preference order. Expansion multiplies size: a `PERMUTE` of k items emits all k! orderings, and a bounded quantifier (`{n}`, `{n,}`, `{,m}`, `{n,m}`, greedy or reluctant) emits one copy of its operand per counted repetition, so nesting multiplies. The compiler therefore counts instructions as it emits them, generates `PERMUTE` orderings one at a time rather than materializing them first, and throws `PatternValidationException` naming `MaxProgramInstructions` as soon as the count would exceed it. A rejected pattern therefore costs at most `MaxProgramInstructions` emitted instructions, and every later pass over the program (including the `Matcher`'s equivalence precomputation and thread scheduling) runs on at most that many. |
 | `ExpressionEvaluator` | Evaluates syntax trees against a thread's match state (label assignments, capture positions, per-variable aggregations) plus the partition's rows and the similarity score map. |
 | `Matcher` | Port of Trino's `io.trino.operator.window.matcher.Matcher` (Apache-2.0; attributed in the file header and in a new repository-root `THIRD-PARTY-NOTICES.md`, which does not exist yet). Threads run in priority order; equivalent threads are pruned using an equivalence check restricted to the state the `define` expressions actually read. When no `define` reads match history, this degenerates to the linear-time Thompson/Pike simulation. |
 | `MatchOutputBuilder` | Applies rows-per-match, `measures` (running/final), exclusion, empty and unmatched rows, and `AFTER MATCH SKIP`. |
 | `PatternBudget` | Tracks the §5 counters; throws `PatternBudgetExceededException` naming the budget. |
 
-Public entry point: `PatternQuery.Compile(request parts) → CompiledPattern` (throws
+Public entry point: `PatternQuery.Compile(request parts, MaxProgramInstructions) → CompiledPattern` (throws
 `PatternValidationException`) and
 `CompiledPattern.Run(partitionRows, similarityScores, budget) → IEnumerable<MatchOutputRow>`.
 
@@ -256,16 +256,29 @@ measures). The TYPE_ROWS source stores a `NULL` column value as `null`: the read
 - Executes through a **new streaming tenant-scoped wrapper**. The existing
   `RunTenantScopedAsync` returns `Task<T>` and disposes its connection, so it cannot stream. The
   new wrapper opens the connection, runs `SET ROLE`, executes the query with Dapper's
-  `ExecuteReaderAsync(sql, param)` — which binds the WHERE builder's `DynamicParameters`, including
-  the single list parameter an `IN` clause adds and Dapper expands — reads that reader unbuffered,
+  `ExecuteReaderAsync(new CommandDefinition(sql, param, cancellationToken: ct))`, where `ct` is the
+  request's timeout token (§5 `TimeoutSeconds`, linked with the client deadline) — which binds the
+  WHERE builder's `DynamicParameters`, including the single list parameter an `IN` clause adds and
+  Dapper expands — reads that reader unbuffered with `ReadAsync(ct)`, checking `ct` before each row,
   and holds the connection until enumeration ends; `SET ROLE NONE` runs on release, with the same failure-swallowing
   discipline. The resilience pipeline wraps only the open, `SET ROLE` and query-start steps
-  (before the first row is yielded); a failure after that propagates.
+  (before the first row is yielded); a failure after that propagates. While the server is executing
+  the statement, cancelling `ct` makes MySqlConnector cancel the StarRocks query (`KILL QUERY`) and
+  then send its own clean-up statement, `SELECT SLEEP(0) INTO @__MySqlConnector__Sleep;`, which
+  StarRocks rejects. The cancellation therefore surfaces as a `MySqlException` with `ErrorCode`
+  `ParseError` (1064), not transient, rather than as `OperationCanceledException`, and it leaves the
+  connection unusable (`ClearingPendingCancellation`). `SET ROLE NONE` then fails and is swallowed,
+  and the pool discards that session. A server that has stopped responding cannot receive `KILL
+  QUERY`. Its query start, row reads, `SET ROLE` and `SET ROLE NONE` then end only at MySqlConnector's
+  command timeout (`DefaultCommandTimeout`, 30 s), as `MySqlException` `CommandTimeoutExpired` (-1),
+  with or without a token. §6 maps these by the token, not by the exception type. Disposing a reader
+  after an early stop against such a server is not bounded even by that (Known issues).
 - Tenant and missing-resource handling match `SearchAsync`: a null or invalid tenant, or
   `IsExpectedMissingResourceError`, yields an empty sequence.
 
 **`CHUNKS` — `IChunkRowSource`** (`Iverson.Vector`), backed by a new
-`IVectorQueryService.ScrollAsync(collection, filter, payloadFields, vectorName?, pageSize)`. A
+`IVectorQueryService.ScrollAsync(collection, filter, payloadFields, vectorName?, pageSize, ct)`,
+passing `ct` to `QdrantClient.ScrollAsync`. A
 Qdrant scroll cannot deliver one parent's chunks contiguously: `order_by` needs an integer, float
 or datetime payload index, but `parent_id` is a keyword, `chunk_index` is stored as a string, and
 chunk point IDs are hashes. The source therefore reads in two phases:
@@ -298,9 +311,12 @@ the `Filter`, the `field` value, the optional vector name, the `BatchRows` bound
 #### 3.3 `SimilarityResolver` (`Iverson.Api`)
 
 1. Collects the distinct `(col, text)` terms from the compiled expressions.
-2. Embeds each distinct text once with `resolver.Get(SchemaDescriptor.ModelOf(schema)).EmbedQueryAsync`.
+2. Embeds each distinct text once with `resolver.Get(SchemaDescriptor.ModelOf(schema)).EmbedQueryAsync(text, ct)`.
 3. `TYPE_ROWS`: for each batch, calls `RetrieveNamedVectorAsync(objectCollection, ids,
-   <the §2 vector name>)`, where `ids` are `IntelligenceStoreConsumer.KeyToUlong(key)` for the batch's
+   <the §2 vector name>, ct)` (`IVectorQueryService.RetrieveNamedVectorAsync`, declared at
+   `IVectorRoles.cs:17-20`, gains an optional `CancellationToken`, which
+   `IntelligenceVectorService.RetrieveNamedVectorAsync` passes to its `client.RetrieveAsync` call at
+   `IntelligenceVectorService.cs:172`), where `ids` are `IntelligenceStoreConsumer.KeyToUlong(key)` for the batch's
    rows, under a read-only scoped API key. `CHUNKS`: uses the vectors returned by the phase-2
    scroll.
 4. Scores each present vector with `TensorPrimitives.CosineSimilarity(queryVector, vector)`. The
@@ -321,7 +337,9 @@ vector (`NULL`):
 #### 3.4 `ObjectSearchGrpcService.MatchPattern`
 
 1. `RequireSchema(type_name)`.
-2. Validate the limits (§5), then `PatternQuery.Compile`. `PatternValidationException` maps to
+2. Validate the limits (§5), then `PatternQuery.Compile`. `MaxProgramInstructions` is enforced inside
+   `Compile`, which receives it, because a program's size is known only while it is emitted.
+   `PatternValidationException` maps to
    `InvalidArgument`. No store is touched before this step succeeds.
 3. `CHUNKS`: resolve `chunk_property` from `schema.ChunkFields` (`InvalidArgument` if absent), and
    require a Qdrant collection (`FailedPrecondition` if absent, as `SearchChunks` does).
@@ -359,8 +377,8 @@ Proto regeneration uses each SDK's existing script or build step.
 `source rows → partition batches (whole partitions, target BatchRows = 2,000 rows) → similarity
 resolution for the batch → per-partition matching → output`. A partition is never split. When a
 single partition exceeds `BatchRows` it forms a batch on its own, up to `MaxPartitionRows`. Memory
-is bounded by one batch, plus the matcher state of one partition, plus the similarity map for one
-batch.
+is bounded by the compiled program (at most `MaxProgramInstructions` instructions), plus one batch,
+plus the matcher state of one partition, plus the similarity map for one batch.
 
 ### 5. Limits
 
@@ -370,6 +388,7 @@ A new `PatternQueryLimitOptions` class with `Section = "Patterns:Limits"`, const
 | Limit | Default | When exceeded |
 |---|---|---|
 | `MaxPatternLength` | 1,000 characters | `InvalidArgument` |
+| `MaxProgramInstructions` (instructions in the compiled pattern program, §3.1) | 5,000 | `InvalidArgument` |
 | `MaxExpressionLength` | 1,000 characters (each) | `InvalidArgument` |
 | `MaxDefines` / `MaxMeasures` / `MaxSubsets` | 50 each | `InvalidArgument` |
 | `MaxSimilarityTerms` (distinct `(col, text)`) | 10 | `InvalidArgument` |
@@ -398,7 +417,7 @@ reaching `limit`.
 | `EngagementStoreDisabledException` | `FailedPrecondition` |
 | Embedding failure | `Unavailable` ("Embedding service unavailable."), as `SearchChunks` does |
 | `PatternBudgetExceededException` | `ResourceExhausted` |
-| Timeout | `DeadlineExceeded` |
+| Timeout: any exception raised after the request's timeout token (`TimeoutSeconds`, or the client deadline if earlier) is cancelled, including the `MySqlException` a cancelled StarRocks read raises (§3.2). Checked before every other row. | `DeadlineExceeded` |
 | Any other StarRocks or Qdrant exception | Propagates exactly as it does from `Pipeline` and `SearchChunks` today |
 | A row with no vector for a `SIMILARITY` term | `NULL` (not an error) |
 | Tenant's object collection not created yet (Qdrant `NotFound`), or the collection lacks the vector (Qdrant `InvalidArgument` "Not existing vector name") | `NULL` for that term's rows (§3.3) |
@@ -442,6 +461,11 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
      exponential without pruning); every `AFTER MATCH SKIP` mode, including the illegal skips;
      every rows-per-match mode.
    - Each budget trips with the correct exception.
+   - `MaxProgramInstructions`: `PERMUTE(A, B, C, D, E, F, G, H)`, `PERMUTE` of 12 items, `A{100000}`
+     and `(A{0,100}){0,100}` are rejected with `PatternValidationException` after emitting at most
+     the cap; a pattern whose program is exactly the cap compiles, and the `Matcher` (equivalence
+     precomputation and thread scheduling) runs on it on a thread-pool thread without a stack
+     overflow.
 2. **Differential oracle.** A Trino Testcontainer (`trinodb/trino`, memory connector) is started
    once through an `ICollectionFixture`.
    - (a) Port the cases from Trino's `TestRowPatternMatching` (inline `VALUES` data).
@@ -460,7 +484,11 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
      including `where`; bytes columns omitted from `ALL_ROWS_*`; a measure colliding with a
      projected or partition column is rejected, in both rows-per-match shapes; a `where`
      clause of each operator the builder accepts, including `IN` and `MUST_NOT`, filters the rows
-     read; overflow at `MaxRowsScanned + 1`; reading more rows than one batch without buffering; a `NULL` column value
+     read; with StarRocks paused (Testcontainers `PauseAsync`) after `limit` output rows are written,
+     whether the request completes, whose result decides between documenting that wait as a known
+     issue and completing the RPC without awaiting the reader's disposal; overflow at `MaxRowsScanned + 1`; reading more rows than one batch without buffering; a request token cancelled while the StarRocks
+     query is still starting ends the read before the query would have finished, the service maps it
+     to `DeadlineExceeded`, and a following request on the pool succeeds; a `NULL` column value
      is treated as SQL `NULL`: `IS NULL` holds for it in `define`, `COALESCE` replaces it in
      `measures`, and it is emitted as a protobuf `null_value` in `ALL_ROWS_*` output, as a
      `ONE_ROW` partition column, and through a measure that passes it through (for example
@@ -494,6 +522,13 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
 - Ingest lag between StarRocks and Qdrant produces `NULL` similarity (§8).
 - History-dependent `define` predicates can make matching exponential in the worst case. It is
   bounded by `MaxActiveThreads`, `MaxSteps` and the timeout, not prevented.
+- Compilation is bounded separately. `PERMUTE` expands to every ordering and bounded quantifiers
+  unroll, so `MaxProgramInstructions` rejects with `InvalidArgument` some patterns well inside
+  `MaxPatternLength`: at the default, `PERMUTE(A, B, C, D, E, F)` (5,759 instructions), `A{10000}`
+  and `(A{0,100}){0,100}`.
+- Open, decided by the §9.3 pause test: if StarRocks stops responding after a request has written
+  `limit` rows, disposing the reader drains until StarRocks answers again, and no MySqlConnector
+  call bounds it, so the request does not complete until then.
 - The `CHUNKS` source scans the filtered chunk set twice (the phase-1 parent list, then the batched
   phase-2 reads) to keep memory bounded.
 - `NaN` from a zero-magnitude vector is kept (§2): `NOT`/`<>` predicates over it with a non-`NULL`
@@ -556,3 +591,5 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
 | The raw reader, and Dapper's `ExecuteReaderAsync` wrapper around it, return `DBNull.Value` for `NULL` in every mapped StarRocks column type, where Dapper's `Query` methods return `null`; `DictToProtoStruct` emits `DBNull.Value` as an empty string and `null` as `null_value` | `ObjectSearchGrpcService.cs` `ToProtoValue` (`null => Value.ForNull()`; default arm `Value.ForString(v.ToString()!)`); CDR-5 probes P66, P67, P69 |
 | The WHERE builder binds `IN` as one `List<string>` parameter, which a plain `MySqlCommand` rejects (`NotSupportedException`); every other clause and the owner/tenant predicates bind scalars. Dapper's `ExecuteReaderAsync(sql, param)` binds all of them, returns a `DbWrappedReader` that streams (no whole-result buffering) and yields `DBNull.Value` for `NULL`, and after an early stop, even over a multi-packet result, leaves the connection usable for `SET ROLE NONE` | `StarRocksQueryBuilder.cs:1006-1066`, `:116-130`; `StarRocksPipelineBuilder.cs:444-465`; `AuthorizationConstraint.cs:6,8`; CDR-6 probes P73, P74, P75, P76, P77, P78 |
 | Each non-`NULL` value the reader yields for a mapped StarRocks column type is `String`, `Int32`, `Int64`, `Single`, `Double`, `Boolean` or `DateTime`, and each has a typed `ToProtoValue` arm; `VARBINARY` is excluded before projection | `ObjectSearchGrpcService.cs` `ToProtoValue`; CDR-6 probe P71 |
+| Trino 483 expands `PERMUTE` to all k! orderings and unrolls bounded quantifiers one operand copy per repetition; its reachable-label precomputation and thread scheduling are recursive, and the precomputation runs from every instruction. Trino 483 fails `PERMUTE` of 7–9 items, `A{0,10000}` and `(A{0,100}){0,100}` with `StackOverflowError`. In .NET a stack overflow ends the process (exit 134), while an explicit-stack traversal of the same program completes. A cap checked on every append rejects `PERMUTE` of 12 after 5,000 instructions. Every ported Trino case compiles to at most 22 instructions | `IrRowPatternToProgramRewriter.java@483:136-153,184-198,200-271`; `ThreadEquivalence.java@483:207-247`; `Matcher.java@483:114,207-254`; CDR-7 probes P80, P81, P82, P83, P83b, P83c, P84, P94 |
+| MySqlConnector 2.4.0 against StarRocks 4.1.1, measured as `root` (CDR-7 P85–P87) and as `iverson_app` under a tenant role provisioned by `EnsureTenantProvisionedAsync` (CDR-7 P88): `ExecuteReaderAsync(sql, param)` takes no token, and its query start ran to completion (6 s) under a 1 s token. While the server is executing the statement, a `CommandDefinition(…, cancellationToken)` start fails at about 1.1 s with `MySqlException` `ParseError` (1064), `IsTransient` false, because StarRocks rejects MySqlConnector's clean-up `SELECT SLEEP(0) INTO @__MySqlConnector__Sleep;`. The connection is left `ClearingPendingCancellation`, `SET ROLE NONE` fails, and the pool gives the next borrower a fresh session. Against a frozen server a token does not help: the query start, a row read, `SET ROLE` and `SET ROLE NONE` each end at MySqlConnector's 30 s command timeout (about 32 s) as `CommandTimeoutExpired` (-1), with or without a token. Disposing a reader after an early stop stays pending until the server resumes, even when the connection is closed instead, and no MySqlConnector call bounds that drain: the token, `MySqlCommand.Cancel()` and `ClearPoolAsync`/`ClearAllPoolsAsync` all leave it pending. A token checked only between rows yields `OperationCanceledException` but cannot interrupt the start. On the `CommandDefinition` path, binding, streaming and early stop behave as on `(sql, param)`, and `KILL QUERY` works for `iverson_app`. `EmbeddingService`, `RetrieveAsync` and `ScrollAsync` honour a token. Without one, each stays pending past 8 s against an endpoint that never answers: the embedding call is bounded only by its `HttpClient` timeout of 100 s, and the Qdrant calls were still pending at 40 s. Both are past the 30 s `TimeoutSeconds` | CDR-7 probes P85, P86, P87, P88, P89, P89c, P95, P96, P98, P98b, P100, and greps G14 and G25; `StarRocksResiliencePipelineFactory.cs:19,37`; `EngagementRepository.cs:142-148` |
