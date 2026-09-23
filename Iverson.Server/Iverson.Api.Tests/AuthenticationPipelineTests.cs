@@ -2,6 +2,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Claims;
+using System.Text.Json;
 using FluentAssertions;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Events;
@@ -343,5 +344,24 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         await factory.StarRocks.Received(1).CheckHealthAsync();
         await factory.Vector.Received(1).PingAsync();
         await factory.Kafka.Received(1).PingAsync();
+    }
+
+    [Fact]
+    public async Task GetHealth_StarRocksAuthPending_IsReportedAsFalse()
+    {
+        using var factory = new HealthCacheTestFactory();
+        factory.Db.QuerySingleOrDefaultAsync<int>(Arg.Any<string>()).Returns(1);
+        factory.StarRocks.CheckHealthAsync().Returns(EngagementHealthStatus.AuthPending);
+        factory.Vector.PingAsync().Returns(true);
+        factory.Kafka.PingAsync().Returns(true);
+
+        var response = await factory.CreateClient().GetAsync("/health");
+
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        body.RootElement.GetProperty("checks").GetProperty("starrocks").ValueKind.Should().Be(
+            JsonValueKind.False,
+            "main's /health collapses AuthPending into false; if it now emits \"authPending\", the "
+            + "follow-up against main has landed — restore the live-path titles of HealthStrip's "
+            + "authPending tests and update this assertion");
     }
 }

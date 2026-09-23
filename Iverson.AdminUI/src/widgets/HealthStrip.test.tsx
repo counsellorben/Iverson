@@ -46,6 +46,7 @@ describe("describeCheck", () => {
     // tile on a deployment that is fine: one whose engagement store was switched off on
     // purpose, and one that is still bootstrapping its StarRocks user on a fresh install.
     expect(describeCheck("disabled")).toBe("disabled");
+    // Forward-compatible: main's /health collapses AuthPending into false (see AuthenticationPipelineTests' tripwire).
     expect(describeCheck("authPending")).toBe("authPending");
     expect(describeCheck(undefined)).toBe("unknown");
   });
@@ -114,7 +115,7 @@ describe("HealthStrip", () => {
     expect(downTile).toHaveClass("MuiChip-filled");
   });
 
-  it("renders an auth-pending StarRocks as its own state, not as Down", async () => {
+  it("renders an auth-pending StarRocks as its own state, not as Down (forward-compatible: the current /health cannot emit authPending)", async () => {
     fetchHealthMock.mockResolvedValue(healthy({ starrocks: "authPending" }));
 
     render(<HealthStrip accessToken={TOKEN} />);
@@ -125,7 +126,7 @@ describe("HealthStrip", () => {
     expect(tile).not.toHaveTextContent("Down");
   });
 
-  it("does not make a fresh install's bootstrapping StarRocks LOOK like a failure", async () => {
+  it("does not make a fresh install's bootstrapping StarRocks LOOK like a failure (forward-compatible: the current /health cannot emit authPending)", async () => {
     // ReadinessPolicy counts AuthPending as READY — the create-user post-install hook cannot
     // run until this probe passes — so /health answers 200 with status "degraded" and this
     // check not "up". An operator's first look at a correctly-progressing install must not be
@@ -150,6 +151,7 @@ describe("HealthStrip", () => {
     expect(CHECK_APPEARANCE.disabled).toEqual({ color: "default", variant: "outlined" });
     expect(CHECK_APPEARANCE.down).toEqual({ color: "error", variant: "filled" });
     expect(CHECK_APPEARANCE.up).toEqual({ color: "success", variant: "filled" });
+    // Forward-compatible: main's /health collapses AuthPending into false (see AuthenticationPipelineTests' tripwire).
     expect(CHECK_APPEARANCE.authPending).toEqual({ color: "warning", variant: "outlined" });
     expect(CHECK_APPEARANCE.unknown).toEqual({ color: "warning", variant: "outlined" });
     // The one promise that must hold whatever the palette becomes: only a real failure is red.
