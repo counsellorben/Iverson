@@ -230,8 +230,8 @@ Public entry point: `PatternQuery.Compile(request parts) → CompiledPattern` (t
 column's value under the canonical key, and a `ONE_ROW` partition column is emitted under that
 stored, canonical key. This governs input rows only; output rows keep ordinal, case-sensitive
 names (§1). SQL `NULL` is represented as C# `null` throughout (row dictionaries, the evaluator,
-measures). The TYPE_ROWS source stores a `NULL` column value as `null`: the raw `MySqlDataReader`
-it reads with returns `DBNull.Value`, which is neither `null` to the §2 evaluator nor a
+measures). The TYPE_ROWS source stores a `NULL` column value as `null`: the reader it reads with
+(Dapper's `DbWrappedReader`) returns `DBNull.Value`, which is neither `null` to the §2 evaluator nor a
 `null_value` in the output (`DictToProtoStruct` emits it as an empty string).
 
 - Validates `partition_by`, the `order_by` properties, every `where` clause property, and every
@@ -255,8 +255,10 @@ it reads with returns `DBNull.Value`, which is neither `null` to the §2 evaluat
   come only from `ColumnsFor`.
 - Executes through a **new streaming tenant-scoped wrapper**. The existing
   `RunTenantScopedAsync` returns `Task<T>` and disposes its connection, so it cannot stream. The
-  new wrapper opens the connection, runs `SET ROLE`, reads unbuffered, and holds the connection
-  until enumeration ends; `SET ROLE NONE` runs on release, with the same failure-swallowing
+  new wrapper opens the connection, runs `SET ROLE`, executes the query with Dapper's
+  `ExecuteReaderAsync(sql, param)` — which binds the WHERE builder's `DynamicParameters`, including
+  the single list parameter an `IN` clause adds and Dapper expands — reads that reader unbuffered,
+  and holds the connection until enumeration ends; `SET ROLE NONE` runs on release, with the same failure-swallowing
   discipline. The resilience pipeline wraps only the open, `SET ROLE` and query-start steps
   (before the first row is yielded); a failure after that propagates.
 - Tenant and missing-resource handling match `SearchAsync`: a null or invalid tenant, or
@@ -456,8 +458,9 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
      relative to the column resolve to the column's value, and `ONE_ROW` emits the partition column
      under its canonical name; authz row filter; hidden-field, tenant-column and bytes-column rejection in every slot,
      including `where`; bytes columns omitted from `ALL_ROWS_*`; a measure colliding with a
-     projected or partition column is rejected, in both rows-per-match shapes; overflow at
-     `MaxRowsScanned + 1`; reading more rows than one batch without buffering; a `NULL` column value
+     projected or partition column is rejected, in both rows-per-match shapes; a `where`
+     clause of each operator the builder accepts, including `IN` and `MUST_NOT`, filters the rows
+     read; overflow at `MaxRowsScanned + 1`; reading more rows than one batch without buffering; a `NULL` column value
      is treated as SQL `NULL`: `IS NULL` holds for it in `define`, `COALESCE` replaces it in
      `measures`, and it is emitted as a protobuf `null_value` in `ALL_ROWS_*` output, as a
      `ONE_ROW` partition column, and through a measure that passes it through (for example
@@ -550,4 +553,6 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
 | The `MATCH_NUMBER()` value inside `define` matches the oracle on every branch of its per-attempt loop (unmatched: no increment; empty and non-empty match: increment) | CDR-4 probe P49 (Trino 483 `PatternRecognitionPartition.java`); probe P30 T1/T2/T6/T9, one scenario each |
 | The evaluator can obtain the attempt's match number during `define` evaluation, as the ported contract provides | CDR-4 probe P33 (`LabelEvaluator.java@483:31,52-54,78`) |
 | The server image restores only the `.csproj` files its Dockerfile copies before `dotnet restore`, then publishes with `--no-restore`; a referenced project missing from that list fails the publish with `NETSDK1004`, and adding its `COPY` line fixes it; the two solution files build and test both new projects | `Iverson.Server/Iverson.Api/Dockerfile:13-23`; CDR-5 probes P61, P62, P64 |
-| The raw reader returns `DBNull.Value` for `NULL` in every mapped StarRocks column type, where Dapper returns `null`; `DictToProtoStruct` emits `DBNull.Value` as an empty string and `null` as `null_value` | `ObjectSearchGrpcService.cs` `ToProtoValue` (`null => Value.ForNull()`; default arm `Value.ForString(v.ToString()!)`); CDR-5 probes P66, P67, P69 |
+| The raw reader, and Dapper's `ExecuteReaderAsync` wrapper around it, return `DBNull.Value` for `NULL` in every mapped StarRocks column type, where Dapper's `Query` methods return `null`; `DictToProtoStruct` emits `DBNull.Value` as an empty string and `null` as `null_value` | `ObjectSearchGrpcService.cs` `ToProtoValue` (`null => Value.ForNull()`; default arm `Value.ForString(v.ToString()!)`); CDR-5 probes P66, P67, P69 |
+| The WHERE builder binds `IN` as one `List<string>` parameter, which a plain `MySqlCommand` rejects (`NotSupportedException`); every other clause and the owner/tenant predicates bind scalars. Dapper's `ExecuteReaderAsync(sql, param)` binds all of them, returns a `DbWrappedReader` that streams (no whole-result buffering) and yields `DBNull.Value` for `NULL`, and after an early stop, even over a multi-packet result, leaves the connection usable for `SET ROLE NONE` | `StarRocksQueryBuilder.cs:1006-1066`, `:116-130`; `StarRocksPipelineBuilder.cs:444-465`; `AuthorizationConstraint.cs:6,8`; CDR-6 probes P73, P74, P75, P76, P77, P78 |
+| Each non-`NULL` value the reader yields for a mapped StarRocks column type is `String`, `Int32`, `Int64`, `Single`, `Double`, `Boolean` or `DateTime`, and each has a typed `ToProtoValue` arm; `VARBINARY` is excluded before projection | `ObjectSearchGrpcService.cs` `ToProtoValue`; CDR-6 probe P71 |
