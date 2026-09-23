@@ -281,6 +281,11 @@ entries:
     identifiers:
       name: iverson-loadtest-bypass
     attrs: {}
+  # Idempotent duplicate of ../operators-group.yaml: the synchronous import must not depend on worker discovery order. Do not dedupe.
+  - model: authentik_core.group
+    identifiers:
+      name: operators
+    attrs: {}
   - model: authentik_core.user
     identifiers:
       username: iverson-loadtest-bypass-user
