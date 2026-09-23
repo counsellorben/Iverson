@@ -1,8 +1,16 @@
 # Azure AKS overlay — StorageClass names and node-pool labels match modules/operators
 # and modules/cluster-azure's fixed naming exactly (see Tasks 2 and 4 of this plan).
 
+# modules/cluster-azure's VNet CIDR — covers both the kubelet (node IPs) and the
+# App Gateway's pod-IP targets, since Azure has no ingress-nginx namespace for
+# api-ingress to admit instead. See values.yaml's networkPolicy comment for why
+# every profile sets this.
+networkPolicy:
+  clusterCidrs: ["10.1.0.0/16"]
+
 global:
   ingressHost: "iverson.example.com"
+  prometheusEnabled: true   # single source of truth — see values.yaml's comment on this flag
   externalScheme: "https"
 
 postgres:
@@ -147,7 +155,7 @@ authentik:
     tlsSecretName: "iverson-authentik-tls"
 
 adminUi:
-  apiBaseUrl: "https://iverson.example.com"
+  apiBaseUrl: "https://admin-api.iverson.example.com"
   ingress:
     className: "azure-application-gateway"
     annotations: {}

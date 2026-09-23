@@ -11,7 +11,7 @@
   adminUi.enabled itself is unusable as the condition — it lives at the parent's top
   level, and a subchart can see only its own scope plus .Values.global.
 
-  Why guard at all: this Ingress publishes /admin, /health and /v1/traces on a public
+  Why guard at all: this Ingress publishes /admin and /health on a public
   hostname, and /health is ANONYMOUS and write-bearing (it drives Qdrant
   EnsureCollectionAsync and a Kafka produce). Publishing that with no console deployed
   and no CORS grant is attack surface for zero function.
@@ -42,13 +42,6 @@ spec:
                 port:
                   number: 8081
           - path: /health
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ .Release.Name }}-api
-                port:
-                  number: 8081
-          - path: /v1/traces
             pathType: Prefix
             backend:
               service:

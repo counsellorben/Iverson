@@ -496,6 +496,17 @@ services:
       - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
       - Tenancy__SeedLegacyTenants=true
+      # Iverson.AdminUI's Vite dev server (npm run dev) runs at localhost:5173
+      # (Iverson.AdminUI/README.md) and is not proxied -- every fetch to /admin,
+      # /health, /v1/traces from it is cross-origin. Without this, CORS never
+      # activates (Program.cs registers no policy when AdminConsole:Origin is
+      # empty) and the browser blocks every one of those calls.
+      - AdminConsole__Origin=http://localhost:5173
+      # /admin/console/metrics (Task 7) proxies Prometheus's HTTP API. The prometheus
+      # service below scrapes iverson-api/iverson-worker (deploy/prometheus/prometheus.local.yml)
+      # and is reachable from api at its compose service name and its own query port 9090 --
+      # without this, the endpoint reports "notDeployed" even though Prometheus is running.
+      - Prometheus__BaseUrl=http://prometheus:9090
     # Kestrel does not begin listening until Program.cs's startup block has finished — the
     # bootstrap DDL (EnsureRolesAsync, the plumbing-table EnsureTableAsync calls, and every
     # ApplySchemaAsync) is awaited BEFORE app.Run(). A successful TCP connect to 8080 is therefore

@@ -37,5 +37,5 @@ adminApiIngress:
 #
 # It ALSO gates the admin-api Ingress (templates/admin-api-ingress.yaml): empty means the
 # admin-api host is not published at all, so a console-less profile does not expose
-# /admin, /health and /v1/traces on a public hostname for nobody to call.
+# /admin and /health on a public hostname for nobody to call.
 adminConsoleOrigin: ""

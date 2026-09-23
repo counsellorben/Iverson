@@ -85,6 +85,13 @@ global:
   engagementEnabled: true
   # Drives the jaeger subchart's condition AND the api/worker OTLP env vars.
   tracingEnabled: true
+  # Drives the prometheus subchart's condition (Chart.yaml), BOTH its NetworkPolicy rules
+  # (templates/networkpolicies.yaml's api-egress and prometheus-ingress) AND the api/worker
+  # Prometheus__BaseUrl env var (charts/api/templates/deployment.yaml, Task 7) — the same
+  # single-source-of-truth reasoning as engagementEnabled above: two flags that must agree
+  # can disagree, and the disagreeing state here would either point Prometheus__BaseUrl at a
+  # Service that was never installed, or silently report "not deployed" when it was.
+  prometheusEnabled: true
   # Gates the Authentik blueprint's dev-only test identities (smoke-test user, loadtest-bypass
   # user/group, loadtest/webtest service clients, the loadtest-human provider, and the
   # localhost:5173 redirect URIs) AND Tenancy__SeedLegacyTenants (the five-tenant legacy seeding
@@ -199,6 +206,24 @@ api:
                                  # className is "azure-application-gateway". This repo's Terraform
                                  # does not provision one — leave empty unless you have provisioned
                                  # it yourself, otherwise AGIC references a rule set that does not exist.
+  # admin-api.<global.ingressHost>, the console's dedicated JSON/CORS-reachable host (Task
+  # 4) — left empty here (the api subchart's own nginx/no-TLS default is correct for
+  # laptop, which never states an override). values-local.yaml restates the same
+  # nginx/no-TLS shape explicitly anyway, matching how it restates api.ingress in full;
+  # cloud overlays override className/annotations/tlsSecretName the same way
+  # api.ingress above does.
+  adminApiIngress: {}
+  # The exact scheme+host the browser loads the console from — fed to the API as
+  # AdminConsole__Origin for CORS. Left empty here (the api subchart's own default)
+  # rather than "http://iverson.local": this file is the base every overlay merges,
+  # including values-laptop.yaml (adminUi.enabled: false, no console to grant CORS
+  # to) — a non-empty default here would leak a CORS grant onto that profile. Every
+  # overlay that actually runs a console (values-local/-aws/-azure/-gcp) sets its own.
+  #
+  # It ALSO gates whether the admin-api Ingress renders at all — see
+  # charts/api/templates/admin-api-ingress.yaml. On laptop that leaves the admin-api
+  # hostname unpublished, which is right: there is no console there to call it.
+  adminConsoleOrigin: ""
 
 worker:
   enabled: true
@@ -249,7 +274,7 @@ adminUi:
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "250m", memory: "256Mi" }
-  apiBaseUrl: "http://iverson.local"
+  apiBaseUrl: "http://admin-api.iverson.local"
   ingress:
     className: ""
     annotations: {}

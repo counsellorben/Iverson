@@ -1,8 +1,15 @@
 # AWS EKS overlay — StorageClass names and node-pool labels match modules/operators
 # and modules/cluster-aws's fixed naming exactly (see Tasks 2 and 3 of this plan).
 
+# modules/cluster-aws's VPC CIDR — covers both the kubelet (node IPs) and the ALB's
+# pod-IP targets, since AWS has no ingress-nginx namespace for api-ingress to admit
+# instead. See values.yaml's networkPolicy comment for why every profile sets this.
+networkPolicy:
+  clusterCidrs: ["10.0.0.0/16"]
+
 global:
   ingressHost: "iverson.example.com"
+  prometheusEnabled: true   # single source of truth — see values.yaml's comment on this flag
   externalScheme: "https"
 
 postgres:
@@ -91,6 +98,20 @@ api:
       alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
       alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
       alb.ingress.kubernetes.io/ssl-redirect: "443"
+  # admin-api.iverson.example.com — same ALB, same ACM certificate (assumed to cover
+  # every *.iverson.example.com host the way it already does for authentik/adminUi
+  # below), but this backend serves plain HTTP/1.1 JSON, not gRPC — the
+  # backend-protocol-version: GRPC annotation above must NEVER be copied here. Omitting
+  # it leaves ALB's default (HTTP1), which is correct for this Ingress.
+  adminApiIngress:
+    className: "alb"
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
+  adminConsoleOrigin: "https://iverson.example.com"
 
 # worker/prometheus/redis/authentik: none of these get a dedicated node pool in
 # modules/cluster-aws (only postgres/kafka/starrocks/qdrant/ollama do — confirmed
@@ -155,7 +176,7 @@ authentik:
       alb.ingress.kubernetes.io/ssl-redirect: "443"
 
 adminUi:
-  apiBaseUrl: "https://iverson.example.com"
+  apiBaseUrl: "https://admin-api.iverson.example.com"
   ingress:
     className: "alb"
     annotations:
