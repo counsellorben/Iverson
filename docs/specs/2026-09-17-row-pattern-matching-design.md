@@ -115,7 +115,12 @@ the first row of the current match, or when `v` bound no row.
 **Pattern grammar** (`pattern`): concatenation; alternation `|`; grouping `( )`; the empty
 pattern `()`; quantifiers `*` `+` `?` `{n}` `{n,}` `{,m}` `{n,m}`, each optionally followed by `?`
 (reluctant); `PERMUTE(a, b, ...)`; exclusion `{- ... -}`; anchors `^` (partition start) and `$`
-(partition end). Variable names are identifiers. A variable used in `pattern` but absent from
+(partition end). Variable names are identifiers. Pattern-variable and subset names are
+case-insensitive and are canonicalized to upper case, as SQL:2016 regular identifiers are: `a`
+and `A` name one variable wherever a variable or subset name appears (`pattern`, `define` and
+`subsets` names, `VAR.`/`SUBSET.` qualifiers, `CLASSIFIER(v)`, and the `AFTER MATCH SKIP`
+target), and `CLASSIFIER()` and the `classifier` response field return the upper-case name. A
+variable used in `pattern` but absent from
 `define` is always true. A `define` or `subsets` entry naming a variable that the pattern never
 uses is `InvalidArgument`. `subsets` names must not collide with pattern variables. `define`
 entries must name distinct variables, and `subsets` names must be distinct. `measures` names must
@@ -124,8 +129,10 @@ Output shapes above), and must not be the reserved tenant column (compared case-
 Otherwise the request is `InvalidArgument`. Distinctness of `measures`, `define` and `subsets`
 names, the reserved-tenant-column check, and — for `CHUNKS` — the comparison against the chosen
 shape's output columns (`parent_key` for `ONE_ROW`; `parent_key`, `chunk_index` and `text` for
-`ALL_ROWS_*`) are enforced by `PatternQuery.Compile` (§3.4 step 2), which receives
-`rows_per_match` among its request parts. For
+`ALL_ROWS_*`) and the check that every column referenced by `define`/`measures` is one of those
+three chunk columns (compared case-insensitively, as the TYPE_ROWS membership check against
+`ColumnsFor` is) are enforced by `PatternQuery.Compile` (§3.4 step 2), which receives `source`
+and `rows_per_match` among its request parts. For
 `TYPE_ROWS` the output-column comparison is enforced by `MatchRowsAsync` (§3.2), which holds the
 validated column set: it rejects a `measures` name equal (ordinal) to a canonical name in that set
 for `ALL_ROWS_*`, or to the canonical name of a `partition_by` column for `ONE_ROW`, throwing
@@ -214,7 +221,12 @@ Public entry point: `PatternQuery.Compile(request parts) → CompiledPattern` (t
 #### 3.2 Row sources
 
 **`TYPE_ROWS` — `IEngagementStoreSearchService.MatchRowsAsync`** (`Iverson.StarRocks`), returning
-`IAsyncEnumerable<IDictionary<string, object?>>`:
+`IAsyncEnumerable<IDictionary<string, object?>>`. Each row dictionary, from this source and from
+`IChunkRowSource`, compares keys with `StringComparer.OrdinalIgnoreCase`. A column reference or
+`partition_by` entry admitted by the case-insensitive membership check below therefore finds its
+column's value under the canonical key, and a `ONE_ROW` partition column is emitted under that
+stored, canonical key. This governs input rows only; output rows keep ordinal, case-sensitive
+names (§1).
 
 - Validates `partition_by`, the `order_by` properties, every `where` clause property, and every
   column referenced by `define`/`measures`/`SIMILARITY` against `ColumnsFor(schema, constraint)`
@@ -230,9 +242,11 @@ Public entry point: `PatternQuery.Compile(request parts) → CompiledPattern` (t
   `InvalidArgument` and `ALL_ROWS_*` output omits them. `EngagementQuerySchema` is unchanged.
 - Reuses the `SearchClause` WHERE builder and the existing authorization-constraint row filter.
 - SQL: `SELECT <key>, <columns> FROM <tenant db>.<table> WHERE <where + authz>
-  ORDER BY <partition_by>, <order_by>, <key> LIMIT <MaxRowsScanned + 1>`. `<columns>` is the
-  referenced columns for `ONE_ROW`, or all validated columns (`ColumnsFor` minus
-  `excludedColumns`) for `ALL_ROWS_*`. Identifiers come only from `ColumnsFor`.
+  ORDER BY <partition_by>, <order_by>, <key> LIMIT <MaxRowsScanned + 1>`. `<columns>` is, for
+  `ONE_ROW`, the canonical columns named by `partition_by` or referenced by
+  `define`/`measures`/`SIMILARITY`, each listed once and omitting `<key>` (already selected); or,
+  for `ALL_ROWS_*`, all validated columns (`ColumnsFor` minus `excludedColumns`). Identifiers
+  come only from `ColumnsFor`.
 - Executes through a **new streaming tenant-scoped wrapper**. The existing
   `RunTenantScopedAsync` returns `Task<T>` and disposes its connection, so it cannot stream. The
   new wrapper opens the connection, runs `SET ROLE`, reads unbuffered, and holds the connection
@@ -408,8 +422,10 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
    - Every §1/§2 validation rule, including distinct `define` variables, distinct `subsets`
      names, and `measures` names (distinct; not the tenant column in any case; for `CHUNKS`, not
      an output column of the chosen shape — `parent_key` in `ONE_ROW`, all three in
-     `ALL_ROWS_*`), plus the `FINAL`-in-`define` rejection. The `TYPE_ROWS` output-column
-     comparison is tested in §9.3, where its operand exists.
+     `ALL_ROWS_*`; for `CHUNKS`, a `define`/`measures` column other than `parent_key`,
+     `chunk_index` or `text`), plus the `FINAL`-in-`define` rejection; mixed-case variable and
+     subset names resolve to one variable, and `CLASSIFIER()` returns the upper-case name. The
+     `TYPE_ROWS` output-column comparison is tested in §9.3, where its operand exists.
    - Evaluator: three-valued logic, the §2 `NaN` semantics (one test per construct, including a
      `NULL` other operand), `MATCH_NUMBER()` and an explicit `RUNNING` prefix inside `define` as
      well as `measures`, every navigation form including out-of-range, running versus
@@ -421,14 +437,18 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
 2. **Differential oracle.** A Trino Testcontainer (`trinodb/trino`, memory connector) is started
    once through an `ICollectionFixture`.
    - (a) Port the cases from Trino's `TestRowPatternMatching` (inline `VALUES` data).
-   - (b) A seeded generator of small random patterns, `define` predicates and data.
+   - (b) A seeded generator of small random patterns, `define` predicates and data. It also emits
+     lower- and mixed-case variable names.
    - Both load identical rows (the key column is included as the ordering tie-breaker) and require
      identical ordered output, including `MATCH_NUMBER()` and `CLASSIFIER()`. The generator emits
      only constructs with identical semantics in both engines, so it excludes `SIMILARITY` and
      `TIMESTAMPDIFF`, which unit tests cover.
 3. **Store integration** (existing StarRocks and Qdrant container fixtures).
    - `MatchRowsAsync`: ordering including the key tie-breaker; column projection per rows-per-match
-     mode; authz row filter; hidden-field, tenant-column and bytes-column rejection in every slot,
+     mode (for `ONE_ROW`, including `partition_by` columns that no expression references, each
+     column selected once); a `define`/`measures` reference and a `partition_by` entry re-cased
+     relative to the column resolve to the column's value, and `ONE_ROW` emits the partition column
+     under its canonical name; authz row filter; hidden-field, tenant-column and bytes-column rejection in every slot,
      including `where`; bytes columns omitted from `ALL_ROWS_*`; a measure colliding with a
      projected or partition column is rejected, in both rows-per-match shapes; overflow at
      `MaxRowsScanned + 1`; reading more rows than one batch without buffering.
@@ -493,10 +513,10 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
 | Qdrant 1.18.2 error shapes: missing collection → `NotFound`; missing named vector (retrieve or vector-selecting scroll) → `InvalidArgument "Wrong input: Not existing vector name error: <name>"`; `RetrieveNamedVectorAsync` catches neither; collections are created/migrated only by the consumer on write | `ObjectSearchGrpcService.cs:281-287` (`NotFound` precedent); `IntelligenceVectorService.cs:156-187`; CDR-1 probes P2, P7 |
 | Unbuffered read works against StarRocks 4.1.1 through a raw `MySqlDataReader` (early stop leaves the connection reusable); Dapper `QueryUnbufferedAsync` throws on reader disposal | CDR-1 probe P4 |
 | `.NET` `double` `NaN` semantics as stated in §2 | CDR-1 probes P6, P13, P18 |
-| Output rows are name-keyed `Struct`s: colliding names overwrite or vanish; the tenant-name strip is case-insensitive; names differing only by case survive at the server and in every SDK's untyped map | `SchemaDescriptor.cs:20-21`; `AuthorizationFieldMasking.cs:213-214`; CDR-1 probes P21, P21b, P21c |
+| Output rows are name-keyed `Struct`s: colliding names overwrite or vanish; the tenant-name strip is case-insensitive; names differing only by case survive at the server and in every SDK's untyped map | `SchemaDescriptor.cs:20-21`; `AuthorizationFieldMasking.cs:217-218`; CDR-1 probes P21, P21b, P21c |
 | Bytes columns are identifiable from the schema: scalar `ClrBytes` → `SqlType` `BYTEA` (StarRocks `VARBINARY`); `BYTEA[]` → `STRING`; `EngagementQuerySchema` carries no column types | `SchemaBuilder.cs:60-64,398,419`; `SchemaDescriptor.cs:117` (`ColumnDescriptor(Name, SqlType, IsNullable)`); `EngagementQuerySchema.cs:39-54` |
 | Bytes columns break output (`"System.Byte[]"`), default-equality partitioning, expression comparison, and `where` filtering | CDR-1 probes P8e, P13, P14, P16c |
-| Trino 483 accepts `MATCH_NUMBER()` and a `RUNNING` prefix inside `DEFINE`, and rejects `FINAL` there ("FINAL semantics is not supported in DEFINE clause") | CDR-3 probe P27 D/E/F, re-run through `/v1/statement` when this fix was applied |
+| Trino 483 accepts `MATCH_NUMBER()` and a `RUNNING` prefix inside `DEFINE` on the operands a semantics prefix can take (`FIRST`, `LAST`, aggregates), and rejects `FINAL` there ("FINAL semantics is not supported in DEFINE clause") | CDR-3 probe P27 D/E/F, re-run through `/v1/statement` when this fix was applied; CDR-4 probe P40 (the same 10-of-17 operand split in `DEFINE` and `MEASURES`) |
 | No ported Trino case exercises `MATCH_NUMBER()` or `RUNNING` inside `DEFINE` | CDR-3 probe P28 (141 `assertions.query(` sites in `TestRowPatternMatching.java`; zero hits) |
 | The new proto enum values and message names do not collide inside `package iverson` | CDR-3 §0 S3 greps (both exit 1) |
 | `Qdrant.Client` 1.18.1 exposes a scroll taking filter, page size, cursor, payload selector and vector selector | CDR-3 probe P29 (`Qdrant.Client.xml` member signature) |
@@ -505,7 +525,7 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
 | Retrieve-by-ID and local cosine exist; the collection metric is Cosine | `IVectorRoles.cs:17`, `IntelligenceVectorService.cs:156-187`; `ResultReranker.cs:42` `TensorPrimitives.CosineSimilarity`; `IntelligenceCollectionManager.cs:17` |
 | `SearchNamedAsync` exposes no exact/threshold parameter | `IntelligenceVectorService.cs:124-148` |
 | Embedding call and its failure mapping | `ObjectSearchGrpcService.cs:549-567` |
-| Global interceptors, no per-RPC name lists | `Program.cs:92-95`; no server references to RPC method names |
+| Global interceptors, no per-RPC name lists | `Program.cs:92-96`; no server references to RPC method names |
 | Limits configuration pattern | `Program.cs:261-280` |
 | `DateTime` converts to `Struct` | `ObjectSearchGrpcService.cs:1261` |
 | Testcontainers available; Trino image ships a memory catalog | `Iverson.Api.Tests.csproj:24` (Testcontainers 4.15.0); `trinodb/trino` `core/docker/default/etc/catalog/memory.properties` |
@@ -513,3 +533,9 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
 | Iverson is MIT | Repository `LICENSE` |
 | No mutation-testing tool installed | No Stryker config or tool; `~/.dotnet/tools` has only `ilspycmd` |
 | Both solution files list every project | `Iverson.slnx`, `Iverson.Server/Iverson.Server.slnx` |
+| A repeated select-list name is returned twice by the raw reader, and an `Add`-built row dictionary then throws; the post-fix `ONE_ROW` SQL lists each name once | CDR-4 probes P45, P47 (StarRocks 4.1.1, MySqlConnector 2.4.0 raw reader) |
+| Trino rejects an unknown column in `DEFINE` and in `MEASURES` at analysis time, even over zero rows | CDR-4 probe P32 Q1, Q2, Q5 |
+| StarRocks names each result column as the `SELECT` spells it; an ordinal lookup of a re-cased name misses, and an `OrdinalIgnoreCase` lookup hits | CDR-4 probe P50 (real `ColumnsFor` by reflection; StarRocks 4.1.1 raw reader) |
+| Trino folds unquoted pattern-variable and subset names to upper case in every slot | CDR-4 probes P53 C1–C8 and P56; C1, C2, C3 and C8 re-run on Trino 483 when this fix was applied |
+| The `MATCH_NUMBER()` value inside `define` matches the oracle on every branch of its per-attempt loop (unmatched: no increment; empty and non-empty match: increment) | CDR-4 probe P49 (Trino 483 `PatternRecognitionPartition.java`); probe P30 T1/T2/T6/T9, one scenario each |
+| The evaluator can obtain the attempt's match number during `define` evaluation, as the ported contract provides | CDR-4 probe P33 (`LabelEvaluator.java@483:31,52-54,78`) |
