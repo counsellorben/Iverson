@@ -169,6 +169,13 @@ Newly introduced by this plan and verified at plan-write time. "Merged tree" mea
 | C5 | Convention | Commit subjects | Dominant: lowercase imperative, no prefix; the previous merge commit's subject is `merge main into admin-console-landing-page` (`41e01848`) |
 | A16 | Path | `docs/plans/` is gitignored | `.gitignore:49` `**/docs/plans/` |
 | D2-D6 | Ordering | Task dependencies | Task 2 needs Task 1's tree (measured: tests run there). Task 5 follows Task 3 (the tripwire replaces the deleted `HealthCheckWireFormatTests`). Tasks 9 and 10 both edit `AuthGate`, in that order. Task 11 edits the entrypoint after Task 7 and relies on Task 8 for the `values-aws` comments. Task 12 needs Tasks 7, 9, 10 (the served CSP and the final type count) |
+| — | Command | PyYAML is importable for Task 12's harness | `python3 -c "import yaml"` → `pyyaml 6.0.3` |
+| — | Command | `docker` on this host is podman | `docker --version` → `podman version 5.7.0`; every docker command in Tasks 7 and 12 ran as written (CIR round 1) |
+| — | Code | Task 5 Step 2's falsification edit compiles | Built in CIR round 1 (T5.2) |
+| — | Code | `export NAME="$(cmd)"` masks `cmd`'s exit status under `set -eu`; assign-then-export propagates it | Run under `sh` with a scheme-less URL: the one-statement form reached the end with an empty value and exit 0; assign-then-export exited 78. The branch used assign-then-export (`87914794:Iverson.AdminUI/docker-entrypoint.sh:85`) |
+| — | Path | The branch tracks the spec and this plan, and both quote the static passwords | CIR round 1 run on Task 11's tree: 4 hits, all in the spec and plan; excluding the two files by name leaves 0 and still catches the runbook sites before Task 11 |
+| — | Command | `admin-ui.yml`'s clean-up is `if: always()` and removes the container and image; the served-CSP step writes `headers.txt` and `directives.txt` into its working directory | Parsed workflow: Clean up has `if: 'always()'` and runs `docker rm -f "$CONTAINER"` and `docker rmi -f "$IMAGE"`; `admin-ui.yml:176`, `:187` |
+| — | Convention | A main decision is a line main changed after the fork | `git blame` at `65cdf63a` plus `git merge-base --is-ancestor <commit> 9eb99f76`. A file-level diff reports 21 pre-fork hunks in 7 files as overrides (CIR round 1). The line-level check fires on real overrides: against the unmerged branch it flags main's `offline_access` test (`AuthProvider.test.tsx:23`) and a re-added Dockerfile `COPY` |
 
 ## Tasks
 
@@ -618,7 +625,8 @@ In `Iverson.AdminUI/nginx.conf:35`, change `connect-src 'self' ${OIDC_ORIGIN};` 
 After `validate API_BASE_URL "${API_BASE_URL-}"`, add:
 
 ```sh
-export ADMIN_API_ORIGIN="$(origin_of API_BASE_URL "$API_BASE_URL")"
+ADMIN_API_ORIGIN=$(origin_of API_BASE_URL "$API_BASE_URL")
+export ADMIN_API_ORIGIN
 ```
 
 Change main's SHELL-FORMAT list from `envsubst '${OIDC_ORIGIN} ${EXTERNAL_SCHEME} ${HSTS_LINE}'` to `envsubst '${ADMIN_API_ORIGIN} ${OIDC_ORIGIN} ${EXTERNAL_SCHEME} ${HSTS_LINE}'`, and in the comment above it change "exactly these three names" to "exactly these four names".
@@ -941,7 +949,7 @@ In `Iverson.AdminUI/docker-entrypoint.sh`, delete the three unused declarations 
 
 ```bash
 sh -n Iverson.AdminUI/docker-entrypoint.sh
-git grep -n "dev-only-not-for-production-bypass-password\|dev-admin-password" -- ':!docs/criticalreviews'   # no hits
+git grep -n "dev-only-not-for-production-bypass-password\|dev-admin-password" -- ':!docs/criticalreviews' ':!docs/specs/2026-09-22-admin-console-main-merge-resolution-design.md' ':!docs/plans/2026-09-23-admin-console-main-merge-implementation-plan.md'   # no hits
 git add Iverson.AdminUI/README.md Iverson.AdminUI/docker-entrypoint.sh \
         docs/runbooks/admin-console-landing-page-usage.md docs/runbooks/operator-access-onboarding.md
 git commit -F - <<'EOF'
@@ -976,14 +984,22 @@ python3 - <<'PY'
 import os, subprocess, yaml
 job = yaml.safe_load(open(".github/workflows/admin-ui.yml"))["jobs"]["image-contract"]
 env = {**os.environ, **{k: str(v) for k, v in job["env"].items()}, "IMAGE": "iverson-adminui-ci:local"}
-for step in job["steps"]:
-    if "run" in step:
-        print("::step::", step.get("name"))
-        subprocess.run(["bash", "-e", "-c", step["run"]], env=env, check=True)
+always = [s for s in job["steps"] if s.get("if") == "always()"]
+try:
+    for step in job["steps"]:
+        if "run" in step and step not in always:
+            print("::step::", step.get("name"), flush=True)
+            subprocess.run(["bash", "-e", "-c", step["run"]], env=env, check=True)
+finally:
+    for step in always:
+        subprocess.run(["bash", "-c", step["run"]], env=env)
+    for f in ("headers.txt", "directives.txt"):
+        if os.path.exists(f):
+            os.remove(f)
 PY
 ```
 
-Expected: every step exits 0, with `OK: connect-src names http://admin-api.ci.invalid` and `OK: connect-src names http://authentik.ci.invalid`. Then falsify: temporarily remove `${ADMIN_API_ORIGIN} ` from `Iverson.AdminUI/nginx.conf:35`, re-run, confirm the served-CSP step fails on `http://admin-api.ci.invalid`, then `git checkout -- Iverson.AdminUI/nginx.conf`. Remove the local image afterwards.
+Expected: every step exits 0, with `OK: connect-src names http://admin-api.ci.invalid` and `OK: connect-src names http://authentik.ci.invalid`. Then falsify: temporarily remove `${ADMIN_API_ORIGIN} ` from `Iverson.AdminUI/nginx.conf:35`, re-run, confirm the served-CSP step fails on `http://admin-api.ci.invalid`, then `git checkout -- Iverson.AdminUI/nginx.conf`. The harness runs the job's `if: always()` clean-up in a `finally`, so no container, image or scratch file is left behind either way.
 
 - [ ] **Step 5: Commit**
 
@@ -1023,11 +1039,34 @@ Read the console's poll cadences (`grep -rn "intervalMs" Iverson.AdminUI/src/wid
 
 - [ ] **Step 5: The audit property**
 
+A main decision is a line main changed after the fork, so the check is line-level: blame each changed line at `65cdf63a` and ask whether its commit predates the fork. A file-level diff would report branch edits to pre-fork lines, which merge cleanly and override nothing.
+
 ```bash
-git diff --stat 65cdf63a..HEAD -- $(git diff --name-only 9eb99f76 65cdf63a)
+python3 - <<'PY'
+import os, re, subprocess
+tip = os.environ.get("TIP", "HEAD")
+sh = lambda *a: subprocess.run(a, capture_output=True, text=True).stdout
+pre = {}
+def prefork(c):
+    if c not in pre: pre[c] = subprocess.run(["git","merge-base","--is-ancestor",c,"9eb99f76"]).returncode == 0
+    return pre[c]
+files = sh("git","diff","--name-only",f"65cdf63a..{tip}","--",*sh("git","diff","--name-only","9eb99f76","65cdf63a").split()).split()
+for f in files:
+    d = sh("git","diff","-U0","65cdf63a",tip,"--",f)
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? ", d, re.M):
+        a, b = int(m[1]), int(m[2] or 1)
+        if b == 0: continue
+        for l in sh("git","blame","-l","-s","-L",f"{a},{a+b-1}","65cdf63a","--",f).splitlines():
+            sha, rest = l.split(" ", 1)
+            if not prefork(sha.lstrip("^")): print("MAIN LINE CHANGED:", f, rest.strip()[:90])
+    gone = {l[1:].strip() for l in sh("git","diff","-U0","9eb99f76","65cdf63a","--",f).splitlines() if l[:1] == "-" and l[:3] != "---"}
+    for l in d.splitlines():
+        s = l[1:].strip()
+        if l[:1] == "+" and l[:3] != "+++" and len(s) > 3 and s in gone: print("MAIN-DELETED LINE RE-ADDED:", f, s[:90])
+PY
 ```
 
-For each main-changed file this lists, confirm the change is on the spec's roster (R1's `GetSchema`, R3's three CSP sites and five `apiBaseUrl` values) or is an additive insertion (`UseCors`, `onSigninCallback`, `useSessionExpiry`, the R7 tripwire, restored values keys). Anything else is an override of a main decision: report it.
+Expected: no `MAIN-DELETED LINE RE-ADDED` line, and exactly ten `MAIN LINE CHANGED` lines, at `Iverson.AdminUI/docker-entrypoint.sh` `22)` and `28)`, `Iverson.AdminUI/nginx.conf` `35)`, `Iverson.AdminUI/src/auth/AuthProvider.test.tsx` `16)` (the import Task 9 extends with `onSigninCallback`), `Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs` `82)`, `83)`, `86)`, `87)`, `88)` (main's filter, carried over by Task 2), and `Iverson.Server/deploy/helm/iverson/charts/admin-ui/templates/ingress.yaml` `42)`. Any other `MAIN LINE CHANGED` line, or any `MAIN-DELETED LINE RE-ADDED` line, is an override of a main decision: report it.
 
 - [ ] **Step 6: Leave the tree clean** — `git status --porcelain` prints nothing; no `adminui-*` or `iverson-adminui-ci` images remain.
 
