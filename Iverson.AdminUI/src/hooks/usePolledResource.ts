@@ -203,8 +203,8 @@ export function usePolledResource<T>(
     const token = tokenRef.current;
     if (!hasToken(token)) return;
 
-    // Supersede whatever is in flight. Without this, a request issued before a token renewal
-    // could land AFTER the one issued with the renewed token and overwrite it with older data.
+    // Supersede whatever is in flight. Without this, an earlier request could land AFTER a newer
+    // one (a Refresh click, or a changed token) and overwrite it with older data.
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -237,8 +237,8 @@ export function usePolledResource<T>(
     }
 
     // Every non-ok outcome — including a 503 the widget will render calmly, and including a
-    // 401 whose renewal is already in flight — backs off the same way. What differs is what
-    // the widget DISPLAYS, which is `failure.kind`'s job, not the scheduler's.
+    // 401, which nothing renews — backs off the same way. What differs is what the widget
+    // DISPLAYS, which is `failure.kind`'s job, not the scheduler's.
     failuresRef.current += 1;
     // The ceiling is compared against the UNJITTERED delay, so where backoff gives up is
     // exact and does not wobble with the jitter draw.
@@ -314,9 +314,10 @@ export function usePolledResource<T>(
       attemptRef.current();
       return;
     }
-    // A renewed token only unblocks a resource that is CURRENTLY failing. A healthy one must
-    // not refetch on every silent renew — that would put `/admin/console/data-volume` back on
-    // a timer through the back door, at whatever cadence the IdP happens to renew on.
+    // A changed token only unblocks a resource that is CURRENTLY failing. A healthy one must
+    // not refetch on every token change. Nothing renews the token today (`automaticSilentRenew`
+    // is off), but if renewal returns, refetching here would put `/admin/console/data-volume`
+    // back on a timer through the back door, at whatever cadence the IdP renews on.
     if (failuresRef.current > 0) refresh();
   }, [accessToken, refresh, clearTimer]);
 

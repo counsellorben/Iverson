@@ -154,16 +154,17 @@ export interface QdrantResponse {
 // ── /health (anonymous, also served on the admin-api host) ────────────────────
 
 /**
- * `starrocks` has FOUR states, not two — it is the wire projection of a three-valued
- * `EngagementHealthStatus` plus an off switch:
+ * `starrocks` is typed with FOUR states, not two — the wire projection of a three-valued
+ * `EngagementHealthStatus` plus an off switch — but main's `/health` currently sends three:
  *
  *  - `true` / `false` — healthy / unhealthy.
  *  - `"disabled"` — the engagement store is switched off in this deployment.
- *  - `"authPending"` — StarRocks answers but the `iverson_app` user does not exist yet,
- *    expected during a fresh install before the create-user post-install hook has run.
- *    `ReadinessPolicy` counts it as READY, so `/health` answers 200 with `status:
- *    "degraded"` while this is the value. Reading it as a falsy boolean puts a red
- *    "Down" chip on a deployment that is progressing correctly.
+ *  - `"authPending"` — FORWARD-COMPATIBLE, not sent today. It would mean StarRocks answers but
+ *    the `iverson_app` user does not exist yet, expected during a fresh install before the
+ *    create-user post-install hook has run. Main's `/health` collapses AuthPending to `false`
+ *    (while `ReadinessPolicy` still counts it as READY, so the response is 200 with `status:
+ *    "degraded"`); the server-side tripwire for the day it sends the string is
+ *    `AuthenticationPipelineTests.GetHealth_StarRocksAuthPending_IsReportedAsFalse`.
  *
  * The other three checks are plain booleans.
  */

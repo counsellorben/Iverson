@@ -12,17 +12,18 @@ export function AppLayout() {
   /**
    * Signs out, and clears the local session even if the IdP round-trip fails.
    *
-   * `revokeTokensOnSignout: true` (see `auth/AuthProvider.tsx`) makes token revocation a hard
-   * PRECONDITION of signout, not a bonus step: oidc-client-ts's `_signoutStart` calls
-   * `_revokeInternal(user)` BEFORE `removeUser()` and rethrows on failure. Revocation is a
-   * cross-origin POST to Authentik, so it can fail for reasons that have nothing to do with
-   * this console — CORS, a network blip, an IdP restart.
+   * `auth/AuthProvider.tsx` does not set `revokeTokensOnSignout`, so oidc-client-ts's
+   * `_signoutStart` revokes nothing: it reads the stored user, removes it locally, then builds
+   * the end-session request from the IdP's metadata and rethrows any failure. That metadata is a
+   * cross-origin fetch to Authentik, so it can fail for reasons that have nothing to do with
+   * this console — CORS, a network blip, an IdP restart — and a failure before the local
+   * removal (reading storage) leaves the session in place.
    *
-   * Without this catch, that failure would leave Logout as a dead button with an unhandled
-   * rejection, the user still signed in, and the local session still in sessionStorage — i.e.
-   * the security fix would make a session STICKIER than it was before. `removeUser()` drops
-   * the local session unconditionally, which restores the pre-fix behaviour as the floor:
-   * `AuthGate` then observes the lost session and sends the browser back into the login flow.
+   * Without this catch, such a failure would leave Logout as a dead button with an unhandled
+   * rejection. `removeUser()` drops the local session unconditionally as the floor: `AuthGate`
+   * then observes the lost session and sends the browser back into the login flow. Were
+   * revocation ever switched on, it would run BEFORE the local removal and rethrow, which makes
+   * this floor matter more, not less.
    */
   const signOut = useCallback(async () => {
     try {

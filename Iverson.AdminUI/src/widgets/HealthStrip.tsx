@@ -9,25 +9,27 @@ import { WidgetCard } from "./WidgetCard";
  *
  * Three things about this widget are contract, not preference:
  *
- * - **`checks.starrocks` has FOUR states.** `true`, `false`, `"disabled"` when the engagement
- *   store is switched off, and `"authPending"` while a fresh install is waiting for its
- *   create-user post-install hook. A boolean read would render EITHER of the two strings as
- *   DOWN and put a red tile on a deployment that is fine. `"authPending"` is the sharper case:
- *   `ReadinessPolicy` deliberately counts it as ready — the hook cannot run until the readiness
- *   probe passes, so failing on it would deadlock every first install — which means `/health`
- *   answers 200 while this check is not "up", and the operator's very first look at a
- *   correctly-progressing deployment would have been a red "StarRocks: Down".
+ * - **`checks.starrocks` is not a boolean.** `true`, `false`, or `"disabled"` when the
+ *   engagement store is switched off; a boolean read would render `"disabled"` as DOWN and put a
+ *   red tile on a deployment that is fine. `"authPending"` — a fresh install waiting for its
+ *   create-user post-install hook — is handled too, but only FORWARD-COMPATIBLY: main's `/health`
+ *   currently collapses AuthPending to `false`, and the server-side tripwire for the day it sends
+ *   the string is `AuthenticationPipelineTests.GetHealth_StarRocksAuthPending_IsReportedAsFalse`.
+ *   Until then a correctly-progressing first install shows "StarRocks: Down" here while
+ *   `/health` answers 200, because `ReadinessPolicy` counts AuthPending as ready (the hook cannot
+ *   run until the readiness probe passes).
  * - **There is no Ollama tile.** `/health` does not check it; its state is inferred from the
  *   embedding-latency figure in the Band B widgets. A tile here would be a guess.
- * - **60 seconds, not 30.** `/health` is write-bearing — it drives readiness — so its cadence
- *   comes from Design 3's table rather than from whatever felt responsive.
+ * - **60 seconds, not 30.** The cadence comes from Design 3's table rather than from whatever
+ *   felt responsive. That table chose it while `/health` still wrote; main has since made every
+ *   check passive (CSR #7), so `/health` no longer writes, and the cadence is simply kept.
  *
  * `/health` answers 503 with exactly the body it answers 200 with, and `fetchHealth` declares
  * that status body-bearing, so a degraded deployment arrives as `kind: "ok"` and the strip
  * renders the degraded checks instead of blanking at the moment it matters most.
  */
 
-/** Design 3's cadence for `/health`. Slower than the others because `/health` writes. */
+/** Design 3's cadence for `/health`, chosen while it still wrote; it is passive since CSR #7. */
 export const HEALTH_POLL_INTERVAL_MS = 60_000;
 
 /** The stores `/health` reports. Ollama is deliberately absent — see the note above. */

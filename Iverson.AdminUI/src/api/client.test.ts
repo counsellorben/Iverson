@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { absoluteUrl, getJson } from "./client";
 import type { HealthResponse, MetricsResponse, TenantsResponse } from "./types";
 

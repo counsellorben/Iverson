@@ -47,11 +47,11 @@ describe("AppLayout logout", () => {
   });
 
   it("still clears the local session when revocation at the IdP fails", async () => {
-    // `revokeTokensOnSignout: true` makes revocation a PRECONDITION of signout in
-    // oidc-client-ts: `_signoutStart` calls `_revokeInternal` before `removeUser` and rethrows.
-    // Revocation is a cross-origin POST to Authentik, so it can fail for reasons unrelated to
-    // this console. Without the fallback, Logout would be a dead button that leaves the user
-    // signed in with the session still in sessionStorage — strictly worse than before the fix.
+    // `AuthProvider` does not set `revokeTokensOnSignout`, so signout revokes nothing — but it
+    // still makes a cross-origin call to Authentik (the end-session request needs the IdP's
+    // metadata) and rethrows on failure, for reasons unrelated to this console. The rejection
+    // below stands in for any such failure. Without the fallback, Logout would be a dead button
+    // with an unhandled rejection; with it, the local session is cleared regardless.
     const signoutRedirect = vi.fn(async () => {
       throw new Error("revocation failed: CORS");
     });

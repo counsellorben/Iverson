@@ -9,8 +9,14 @@ export function useSessionExpiry(): void {
 
   useEffect(() => {
     if (!events || typeof removeUser !== "function") return;
-    return events.addAccessTokenExpired(() => {
-      void removeUser();
+    return events.addAccessTokenExpired(async () => {
+      // Caught and logged, as AppLayout's signOut does: a failed removeUser must not surface as an
+      // unhandled rejection.
+      try {
+        await removeUser();
+      } catch (error) {
+        console.error("Could not end the expired session.", error);
+      }
     });
   }, [events, removeUser]);
 }
