@@ -176,6 +176,9 @@ Newly introduced by this plan and verified at plan-write time. "Merged tree" mea
 | — | Path | The branch tracks the spec and this plan, and both quote the static passwords | CIR round 1 run on Task 11's tree: 4 hits, all in the spec and plan; excluding the two files by name leaves 0 and still catches the runbook sites before Task 11 |
 | — | Command | `admin-ui.yml`'s clean-up is `if: always()` and removes the container and image; the served-CSP step writes `headers.txt` and `directives.txt` into its working directory | Parsed workflow: Clean up has `if: 'always()'` and runs `docker rm -f "$CONTAINER"` and `docker rmi -f "$IMAGE"`; `admin-ui.yml:176`, `:187` |
 | — | Convention | A main decision is a line main changed after the fork | `git blame` at `65cdf63a` plus `git merge-base --is-ancestor <commit> 9eb99f76`. A file-level diff reports 21 pre-fork hunks in 7 files as overrides (CIR round 1). The line-level check fires on real overrides: against the unmerged branch it flags main's `offline_access` test (`AuthProvider.test.tsx:23`) and a re-added Dockerfile `COPY` |
+| — | Command | Task 12's harness runs `bash -e -c` without Actions' `pipefail`, and that cannot change the job's outcome | `image-contract` declares no `shell:` or `defaults`; every stage of its pipelines (`admin-ui.yml:182`, `:187`) exited 0 on the passing and falsified runs (CIR round 2) |
+| — | Command | The plan's `grep` commands run under this host's ugrep shell function | `type grep` → `grep is a function`; every plan grep produced its expected output, and Task 9 Step 6's negative grep also exits 1 under `command grep` (CIR round 2); its target `Iverson.AdminUI/src` is not gitignored |
+| — | Path | The `image-contract` job starts the image twice, and both starts need main's env contract | Served-CSP step `admin-ui.yml:156-160` and malformed-value step `:229-233`. Without `EXTERNAL_SCHEME`/`OIDC_ORIGIN`, the malformed-value step passes a tree with `validate` removed (exit 2 is neither 0 nor 124); with them it fails that tree and passes the correct one with exit 78 (CIR round 2 runs) |
 
 ## Tasks
 
@@ -965,7 +968,7 @@ EOF
 
 **Interfaces:** After Tasks 7, 9 and 10.
 
-- [ ] **Step 1: Main's entrypoint contract** — in the served-CSP step's `docker run` (`:156-160`), add `-e EXTERNAL_SCHEME=http -e "OIDC_ORIGIN=$IDP_ORIGIN"`.
+- [ ] **Step 1: Main's entrypoint contract** — add `-e EXTERNAL_SCHEME=http -e "OIDC_ORIGIN=$IDP_ORIGIN"` to both `docker run`s that start the image: the served-CSP step's (`:156-160`), and the malformed-value step's (`:229-233`, directly below its `-e "API_BASE_URL=$API_ORIGIN" \`). The second one passes without the pair, because the branch's `validate` exits 78 before main's tail runs. But if validation regresses, the container dies on the unset `$EXTERNAL_SCHEME` (exit 2) instead of starting nginx, and the step, which fails only on exit 0 or 124, reads that as a pass.
 
 - [ ] **Step 2: `frame-src`** — delete `assert_directive_names frame-src "$IDP_ORIGIN"` (`:210`), and in the error message at `:201` delete ", and frame-src without it blocks the iframe silent-renew fallback".
 
