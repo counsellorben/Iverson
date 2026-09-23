@@ -78,10 +78,11 @@ jobs:
           echo "::endgroup::"
 
       - name: TypeScript errors must not increase beyond the recorded baseline
-        # This package has 7 pre-existing type errors (4 x `import.meta.env` needing
-        # vite/client types, 3 x react-router's dropped `future` prop) and has never had
-        # a type-check gate, so `npx tsc --noEmit` cannot simply be made blocking -- it
-        # would turn every PR red on day one.
+        # This package has 8 pre-existing type errors (4 x `import.meta.env` needing
+        # vite/client types, 3 x react-router's dropped `future` prop, and 1 x the
+        # `@fontsource` CSS side-effect import in main.tsx missing type declarations)
+        # and has never had a type-check gate, so `npx tsc --noEmit` cannot simply be
+        # made blocking -- it would turn every PR red on day one.
         #
         # A ratchet is used instead of a non-blocking informational run, because a step
         # that can never fail is not a check. This one fails the moment a ninth error
