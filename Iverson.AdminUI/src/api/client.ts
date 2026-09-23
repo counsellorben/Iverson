@@ -13,7 +13,7 @@ import { config } from "../config";
  * |------------------|----------------------------------------------------------------------|
  * | `"ok"`           | 2xx (or a declared body-bearing status) with a parsed JSON body.      |
  * | `"problem"`      | Non-2xx WITH a parsed JSON body — e.g. a 503 carrying `reason`.       |
- * | `"unauthorized"` | 401. Token renewal has been requested; the widget shows nothing new.  |
+ * | `"unauthorized"` | 401. The session is no longer valid; the widget shows nothing new.    |
  * | `"forbidden"`    | 403. This session may not read this endpoint. Derived from the STATUS.|
  * | `"failed"`       | Transport failure, or a non-2xx whose body is not JSON.               |
  *
@@ -25,23 +25,16 @@ import { config } from "../config";
  * body is therefore carried through on `body`, with `reason` and `error` lifted out for
  * convenience.
  *
- * ## 401 is handled once, not nine times
- *
- * An expired token fails every widget on the landing page simultaneously. Nine identical
- * "unauthorized" cards is the wrong output, so a 401 is routed to the `oidc-client-ts` silent
- * renewal path instead: the fetch layer calls the renewer registered by
- * {@link setTokenRenewer} (see `useTokenRenewal`, mounted inside the auth boundary) and
- * returns `kind: "unauthorized"`. `usePolledResource` keeps the last good value on that
- * outcome and does not surface an error. If renewal succeeds the new token flows back in as a
- * hook argument; if it fails, `react-oidc-context` drops the user and `AuthGate` redirects to
- * the login flow — which is the correct blast radius for an expired session.
- *
- * Concurrent 401s are COALESCED into a single renewal. Without that, nine widgets failing at
- * once would open nine silent-renew iframes.
+ * A 401 is reported as `kind: "unauthorized"` and nothing more — there is no renewal path to
+ * route it to. Main's auth configuration requests no `offline_access` scope, so
+ * `oidc-client-ts` never holds a refresh token, and this app's CSP has no `frame-src`, so the
+ * hidden-iframe silent renewal that `automaticSilentRenew` would need is blocked anyway. An
+ * expired session is ended instead: `useSessionExpiry` calls `removeUser()` once the token's
+ * own expiry fires, and that is what trips `AuthGate`'s redirect into the login flow.
  *
  * ## 403 is its own outcome, and it is derived from the status alone
  *
- * 403 is deliberately NOT routed to renewal: it is a real, per-endpoint authorization answer
+ * 403 is a real, per-endpoint authorization answer
  * that a fresh token cannot change, and it belongs on the widget that asked.
  *
  * It gets its own `kind` because **the server sends a 403 with NO BODY**.
@@ -117,49 +110,6 @@ export function isOk<T>(result: ApiResult<T>): result is ApiSuccess<T> {
   return result.kind === "ok";
 }
 
-// ── 401 → silent renewal ──────────────────────────────────────────────────────
-
-export type TokenRenewer = () => Promise<unknown>;
-
-let tokenRenewer: TokenRenewer | null = null;
-/**
- * The renewal currently in flight, or `null`. Held as the PROMISE rather than a boolean, and
- * cleared only by that promise settling — never by {@link setTokenRenewer}. `useTokenRenewal`
- * re-registers on every change of `signinSilent`'s identity, and a boolean that a
- * re-registration reset would drop the guard mid-renewal, letting the next 401 burst open a
- * second one.
- */
-let renewalInFlight: Promise<unknown> | null = null;
-
-/**
- * Registers (or with `null`, clears) the silent-renewal callback a 401 triggers. Called from
- * `useTokenRenewal`, which is the React-side bridge to `oidc-client-ts`.
- */
-export function setTokenRenewer(renewer: TokenRenewer | null): void {
-  tokenRenewer = renewer;
-}
-
-/**
- * Asks for one silent renewal, coalescing concurrent requests. Fire-and-forget by design: the
- * caller that hit the 401 gets no useful answer from waiting, since the renewed token reaches
- * it as a fresh hook argument on a later render, not as a return value here.
- */
-export function requestTokenRenewal(): void {
-  const renewer = tokenRenewer;
-  if (renewer === null || renewalInFlight !== null) return;
-  const pending = Promise.resolve()
-    .then(() => renewer())
-    // A failed renewal is not this layer's problem to report: react-oidc-context clears the
-    // user, and AuthGate redirects into the login flow.
-    .catch(() => undefined)
-    .finally(() => {
-      // Releasing the guard is what lets the NEXT 401 renew. Leaving it raised would mean the
-      // console never renews again for the life of the page.
-      renewalInFlight = null;
-    });
-  renewalInFlight = pending;
-}
-
 // ── Requests ──────────────────────────────────────────────────────────────────
 
 export interface JsonRequestOptions {
@@ -211,7 +161,6 @@ export async function getJson<T>(
   }
 
   if (response.status === 401) {
-    requestTokenRenewal();
     return { kind: "unauthorized", status: 401 };
   }
 

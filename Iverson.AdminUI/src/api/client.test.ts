@@ -1,9 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import {
-  absoluteUrl,
-  getJson,
-  setTokenRenewer,
-} from "./client";
+import { absoluteUrl, getJson } from "./client";
 import type { HealthResponse, MetricsResponse, TenantsResponse } from "./types";
 
 const TOKEN = "test-access-token";
@@ -36,7 +32,6 @@ const signal = () => new AbortController().signal;
 describe("getJson", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    setTokenRenewer(null);
   });
 
   it("composes an absolute URL against the admin-api origin, trimming a trailing slash", () => {
@@ -117,8 +112,6 @@ describe("getJson", () => {
   });
 
   it("reports the server's empty-bodied 403 as forbidden, not as a generic failure", async () => {
-    const renewer = vi.fn(async () => undefined);
-    setTokenRenewer(renewer);
     // What the server ACTUALLY sends: RequireAuthorization("Operator") ends at the stock
     // AuthorizationMiddlewareResultHandler, which emits a 403 with no body at all. The
     // outcome has to come from the status, because there is nothing else to read.
@@ -127,9 +120,6 @@ describe("getJson", () => {
     const result = await getJson("/admin/console/tenants", TOKEN, signal());
 
     expect(result).toEqual({ kind: "forbidden", status: 403, error: null });
-    // A 403 is a real per-endpoint answer for a non-Operator; renewing the token cannot
-    // change it, so the renewal path must stay out of it.
-    expect(renewer).not.toHaveBeenCalled();
   });
 
   it("carries an error string on a 403 that does happen to have a body", async () => {
@@ -140,54 +130,7 @@ describe("getJson", () => {
     expect(result).toEqual({ kind: "forbidden", status: 403, error: "operators only" });
   });
 
-  it("routes a 401 to silent renewal and reports it as unauthorized", async () => {
-    const renewer = vi.fn(async () => undefined);
-    setTokenRenewer(renewer);
-    stubFetch(jsonResponse({}, 401));
-
-    const result = await getJson("/admin/console/tenants", TOKEN, signal());
-
-    expect(result).toEqual({ kind: "unauthorized", status: 401 });
-    expect(renewer).toHaveBeenCalledTimes(1);
-  });
-
-  it("coalesces concurrent 401s into a single renewal", async () => {
-    // A renewal held open is exactly the state nine widgets 401-ing at once would find the
-    // guard in. It is resolved before the test ends so the guard cannot leak into the next.
-    let release!: () => void;
-    const renewer = vi.fn(() => new Promise<void>((resolve) => (release = resolve)));
-    setTokenRenewer(renewer);
-    stubFetch(jsonResponse({}, 401), jsonResponse({}, 401), jsonResponse({}, 401));
-
-    await Promise.all([
-      getJson("/admin/console/tenants", TOKEN, signal()),
-      getJson("/admin/console/schema", TOKEN, signal()),
-      getJson("/admin/console/qdrant", TOKEN, signal()),
-    ]);
-
-    expect(renewer).toHaveBeenCalledTimes(1);
-    release();
-    await Promise.resolve();
-  });
-
-  it("renews again on a later 401, once the previous renewal has settled", async () => {
-    const renewer = vi.fn(async () => undefined);
-    setTokenRenewer(renewer);
-    stubFetch(jsonResponse({}, 401), jsonResponse({}, 401));
-
-    await getJson("/admin/console/tenants", TOKEN, signal());
-    // Let the renewal chain settle and release the guard.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    await getJson("/admin/console/tenants", TOKEN, signal());
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // A guard that was never released would mean the console stops renewing for the life of
-    // the page after the very first 401.
-    expect(renewer).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not throw when no renewer is registered", async () => {
+  it("reports a 401 as unauthorized", async () => {
     stubFetch(jsonResponse({}, 401));
 
     await expect(
@@ -239,27 +182,5 @@ describe("getJson", () => {
     await expect(
       getJson("/admin/console/tenants", TOKEN, signal())
     ).rejects.toThrow("The operation was aborted.");
-  });
-});
-
-describe("setTokenRenewer", () => {
-  beforeEach(() => {
-    setTokenRenewer(null);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    setTokenRenewer(null);
-  });
-
-  it("stops calling a renewer once it is cleared", async () => {
-    const renewer = vi.fn(async () => undefined);
-    setTokenRenewer(renewer);
-    setTokenRenewer(null);
-    stubFetch(jsonResponse({}, 401));
-
-    await getJson("/admin/console/tenants", TOKEN, signal());
-
-    expect(renewer).not.toHaveBeenCalled();
   });
 });
