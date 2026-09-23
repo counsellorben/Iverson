@@ -62,8 +62,22 @@ role cannot read the OAuth client secrets and API tokens it carries (`74bcbf9e`)
 
 The same pin also exists in the compose blueprint, which auto-merges cleanly and would
 therefore *keep* it — leaving the two provider definitions divergent as an accident of where
-git detected a conflict. **Resolution: drop the compose pin too**, so both paths match main
-exactly and the merge leaves no arbitrary divergence. Re-pinning both is a single follow-up.
+git detected a conflict. **Resolution: drop the compose pin too.** Re-pinning both is a single
+follow-up.
+
+The compose blueprint auto-merges **four** branch hunks, not one, so the pin is not the only
+branch content there. Also drop the two `offline_access` scope-mapping entries and their comment
+blocks: on `iverson-oidc-default` (merged `:174-188`) and on `iverson-loadtest-human` (merged
+`:282-296`). Both exist to serve the console's `offline_access` scope, which main reversed. The
+second would also open a new divergence: main's Helm `iverson-loadtest-human` maps only `groups`
+and `tenant_id`, so keeping it would make compose issue refresh tokens to main's LoadTest where
+Helm does not. Dropping both restores main's mapping lists on both providers and needs no
+follow-up.
+
+After that, compose matches main **except** the bypass user's `operators` membership (merged
+`:331-335`), which ships deliberately as branch feature work: a compose-only operator identity
+for console development, resolved against the branch-only `blueprints/operators-group.yaml` and
+documented by `docs/user-management-and-security.md` and R6.
 
 ### `-X theirs` does not produce a building tree
 
@@ -274,7 +288,16 @@ with the resolution policy.
 
 - Stale comments left pointing at removed structures (`values-aws.yaml`, `docker-entrypoint.sh`
   still reference `adminApiIngress` / admin-api after `-X theirs` removed them).
-- README port and user corrections.
+- README port correction, and the seeded-user sentence added **after** main's bootstrap-password
+  sentence (`main:Iverson.AdminUI/README.md:27-29`, which stays). It names main's generated
+  `IVERSON_BYPASS_PASSWORD` from `.env` (via `scripts/generate-compose-secrets.sh`), not the
+  branch's static password — restoring the branch text verbatim would name a password main
+  replaced and revert main's own sentence.
+- The two branch-only runbooks, which still give the static credentials main replaced with
+  generated ones: `docs/runbooks/admin-console-landing-page-usage.md` `:67` (bypass password),
+  `:70` ("hardcoded deliberately") and `:79` (`dev-admin-password`), and
+  `docs/runbooks/operator-access-onboarding.md:21` (`dev-admin-password` →
+  `AUTHENTIK_BOOTSTRAP_PASSWORD`). A developer following either gets a login that does not work.
 
 `HealthStrip` needs no behavioral change — it already handles booleans and `"disabled"`
 correctly. Its narrowed `starrocks` domain is handled entirely by R7.
@@ -303,6 +326,24 @@ test currently tying the two sides together. A capability disappears with a full
    forward-compatibility coverage, but retitle/annotate them so nobody reads them as
    live-path proof — the same discipline already applied to `ProbeAuthorizationPipelineTests`.
 
+### R8 — Adapt the branch's AdminUI CI job
+
+`.github/workflows/admin-ui.yml` is branch-only, so it survives the merge untouched and runs on
+the merge PR (its triggers include `Iverson.AdminUI/**`). Three of its checks fail on the tree
+R1–R7 produce. All three fixes are in this one branch-owned file, so no main line changes:
+
+1. **Main's entrypoint contract.** The served-CSP step's `docker run` (`:156-160`) passes only
+   `OIDC_CLIENT_ID`, `OIDC_AUTHORITY` and `API_BASE_URL` — the branch entrypoint's contract. After
+   the merge the executing tail is main's, which runs `set -eu` and reads `$EXTERNAL_SCHEME` and
+   `${OIDC_ORIGIN}`, so the container exits before nginx starts. Add
+   `-e EXTERNAL_SCHEME=http -e "OIDC_ORIGIN=$IDP_ORIGIN"`.
+2. **`frame-src`.** Delete `assert_directive_names frame-src "$IDP_ORIGIN"` (`:210`). Main's CSP
+   omits `frame-src` by decision (see R5), so the assertion encodes a branch decision main
+   reversed — the same class R4 deletes.
+3. **The `tsc` ratchet.** Set `BASELINE` (`:100`) to the count `npx tsc --noEmit` measures on the
+   post-merge tree. The ratchet compares with `-gt` (`:109`), so a baseline equal to the measured
+   count passes.
+
 ## Out of scope — follow-ups against `main`
 
 These are main-owned and deliberately excluded by the resolution policy:
@@ -330,13 +371,19 @@ with its stated reason: `Iverson.Api.Tests`,
 CORS middleware — it goes red if the `UseCors` call is missing. `npx tsc --noEmit` back to a
 baseline **re-established
 post-merge and written here as a number** (the branch's was 7; the spliced merge showed 13;
-main's own count is unmeasured).
+main's own count is unmeasured) — and into `admin-ui.yml`'s `BASELINE` (R8), which is where the
+number is enforced. The `admin-ui.yml` workflow is itself a gate: both its jobs green.
 
 **Helm.** `helm dependency update` **before every** lint and template — packaged `.tgz` subcharts
 shadow live directory edits and silently render stale output, which invalidated an entire
 validation round earlier on this branch. Then **`helm template` across all five overlays** — that
 is the check that can actually fail here, because `helm lint` exits **0** even when a template
-`fail` fires, so a lint-only pass would sign off a chart that cannot render. Assert that each
+`fail` fires, so a lint-only pass would sign off a chart that cannot render. Render per overlay
+the way `main:.github/workflows/deploy-validate.yml:64-73` does: `helm template … -f
+values-<p>.yaml` for `local` and `laptop`, and `helm template … -f values-<p>.yaml -f
+values-<p>.ci-override.yaml` for `aws`, `azure` and `gcp`. Without the override, main's
+placeholder guard (`templates/_validate.tpl`, included at `networkpolicies.yaml:1`) fails those
+three renders on the shipped `iverson.example.com` host whatever R3 does. Assert that each
 profile renders `adminApiIngress` where a console exists and does not where one does not.
 
 **Targeted proofs — each must fail against the unfixed code, not merely pass:**
@@ -354,7 +401,8 @@ profile renders `adminApiIngress` where a console exists and does not where one 
   `connect-src`, because the same string appeared in `frame-src`. Assert it in **both** places
   the browser can get the header from: the pod's CSP, and the rendered `values-local` admin-ui
   Ingress `configuration-snippet`. The pod-side assertion alone passes while the Ingress snippet
-  replaces the header and the browser still blocks.
+  replaces the header and the browser still blocks. The pod-side half is `admin-ui.yml`'s
+  served-CSP step (R8), which asserts each origin per directive against the built image.
 
 **Known-unknowns, named rather than discovered later:**
 
@@ -406,3 +454,7 @@ profile renders `adminApiIngress` where a console exists and does not where one 
 | R3 overwrites main's `apiBaseUrl` in five files | main: `values.yaml:238` and `values-local.yaml:147` `http://iverson.local`; `values-aws.yaml:150`, `values-azure.yaml:141`, `values-gcp.yaml:142` `https://iverson.example.com`. `values-laptop.yaml` sets it on neither side |
 | Main's surviving test mock writes `capturedOidcProps`, not `capturedProviderProps` | `main:AuthProvider.test.tsx:6` `const capturedOidcProps`, `:11` push inside `vi.mock`, `:20` reset; the branch helper reads `let capturedProviderProps` (`b60e4928:…:7,24-34`), set only by the branch's mock at `:16` |
 | Main pins `/v1/traces` to 8080; the admin-api Ingress targets 8081 | `main:Program.cs:697` `.WithMetadata(new RequireListenerPort(8080))`; `charts/api/templates/admin-api-ingress.yaml:51` `/v1/traces` to port `8081`, the `Protocols: Http1` listener (`main:appsettings.json:15-17`) |
+| The AdminUI CI job starts main's entrypoint without main's env contract | `admin-ui.yml:156-159` passes only `OIDC_CLIENT_ID`, `OIDC_AUTHORITY`, `API_BASE_URL`; `main:Iverson.AdminUI/docker-entrypoint.sh:2` `set -eu` and `:16` reads `$EXTERNAL_SCHEME`; the job asserts `frame-src` at `:210`, which `main:nginx.conf` omits; `BASELINE=7` at `:100`, compared with `-gt` at `:109` |
+| Main's placeholder guard needs the CI overrides on cloud profiles | `main:templates/networkpolicies.yaml:1` includes `iverson.validateNoPlaceholders` (`_validate.tpl`, `https` profiles only); `values-{aws,azure,gcp}.ci-override.yaml` count 0 at `9eb99f76` and on the branch, 3 on main; `main:deploy-validate.yml:64-73` layers them |
+| Four branch hunks auto-merge into the compose blueprint | branch `compose-only/service-clients.yaml`: the pin; `offline_access` `!Find` under `iverson-oidc-default` (`:188`) and `iverson-loadtest-human` (`:296`); the `operators` grant (`:335`). Main's compose file has 0 `offline_access` and 0 `operators`; main's Helm `iverson-loadtest-human` maps only `groups` and `tenant_id` (`secret-service-clients.yaml:485-486`); main's LoadTest requests `offline_access` through it (`Iverson.Server/Iverson.LoadTest/Auth/AuthentikFlowExecutorClient.cs:281`) |
+| Main replaced the static compose passwords with generated ones | `git grep` for the two static strings over the pure merge tree `06b78f70` finds exactly four sites, all in branch-only runbooks: `admin-console-landing-page-usage.md:67,70,79` and `operator-access-onboarding.md:21`; main's README `:28` names the generated `AUTHENTIK_BOOTSTRAP_PASSWORD` |
