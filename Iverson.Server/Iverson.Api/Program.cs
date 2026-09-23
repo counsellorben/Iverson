@@ -486,6 +486,17 @@ preAuthOptions.AddPolicy("traces", _ => RateLimitPartition.GetNoLimiter<string>(
 app.Use(ListenerPortGateAsync);
 app.UseRateLimiter(preAuthOptions);
 app.UseHttpsRedirection();
+
+// Must run before UseAuthentication: a cross-origin preflight OPTIONS carries no
+// Authorization header, so if it reached the FallbackPolicy's RequireAuthenticatedUser
+// first, every preflight would be rejected before CORS ever got to answer it.
+// (AdminConsoleCorsPipelineTests.ConfiguredOrigin_PreflightOptions_AdminDlq_AnsweredByCors
+// NotFallbackPolicy pins this: moving UseCors below UseAuthentication/UseAuthorization
+// makes that one test fail with 401, confirmed empirically before this comment was
+// restored.)
+if (!string.IsNullOrEmpty(adminConsoleOrigin))
+    app.UseCors(AdminConsoleCorsPolicy);
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();   // existing DI-configured GlobalLimiter, unchanged
