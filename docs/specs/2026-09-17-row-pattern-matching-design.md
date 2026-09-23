@@ -202,7 +202,10 @@ only at run time) fail the request with `InvalidArgument`.
 #### 3.1 `Iverson.Server/Iverson.Patterns` (new project, no store dependencies)
 
 Added to both `Iverson.slnx` and `Iverson.Server/Iverson.Server.slnx`, with a sibling
-`Iverson.Patterns.Tests`.
+`Iverson.Patterns.Tests`. `Iverson.Patterns.csproj` is also added to the per-project `COPY` list
+that precedes `RUN dotnet restore` in `Iverson.Server/Iverson.Api/Dockerfile`: the server image
+restores only the project files copied there and then publishes with `--no-restore`, so a project
+missing from that list fails the image build (the test project is not needed there).
 
 | Unit | Responsibility |
 |---|---|
@@ -226,7 +229,10 @@ Public entry point: `PatternQuery.Compile(request parts) → CompiledPattern` (t
 `partition_by` entry admitted by the case-insensitive membership check below therefore finds its
 column's value under the canonical key, and a `ONE_ROW` partition column is emitted under that
 stored, canonical key. This governs input rows only; output rows keep ordinal, case-sensitive
-names (§1).
+names (§1). SQL `NULL` is represented as C# `null` throughout (row dictionaries, the evaluator,
+measures). The TYPE_ROWS source stores a `NULL` column value as `null`: the raw `MySqlDataReader`
+it reads with returns `DBNull.Value`, which is neither `null` to the §2 evaluator nor a
+`null_value` in the output (`DictToProtoStruct` emits it as an empty string).
 
 - Validates `partition_by`, the `order_by` properties, every `where` clause property, and every
   column referenced by `define`/`measures`/`SIMILARITY` against `ColumnsFor(schema, constraint)`
@@ -451,7 +457,11 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
      under its canonical name; authz row filter; hidden-field, tenant-column and bytes-column rejection in every slot,
      including `where`; bytes columns omitted from `ALL_ROWS_*`; a measure colliding with a
      projected or partition column is rejected, in both rows-per-match shapes; overflow at
-     `MaxRowsScanned + 1`; reading more rows than one batch without buffering.
+     `MaxRowsScanned + 1`; reading more rows than one batch without buffering; a `NULL` column value
+     is treated as SQL `NULL`: `IS NULL` holds for it in `define`, `COALESCE` replaces it in
+     `measures`, and it is emitted as a protobuf `null_value` in `ALL_ROWS_*` output, as a
+     `ONE_ROW` partition column, and through a measure that passes it through (for example
+     `FIRST(A.x)`).
    - `IChunkRowSource`: both phases; `chunk_index` sorted numerically (`10` after `2`); a missing
      collection returns empty; the ownership filter is applied; OR-filter rejection; a collection
      lacking the vector re-issues the phase-2 scroll without it; phase 1 over `MaxRowsScanned`
@@ -539,3 +549,5 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
 | Trino folds unquoted pattern-variable and subset names to upper case in every slot | CDR-4 probes P53 C1–C8 and P56; C1, C2, C3 and C8 re-run on Trino 483 when this fix was applied |
 | The `MATCH_NUMBER()` value inside `define` matches the oracle on every branch of its per-attempt loop (unmatched: no increment; empty and non-empty match: increment) | CDR-4 probe P49 (Trino 483 `PatternRecognitionPartition.java`); probe P30 T1/T2/T6/T9, one scenario each |
 | The evaluator can obtain the attempt's match number during `define` evaluation, as the ported contract provides | CDR-4 probe P33 (`LabelEvaluator.java@483:31,52-54,78`) |
+| The server image restores only the `.csproj` files its Dockerfile copies before `dotnet restore`, then publishes with `--no-restore`; a referenced project missing from that list fails the publish with `NETSDK1004`, and adding its `COPY` line fixes it; the two solution files build and test both new projects | `Iverson.Server/Iverson.Api/Dockerfile:13-23`; CDR-5 probes P61, P62, P64 |
+| The raw reader returns `DBNull.Value` for `NULL` in every mapped StarRocks column type, where Dapper returns `null`; `DictToProtoStruct` emits `DBNull.Value` as an empty string and `null` as `null_value` | `ObjectSearchGrpcService.cs` `ToProtoValue` (`null => Value.ForNull()`; default arm `Value.ForString(v.ToString()!)`); CDR-5 probes P66, P67, P69 |
