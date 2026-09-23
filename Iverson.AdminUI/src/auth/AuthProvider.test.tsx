@@ -112,6 +112,32 @@ describe("AuthGate", () => {
     expect(screen.queryByText("Protected content")).not.toBeInTheDocument();
     expect(signinRedirect).not.toHaveBeenCalled();
   });
+
+  it("ends the session when the access token expires, so the redirect can fire", () => {
+    let onExpired: (() => void) | undefined;
+    const removeUser = vi.fn(async () => undefined);
+    useAuthMock.mockReturnValue({
+      isLoading: false,
+      isAuthenticated: true,
+      signinRedirect,
+      removeUser,
+      events: {
+        addAccessTokenExpired: (cb: () => void) => {
+          onExpired = cb;
+          return () => {};
+        },
+      },
+    });
+
+    render(
+      <AuthGate>
+        <div>Protected content</div>
+      </AuthGate>
+    );
+    onExpired!();
+
+    expect(removeUser).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("AuthProvider OIDC settings", () => {

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { AuthProvider as OidcAuthProvider, useAuth } from "react-oidc-context";
 import { config } from "../config";
+import { useSessionExpiry } from "./useSessionExpiry";
 
 // Deliberately no `offline_access` scope: requesting it makes oidc-client-ts
 // obtain a refresh token and store the whole token set (access + id +
@@ -63,10 +64,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
  * Gates its children behind an authenticated session, redirecting an
  * unauthenticated visitor into the Authentik login flow. `AppLayout`
  * (Task 4) is the intended child; this component only concerns itself
- * with the auth boundary.
+ * with the auth boundary. It also ends the session when the access token
+ * expires — see `useSessionExpiry`.
  */
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const auth = useAuth();
+  useSessionExpiry();
 
   useEffect(() => {
     if (!auth.isLoading && !auth.isAuthenticated) {
