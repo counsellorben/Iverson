@@ -206,7 +206,7 @@ repo, so an absence points at a modified blueprint.
 | Metrics band says Prometheus is not deployed | `global.prometheusEnabled` is false for that profile — `values-laptop.yaml` disables it deliberately. Reported distinctly from "deployed but unreachable". |
 | Backlog and DLQ read "No data" | Those five series are **worker-only**. If the worker is not scraped they are absent, not zero — and absent is what is shown. |
 | Transport health's error percentage is blank | Normal on a healthy system. The query divides two rates; with zero 5xx in the window the numerator is empty. Blank means "nothing has failed". |
-| StarRocks shows a neutral "Auth pending" chip | First install. Readiness deliberately treats that state as ready so the post-install hook does not deadlock — not a failure, and not coloured as one. |
+| StarRocks shows **Down** during a first install | Main's `/health` collapses `AuthPending` to `false`, so a fresh install whose StarRocks user is still bootstrapping shows "StarRocks: Down" — not a failure. `ReadinessPolicy` still counts that bootstrapping state as ready, so the post-install create-user hook runs and the install proceeds regardless. The console renders a neutral "Auth pending" chip instead only once `/health` reports that state again, which is the out-of-scope follow-up against main. |
 | Data volume shows zeros for everything | The `tenant_id` does not match a provisioned tenant. The store has no database to address; zero is honest. |
 | Login redirects then fails on a cloud profile | The console and Authentik must be on the **same scheme**. An `https://` console calling an `http://` authority is blocked as mixed content before any request is sent. |
 

@@ -444,7 +444,7 @@ describe("usePolledResource", () => {
   });
 
   describe("token changes", () => {
-    it("retries immediately on a renewed token when the resource is failing", async () => {
+    it("retries immediately on a new token when the resource is failing", async () => {
       const fetcher = vi
         .fn<ApiFetcher<Payload>>()
         .mockResolvedValueOnce({ kind: "unauthorized", status: 401 })
@@ -468,7 +468,7 @@ describe("usePolledResource", () => {
       expect(result.current.failure).toBeNull();
     });
 
-    it("does not refetch a healthy resource when the token is silently renewed", async () => {
+    it("does not refetch a healthy resource when the token changes", async () => {
       const fetcher = vi.fn<ApiFetcher<Payload>>().mockResolvedValue(ok(1));
 
       const { rerender } = await mountWith(
@@ -477,8 +477,10 @@ describe("usePolledResource", () => {
       );
       expect(fetcher).toHaveBeenCalledTimes(1);
 
-      // Silent renewal happens roughly every five minutes. If it forced a refetch, an
-      // expensive non-polled resource would be back on a timer through the back door.
+      // A token change alone must not force a refetch: this hook's job is polling on
+      // `intervalMs`, not reacting to token identity. A healthy resource refetching on every
+      // token change would put an expensive non-polled resource back on a timer through the
+      // back door.
       await act(async () => {
         rerender({ token: "second" });
         await settle(0);
@@ -644,8 +646,9 @@ describe("usePolledResource", () => {
       });
       expect(result.current.data).toEqual({ value: 2 });
 
-      // The superseded request answers late — as a pre-renewal request would, landing after
-      // the renewed one. Its older value must not overwrite the newer one.
+      // The superseded request answers late — as a request made with the previous token would,
+      // landing after the one made with the new token. Its older value must not overwrite the
+      // newer one.
       await act(async () => {
         calls[0].resolve(ok(1));
         await settle(0);

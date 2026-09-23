@@ -37,9 +37,10 @@ export type WidgetState =
   /** 403. A real authorization answer that a fresh token cannot change. */
   | "forbidden"
   /**
-   * 401. Not ordinary expiry — `useSessionExpiry` ends the session when the token expires, which
-   * drops the card to `awaitingToken` — but a token the API rejects while the client still holds
-   * it (an IdP reset, a signing-key rotation). Nothing renews it; the user has to sign in again.
+   * 401. Not ordinary expiry — `useSessionExpiry` ends the session when the token expires, and
+   * `AuthGate` then unmounts this page to redirect to login, so the card never reaches
+   * `awaitingToken` — but a token the API rejects while the client still holds it (an IdP
+   * reset, a signing-key rotation). Nothing renews it; the user has to sign in again.
    */
   | "unauthorized"
   /** A non-2xx that carried a `reason` — `disabled`, `notReady`, `notDeployed`, … */

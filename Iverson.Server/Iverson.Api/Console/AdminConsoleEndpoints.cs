@@ -308,11 +308,11 @@ public sealed record SchemaTypeSummary(
 /// authorized field set after <c>FieldPermission</c> filtering (<c>SchemaCatalogReader.cs</c>, the
 /// <c>fields.Count == 0</c> guard) — and this figure merges them, because it is derived from the
 /// size of the registry subset this caller's tenant may enumerate rather than from the reader's own
-/// reasons. Another tenant's types are outside that subset, so they are absent, not withheld. Both grounds genuinely mean "withheld
-/// from you", so the merge is honest; calling it <c>deniedTypeCount</c> would not be, since it
-/// would claim a precision the derivation does not have. Contrast
-/// <see cref="DataVolumeResponse.DeniedTypeCount"/>, which is incremented from an actual
-/// <c>TypeRowCountStatus.Denied</c> and therefore may make that stronger claim.
+/// reasons. Another tenant's types are outside that subset, so they are absent, not withheld. Both
+/// grounds genuinely mean "withheld from you", so the merge is honest; calling it
+/// <c>deniedTypeCount</c> would not be, since it would claim a precision the derivation does not
+/// have. Contrast <see cref="DataVolumeResponse.DeniedTypeCount"/>, which is incremented from an
+/// actual <c>TypeRowCountStatus.Denied</c> and therefore may make that stronger claim.
 /// </para>
 /// <para>
 /// Withheld types are counted, never named — the same rule <see cref="DataVolumeResponse"/>

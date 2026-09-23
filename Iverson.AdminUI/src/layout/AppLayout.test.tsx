@@ -52,14 +52,16 @@ describe("AppLayout logout", () => {
     expect(removeUser).not.toHaveBeenCalled();
   });
 
-  it("still clears the local session when revocation at the IdP fails", async () => {
-    // `AuthProvider` does not set `revokeTokensOnSignout`, so signout revokes nothing — but it
-    // still makes a cross-origin call to Authentik (the end-session request needs the IdP's
-    // metadata) and rethrows on failure, for reasons unrelated to this console. The rejection
-    // below stands in for any such failure. Without the fallback, Logout would be a dead button
-    // with an unhandled rejection; with it, the local session is cleared regardless.
+  it("still clears the local session when the IdP round-trip fails", async () => {
+    // `AuthProvider` does not set `revokeTokensOnSignout`, so signout revokes nothing — but
+    // oidc-client-ts's `_signoutStart` still removes the user locally FIRST, then makes a
+    // cross-origin call to Authentik to build the end-session request, and rethrows if that
+    // call fails, for reasons unrelated to this console. The rejection below stands in for any
+    // such failure. By the time it fires, oidc-client-ts has already removed the user locally,
+    // so the fallback below is a floor, not what clears the session in this scenario — but
+    // without it, the rejection would go unhandled.
     const signoutRedirect = vi.fn(async () => {
-      throw new Error("revocation failed: CORS");
+      throw new Error("end-session request failed: CORS");
     });
     const removeUser = vi.fn(async () => undefined);
     renderLayout({ signoutRedirect, removeUser });

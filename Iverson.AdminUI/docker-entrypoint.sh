@@ -63,11 +63,12 @@ validate() {
 
 # Reduces an absolute URL to the CSP source expression for its origin: scheme, host
 # and port, with any path discarded. A CSP source that carries a path is PATH-MATCHED,
-# so passing the authority URL through whole ("http://idp/application/o/iverson-api/")
-# would authorise only that subtree — and oidc-client-ts fetches
-# ".../.well-known/openid-configuration" and posts to ".../token", which are not under
-# it. Failing loudly when there is no scheme beats emitting a policy that silently
-# omits an origin and surfaces days later as "login just stops".
+# so passing API_BASE_URL through whole — say, if it carried a path like
+# ".../admin/console" — would authorise only that one subtree, and the console's
+# other calls on the same origin ("/health", ".../admin/console/schema", ...)
+# would not be under it. Failing loudly when there is no scheme beats emitting a
+# policy that silently omits the origin and surfaces days later as every console
+# widget failing to load, for a reason that has nothing to do with the API itself.
 origin_of() {
     _name=$1
     _url=$2
