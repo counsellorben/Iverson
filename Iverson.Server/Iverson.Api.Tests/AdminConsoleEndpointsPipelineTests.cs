@@ -12,8 +12,7 @@ namespace Iverson.Api.Tests;
 /// Task 6's four <c>/admin/console/*</c> endpoints, driven through the real <c>Program.cs</c>
 /// pipeline (<see cref="AdminConsoleTestWebApplicationFactory"/>) so the real JwtBearer handler,
 /// the real <c>Operator</c> policy, the real <c>FallbackPolicy</c> and the real minimal-API JSON
-/// serialization all run — the same pattern as <c>ProbeAuthorizationPipelineTests</c> and
-/// <c>AdminConsoleCorsPipelineTests</c>.
+/// serialization all run — the same pattern as <c>AdminConsoleCorsPipelineTests</c>.
 /// <para>
 /// Three things are pinned here that a shape-only test would miss:
 /// </para>
@@ -58,10 +57,9 @@ public class AdminConsoleEndpointsPipelineTests : IClassFixture<AdminConsoleTest
         ]);
 
     /// <summary>
-    /// An operator, exactly as <c>ProbeAuthorizationPipelineTests</c> builds one. Note what it does
-    /// NOT carry: a <c>tenant_id</c> claim. That is not an omission in the fixture — it is the live
-    /// state Design 4d records, and the two authenticated endpoints' behaviour under it is pinned
-    /// below rather than papered over.
+    /// An operator with the <c>operators</c> group claim and no <c>tenant_id</c> claim. That absence
+    /// is not an omission in the fixture — it is the live state Design 4d records, and the two
+    /// authenticated endpoints' behaviour under it is pinned below rather than papered over.
     /// </summary>
     private static string OperatorToken() => TestJwtFactory.CreateToken(
         "test-service-audience",

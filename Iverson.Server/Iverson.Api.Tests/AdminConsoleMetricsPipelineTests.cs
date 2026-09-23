@@ -9,10 +9,9 @@ using Xunit;
 namespace Iverson.Api.Tests;
 
 /// <summary>
-/// <c>GET /admin/console/metrics</c> against the real <c>Program.cs</c> pipeline — same pattern as
-/// <c>ProbeAuthorizationPipelineTests</c>: <see cref="AuthTestWebApplicationFactory"/> boots the
-/// real <c>JwtBearer</c> handler and the real <c>Operator</c> policy, with no DI swap needed for
-/// <c>IPrometheusQueryClient</c>. The test host's <c>appsettings.json</c> ships
+/// <c>GET /admin/console/metrics</c> against the real <c>Program.cs</c> pipeline: <see cref="AuthTestWebApplicationFactory"/>
+/// boots the real <c>JwtBearer</c> handler and the real <c>Operator</c> policy, with no DI swap
+/// needed for <c>IPrometheusQueryClient</c>. The test host's <c>appsettings.json</c> ships
 /// <c>Prometheus:BaseUrl: ""</c> (no override here), which is itself a real, supported deployment
 /// state — the same one <c>values-laptop.yaml</c> ships — so an authorized request reaching the
 /// handler proves the whole wire-up (config key → <c>PrometheusOptions</c> → handler → JSON body)
