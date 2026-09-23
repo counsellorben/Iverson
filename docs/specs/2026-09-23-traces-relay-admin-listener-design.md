@@ -18,7 +18,7 @@ The admin console's browser span export reaches Jaeger again, in compose and on 
 - `:8080` accepts `Http2` only, cleartext (h2c).
 - `:8081` accepts `Http1` only.
 
-**Main's `0baebc4b` pinned every non-operational endpoint to 8080** via `RequireListenerPort`, and every operational endpoint to 8081. The 8080 group includes gRPC, `/admin/reconcile`, `/admin/dlq*` and the `/v1/traces` relay (`Program.cs:769`). The 8081 group is `/health*`, `/build`, and the Prometheus scrape. The commit gives no traces-specific reason.
+**Main's `0baebc4b` pinned every non-operational endpoint to 8080** via `RequireListenerPort`, and every operational endpoint to 8081. The 8080 group includes gRPC, `/admin/reconcile`, `/admin/dlq*` and the `/v1/traces` relay (`Program.cs:769`). It also includes gRPC's generated unimplemented-service catch-all, `{unimplementedService}/{unimplementedMethod}`, which inherits the pin from the `MapGrpcService<…>().WithMetadata(new RequireListenerPort(8080))` calls (`Program.cs:717-722`). The 8081 group is `/health*`, `/build`, and the Prometheus scrape. The commit gives no traces-specific reason.
 
 **The admin-api Ingress routes only `/admin` and `/health` to 8081.** The branch had a `/v1/traces` → 8081 rule, but the admin-console merge dropped it, because 8081 answers `/v1/traces` with the port gate's 404.
 
@@ -34,20 +34,21 @@ Browsers never speak h2c. ingress-nginx sends HTTP/1.1 upstream unless an Ingres
 
 ## Decision
 
-**Remove the relay's listener pin, and restore the admin-api Ingress `/v1/traces` rule.** The user picked this option (A) over the alternatives below.
+**Remove the relay's listener pin, let the relay answer CORS preflights, and restore the admin-api Ingress `/v1/traces` rule.** The user picked this option (A) over the alternatives below.
 
 | Option | Verdict | Why |
 |---|---|---|
-| **A** — unpin + restore the Ingress rule | **Chosen** | One line of server code. Every existing protection stays. Works in compose, on kind and in the cloud. |
+| **A** — unpin + restore the Ingress rule | **Chosen** | Two metadata changes on one registration: the unpin, and accepting CORS preflights. Every existing protection stays. Works in compose, on kind and in the cloud. |
 | **B** — pin to 8081 | Rejected (dominated by A) | The pre-auth IP limiter exempts endpoints pinned to 8081 (`Program.cs:461`), and so does the post-auth limiter (`Program.cs:117`). Main's own api-Ingress route to 8080 would then 404. |
 | **C** — export same-origin through main's api Ingress to 8080 | Rejected | Fails outright in compose, because a browser can't do h2c. Fails on the nginx profiles, where HTTP/1.1 upstream gets a 400. |
-| **D** — a new `/admin/console/traces` route | Rejected | Reachability and limits are the same as A. Costs a refactor of main's 28-line inline handler into a shared method plus a console URL change. Buys only a literal 8080 pin, and the `/admin/console/*` endpoints already answer on both listeners. |
+| **D** — a new `/admin/console/traces` route | Rejected | Same reachability and limits as A. D's three-segment path never meets the gRPC catch-all; A gets there with the preflight metadata. Costs a refactor of main's 28-line inline handler into a shared method plus a console URL change. Buys only a literal 8080 pin, and the `/admin/console/*` endpoints already answer on both listeners. |
 
 ## Design
 
-1. **Server.** In `Iverson.Server/Iverson.Api/Program.cs`, the relay's registration ends with `.RequireAuthorization().RequireRateLimiting("traces");`. The `.WithMetadata(new RequireListenerPort(8080))` is removed. A short comment beside it explains why this endpoint is deliberately unpinned:
-   - It is browser-originated. 8080 is h2c-only, which browsers can't speak, so it must also answer on the `Http1` listener that the admin-api Ingress targets.
-   - It keeps authentication (the fallback authenticated-user policy), the per-user 60/min `traces` policy (`Program.cs:144-152`, keyed by `sub`), and both global limiters. Those limiters exempt only endpoints pinned to 8081.
+1. **Server.** In `Iverson.Server/Iverson.Api/Program.cs`, the relay's registration ends with `.RequireAuthorization().RequireRateLimiting("traces").WithMetadata(new HttpMethodMetadata(new[] { "POST" }, acceptCorsPreflight: true));`. The `.WithMetadata(new RequireListenerPort(8080))` is removed. A short comment beside it explains both changes:
+   - **Why it's unpinned:** it is browser-originated. 8080 is h2c-only, which browsers can't speak, so it must also answer on the `Http1` listener that the admin-api Ingress targets.
+   - **Why it accepts preflights:** the exporter's cross-origin POST is preceded by `OPTIONS /v1/traces`. A `MapPost` endpoint doesn't accept preflights, so without this the router selects gRPC's unimplemented-service catch-all for that two-segment path. The catch-all carries the gRPC services' `RequireListenerPort(8080)`, so the port gate returns 404 on the `Http1` listener, and the browser never sends the POST.
+   - **What it keeps:** authentication (the fallback authenticated-user policy), the per-user 60/min `traces` policy (`Program.cs:144-152`, keyed by `sub`), and both global limiters. Those limiters exempt only endpoints pinned to 8081. With no `AdminConsole:Origin` configured, the preflight reaches authorization and gets a 401, so it fails closed.
 
    Nothing else in `Program.cs` changes. Main's api Ingress keeps `/v1/traces` → 8080 unchanged (`charts/api/templates/ingress.yaml:95`).
 2. **Ingress.**
@@ -62,6 +63,10 @@ Browsers never speak h2c. ingress-nginx sends HTTP/1.1 upstream unless an Ingres
    - Resolve the actual `POST /v1/traces` endpoint from the app's `EndpointDataSource`. `AuthenticationPipelineTests.cs:183/205` is the precedent.
    - Run it through `Program.ListenerPortGateAsync` with `Connection.LocalPort` set to 8081, then 8080. Both must reach `next`.
    - **Mutation proof:** restore the 8080 pin temporarily and watch the 8081 case fail.
+1b. **Full-pipeline preflight test.**
+   - Boot the real `Program` with `AdminConsole__Origin` set before the host starts, as `CorsConfiguredTestWebApplicationFactory` does. Add an `IStartupFilter` that stamps `Connection.LocalPort = 8081`.
+   - Send `OPTIONS /v1/traces` with `Origin`, `Access-Control-Request-Method: POST` and `Access-Control-Request-Headers: authorization,content-type`. Assert 204 and an `Access-Control-Allow-Origin` equal to the configured origin.
+   - **Mutation proof:** remove the preflight metadata and watch it return 404.
 
    Main's existing gate unit tests and `TracesRelayEndpointTests` stay as they are.
 2. **Helm renders** on all five profiles, with main's CI overrides:
@@ -70,7 +75,7 @@ Browsers never speak h2c. ingress-nginx sends HTTP/1.1 upstream unless an Ingres
    - main's api Ingress still has `/v1/traces` → 8080;
    - kubeconform finds 0 invalid.
 3. **Comment sweep.** Correct every comment that describes the admin-api host's paths or says console span export is off. Known targets: `admin-api-ingress.yaml:14` and `charts/api/values.yaml:45`. Leave the notes that are already true after the fix, such as `telemetry.ts:22-26`, `Program.cs:159` and `docker-compose.yml:501`.
-4. **Gates.** Full `Iverson.Api.Tests` and the Helm loop. No compose smoke test: the gate test proves the same routing fact without a running stack.
+4. **Gates.** Full `Iverson.Api.Tests` and the Helm loop. No compose smoke test: the preflight test (1b) proves the browser's path through the real pipeline without a running stack.
 
 ## Known issues / accepted as out of scope
 
@@ -87,7 +92,7 @@ Browsers never speak h2c. ingress-nginx sends HTTP/1.1 upstream unless an Ingres
 | # | Assumption | Evidence |
 |---|---|---|
 | 1 | Exactly one `RequireListenerPort(8080)` on the relay | `Program.cs:769`; the pin string occurs once |
-| 2 | Unpinned endpoints pass the port gate on any listener | `ListenerPortGateAsync`, `Program.cs:793-803` (no metadata → `next()`); main's test `ListenerPortGate_UnmarkedEndpoint_InvokesNext` (`AuthenticationPipelineTests.cs:267`) |
+| 2 | The endpoint a request selects passes the port gate on any listener when it is unpinned (a preflight selects the relay only with row 20's metadata) | `ListenerPortGateAsync`, `Program.cs:793-803` (no metadata → `next()`); main's test `ListenerPortGate_UnmarkedEndpoint_InvokesNext` (`AuthenticationPipelineTests.cs:267`) |
 | 3 | Unpinned endpoints stay under both global limiters | `Program.cs:117` and `:461` exempt only `…RequireListenerPort>()?.Port == 8081`, plus gRPC content type for post-auth |
 | 4 | The `traces` policy is endpoint-attached and listener-independent | `.RequireRateLimiting("traces")`; policy at `Program.cs:144-152`, keyed by `sub` |
 | 5 | JWT auth doesn't depend on the listener | `AddJwtBearer` (`:182`, `:206`) and `FallbackPolicy` (`:235`) carry no listener condition |
@@ -102,3 +107,7 @@ Browsers never speak h2c. ingress-nginx sends HTTP/1.1 upstream unless an Ingres
 | 14 | Nothing asserts or blocks the pin | No test pins `/v1/traces` (it appears only in `TracesRelayEndpointTests`, in-process with `LocalPort` 0); `templates/networkpolicies.yaml` api-ingress admits ingress-nginx and `clusterCidrs` on 8081 |
 | 15 | The console calls no other 8080-pinned route | It calls only `/admin/console/*` (unpinned) and `/health` (pinned 8081); `api/console.ts` |
 | 16 | Laptop renders no admin-api Ingress | `adminConsoleEnabled` is false by default and unset in `values-laptop.yaml` (the I1 renders on `a55e53ac`) |
+| 17 | Helm's Jaeger accepts OTLP/HTTP on 4318 without `COLLECTOR_OTLP_ENABLED` | `jaegertracing/all-in-one:1.62.0` (`charts/jaeger/values.yaml:1`; no overlay overrides it), where OTLP receivers are default-on (since 1.35); the Service exposes `otlp-http` 4318 (`charts/jaeger/templates/service.yaml:13-14`); CDR round 1 P7: the container answers 200 on `:4318` |
+| 18 | `Jaeger__OtlpHttpUrl` renders on every profile that runs the console | Renders of local, aws, azure and gcp all give `http://<release>-jaeger:4318` |
+| 19 | The api → Jaeger:4318 NetworkPolicy path exists | Renders of local, aws, azure and gcp: `<release>-api-egress` and `<release>-jaeger-ingress` both carry 4318 |
+| 20 | The `/v1/traces` CORS preflight on 8081 reaches CORS only with the relay's preflight metadata | In-process real pipeline with `LocalPort` stamped to 8081 and the origin configured: unpin only gives 404, with no CORS header (the preflight selects gRPC's catch-all, pinned to 8080); unpin plus `HttpMethodMetadata(["POST"], acceptCorsPreflight: true)` gives 204 with ACAO; with the origin unset it gives 401. The relay, CORS-pipeline and port-gate tests pass 16/16 with the fix. CDR round 1 P1 reproduced 404 → 204 on real Kestrel sockets, with authentication and the 60/min limit unchanged |
