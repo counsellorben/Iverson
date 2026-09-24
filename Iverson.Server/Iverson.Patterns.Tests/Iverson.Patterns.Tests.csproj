@@ -17,8 +17,12 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="Testcontainers" Version="4.15.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Iverson.Patterns/Iverson.Patterns.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Oracle/trino-483-cases.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
