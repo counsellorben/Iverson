@@ -13,6 +13,11 @@ public static class OracleRunner
         Exception? ourError = null;
         try { ours = RunOurs(c, expected.Columns); }
         catch (Exception e) when (e is PatternValidationException or PatternEvaluationException) { ourError = e; }
+        catch (PatternBudgetExceededException e)
+        {
+            throw new InvalidOperationException(
+                $"{c}: our engine exceeded {e.BudgetName} (Trino {(expected.Error is null ? "succeeded" : "failed: " + expected.Error)}).\n{sql}", e);
+        }
 
         if (expected.Error is not null)
         {
