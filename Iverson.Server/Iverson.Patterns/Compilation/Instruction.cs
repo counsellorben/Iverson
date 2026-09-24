@@ -1,3 +1,4 @@
+// Port of Trino 483 io.trino.operator.window.matcher.Instruction (Apache-2.0); see THIRD-PARTY-NOTICES.md.
 namespace Iverson.Patterns.Compilation;
 
 internal enum InstructionKind { MatchLabel, Split, Jump, ExclusionStart, ExclusionEnd, MatchStart, MatchEnd, Done }

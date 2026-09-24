@@ -110,6 +110,36 @@ public sealed class PatternQueryTests
         ShouldMatch(actual, overlapping ? NextRow : PastLast);
     }
 
+    [Fact]
+    public void Unmatched_rows_inside_an_earlier_match_are_not_output()
+    {
+        // Trino 483 (final-fix-report.md, query 7a). SKIP TO NEXT ROW retries at every row; the attempts at ids 3
+        // and 7 fail but lie inside the matches that started at ids 2 and 6, so they are not output as unmatched
+        // rows. The attempts at ids 4 and 8 fail past every match so far and are.
+        ShouldMatch(Run(Req("A B+ | C", [BD, ("C", "FALSE")], MS, RowsPerMatch.AllRowsWithUnmatched,
+                AfterMatchSkipKind.ToNextRow), D1),
+            Matched(1, 90, 1, "A"), Matched(2, 80, 1, "B"), Matched(3, 70, 1, "B"),
+            Matched(2, 80, 2, "A"), Matched(3, 70, 2, "B"),
+            AllRow(4, 80, 0, "", null, null, null),
+            Matched(5, 90, 3, "A"), Matched(6, 50, 3, "B"), Matched(7, 40, 3, "B"),
+            Matched(6, 50, 4, "A"), Matched(7, 40, 4, "B"),
+            AllRow(8, 60, 0, "", null, null, null));
+    }
+
+    [Fact]
+    public void Skip_to_first_of_a_subset_listed_out_of_order()
+    {
+        // Trino 483 (final-fix-report.md, query 7b). U = (C, A) holds labels 3 and 1; FIRST(U) is each match's A,
+        // the row after X, so every match restarts one row later: five overlapping matches.
+        ShouldMatch(Run(Req("X A B C", [("X", "TRUE")], MS, skip: AfterMatchSkipKind.ToFirst, skipVariable: "U",
+                subsets: [new SubsetDefinition("U", ["C", "A"])]), D1),
+            Matched(1, 90, 1, "X"), Matched(2, 80, 1, "A"), Matched(3, 70, 1, "B"), Matched(4, 80, 1, "C"),
+            Matched(2, 80, 2, "X"), Matched(3, 70, 2, "A"), Matched(4, 80, 2, "B"), Matched(5, 90, 2, "C"),
+            Matched(3, 70, 3, "X"), Matched(4, 80, 3, "A"), Matched(5, 90, 3, "B"), Matched(6, 50, 3, "C"),
+            Matched(4, 80, 4, "X"), Matched(5, 90, 4, "A"), Matched(6, 50, 4, "B"), Matched(7, 40, 4, "C"),
+            Matched(5, 90, 5, "X"), Matched(6, 50, 5, "A"), Matched(7, 40, 5, "B"), Matched(8, 60, 5, "C"));
+    }
+
     [Theory]
     [InlineData(AfterMatchSkipKind.ToFirst, "A", "*cannot skip to first row of match*")]
     [InlineData(AfterMatchSkipKind.ToLast, "C", "*not present in match*")]

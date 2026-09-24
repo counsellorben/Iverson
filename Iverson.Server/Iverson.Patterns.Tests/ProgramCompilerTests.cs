@@ -55,6 +55,7 @@ public sealed class ProgramCompilerTests
     [InlineData("^ A $", "start | label A | end | done")]
     [InlineData("(() | A)", "split 2 1 | label A | done")]
     [InlineData("(A | ())", "split 1 2 | label A | done")]
+    [InlineData("(A | () | ())", "split 1 2 | label A | done")]   // the flattener keeps only the first empty branch
     [InlineData("A () B", "label A | label B | done")]
     [InlineData("PERMUTE(A, ())", "label A | done")]
     [InlineData("(A | B)* X", "split 1 6 | split 2 4 | label A | jump 5 | label B | split 1 6 | label X | done")]
