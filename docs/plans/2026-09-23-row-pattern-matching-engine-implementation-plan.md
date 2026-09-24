@@ -97,7 +97,13 @@ Newly introduced by this plan and verified at plan-write time (2026-09-23; probe
 | 26 | Code validity | Trino returns a partition's rows in a stable order but the order of partitions varies between runs; unmatched rows carry NULL match number and classifier | same query run 4×: partition `x` first once, `y` first 3×; per-partition order identical |
 | 27 | Code validity | The oracle's ported-case file is reproducible: `extract_sites.py` (Appendix B) evaluates all 141 `assertions.query` sites of `TestRowPatternMatching.java@483`; `structure_sites.py` structures 130 and excludes 11 (6 subquery, 1 quoted identifier, 1 `CAST`, 1 multiple `MATCH_RECOGNIZE`, 1 `EXISTS`, 1 `lower`); re-rendering each structured case and running it on Trino reproduces the original result multiset in 130/130 (7 are expected errors: 2 runtime skip failures, 5 unknown-qualifier compile failures); no case has an `ORDER BY` tie; `cases.json` md5 `3a778e9c636f004f720acc243d7dbefa` | run output (Python 3.14.4) |
 | 28 | Consumer impact | Adding the two projects to `Iverson.slnx` adds them to CI's build and unit-test run; the oracle tests are excluded there by the `Integration` trait, and CodeQL's autobuild over `Iverson.slnx` compiles one more reference-free library | CI command (row 12); the projects reference nothing |
-| 29 | Code validity | Trino 483 grammar and prefix rules the Task 2 and Task 4 tests assert: `A**` and `A |` rejected; `A{,}` and `PERMUTE(A)` accepted; an upper bound of 0 rejected ("Pattern quantifier upper bound must be greater than or equal to 1"); `A{3,2}` rejected; `FIRST(LAST(..))`, `PREV(PREV(..))`, `PREV(NEXT(..))` rejected ("Cannot nest …"); `PREV(FIRST(A.x) + 1)` rejected ("Immediate nesting is required …"); `RUNNING`/`FINAL` accepted only on `FIRST`, `LAST` and aggregates (`PREV`, `NEXT`, `CLASSIFIER`, `MATCH_NUMBER` rejected; `FINAL A.x` a syntax error; `PREV(FINAL LAST(x))` accepted); a navigation offset must be a non-negative integer literal; duplicate `define` names rejected in any case; a duplicate subset element accepted; nested aggregates rejected; `COUNT(CLASSIFIER())`, `SUM(MATCH_NUMBER())`, `CLASSIFIER(U)` for a subset accepted; `FINAL` in `DEFINE` rejected | 34-case probe run (V1–V24) against Trino 483, each result recorded |
+| 29 | Code validity | Trino 483 grammar and prefix rules the Task 2 and Task 4 tests assert: `A**` and `A |` rejected; `A{,}` accepted; `PERMUTE(A)` accepted as the variable `PERMUTE` followed by `(A)` (a permutation needs a top-level comma, as `PERMUTE()` and `PERMUTE((A))` also show); an upper bound of 0 rejected ("Pattern quantifier upper bound must be greater than or equal to 1"); `A{3,2}` rejected; `FIRST(LAST(..))`, `PREV(PREV(..))`, `PREV(NEXT(..))` rejected ("Cannot nest …"); `PREV(FIRST(A.x) + 1)` rejected ("Immediate nesting is required …"); `RUNNING`/`FINAL` accepted only on `FIRST`, `LAST` and aggregates (`PREV`, `NEXT`, `CLASSIFIER`, `MATCH_NUMBER` rejected; `FINAL A.x` a syntax error; `PREV(FINAL LAST(x))` accepted); a navigation offset must be a non-negative integer literal; duplicate `define` names rejected in any case; a duplicate subset element accepted; nested aggregates rejected; `COUNT(CLASSIFIER())`, `SUM(MATCH_NUMBER())`, `CLASSIFIER(U)` for a subset accepted; `FINAL` in `DEFINE` rejected; `running`/`final` are ordinary columns or qualifiers unless directly followed by a call (`final > 0`, `A.final > 0`, `running + 1` accepted) | 34-case probe run (V1–V24) against Trino 483, each result recorded; CIR-1 probes P26, P27, P29, P31, P53, re-confirmed on Trino 483 when these fixes were applied |
+| 30 | Code validity | The Task 8 fixture starts `trinodb/trino:483` under Testcontainers 4.15.0 on this host's podman socket with the unqualified tag and a parameterless `ContainerBuilder()` | CIR-1 probe P7 |
+| 31 | Code validity | The FluentAssertions 8.11 idioms the tests rely on behave as needed: `.Should().Be(double.NaN)` on `object` and `double`, and `BeEquivalentTo(…, o => o.WithStrictOrdering().ComparingByMembers<MatchOutputRow>())` | CIR-1 probes P14, P2 (every test file compiles) |
+| 32 | Code validity | The 130 ported cases stay inside Task 2's pattern grammar and Task 4's expression grammar (function names, literal classes, all patterns) | CIR-1 probes P17, P32 |
+| 33 | Code validity | Trino 483's empty-match measures: `COUNT(*)` 0, `SUM`/`LAST`/`CLASSIFIER()` NULL, `MATCH_NUMBER()` the match number — which the generator's measures meet | CIR-1 probe P15 |
+| 34 | Consumer impact | Task 1's `.slnx` edits leave the server image build intact before Plan 2: the plan's only `ProjectReference` is the test project's, no repository `.csproj` names `Iverson.Patterns`, and no Dockerfile restores a solution file | CIR-1 probes P45, P22 |
+| 35 | Code validity | `(A?){2499} B` compiles to exactly 5,000 instructions and drives `advanceAndSchedule` to recursion depth 2,500 (`A{0,2499} B` and `A{4999}` reach at most 2); a recursive scheduler overflows a 256 KB stack on it while the explicit-stack code completes | CIR-1 probes P9, P10, P47; Appendix A re-run when this fix was applied |
 
 ## Tasks
 
@@ -443,7 +449,8 @@ public sealed class PatternParserTests
     [InlineData("A{ 1 , 3 }?", "A{1,3}?")]
     [InlineData("A{,}", "A{0,}")]
     [InlineData("PERMUTE(a, b | c)", "PERMUTE(A, (B | C))")]
-    [InlineData("permute(A)", "PERMUTE(A)")]
+    [InlineData("permute(A)", "(PERMUTE A)")]
+    [InlineData("PERMUTE()", "(PERMUTE ())")]
     [InlineData("A {- B -} C", "(A {- B -} C)")]
     [InlineData("{- A {- B -} -}", "{- (A {- B -}) -}")]
     [InlineData("(() | A)", "(() | A)")]
@@ -494,7 +501,6 @@ public sealed class PatternParserTests
     [InlineData("(A")]
     [InlineData("A)")]
     [InlineData("{- A")]
-    [InlineData("PERMUTE()")]
     [InlineData("PERMUTE(A,)")]
     [InlineData("A ; B")]
     [InlineData("A.B")]
@@ -552,9 +558,9 @@ Expected: FAIL — `PatternParser` does not exist.
   quantified    := primary quantifier?
   quantifier    := ('*' | '+' | '?' | '{' n? (',' m?)? '}') '?'?
   primary       := IDENT | '(' ')' | '(' alternation ')' | '{-' alternation '-}' | '^' | '$'
-                 | PERMUTE '(' alternation (',' alternation)* ')'
+                 | PERMUTE '(' alternation (',' alternation)+ ')'
   ```
-  At most one quantifier per primary (`A**` is an error). `{n}` = (n, n); `{n,}` = (n, ∞); `{,m}` = (0, m); `{,}` = (0, ∞); `min > max` is an error, and so is an upper bound of 0 (`{0}`, `{,0}`, `{0,0}`), as in Trino 483 ("Pattern quantifier upper bound must be greater than or equal to 1"). `PERMUTE` (any case) is a keyword only when the next token is `(`; otherwise it is an identifier. A parenthesized single alternation returns its inner node; `()` is `EmptyNode`. A one-element sequence is returned unwrapped (no one-element `ConcatenationNode`/`AlternationNode`). The whole input must be consumed.
+  At most one quantifier per primary (`A**` is an error). `{n}` = (n, n); `{n,}` = (n, ∞); `{,m}` = (0, m); `{,}` = (0, ∞); `min > max` is an error, and so is an upper bound of 0 (`{0}`, `{,0}`, `{0,0}`), as in Trino 483 ("Pattern quantifier upper bound must be greater than or equal to 1"). `PERMUTE` (any case) is the permutation keyword only when the next token is `(` and those parentheses hold a top-level comma, as in Trino 483; otherwise it is an identifier, so `PERMUTE()` is the variable `PERMUTE` then `()`, and `PERMUTE(x)` the variable then `(x)`. A parenthesized single alternation returns its inner node; `()` is `EmptyNode`. A one-element sequence is returned unwrapped (no one-element `ConcatenationNode`/`AlternationNode`). The whole input must be consumed.
 - **Variables:** every `IDENT` primary becomes `LabelNode(name.ToUpperInvariant())`; `Variables` lists them deduplicated in first-appearance order.
 - **Subsets:** each name is upper-cased; it must not equal a primary variable, must not repeat another subset name, must have at least one member, and every member (upper-cased) must be a primary variable. Violations throw `PatternValidationException` naming the offending (upper-case) name.
 - **`HasExclusion`** is true when any `ExclusionNode` occurs.
@@ -1090,6 +1096,14 @@ public sealed class ExpressionParserTests
     }
 
     [Fact]
+    public void Running_and_final_are_columns_unless_they_prefix_a_call()
+    {
+        Define("final > 0").Should().BeOfType<BinaryExpr>().Which.Left.Should().Be(new ColumnExpr("final", Nav([])));
+        Define("A.final > 0").Should().BeOfType<BinaryExpr>().Which.Left.Should().Be(new ColumnExpr("final", Nav([0])));
+        Measure("running + 1").Should().BeOfType<BinaryExpr>().Which.Left.Should().Be(new ColumnExpr("running", Nav([])));
+    }
+
+    [Fact]
     public void Accepts_running_and_match_number_inside_define()
     {
         Define("RUNNING LAST(A.x) > 0 AND MATCH_NUMBER() = 1").Should().BeOfType<BinaryExpr>();
@@ -1128,7 +1142,7 @@ Expected: FAIL — `ExpressionParser` does not exist.
 - **Identifiers:** `v.col` where `v` (case-insensitive) is a key of `labels` or `subsets` → a read with label set `[labels[V]]` or `subsets[V]`; any other `x.col` qualifier → `PatternValidationException("Column 'x.col' cannot be resolved")`. A bare identifier not followed by `(` is a column over the universal set. Every column name read is added to `ReferencedColumns` as written.
 - **Navigations** `PREV`/`NEXT(expr [, n])` and `FIRST`/`LAST(expr [, n])`: `n` must be an integer literal: a `-` followed by an integer literal → "requires a non-negative number as the second argument"; any other expression → "requires a number as the second argument". The argument is lowered with a pending navigation that each `ColumnExpr`/`ClassifierExpr`/`SimilarityExpr` read inside it receives. Rules (Trino's messages): all reads inside must share one label set ("All labels and classifiers inside the call to '…' must match"); it must contain a column read or `CLASSIFIER` ("… must contain at least one column reference or CLASSIFIER()"); `FIRST`/`LAST` may not contain any navigation ("Cannot nest … inside …"); `PREV`/`NEXT` may contain another navigation only as its whole argument and only `FIRST`/`LAST` ("Immediate nesting is required …" / "Cannot nest …"); no aggregate inside a navigation ("Cannot nest … aggregate function inside …").
 - **Aggregates** `COUNT(*)`, `COUNT(v.*)`, `COUNT|SUM|AVG|MIN|MAX(expr)`: reads inside get navigation `null`; their qualifiers must agree and become `Labels` (none → universal); a `CLASSIFIER()` inside sets `ClassifierInvolved`; no navigation or aggregate inside ("Cannot nest …").
-- **`RUNNING`/`FINAL`** may prefix only `FIRST`, `LAST` or an aggregate (default `RUNNING`); on anything else → "… semantics is not supported with …" (`FINAL A.x` is also rejected). `FINAL` anywhere in a `define` → "FINAL semantics is not supported in DEFINE clause".
+- **`RUNNING`/`FINAL`** is a semantics prefix only when the next two tokens are an identifier and `(` (a call), as in Trino 483; otherwise `running`/`final` is an ordinary identifier (a column, or a qualifier before `.`). As a prefix it may apply only to `FIRST`, `LAST` or an aggregate (default `RUNNING`); on any other call → "… semantics is not supported with …". `FINAL A.x` stays rejected (the identifier `FINAL` followed by a trailing token). A `FINAL` prefix in a `define` → "FINAL semantics is not supported in DEFINE clause".
 - **`CLASSIFIER()`** / **`CLASSIFIER(v)`** (`v` a variable or subset, else "… is not a primary pattern variable or subset name"); **`MATCH_NUMBER()`**; **`COALESCE`** (≥ 1 argument), **`NULLIF`** (2), **`ROUND`** (1 or 2, the second an integer literal), **`ABS`** (1); **`TIMESTAMPDIFF(unit, a, b)`** with unit `SECOND|MINUTE|HOUR|DAY` (else an error naming `TIMESTAMPDIFF`); **`SIMILARITY(colref, 'text')`** — first argument a column read (qualified or not), second a non-empty string literal, else an error naming `SIMILARITY`; lowered to `SimilarityExpr(similarityTerms.GetOrAdd(column, text), navigation)`, and the column goes into `ReferencedColumns`. Any other function name → an error naming it.
 - **`ParseDefine`** rejects a root that can never be boolean — arithmetic, unary minus, a numeric or string literal, `COUNT`/`SUM`/`AVG`, `MATCH_NUMBER()`, `CLASSIFIER`, `SIMILARITY`, `TIMESTAMPDIFF`, `ROUND`, `ABS` — with "Expression defining a label must be boolean"; any other root is checked at run time (Task 5).
 - Trailing tokens after a complete expression are an error.
@@ -1623,8 +1637,9 @@ public sealed class MatcherTests
     }
 
     [Theory]
-    [InlineData("A{0,2499} B")]   // a 2,499-deep chain of Splits: the deepest traversal at the cap
+    [InlineData("A{0,2499} B")]   // 5,000 instructions: the reachable-label precomputation recurses 5,000 deep
     [InlineData("A{4999}")]
+    [InlineData("(A?){2499} B")]  // 5,000 instructions; its Splits chain through their second branches: 2,500-deep scheduling
     public void An_at_cap_program_runs_without_a_stack_overflow_on_small_stacks(string pattern)
     {
         void RunOnce()
@@ -2246,7 +2261,7 @@ In order, each failure a `PatternValidationException`:
 
 - [ ] **Step 5: Implement `Run` (the partition loop)**
 
-`Matching/PartitionLabelEvaluator.cs` implements `ILabelEvaluator` over an `EvaluationContext` (`InputLength = rows.Count − patternStart`; `MatchingAtPartitionStart = patternStart == 0`; `EvaluateLabel` sets `MatchedLabels`, `CurrentRow = patternStart + matchedLabels.Length − 1`, and returns `define is null || ExpressionEvaluator.EvaluateDefine(define, ctx)`, calling `budget.Step()` is the matcher's job). `Matching/PartitionMatcher.cs` ports `processNextRow` as an iterator: `matchNumber = 1`, `lastSkipped = lastMatched = -1`; for each `current` in `0..rows.Count−1` not `<= lastSkipped`, run the matcher from `patternStart = current` with `ctx.MatchNumber = matchNumber`, then:
+`Matching/PartitionLabelEvaluator.cs` implements `ILabelEvaluator` over an `EvaluationContext` (`InputLength = rows.Count − patternStart`; `MatchingAtPartitionStart = patternStart == 0`; `EvaluateLabel` sets `PatternStart = patternStart`, `EmptyMatch = false`, `MatchedLabels` and `CurrentRow = patternStart + matchedLabels.Length − 1`, and returns `define is null || ExpressionEvaluator.EvaluateDefine(define, ctx)`, calling `budget.Step()` is the matcher's job). `Matching/PartitionMatcher.cs` ports `processNextRow` as an iterator: `matchNumber = 1`, `lastSkipped = lastMatched = -1`; for each `current` in `0..rows.Count−1` not `<= lastSkipped`, run the matcher from `patternStart = current` with `ctx.MatchNumber = matchNumber`, then:
 - **no match:** for `AllRowsWithUnmatched`, if `current > lastMatched` yield the unmatched row (input columns, every measure `null`, `MatchNumber` 0, classifier `""`); `lastSkipped = current`.
 - **empty match** (`Labels.Length == 0`): for `OneRow` and `AllRowsShowEmpty`/`AllRowsWithUnmatched` yield one row for `current` with measures evaluated under `EmptyMatch = true` (`MatchNumber = matchNumber`, classifier `""`); `lastSkipped = current`; `matchNumber++`.
 - **match:** `OneRow` → one row of the partition columns (`parent_key` for `Chunks`; each `PartitionBy` entry emitted under the row's own key spelling, found case-insensitively among the row's keys) plus the measures computed at `CurrentRow = patternStart + Labels.Length − 1`, classifier `""`. `AllRows*` → one row per matched row outside the exclusion pairs, each with every input column (the row's keys, in enumeration order) plus the measures computed at that row, classifier = that row's upper-case label. Measures use `PatternStart = current`, `MatchedLabels = result.Labels`, `EmptyMatch = false`. Then `lastMatched = max(lastMatched, patternStart + Labels.Length − 1)`; skip: `PastLastRow` → `lastSkipped = patternStart + Labels.Length − 1`; `ToNextRow` → `lastSkipped = current`; `ToFirst`/`ToLast` → `position = skipNavigation.ResolvePosition(patternStart + Labels.Length − 1, Labels, 0, rows.Count, patternStart)`, `-1` → `PatternEvaluationException("AFTER MATCH SKIP failed: pattern variable is not present in match")`, `== patternStart` → `PatternEvaluationException("AFTER MATCH SKIP failed: cannot skip to first row of match")`, else `lastSkipped = position − 1`; `matchNumber++`.
@@ -2894,6 +2909,15 @@ class Parser:
     def peek(s): return s.t[s.i] if s.i < len(s.t) else None
     def eat(s, x=None):
         v = s.peek(); assert x is None or v == x, (x, v); s.i += 1; return v
+    def top_level_comma(s, open_index):
+        # Trino 483: PERMUTE( opens a permutation only when its parentheses hold a top-level comma.
+        depth = 0
+        for tok in s.t[open_index:]:
+            if tok in ('(', '{-'): depth += 1
+            elif tok in (')', '-}'): depth -= 1
+            if depth == 0: return False
+            if tok == ',' and depth == 1: return True
+        return False
     def alt(s):
         ps = [s.concat()]
         while s.peek() == '|': s.eat(); ps.append(s.concat())
@@ -2934,7 +2958,7 @@ class Parser:
             s.eat(); p = s.alt(); s.eat('-}'); return Exclusion(p)
         if v == '^': s.eat(); return Anchor(True)
         if v == '$': s.eat(); return Anchor(False)
-        if v.upper() == 'PERMUTE' and s.t[s.i + 1:s.i + 2] == ['(']:
+        if v.upper() == 'PERMUTE' and s.t[s.i + 1:s.i + 2] == ['('] and s.top_level_comma(s.i + 1):
             s.eat(); s.eat('('); ps = [s.alt()]
             while s.peek() == ',': s.eat(); ps.append(s.alt())
             s.eat(')'); return Perm(ps)
