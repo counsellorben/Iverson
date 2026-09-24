@@ -27,7 +27,7 @@ The seventh path, `/v1/traces`, is dead weight: the traces-relay-admin-listener 
    - Add a second annotation inside the existing `{{- if eq .Values.ingress.className "nginx" }}` branch (alongside the existing `configuration-snippet`), at the same level: `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"`.
    - Delete the `/v1/traces` path block (currently `:95-101`) entirely.
 2. **`values-local.yaml`** (`api.ingress`, `:116`) **and `values-laptop.yaml`** (`api.ingress`, `:97`): `tlsSecretName: ""` → `tlsSecretName: "iverson-api-tls"` — the same name `values-azure.yaml`/`values-gcp.yaml` already use for this Ingress.
-3. **`values-local.yaml`** header comment (`:4-8`), which currently asserts this Ingress "renders without a `tls:` block" and is reached over plain HTTP: rewritten to say the api Ingress now has a self-signed dev cert for gRPC clients specifically, while everything else on this profile (`global.externalScheme: "http"`, admin-ui, admin-api, authentik) stays plain HTTP as before — `global.externalScheme` is untouched.
+3. **`values-local.yaml`** header comment (`:4-8`), which currently asserts this Ingress "renders without a `tls:` block" and is reached over plain HTTP: rewritten to say the api Ingress now has a self-signed dev cert for gRPC clients specifically, while everything else on this profile stays plain HTTP as before — `admin-api`/`authentik` because they're on different hostnames with no certificate, `admin-ui` because of the new `ssl-redirect: "false"` annotation on its own Ingress (item 6) despite sharing `iverson.local`'s certificate — and `global.externalScheme` is untouched.
 4. **`values-azure.yaml` / `values-gcp.yaml`:** one-line comment next to their existing `tlsSecretName: "iverson-api-tls"` noting the gRPC paths still 400 pending an AGIC/GCE `backend-protocol` equivalent, pointing at this design.
 5. **`deploy/kind/setup.sh`:** immediately after the `iverson` namespace is created (`:55`), idempotently generate the self-signed cert and create the `iverson-api-tls` Secret in that namespace, before `helm upgrade --install iverson` ever runs:
 
@@ -44,17 +44,26 @@ The seventh path, `/v1/traces`, is dead weight: the traces-relay-admin-listener 
    ```
 
    `deploy/kind/setup.ps1` is left untouched — it's already separately drifted (no version pins, no snippet-annotation setting) and outside what either investigation covered.
+6. **`charts/admin-ui/templates/ingress.yaml`:** inside its existing `{{- if eq .Values.ingress.className "nginx" }}` branch (the same one guarding its security-header `configuration-snippet`), add one more conditional annotation:
+
+   ```yaml
+   {{- if ne .Values.global.externalScheme "https" }}
+   nginx.ingress.kubernetes.io/ssl-redirect: "false"
+   {{- end }}
+   ```
+
+   ingress-nginx decides the HTTP→HTTPS redirect per *hostname*, not per Ingress. The admin-ui Ingress shares `iverson.local` with the api Ingress and has no `tls:` block of its own; once the api Ingress carries a certificate for that host, ingress-nginx would otherwise 308-redirect every plain-HTTP request to `iverson.local/admin…` to `https`, which breaks the console (Authentik's registered callback URL is `http://…/admin/callback`, strict-matched; the API's CORS allow-list and `API_BASE_URL` are both `http://`). This annotation renders only where the profile's scheme isn't already https, so it's a no-op on `azure`/`gcp`/`aws` and on `laptop` (which doesn't render admin-ui at all).
 
 ## Out of scope
 
-- No change to `global.externalScheme` (stays `"http"` on `local`/`laptop`) or to any other Ingress (admin-ui, admin-api, authentik) — they're plain HTTP/JSON, and only a real gRPC client needs genuine HTTP/2 from the first byte.
+- No change to `global.externalScheme` (stays `"http"` on `local`/`laptop`), or to `admin-api`'s or `authentik`'s Ingress (different hostnames, no certificate, so ingress-nginx's host-based TLS redirect never reaches them) — they're plain HTTP/JSON. `admin-ui`'s Ingress gets one new annotation (Design item 6) purely to stay off the redirect the api Ingress's new certificate would otherwise trigger on their shared hostname; nothing else about its behavior changes.
 - No AGIC/GCE-specific fix for `azure`/`gcp` — deferred, documented, no live consumer.
 - No change to which of the six gRPC services enable grpc-web — orthogonal to this fix.
 
 ## Testing and verification
 
-1. **Render check** (all five profiles, kubeconform): `local`/`laptop`'s rendered api Ingress carries `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` and a `tls:` block referencing `iverson-api-tls`; no profile's rendered Ingress contains a `/v1/traces` path. `azure`/`gcp`'s rendered Ingress is unchanged except the new comment (comments don't render).
-2. **Live gRPC check on kind:** deploy the `local` profile, confirm the api pod reaches its listening state, then run a real external gRPC call (`grpcurl` or equivalent) against `https://iverson.local` with certificate verification disabled and confirm a genuine `grpc-status`/response — not a 400.
+1. **Render check** (all five profiles, kubeconform): `local`/`laptop`'s rendered api Ingress carries `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` and a `tls:` block referencing `iverson-api-tls`, and `local`'s rendered `iverson-admin-ui` Ingress carries `ssl-redirect: "false"` (absent on every other profile); no profile's rendered `iverson-api` Ingress contains a `/v1/traces` path (`iverson-admin-api`'s render is untouched and keeps it wherever it already renders). `azure`/`gcp`'s rendered `iverson-api` Ingress differs from HEAD only by the removed `/v1/traces` path plus the new comment (comments don't render).
+2. **Live gRPC check on kind:** deploy the `local` profile, confirm the api pod reaches its listening state, then run a real external gRPC call (`grpcurl` or equivalent) against `https://iverson.local` with certificate verification disabled and confirm a genuine `grpc-status`/response — not a 400. Also confirm `http://iverson.local/admin` still returns the console (`200`), not a redirect to `https` (`308`), after the api Ingress gains its certificate.
 
 ## Known issues / accepted as out of scope
 
@@ -78,3 +87,4 @@ The seventh path, `/v1/traces`, is dead weight: the traces-relay-admin-listener 
 | 10 | `openssl` is a new dependency for `deploy/kind/setup.sh` (not already assumed) | `command grep -rn openssl deploy/kind/*.sh deploy/scripts/*.sh docs/runbooks/*.md` — no existing hits; confirmed present in this dev environment, but this is genuinely a new prerequisite the script will require |
 | 11 | A self-signed cert needs a SAN, not just a CN, to satisfy modern TLS clients | Confirmed empirically during probing: a CN-only cert triggered ingress-nginx's "does not contain a Common Name or Subject Alternative Name" warning and fell back to its own default certificate; adding `-addext "subjectAltName=DNS:..."` resolved it |
 | 12 | Kubernetes accepts an Ingress whose `tls.secretName` doesn't yet exist at apply time (ordering safety net) | Standard, well-established Kubernetes API admission behavior for core `Ingress` objects — no admission webhook validates Secret existence; only the TLS handshake for that host fails until the Secret appears. Design already sequences secret creation before `helm upgrade --install` regardless |
+| 13 | ingress-nginx's HTTP→HTTPS redirect is decided per hostname, not per Ingress — so putting a certificate on the api Ingress alone would redirect admin-ui's plain-HTTP traffic too unless `ssl-redirect: "false"` is added there | Probed live and by render: applying `nginx.ingress.kubernetes.io/ssl-redirect: "false"` to `local`'s admin-ui Ingress restored `/admin` from a `308` redirect back to `200` while the api Ingress's own paths stayed on `https`; render-confirmed the annotation appears only on `local`'s admin-ui Ingress (absent on `laptop`, which has no admin-ui, and on `aws`/`azure`/`gcp`, whose admin-ui Ingress isn't nginx-class) |
