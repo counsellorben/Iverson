@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using System.Net;
 using FluentAssertions;
 using Iverson.Api.Tests.Helpers;
@@ -6,11 +8,11 @@ using Xunit;
 namespace Iverson.Api.Tests;
 
 // Task 4's CORS registration (Program.cs, "CORS (admin console)") boots the real Program.cs
-// pipeline via CorsConfiguredTestWebApplicationFactory / CorsDisabledTestWebApplicationFactory
-// (both thin AuthTestWebApplicationFactory derivations — see Helpers/
-// AdminConsoleCorsTestWebApplicationFactories.cs) so app.UseCors, app.UseAuthentication, and
-// the real FallbackPolicy from Program.cs's AddAuthorization block all actually run, in the
-// real order Program.cs wires them in.
+// pipeline via CorsConfiguredTestWebApplicationFactory / CorsDisabledTestWebApplicationFactory /
+// CorsConfiguredAdminListenerTestWebApplicationFactory (all thin AuthTestWebApplicationFactory
+// derivations — see Helpers/AdminConsoleCorsTestWebApplicationFactories.cs) so app.UseCors,
+// app.UseAuthentication, and the real FallbackPolicy from Program.cs's AddAuthorization block
+// all actually run, in the real order Program.cs wires them in.
 //
 // A standalone throwaway host (copying just the AddCors/UseCors lines, with no real
 // FallbackPolicy) verified the CORS *policy semantics* during this task's first review round,
@@ -126,6 +128,22 @@ public class AdminConsoleCorsPipelineTests :
         response.StatusCode.Should().Be(HttpStatusCode.NoContent);
         response.Headers.TryGetValues("Access-Control-Allow-Origin", out var allowOrigin).Should().BeTrue();
         allowOrigin!.Should().ContainSingle().Which.Should().Be(CorsConfiguredTestWebApplicationFactory.ConfiguredOrigin);
+
+        // Content-Type: application/json is not CORS-safelisted, so a real browser also
+        // requires the preflight response to grant it (and Authorization) via
+        // Access-Control-Allow-Headers, and to grant POST via Access-Control-Allow-Methods --
+        // otherwise the browser blocks the actual request even though this OPTIONS succeeded.
+        // ASP.NET Core CORS answers each as a single comma-separated header value (observed:
+        // "Authorization,Content-Type" and "POST"), so both are split on commas and trimmed
+        // before the case-insensitive membership check.
+        response.Headers.TryGetValues("Access-Control-Allow-Headers", out var allowHeadersValues).Should().BeTrue();
+        var allowedHeaders = allowHeadersValues!.SelectMany(v => v.Split(',')).Select(h => h.Trim());
+        allowedHeaders.Should().Contain(h => h.Equals("authorization", StringComparison.OrdinalIgnoreCase));
+        allowedHeaders.Should().Contain(h => h.Equals("content-type", StringComparison.OrdinalIgnoreCase));
+
+        response.Headers.TryGetValues("Access-Control-Allow-Methods", out var allowMethodsValues).Should().BeTrue();
+        var allowedMethods = allowMethodsValues!.SelectMany(v => v.Split(',')).Select(m => m.Trim());
+        allowedMethods.Should().Contain(m => m.Equals("POST", StringComparison.OrdinalIgnoreCase));
     }
 
     // 4. Fail-closed path, exercised through the real pipeline: with AdminConsole:Origin

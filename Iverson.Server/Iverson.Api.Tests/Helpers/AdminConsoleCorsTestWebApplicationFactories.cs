@@ -4,10 +4,11 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Iverson.Api.Tests.Helpers;
 
-// Two sibling factories, one per AdminConsole:Origin state, backing
-// AdminConsoleCorsPipelineTests.cs. Both derive from AuthTestWebApplicationFactory to reuse
-// its NoOp infra swaps (see that file) rather than duplicating them -- the only thing either
-// one adds is the AdminConsole__Origin env var.
+// Three sibling factories backing AdminConsoleCorsPipelineTests.cs: one per AdminConsole:Origin
+// state, plus an admin-listener variant that shares the configured state. All derive from
+// AuthTestWebApplicationFactory to reuse its NoOp infra swaps (see that file) rather than
+// duplicating them -- the only thing any of them adds is the AdminConsole__Origin env var (the
+// admin-listener variant also stamps the request's LocalPort, see below).
 //
 // Why an env var set in an INSTANCE constructor, immediately followed by CreateClient(),
 // rather than a static constructor (the pattern AuthTestWebApplicationFactory itself uses for
