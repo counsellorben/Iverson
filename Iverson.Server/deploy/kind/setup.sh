@@ -85,6 +85,18 @@ echo "Installing ingress-nginx..."
 # index.yaml chart-version-to-appVersion mapping as of this fix), well past the fixed
 # versions. Re-verified `helm template` output with this repo's exact --set flags
 # renders cleanly at this chart version.
+#
+# `allowSnippetAnnotations=true` alone is no longer sufficient on this chart version:
+# confirmed live 2026-09-24 that installing with only that flag still gets the api and
+# admin-ui Ingresses rejected at apply time with "annotation group ConfigurationSnippet
+# contains risky annotation" from the admission webhook. Controller 1.12 added a second,
+# independent gate — annotations are now classified by risk, and the ConfigMap's default
+# `annotations-risk-level` dropped from Critical to High, which sits below
+# configuration-snippet's Critical classification. `allow-snippet-annotations` only
+# controls whether the controller RENDERS the annotation into nginx.conf; this is what
+# controls whether the admission webhook lets the Ingress through in the first place.
+# Raising it back to Critical carries the same trade-off as the setting above (this is a
+# single-tenant cluster; only this repo's own chart templates create Ingresses here).
 helm upgrade --install ingress-nginx ingress-nginx \
   --repo https://kubernetes.github.io/ingress-nginx \
   --version 4.12.8 \
@@ -92,6 +104,7 @@ helm upgrade --install ingress-nginx ingress-nginx \
   --set controller.hostPort.enabled=true \
   --set controller.service.type=ClusterIP \
   --set controller.allowSnippetAnnotations=true \
+  --set-string controller.config.annotations-risk-level=Critical \
   --wait
 
 echo "Installing CloudNativePG operator..."
