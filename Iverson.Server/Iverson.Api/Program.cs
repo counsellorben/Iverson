@@ -722,7 +722,7 @@ if (workloadRole == "api")
     app.MapGrpcService<TenantAdminGrpcService>().RequireAuthorization("TenantAdmin").EnableGrpcWeb().WithMetadata(new RequireListenerPort(8080));
 
     // Relays the admin-ui browser's OTel Web SDK spans to Jaeger's OTLP/HTTP endpoint.
-    // Same-origin so the browser never needs Jaeger's own network address, and
+    // Served by the API so the browser never needs Jaeger's own network address, and
     // authenticated so only signed-in admin-ui sessions can write traces through it.
     // Body is relayed byte-for-byte (StreamContent straight from the request body), so this
     // must not attempt to parse or re-serialize it. The endpoint's only consumer is the
@@ -736,6 +736,15 @@ if (workloadRole == "api")
     // IHttpMaxRequestBodySizeFeature (so a request that lies about its length is still cut
     // off by the transport once actually read) — this relay must not be usable to push an
     // unbounded payload at Jaeger.
+    //
+    // Deliberately NOT pinned to a listener, and accepting CORS preflights. The admin console
+    // calls this cross-origin on its admin-api host, which the admin-api Ingress sends to the
+    // Http1 listener (8081); 8080 is h2c-only, which no browser can speak. A MapPost endpoint
+    // does not accept preflights, so without the HttpMethodMetadata below the browser's
+    // OPTIONS /v1/traces would select gRPC's unimplemented-service catch-all, which carries
+    // the gRPC services' RequireListenerPort(8080), and the listener gate would answer it 404
+    // on 8081. Authentication, the "traces" per-user policy and both global limiters still
+    // apply: the limiters exempt only endpoints pinned to 8081.
     const long MaxTraceBodyBytes = 1 * 1024 * 1024; // 1 MiB: a browser span batch is KBs; ample headroom, still bounded.
 
     app.MapPost("/v1/traces", async (HttpContext ctx, IHttpClientFactory httpClientFactory) =>
@@ -766,7 +775,8 @@ if (workloadRole == "api")
         using var response = await client.PostAsync("/v1/traces", content);
         ctx.Response.StatusCode = (int)response.StatusCode;
         await response.Content.CopyToAsync(ctx.Response.Body);
-    }).RequireAuthorization().RequireRateLimiting("traces").WithMetadata(new RequireListenerPort(8080));
+    }).RequireAuthorization().RequireRateLimiting("traces")
+        .WithMetadata(new HttpMethodMetadata(new[] { "POST" }, acceptCorsPreflight: true));
 }
 
 app.Lifetime.ApplicationStarted.Register(() =>

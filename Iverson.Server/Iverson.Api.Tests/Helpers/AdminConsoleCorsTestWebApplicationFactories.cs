@@ -1,3 +1,7 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+
 namespace Iverson.Api.Tests.Helpers;
 
 // Two sibling factories, one per AdminConsole:Origin state, backing
@@ -53,5 +57,40 @@ public sealed class CorsDisabledTestWebApplicationFactory : AuthTestWebApplicati
     {
         Environment.SetEnvironmentVariable("AdminConsole__Origin", "");
         Client = CreateClient();
+    }
+}
+
+// The configured origin again, plus a startup filter that stamps every request's LocalPort as
+// 8081 -- the Http1 listener the admin-api Ingress targets -- so ListenerPortGateAsync runs
+// exactly as it does for a real browser request there (TestServer otherwise reports
+// LocalPort 0, which the gate lets through). Built the same way as its siblings, and used only
+// by AdminConsoleCorsPipelineTests, for the env-var reason documented above.
+public sealed class CorsConfiguredAdminListenerTestWebApplicationFactory : AuthTestWebApplicationFactory
+{
+    public HttpClient Client { get; }
+
+    public CorsConfiguredAdminListenerTestWebApplicationFactory()
+    {
+        Environment.SetEnvironmentVariable("AdminConsole__Origin", CorsConfiguredTestWebApplicationFactory.ConfiguredOrigin);
+        Client = CreateClient();
+    }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        builder.ConfigureServices(services => services.AddTransient<IStartupFilter, AdminListenerPortStamp>());
+    }
+
+    private sealed class AdminListenerPortStamp : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            app.Use((context, nextMiddleware) =>
+            {
+                context.Connection.LocalPort = 8081;
+                return nextMiddleware();
+            });
+            next(app);
+        };
     }
 }

@@ -210,6 +210,30 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         endpoint.Metadata.GetMetadata<Program.RequireListenerPort>()!.Port.Should().Be(8081);
     }
 
+    [Theory]
+    // The browser posts spans to the admin-api host, which the admin-api Ingress sends to the
+    // Http1 listener (8081) -- 8080 is h2c-only, which no browser speaks -- while main's api
+    // Ingress still routes /v1/traces to 8080. So the relay must pass the gate on both
+    // listeners (docs/specs/2026-09-23-traces-relay-admin-listener-design.md).
+    [InlineData(8081)]
+    [InlineData(8080)]
+    public async Task TracesRelay_PassesTheListenerPortGate(int localPort)
+    {
+        var dataSource = _factory.Services.GetRequiredService<EndpointDataSource>();
+        var relay = dataSource.Endpoints
+            .OfType<RouteEndpoint>()
+            .Single(e => e.RoutePattern.RawText == "/v1/traces");
+        var context = new DefaultHttpContext { Connection = { LocalPort = localPort } };
+        context.SetEndpoint(relay);
+        var nextInvoked = false;
+        Task Next() { nextInvoked = true; return Task.CompletedTask; }
+
+        await Program.ListenerPortGateAsync(context, Next);
+
+        nextInvoked.Should().BeTrue();
+        context.Response.StatusCode.Should().Be(StatusCodes.Status200OK);
+    }
+
     [Fact]
     public async Task ListenerPortGate_WrongPort_Returns404AndDoesNotInvokeNext()
     {

@@ -32,19 +32,23 @@ namespace Iverson.Api.Tests;
 // that hang risk.
 public class AdminConsoleCorsPipelineTests :
     IClassFixture<CorsConfiguredTestWebApplicationFactory>,
-    IClassFixture<CorsDisabledTestWebApplicationFactory>
+    IClassFixture<CorsDisabledTestWebApplicationFactory>,
+    IClassFixture<CorsConfiguredAdminListenerTestWebApplicationFactory>
 {
     private const string UnlistedOrigin = "https://evil.example";
 
     private readonly HttpClient _configured;
     private readonly HttpClient _disabled;
+    private readonly HttpClient _configuredOnAdminListener;
 
     public AdminConsoleCorsPipelineTests(
         CorsConfiguredTestWebApplicationFactory configured,
-        CorsDisabledTestWebApplicationFactory disabled)
+        CorsDisabledTestWebApplicationFactory disabled,
+        CorsConfiguredAdminListenerTestWebApplicationFactory configuredOnAdminListener)
     {
         _configured = configured.Client;
         _disabled = disabled.Client;
+        _configuredOnAdminListener = configuredOnAdminListener.Client;
     }
 
     private static HttpRequestMessage CrossOriginGet(string path, string origin)
@@ -98,6 +102,27 @@ public class AdminConsoleCorsPipelineTests :
         var response = await _configured.SendAsync(request);
 
         response.StatusCode.Should().NotBe(HttpStatusCode.Unauthorized);
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        response.Headers.TryGetValues("Access-Control-Allow-Origin", out var allowOrigin).Should().BeTrue();
+        allowOrigin!.Should().ContainSingle().Which.Should().Be(CorsConfiguredTestWebApplicationFactory.ConfiguredOrigin);
+    }
+
+    // The browser's span export is a cross-origin POST to /v1/traces on the admin-api host,
+    // which the admin-api Ingress sends to the Http1 listener (8081), so its preflight must be
+    // answered by CORS there. A MapPost endpoint does not accept preflights: without the relay's
+    // HttpMethodMetadata(acceptCorsPreflight: true) the preflight selects gRPC's
+    // unimplemented-service catch-all, which is pinned to 8080, and the listener gate answers
+    // 404 (docs/specs/2026-09-23-traces-relay-admin-listener-design.md).
+    [Fact]
+    public async Task ConfiguredOrigin_PreflightOptions_TracesRelay_OnAdminListener_AnsweredByCors()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Options, "/v1/traces");
+        request.Headers.Add("Origin", CorsConfiguredTestWebApplicationFactory.ConfiguredOrigin);
+        request.Headers.Add("Access-Control-Request-Method", "POST");
+        request.Headers.Add("Access-Control-Request-Headers", "authorization,content-type");
+
+        var response = await _configuredOnAdminListener.SendAsync(request);
+
         response.StatusCode.Should().Be(HttpStatusCode.NoContent);
         response.Headers.TryGetValues("Access-Control-Allow-Origin", out var allowOrigin).Should().BeTrue();
         allowOrigin!.Should().ContainSingle().Which.Should().Be(CorsConfiguredTestWebApplicationFactory.ConfiguredOrigin);
