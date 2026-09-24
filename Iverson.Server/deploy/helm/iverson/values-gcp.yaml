@@ -98,6 +98,10 @@ api:
     # The gRPC paths on this Ingress still 400 here — AGIC/GCE need their own
     # gRPC-passthrough configuration, not yet done. See
     # docs/specs/2026-09-24-api-ingress-nginx-grpc-design.md.
+    # GCE ingress terminates TLS from a standard Kubernetes Secret
+    # referenced via the Ingress's tls: block, same as Azure above — replace
+    # with a real cert-manager-issued Secret name for the real host before
+    # applying.
     tlsSecretName: "iverson-api-tls"
   adminApiIngress:
     className: "gce"
