@@ -126,6 +126,21 @@ public sealed class MatcherTests
         act.Should().Throw<PatternBudgetExceededException>().Which.BudgetName.Should().Be("MaxSteps");
     }
 
+    [Fact]
+    public void One_label_over_one_true_row_costs_three_steps()
+    {
+        // Program "A" is: 0 label A, 1 done. Step 1: AdvanceAndSchedule pops instruction 0 at input index 0 and
+        // parks the thread on the MatchLabel. Step 2: A's define is evaluated at row 0 (true). Step 3:
+        // AdvanceAndSchedule pops instruction 1 (Done) after the label is consumed. The input then ends; the final
+        // scan for a thread at Done is not a step.
+        var (matcher, _) = Build("A");
+        var budget = Budget();
+
+        matcher.Run(new TableEvaluator(AllTrue(1, 1)), budget).Matched.Should().BeTrue();
+
+        budget.StepsUsed.Should().Be(3);
+    }
+
     [Theory]
     [InlineData("A{0,2499} B")]   // 5,000 instructions: the reachable-label precomputation recurses 5,000 deep
     [InlineData("A{4999}")]
@@ -186,6 +201,125 @@ public sealed class MatcherTests
 
         eq.Equivalent(1, View(1, 0), 2, View(1, 0), pointer: 5).Should().BeTrue();
         eq.Equivalent(1, View(0, 1), 2, View(1, 0), pointer: 5).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(1, true)]              // LAST(A, 0) = 3 and LAST(A, 1) = 2 in both threads
+    [InlineData(2, false)]             // LAST(A, 2) is row 0 in one thread and row 1 in the other
+    [InlineData(2_000_000_000, false)] // offsets past the 4 matched labels resolve -1 in both: same verdict as 2
+    public void Threads_are_compared_on_every_last_offset_up_to_the_match_length(int offset, bool equivalent)
+    {
+        var eq = EquivalenceFor($"LAST(A.x, {offset}) > 0");
+
+        eq.Equivalent(1, View(0, 1, 0, 0), 2, View(1, 0, 0, 0), pointer: 5).Should().Be(equivalent);
+        // a difference that no LAST(A, k) reads keeps the threads equivalent at any offset
+        eq.Equivalent(1, View(0, 1, 0), 2, View(0, 2, 0), pointer: 5).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(2, true)]              // PREV(LAST(A), 2) and the trailing label at LAST(A) - 1 agree
+    [InlineData(3, false)]             // PREV(LAST(A), 3) is row 0: label B in one thread, C in the other
+    [InlineData(2_000_000_000, false)] // the trailing labels reach row 0 too; those before it resolve -1 in both
+    public void Threads_are_compared_on_every_trailing_label_up_to_the_match_length(int offset, bool equivalent)
+    {
+        var eq = EquivalenceFor($"PREV(CLASSIFIER(A), {offset}) = 'A'");
+
+        eq.Equivalent(1, View(1, 0, 0, 0), 2, View(2, 0, 0, 0), pointer: 5).Should().Be(equivalent);
+    }
+
+    /// <summary>C's define reads exactly one navigation, so the equivalence at C's instruction (5) is decided by
+    /// that navigation's comparison set alone. The reference materializes Trino's allPositionsToCompare.</summary>
+    [Theory]
+    [InlineData("LAST(A.x, {0}) IS NULL")]
+    [InlineData("PREV(LAST(B.x, {0}), 2) IS NULL")]
+    [InlineData("FIRST(A.x, {0}) IS NULL")]
+    [InlineData("PREV(CLASSIFIER(A), {0}) = 'A'")]
+    [InlineData("NEXT(LAST(CLASSIFIER(B), {0}), 1) = 'A'")]
+    [InlineData("PREV(LAST(CLASSIFIER(), {0}), 2) = 'A'")]
+    [InlineData("PREV(FIRST(CLASSIFIER(A), {0}), 1) = 'A'")]
+    public void The_bounded_comparison_equals_trinos_materialized_expansion(string defineFormat)
+    {
+        var labelArrays = Enumerable.Range(1, 4).SelectMany(AllLabelArrays).ToList();
+        foreach (int offset in new[] { 0, 1, 2, 3, 10 })
+        {
+            var define = string.Format(defineFormat, offset);
+            var eq = EquivalenceFor(define);
+            var huge = EquivalenceFor(string.Format(defineFormat, 2_000_000_000));
+            var (navigation, classifier) = SingleNavigation(define);
+
+            foreach (var first in labelArrays)
+            {
+                foreach (var second in labelArrays.Where(l => l.Length == first.Length))
+                {
+                    bool expected = ReferenceAgree(navigation, classifier, View(first), View(second));
+                    eq.Equivalent(1, View(first), 2, View(second), pointer: 5).Should().Be(expected,
+                        $"{define} over [{string.Join(",", first)}] vs [{string.Join(",", second)}]");
+
+                    // 10 exceeds every length here, so its verdict is also the verdict at any larger offset
+                    if (offset == 10)
+                    {
+                        huge.Equivalent(1, View(first), 2, View(second), pointer: 5).Should().Be(expected,
+                            $"offset 2e9: [{string.Join(",", first)}] vs [{string.Join(",", second)}]");
+                    }
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<int[]> AllLabelArrays(int length) =>
+        length == 0
+            ? [[]]
+            : AllLabelArrays(length - 1).SelectMany(prefix => new[] { 0, 1, 2 }.Select(l => prefix.Append(l).ToArray()));
+
+    private static (Navigation Navigation, bool Classifier) SingleNavigation(string define)
+    {
+        var parser = new ExpressionParser(new Dictionary<string, int> { ["A"] = 0, ["B"] = 1, ["C"] = 2 },
+            new Dictionary<string, int[]>(), new SimilarityTermTable());
+        var read = parser.ParseDefine(define) switch
+        {
+            IsNullExpr isNull => isNull.Operand,
+            BinaryExpr binary => binary.Left,
+            var other => throw new InvalidOperationException(other.ToString()),
+        };
+        return read switch
+        {
+            ColumnExpr { Navigation: { } navigation } => (navigation, false),
+            ClassifierExpr { Navigation: { } navigation } => (navigation, true),
+            _ => throw new InvalidOperationException(read.ToString()),
+        };
+    }
+
+    /// <summary>The pre-bound ThreadEquivalence: Trino's allPositionsToCompare, materialized, then resolved.</summary>
+    private static bool ReferenceAgree(Navigation navigation, bool classifier, ArrayView first, ArrayView second)
+    {
+        if (!classifier)
+        {
+            navigation = navigation.WithPhysicalOffset(0);
+        }
+
+        var all = new List<Navigation>();
+        if (navigation.Last)
+        {
+            for (int offset = 0; offset <= navigation.LogicalOffset; offset++) all.Add(navigation.WithLogicalOffset(offset));
+            for (int tail = navigation.PhysicalOffset + 1; tail < 0; tail++)
+                all.Add(navigation.WithLogicalOffset(0).WithPhysicalOffset(tail));
+        }
+        else
+        {
+            all.Add(navigation);
+        }
+
+        int Resolve(Navigation n, ArrayView labels) => n.ResolvePosition(labels.Length - 1, labels, 0, labels.Length, 0);
+        foreach (var n in all)
+        {
+            int a = Resolve(n, first), b = Resolve(n, second);
+            if (!classifier ? a != b : (a == -1) != (b == -1) || (a != -1 && first[a] != second[b]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     [Fact]

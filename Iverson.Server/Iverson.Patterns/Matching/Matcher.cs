@@ -10,8 +10,10 @@ namespace Iverson.Patterns.Matching;
 /// Deviations from Trino: <c>advanceAndSchedule</c> uses an explicit stack instead of recursion (its push order
 /// keeps Trino's thread priority order); aggregations are not carried per thread (the label evaluator and
 /// <see cref="ThreadEquivalence"/> recompute them from the matched labels); every instruction processed and every
-/// label evaluation is one <see cref="PatternBudget.Step"/>, and every thread allocation checks
-/// <see cref="PatternBudget.MaxActiveThreads"/>; memory accounting is dropped.
+/// label evaluation is one <see cref="PatternBudget.Step"/>, every thread allocation checks
+/// <see cref="PatternBudget.MaxActiveThreads"/>, and every step and equivalence comparison observes the budget's
+/// cancellation token; memory accounting is dropped; the per-instruction thread lists start at capacity 4, not
+/// the program length.
 /// </para>
 /// </summary>
 internal sealed class Matcher(Instruction[] program, ThreadEquivalence equivalence)
@@ -27,7 +29,9 @@ internal sealed class Matcher(Instruction[] program, ThreadEquivalence equivalen
             InputLength = inputLength;
             MatchingAtPartitionStart = matchingAtPartitionStart;
 
-            ThreadsAtInstructions = new IntMultimap(program.Length, program.Length);
+            // Trino sizes every per-instruction list to the program length; 4 keeps an at-cap program from
+            // allocating program-length lists for every instruction a thread reaches (the lists still grow)
+            ThreadsAtInstructions = new IntMultimap(program.Length, 4);
             _threadsToKill = new IntList(initialCapacity);
         }
 
@@ -213,6 +217,7 @@ internal sealed class Matcher(Instruction[] program, ThreadEquivalence equivalen
             bool killed = false;
             for (int i = 0; i < threadsHere.Length; i++)
             {
+                budget.ThrowIfCancellationRequested();   // up to MaxActiveThreads comparisons inside one step
                 int other = threadsHere[i];
                 if (equivalence.Equivalent(other, runtime.Captures.GetLabels(other), thread, runtime.Captures.GetLabels(thread), at))
                 {

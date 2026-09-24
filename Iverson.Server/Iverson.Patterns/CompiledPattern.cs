@@ -43,8 +43,26 @@ public sealed class CompiledPattern
 
     /// <summary>
     /// Matches one partition, rows already in partition order, and yields its output rows lazily. Match numbers
-    /// restart at 1 per call. Throws <see cref="PatternEvaluationException"/> and
-    /// <see cref="PatternBudgetExceededException"/> during enumeration.
+    /// restart at 1 per call. Throws <see cref="PatternEvaluationException"/>,
+    /// <see cref="PatternBudgetExceededException"/> and, once the budget's cancellation token is cancelled,
+    /// <see cref="OperationCanceledException"/>, all during enumeration.
+    /// <para>
+    /// Caller contract:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description><paramref name="partitionRows"/>: every row dictionary must compare keys with
+    /// <see cref="StringComparer.OrdinalIgnoreCase"/> (spec §3.2). Columns are looked up under the spelling the
+    /// expressions use, so with an ordinal dictionary a column written in another case fails with a
+    /// <see cref="PatternEvaluationException"/> ("Column '…' is not in the row").</description></item>
+    /// <item><description><paramref name="similarity"/>: called as <c>similarity(row, term)</c>, where
+    /// <c>row</c> is the row's index within <paramref name="partitionRows"/> and <c>term</c> indexes
+    /// <see cref="SimilarityTerms"/>; null is SQL <c>NULL</c>.</description></item>
+    /// <item><description><paramref name="budget"/>: pass the same instance to every partition of one request.
+    /// <see cref="PatternBudget.MaxSteps"/> is a per-request limit; only
+    /// <see cref="PatternBudget.MaxActiveThreads"/> applies per match attempt.</description></item>
+    /// <item><description>Run on a thread with a normal-size stack (not a reduced-stack thread): see
+    /// <see cref="PatternQuery.Compile"/>.</description></item>
+    /// </list>
     /// </summary>
     public IEnumerable<MatchOutputRow> Run(
         IReadOnlyList<IDictionary<string, object?>> partitionRows,
@@ -54,6 +72,11 @@ public sealed class CompiledPattern
 
     internal static CompiledPattern Create(PatternRequest request, int maxProgramInstructions)
     {
+        // 0. enum values: an undefined value (a cast integer) must not reach a switch that would mis-handle it
+        RequireDefined(request.Source, "source");
+        RequireDefined(request.RowsPerMatch, "rows_per_match");
+        RequireDefined(request.AfterMatchSkip, "after_match");
+
         // 1. pattern and subsets
         var parsed = PatternParser.Parse(request.Pattern, request.Subsets);
 
@@ -112,6 +135,16 @@ public sealed class CompiledPattern
                     throw new PatternValidationException(
                         $"Measure name '{name}' collides with the CHUNKS output column '{name}'.");
                 }
+            }
+        }
+
+        // 4a. partition_by names each column once: input names resolve case-insensitively (spec §1)
+        var partitionColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var column in request.PartitionBy)
+        {
+            if (!partitionColumns.Add(column))
+            {
+                throw new PatternValidationException($"partition_by column '{column}' is listed more than once.");
             }
         }
 
@@ -194,6 +227,15 @@ public sealed class CompiledPattern
             similarityTerms.Terms.ToArray(),
             measureNames.AsReadOnly(),
             partitionMatcher);
+    }
+
+    private static void RequireDefined<TEnum>(TEnum value, string field) where TEnum : struct, Enum
+    {
+        if (!Enum.IsDefined(value))
+        {
+            throw new PatternValidationException(
+                $"{field}: {Convert.ToInt64(value)} is not a defined {typeof(TEnum).Name} value.");
+        }
     }
 
     /// <summary>Trino's skip-to navigation: <c>FIRST(v)</c> or <c>LAST(v)</c>, FINAL, over the variable's label set.</summary>

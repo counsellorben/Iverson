@@ -30,7 +30,10 @@ namespace Iverson.Patterns.Matching;
 /// (<paramref name="labelDefinitions"/>, indexed by label, null = no define) instead of from physical value
 /// accessors and per-thread <c>MatchAggregation</c>s. An aggregation's positions are recomputed from the matched
 /// labels: the relative indexes of the labels in its label set (all of them, for the universal set), which is
-/// Trino's <c>SetEvaluator.getAllPositions</c>.
+/// Trino's <c>SetEvaluator.getAllPositions</c>. Trino materializes every logical offset of a <c>LAST</c> navigation
+/// (and every trailing row of a negative physical offset) at construction; here each navigation is kept once and
+/// its offsets are walked at comparison time, only as far as the compared threads' matched labels reach (see
+/// <see cref="AgreeOnAllPositionsToCompare"/>), so an offset of up to <see cref="int.MaxValue"/> costs nothing extra.
 /// </para>
 /// </summary>
 internal sealed class ThreadEquivalence
@@ -39,11 +42,15 @@ internal sealed class ThreadEquivalence
     // starting from this instruction until the program ends, through any path.
     private readonly HashSet<int>[] _reachableLabels;
 
-    // for every label, the set of navigations for accessing input values based on the defining condition
-    private readonly HashSet<Navigation>[] _positionsToCompare;
+    // for every label, the distinct navigations for accessing input values based on the defining condition, with
+    // the physical offset stripped. Kept compact: a LAST navigation stands for Trino's expansion to every logical
+    // offset 0..LogicalOffset, which Equivalent walks only as far as the matched labels reach.
+    private readonly Navigation[][] _positionsToCompare;
 
-    // for every label, the set of navigations for accessing the matched labels based on the defining condition
-    private readonly HashSet<Navigation>[] _labelsToCompare;
+    // for every label, the distinct navigations for accessing the matched labels based on the defining condition.
+    // Kept compact: a LAST navigation stands for Trino's expansion to every logical offset 0..LogicalOffset and,
+    // when its physical offset p is negative, to LAST at logical offset 0 with every physical offset p+1..-1.
+    private readonly Navigation[][] _labelsToCompare;
 
     // for every label, all aggregations present in the defining condition which require only comparing the
     // aggregated positions; null when no define has one
@@ -58,8 +65,8 @@ internal sealed class ThreadEquivalence
         _reachableLabels = ComputeReachableLabels(program);
 
         int labelCount = labelDefinitions.Count;
-        _positionsToCompare = new HashSet<Navigation>[labelCount];
-        _labelsToCompare = new HashSet<Navigation>[labelCount];
+        _positionsToCompare = new Navigation[labelCount][];
+        _labelsToCompare = new Navigation[labelCount][];
         var noClassifierAggregations = new List<AggregateExpr>[labelCount];
         var classifierAggregations = new List<AggregateExpr>[labelCount];
         bool foundNoClassifierAggregations = false;
@@ -86,7 +93,7 @@ internal sealed class ThreadEquivalence
 
                     // classifier value pointers
                     case ClassifierExpr { Navigation: { } navigation }:
-                        labels.UnionWith(AllPositionsToCompare(navigation));
+                        labels.Add(navigation);
                         break;
 
                     // classifyAggregations: an aggregation does not depend on CLASSIFIER when its arguments do not
@@ -107,8 +114,8 @@ internal sealed class ThreadEquivalence
                 }
             }
 
-            _positionsToCompare[label] = positions;
-            _labelsToCompare[label] = labels;
+            _positionsToCompare[label] = positions.ToArray();
+            _labelsToCompare[label] = labels.ToArray();
             noClassifierAggregations[label] = noClassifier;
             classifierAggregations[label] = classifier;
         }
@@ -134,66 +141,53 @@ internal sealed class ThreadEquivalence
             return true;
         }
 
-        // compare resulting positions for input navigations
-        var distinctPositionsToCompare = new HashSet<Navigation>();
-        foreach (int label in _reachableLabels[pointer])
-        {
-            distinctPositionsToCompare.UnionWith(_positionsToCompare[label]);
-        }
+        var reachableLabels = _reachableLabels[pointer];
 
-        foreach (var navigation in distinctPositionsToCompare)
+        // compare resulting positions for input navigations. Iterating per label instead of over the union of the
+        // labels' sets only repeats the check of a navigation two labels share, which cannot change the verdict.
+        foreach (int label in reachableLabels)
         {
-            if (ResolvePosition(navigation, firstLabels) != ResolvePosition(navigation, secondLabels))
+            foreach (var navigation in _positionsToCompare[label])
             {
-                return false;
+                if (!AgreeOnAllPositionsToCompare(navigation, firstLabels, secondLabels, compareLabels: false))
+                {
+                    return false;
+                }
             }
         }
 
         // compare resulting labels for `CLASSIFIER` navigations
-        var distinctLabelPositionsToCompare = new HashSet<Navigation>();
-        foreach (int label in _reachableLabels[pointer])
+        foreach (int label in reachableLabels)
         {
-            distinctLabelPositionsToCompare.UnionWith(_labelsToCompare[label]);
-        }
-
-        foreach (var navigation in distinctLabelPositionsToCompare)
-        {
-            int firstPosition = ResolvePosition(navigation, firstLabels);
-            int secondPosition = ResolvePosition(navigation, secondLabels);
-            if ((firstPosition == -1) != (secondPosition == -1))
+            foreach (var navigation in _labelsToCompare[label])
             {
-                return false;
-            }
-
-            if (firstPosition != -1 && firstLabels[firstPosition] != secondLabels[secondPosition])
-            {
-                return false;
+                if (!AgreeOnAllPositionsToCompare(navigation, firstLabels, secondLabels, compareLabels: true))
+                {
+                    return false;
+                }
             }
         }
 
         // compare sets of all aggregated positions for aggregations which do not depend on `CLASSIFIER`
         if (_matchAggregationsToComparePositions is { } comparePositions)
         {
-            var aggregationsToComparePositions = new HashSet<AggregateExpr>(ReferenceEqualityComparer.Instance);
-            foreach (int label in _reachableLabels[pointer])
+            foreach (int label in reachableLabels)
             {
-                aggregationsToComparePositions.UnionWith(comparePositions[label]);
-            }
-
-            foreach (var aggregation in aggregationsToComparePositions)
-            {
-                var firstPositions = GetAllPositions(aggregation, firstLabels);
-                var secondPositions = GetAllPositions(aggregation, secondLabels);
-                if (firstPositions.Length != secondPositions.Length)
+                foreach (var aggregation in comparePositions[label])
                 {
-                    return false;
-                }
-
-                for (int i = 0; i < firstPositions.Length; i++)
-                {
-                    if (firstPositions[i] != secondPositions[i])
+                    var firstPositions = GetAllPositions(aggregation, firstLabels);
+                    var secondPositions = GetAllPositions(aggregation, secondLabels);
+                    if (firstPositions.Length != secondPositions.Length)
                     {
                         return false;
+                    }
+
+                    for (int i = 0; i < firstPositions.Length; i++)
+                    {
+                        if (firstPositions[i] != secondPositions[i])
+                        {
+                            return false;
+                        }
                     }
                 }
             }
@@ -203,27 +197,24 @@ internal sealed class ThreadEquivalence
         // aggregations which depend on `CLASSIFIER`
         if (_matchAggregationsToComparePositionsAndLabels is { } comparePositionsAndLabels)
         {
-            var aggregationsToComparePositionsAndLabels = new HashSet<AggregateExpr>(ReferenceEqualityComparer.Instance);
-            foreach (int label in _reachableLabels[pointer])
+            foreach (int label in reachableLabels)
             {
-                aggregationsToComparePositionsAndLabels.UnionWith(comparePositionsAndLabels[label]);
-            }
-
-            foreach (var aggregation in aggregationsToComparePositionsAndLabels)
-            {
-                var firstPositions = GetAllPositions(aggregation, firstLabels);
-                var secondPositions = GetAllPositions(aggregation, secondLabels);
-                if (firstPositions.Length != secondPositions.Length)
+                foreach (var aggregation in comparePositionsAndLabels[label])
                 {
-                    return false;
-                }
-
-                for (int i = 0; i < firstPositions.Length; i++)
-                {
-                    int position = firstPositions[i];
-                    if (position != secondPositions[i] || firstLabels[position] != secondLabels[position])
+                    var firstPositions = GetAllPositions(aggregation, firstLabels);
+                    var secondPositions = GetAllPositions(aggregation, secondLabels);
+                    if (firstPositions.Length != secondPositions.Length)
                     {
                         return false;
+                    }
+
+                    for (int i = 0; i < firstPositions.Length; i++)
+                    {
+                        int position = firstPositions[i];
+                        if (position != secondPositions[i] || firstLabels[position] != secondLabels[position])
+                        {
+                            return false;
+                        }
                     }
                 }
             }
@@ -295,18 +286,18 @@ internal sealed class ThreadEquivalence
     }
 
     /// <summary>Trino's <c>positionsToCompare</c> mapping: skip the universal pattern variable, strip the physical
-    /// offset, expand with <see cref="AllPositionsToCompare"/>.</summary>
+    /// offset. The expansion is deferred to <see cref="AgreeOnAllPositionsToCompare"/>.</summary>
     private static void AddInputNavigation(HashSet<Navigation> positions, Navigation navigation)
     {
         if (navigation.Labels.Length != 0)
         {
-            positions.UnionWith(AllPositionsToCompare(navigation.WithPhysicalOffset(0)));
+            positions.Add(navigation.WithPhysicalOffset(0));
         }
     }
 
     /// <summary>
-    /// For a navigation, returns all navigations which must return equal results for the two compared threads if
-    /// the threads are equivalent.
+    /// Whether both threads agree on every navigation of Trino's <c>allPositionsToCompare</c> expansion of
+    /// <paramref name="navigation"/>:
     /// <code>
     /// FIRST(A.value)    -> compare the position "FIRST(A)"
     /// FIRST(A.value, 2) -> compare the position "FIRST(A, 2)"
@@ -316,29 +307,97 @@ internal sealed class ThreadEquivalence
     /// They must all be equal for both threads in case there are more labels "A" assigned in the future.
     /// <c>PREV(LAST(CLASSIFIER(A), 2), 5)</c> -> compare the positions "PREV(LAST(A, 2), 5)", "PREV(LAST(A, 1), 5)",
     /// "PREV(LAST(A), 5)", and the 5 trailing labels.
+    /// <para>
+    /// Deviation from Trino: the expansion is walked, not materialized, and only as far as the matched labels
+    /// reach. <c>LAST(A, k)</c> is the (k+1)-th label A from the end, so both threads' candidates are found in one
+    /// backward pass; once neither thread has another one, every larger offset resolves to -1 in both threads. A
+    /// trailing physical offset at or below -length lands before the match in both threads, also -1. The skipped
+    /// navigations therefore agree, and the verdict equals Trino's, in O(length) whatever the offsets.
+    /// </para>
     /// </summary>
-    private static List<Navigation> AllPositionsToCompare(Navigation navigation)
+    /// <param name="compareLabels">False for input navigations (compare the positions); true for
+    /// <c>CLASSIFIER</c> navigations (compare whether the positions exist and, if so, their labels).</param>
+    private static bool AgreeOnAllPositionsToCompare(
+        Navigation navigation, ArrayView firstLabels, ArrayView secondLabels, bool compareLabels)
     {
-        if (navigation.Last)
+        if (!navigation.Last)
         {
-            var result = new List<Navigation>();
-            for (int offset = 0; offset <= navigation.LogicalOffset; offset++)
-            {
-                result.Add(navigation.WithLogicalOffset(offset));
-            }
-
-            // physical offset can be present only in `CLASSIFIER` navigations. For input navigations it was pruned.
-            // In case when the physical offset is negative, we need to compare all labels in the offset-length suffix
-            // of the match between both compared threads.
-            for (int tail = navigation.PhysicalOffset + 1; tail < 0; tail++)
-            {
-                result.Add(navigation.WithLogicalOffset(0).WithPhysicalOffset(tail));
-            }
-
-            return result;
+            return Agree(ResolvePosition(navigation, firstLabels), ResolvePosition(navigation, secondLabels),
+                firstLabels, secondLabels, compareLabels);
         }
 
-        return [navigation];
+        int length = firstLabels.Length;
+
+        // logical offsets 0..LogicalOffset, at the navigation's physical offset
+        int firstRelative = length, secondRelative = length; // one past the matched labels, before offset 0
+        int firstLast = -1, secondLast = -1;                  // LAST at logical offset 0, for the trailing labels
+        for (int offset = 0; ; offset++)
+        {
+            firstRelative = navigation.PreviousMatch(firstRelative, firstLabels);
+            secondRelative = navigation.PreviousMatch(secondRelative, secondLabels);
+            if (offset == 0)
+            {
+                firstLast = firstRelative;
+                secondLast = secondRelative;
+            }
+
+            if (!Agree(Target(firstRelative, navigation.PhysicalOffset, length),
+                    Target(secondRelative, navigation.PhysicalOffset, length),
+                    firstLabels, secondLabels, compareLabels))
+            {
+                return false;
+            }
+
+            // every larger offset resolves to -1 in both threads
+            if ((firstRelative == -1 && secondRelative == -1) || offset == navigation.LogicalOffset)
+            {
+                break;
+            }
+        }
+
+        // physical offset can be present only in `CLASSIFIER` navigations. For input navigations it was pruned.
+        // In case when the physical offset is negative, we need to compare all labels in the offset-length suffix
+        // of the match between both compared threads: LAST at logical offset 0, physical offsets -1 down to
+        // PhysicalOffset + 1, stopping at -length (below it every target precedes the match in both threads).
+        for (int physical = -1; physical > navigation.PhysicalOffset && physical > -length; physical--)
+        {
+            if (!Agree(Target(firstLast, physical, length), Target(secondLast, physical, length),
+                    firstLabels, secondLabels, compareLabels))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary><see cref="Navigation.ResolvePosition"/>'s last step for the equivalence's frame (search area and
+    /// match both <c>[0, length)</c>, pattern start 0): the relative position moved by the physical offset.</summary>
+    private static int Target(int relative, int physicalOffset, int length)
+    {
+        if (relative == -1)
+        {
+            return -1;
+        }
+
+        int target = relative + physicalOffset;
+        return target < 0 || target >= length ? -1 : target;
+    }
+
+    private static bool Agree(int firstPosition, int secondPosition, ArrayView firstLabels, ArrayView secondLabels,
+        bool compareLabels)
+    {
+        if (!compareLabels)
+        {
+            return firstPosition == secondPosition;
+        }
+
+        if ((firstPosition == -1) != (secondPosition == -1))
+        {
+            return false;
+        }
+
+        return firstPosition == -1 || firstLabels[firstPosition] == secondLabels[secondPosition];
     }
 
     /// <summary>Every column, <c>SIMILARITY</c>, <c>CLASSIFIER</c> and aggregate node of a lowered expression, found

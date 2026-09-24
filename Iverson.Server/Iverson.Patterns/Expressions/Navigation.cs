@@ -43,6 +43,19 @@ internal sealed record Navigation(int[] Labels, bool Last, bool Running, int Log
         return found == LogicalOffset + 1 ? position : -1;
     }
 
+    /// <summary>The nearest position before <paramref name="position"/> whose label this navigation reads, or -1:
+    /// one step of the backward scan <c>LAST</c> resolves with. <c>ThreadEquivalence</c> walks a <c>LAST</c>
+    /// navigation's logical offsets with it.</summary>
+    internal int PreviousMatch(int position, ArrayView matchedLabels)
+    {
+        while (position > 0)
+        {
+            position--;
+            if (Matches(matchedLabels[position])) return position;
+        }
+        return -1;
+    }
+
     private bool Matches(int label) => Labels.Length == 0 || Array.BinarySearch(Labels, label) >= 0;
 
     public Navigation WithLogicalOffset(int offset) => this with { LogicalOffset = offset };

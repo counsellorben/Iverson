@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using FluentAssertions;
 using Xunit;
 using static Iverson.Patterns.Tests.TestRows;
@@ -246,6 +247,63 @@ public sealed class PatternQueryTests
         threads.Should().Throw<PatternBudgetExceededException>().Which.BudgetName.Should().Be("MaxActiveThreads");
     }
 
+    [Theory]
+    [InlineData("LAST(A.value, 2000000000) IS NULL")]
+    [InlineData("PREV(CLASSIFIER(A), 2000000000) IS NULL")]
+    public void Huge_navigation_offsets_compile_and_run_in_bounded_time(string read)
+    {
+        // C's define is reachable from every instruction of the loop, so every thread comparison walks the read's
+        // offsets. C never holds (every value is positive), so nothing matches. Before the bound, Compile alone
+        // materialized one navigation per offset: about 200 GB at this offset.
+        var sw = Stopwatch.StartNew();
+        var compiled = PatternQuery.Compile(Req("(A | B)+ C", [("C", $"{read} AND C.value < 0")], MS), 5000);
+        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1), "Compile must not expand the offsets");
+
+        sw.Restart();
+        compiled.Run(D2, (_, _) => null, new PatternBudget(10_000, 10_000_000)).Should().BeEmpty();
+        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1), "the comparison walks only the matched labels");
+    }
+
+    [Fact]
+    public void One_label_over_one_row_costs_three_steps_through_the_partition_loop()
+    {
+        // The three matcher steps of MatcherTests.One_label_over_one_true_row_costs_three_steps; the partition
+        // loop adds none.
+        var budget = new PatternBudget(10_000, 10_000_000);
+        Run(Req("A", [("A", "TRUE")], MS), Rows(["id", "value"], [1L, 90L]), budget: budget)
+            .Should().ContainSingle();
+        budget.StepsUsed.Should().Be(3);
+    }
+
+    [Fact]
+    public void A_cancelled_budget_token_stops_the_run()
+    {
+        var budget = new PatternBudget(10_000, 10_000_000, new CancellationToken(canceled: true));
+
+        var act = () => Run(Req("A", [("A", "TRUE")], MS), D2, budget: budget);
+
+        act.Should().Throw<OperationCanceledException>();
+        budget.StepsUsed.Should().Be(0);
+    }
+
+    [Fact]
+    public void Cancelling_the_budget_token_interrupts_a_long_run()
+    {
+        // Each define sums the whole match so far, so 300,000 steps take over ten seconds (2,000,000 took 90 s):
+        // a run that ignored the token would end in PatternBudgetExceededException instead, not hang the suite.
+        var rows = Rows(["id", "x"], Enumerable.Range(0, 3000).Select(i => new object?[] { (long)i, (long)(i % 7) }).ToArray());
+        var compiled = PatternQuery.Compile(Req("A+ B", [("A", "SUM(A.x) >= 0"), ("B", "FALSE")]), 5000);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        var budget = new PatternBudget(10_000, 300_000, cancellation.Token);
+
+        var sw = Stopwatch.StartNew();
+        var act = () => compiled.Run(rows, (_, _) => null, budget).ToList();
+
+        act.Should().Throw<OperationCanceledException>();
+        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1));
+        budget.StepsUsed.Should().BePositive("the run was under way when the token was cancelled");
+    }
+
     // ---- Compile: validation (spec §1, §2) ----
 
     private static void Rejects(PatternRequest request, string message = "*")
@@ -282,6 +340,26 @@ public sealed class PatternQueryTests
         PatternQuery.Compile(Req("A", [("A", "A.TEXT = 'x' AND chunk_index > 0")], source: PatternSource.Chunks), 5000);
         Rejects(Req("A", [("A", "SIMILARITY(chunk_index, 'x') > 0")], source: PatternSource.Chunks), "*SIMILARITY*");
         PatternQuery.Compile(Req("A", [("A", "SIMILARITY(TEXT, 'x') > 0")], source: PatternSource.Chunks), 5000);
+    }
+
+    [Fact]
+    public void Undefined_enum_values_are_rejected_naming_the_field()
+    {
+        Rejects(Req("A", source: (PatternSource)5), "source: 5 is not a defined PatternSource value.");
+        Rejects(Req("A", rows: (RowsPerMatch)9), "rows_per_match: 9 is not a defined RowsPerMatch value.");
+        Rejects(Req("A", skip: (AfterMatchSkipKind)7, skipVariable: "A"),
+            "after_match: 7 is not a defined AfterMatchSkipKind value.");
+    }
+
+    [Theory]
+    [InlineData("x", "X")]
+    [InlineData("x", "x")]
+    public void Partition_by_columns_must_be_distinct_case_insensitively(string first, string second)
+    {
+        Rejects(Req("A", rows: RowsPerMatch.OneRow, partitionBy: [first, second]),
+            $"partition_by column '{second}' is listed more than once.");
+        Rejects(Req("A", rows: RowsPerMatch.AllRowsShowEmpty, partitionBy: ["y", first, second]), $"*'{second}'*");
+        PatternQuery.Compile(Req("A", rows: RowsPerMatch.OneRow, partitionBy: [first, "y"]), 5000).Should().NotBeNull();
     }
 
     [Fact]
