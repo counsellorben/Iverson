@@ -55,6 +55,16 @@ echo "Creating iverson namespace with restricted-baseline Pod Security Admission
 kubectl create namespace iverson --dry-run=client -o yaml | kubectl apply -f -
 kubectl label namespace iverson pod-security.kubernetes.io/enforce=baseline --overwrite
 
+if ! kubectl get secret iverson-api-tls -n iverson >/dev/null 2>&1; then
+  echo "Generating a self-signed dev cert for the api Ingress (iverson.local)..."
+  openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+    -keyout /tmp/iverson-api-tls.key -out /tmp/iverson-api-tls.crt \
+    -subj "/CN=iverson.local" -addext "subjectAltName=DNS:iverson.local"
+  kubectl create secret tls iverson-api-tls -n iverson \
+    --cert=/tmp/iverson-api-tls.crt --key=/tmp/iverson-api-tls.key
+  rm -f /tmp/iverson-api-tls.key /tmp/iverson-api-tls.crt
+fi
+
 echo "Installing ingress-nginx..."
 # allow-snippet-annotations is disabled by default since ingress-nginx v1.9; the
 # api and admin-ui charts' Ingress templates emit
