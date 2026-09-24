@@ -113,7 +113,6 @@ internal static class ExpressionEvaluator
         }
 
         int end = aggregate.Running ? ctx.CurrentRow - ctx.PatternStart : ctx.MatchedLabels.Length - 1;
-        end = Math.Min(end, ctx.MatchedLabels.Length - 1);
 
         long positions = 0;
         var values = new List<object>();
@@ -137,7 +136,8 @@ internal static class ExpressionEvaluator
             // COUNT(*) / COUNT(v.*) count rows; COUNT(e) counts non-null values (NaN is not null).
             AggregateKind.Count => (object)(aggregate.Argument is null ? positions : values.Count),
             AggregateKind.Sum => Sum(values),
-            AggregateKind.Avg => values.Count == 0 ? null : (object)(ToDouble(Sum(values)!) / values.Count),
+            // Trino's avg(bigint) sums in double, so an AVG never overflows.
+            AggregateKind.Avg => values.Count == 0 ? null : (object)(DoubleSum(values) / values.Count),
             AggregateKind.Min => Extreme(values, max: false),
             AggregateKind.Max => Extreme(values, max: true),
             _ => throw new InvalidOperationException($"Unknown aggregate {aggregate.Kind}."),
@@ -153,14 +153,7 @@ internal static class ExpressionEvaluator
             return null;
         }
 
-        foreach (var value in values)
-        {
-            if (!SqlValues.IsNumeric(value))
-            {
-                throw new PatternEvaluationException($"Cannot sum {SqlValues.TypeName(value)}.");
-            }
-        }
-
+        RequireNumeric(values);
         if (values.TrueForAll(value => value is long))
         {
             long total = 0;
@@ -179,6 +172,13 @@ internal static class ExpressionEvaluator
             return total;
         }
 
+        return DoubleSum(values);
+    }
+
+    /// <summary>The IEEE <c>double</c> sum of numeric values (NaN propagates).</summary>
+    private static double DoubleSum(List<object> values)
+    {
+        RequireNumeric(values);
         double sum = 0;
         foreach (var value in values)
         {
@@ -188,7 +188,16 @@ internal static class ExpressionEvaluator
         return sum;
     }
 
-    private static double ToDouble(object value) => SqlValues.ToDouble(value);
+    private static void RequireNumeric(List<object> values)
+    {
+        foreach (var value in values)
+        {
+            if (!SqlValues.IsNumeric(value))
+            {
+                throw new PatternEvaluationException($"Cannot sum {SqlValues.TypeName(value)}.");
+            }
+        }
+    }
 
     /// <summary>MIN/MAX over non-null values. Numeric pairs involving a <c>double</c> order by
     /// <see cref="double.CompareTo(double)"/>, where NaN is lowest: MIN returns NaN if present, MAX ignores NaN

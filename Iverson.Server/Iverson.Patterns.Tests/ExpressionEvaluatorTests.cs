@@ -29,6 +29,10 @@ public sealed class ExpressionEvaluatorTests
     private static object? Eval(string measure, EvaluationContext ctx) =>
         ExpressionEvaluator.Evaluate(Parser().ParseMeasure(measure), ctx);
 
+    // FluentAssertions' Be converts numerics (-1.0 passes Be(-1L)), so the long/double value model needs a type check.
+    private static void ShouldBeExactly(object? actual, object expected) =>
+        actual.Should().BeOfType(expected.GetType()).And.Be(expected);
+
     // One row: s = NaN, n = NULL, i = 5, m = long.MinValue.
     private static EvaluationContext NaNRow() =>
         Ctx(Rows(["s", "n", "i", "m"], [double.NaN, null, 5L, long.MinValue]), [0]);
@@ -79,10 +83,12 @@ public sealed class ExpressionEvaluatorTests
 
         Eval("FINAL SUM(A.v)", ctx).Should().Be(double.NaN);
         Eval("FINAL AVG(A.v)", ctx).Should().Be(double.NaN);
-        Eval("FINAL COUNT(A.v)", ctx).Should().Be(3L);
+        ShouldBeExactly(Eval("FINAL COUNT(A.v)", ctx), 3L);
         Eval("FINAL MIN(A.v)", ctx).Should().Be(double.NaN);
         Eval("FINAL MAX(A.v)", ctx).Should().Be(2.0);
         Eval("FINAL MAX(A.v)", Ctx(Rows(["v"], [double.NaN], [double.NaN]), [0, 0])).Should().Be(double.NaN);
+        // AVG sums in double, as Trino's avg(bigint) does, so it cannot overflow.
+        ShouldBeExactly(Eval("FINAL AVG(A.v)", Ctx(Rows(["v"], [long.MaxValue], [long.MaxValue]), [0, 0])), (double)long.MaxValue);
     }
 
     [Theory]
@@ -102,7 +108,7 @@ public sealed class ExpressionEvaluatorTests
     [InlineData("ABS(-3)", 3L)]
     [InlineData("ROUND(7)", 7L)]
     public void Integer_arithmetic_truncates_toward_zero(string expression, long expected) =>
-        Eval(expression, NaNRow()).Should().Be(expected);
+        ShouldBeExactly(Eval(expression, NaNRow()), expected);
 
     [Theory]
     [InlineData("7 / 2.0", 3.5)]
@@ -113,7 +119,7 @@ public sealed class ExpressionEvaluatorTests
     [InlineData("1.0 / 0", double.PositiveInfinity)]
     [InlineData("0.0 / 0", double.NaN)]
     public void Mixed_and_double_arithmetic_promotes_to_double(string expression, double expected) =>
-        Eval(expression, NaNRow()).Should().Be(expected);
+        ShouldBeExactly(Eval(expression, NaNRow()), expected);
 
     [Theory]
     [InlineData("1 / 0")]
@@ -136,8 +142,8 @@ public sealed class ExpressionEvaluatorTests
     {
         Eval("'a' < 'B'", NaNRow()).Should().Be(false);
         Eval("'B' < 'a'", NaNRow()).Should().Be(true);
-        Eval("v", Ctx(Rows(["v"], [7]), [0])).Should().Be(7L);          // Int32 reads as long
-        Eval("v", Ctx(Rows(["v"], [1.5f]), [0])).Should().Be(1.5);      // Single reads as double
+        ShouldBeExactly(Eval("v", Ctx(Rows(["v"], [7]), [0])), 7L);          // Int32 reads as long
+        ShouldBeExactly(Eval("v", Ctx(Rows(["v"], [1.5f]), [0])), 1.5);      // Single reads as double
         var bytes = () => Eval("v", Ctx(Rows(["v"], [new byte[] { 1 }]), [0]));
         bytes.Should().Throw<PatternEvaluationException>();
     }
@@ -157,10 +163,10 @@ public sealed class ExpressionEvaluatorTests
         var ctx = Ctx(Rows(["t1", "t2", "t3"],
             [new DateTime(2026, 1, 1, 10, 0, 0), new DateTime(2026, 1, 1, 9, 58, 30), new DateTime(2026, 1, 3, 9, 0, 0)]), [0]);
 
-        Eval("TIMESTAMPDIFF(SECOND, t1, t2)", ctx).Should().Be(-90L);
-        Eval("TIMESTAMPDIFF(MINUTE, t1, t2)", ctx).Should().Be(-1L);
-        Eval("TIMESTAMPDIFF(HOUR, t1, t3)", ctx).Should().Be(47L);
-        Eval("TIMESTAMPDIFF(DAY, t1, t3)", ctx).Should().Be(1L);
+        ShouldBeExactly(Eval("TIMESTAMPDIFF(SECOND, t1, t2)", ctx), -90L);
+        ShouldBeExactly(Eval("TIMESTAMPDIFF(MINUTE, t1, t2)", ctx), -1L);
+        ShouldBeExactly(Eval("TIMESTAMPDIFF(HOUR, t1, t3)", ctx), 47L);
+        ShouldBeExactly(Eval("TIMESTAMPDIFF(DAY, t1, t3)", ctx), 1L);
     }
 
     // Five partition rows x = 10..50; the match starts at row 1 with labels A B B (rows 1–3).
@@ -186,8 +192,14 @@ public sealed class ExpressionEvaluatorTests
     [InlineData("MIN(B.x)", 30L)]
     [InlineData("AVG(U.x)", 30.0)]
     [InlineData("COUNT(CLASSIFIER())", 3L)]
-    public void Measures_read_through_navigations_at_the_last_row(string measure, object? expected) =>
-        Eval(measure, Match(currentRow: 3)).Should().Be(expected);
+    public void Measures_read_through_navigations_at_the_last_row(string measure, object? expected)
+    {
+        var actual = Eval(measure, Match(currentRow: 3));
+        if (expected is null)
+            actual.Should().BeNull();
+        else
+            ShouldBeExactly(actual, expected);
+    }
 
     [Fact]
     public void Running_reads_stop_at_the_current_row_and_final_reads_see_the_whole_match()
@@ -215,7 +227,7 @@ public sealed class ExpressionEvaluatorTests
         ctx.EmptyMatch = true;
         ctx.MatchedLabels = ArrayView.Empty;
 
-        Eval("MATCH_NUMBER()", ctx).Should().Be(4L);
+        ShouldBeExactly(Eval("MATCH_NUMBER()", ctx), 4L);
         Eval("CLASSIFIER()", ctx).Should().BeNull();
         Eval("x", ctx).Should().BeNull();
         Eval("COUNT(*)", ctx).Should().Be(0L);
