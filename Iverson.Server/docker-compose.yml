@@ -536,6 +536,14 @@ services:
         condition: service_healthy
       authentik-server:
         condition: service_healthy
+      # authentik-server alone never applies the compose-only blueprints (users, OAuth clients,
+      # flows) -- that's authentik-worker's job, and nothing else in this file depends on it, so
+      # `docker compose up -d iverson-api` alone would otherwise never start it, leaving nobody
+      # able to log in or mint a token. No healthcheck exists on this image's worker role, so
+      # service_started is the strongest condition available; blueprint application finishes on
+      # its own shortly after the container starts.
+      authentik-worker:
+        condition: service_started
       tei-embed:
         condition: service_healthy
 
@@ -605,6 +613,10 @@ services:
         condition: service_healthy
       authentik-server:
         condition: service_healthy
+      # See the matching comment on iverson-api's depends_on: without this, authentik-worker
+      # never starts and the compose-only blueprints (users, OAuth clients, flows) never apply.
+      authentik-worker:
+        condition: service_started
       ollama-init:
         condition: service_completed_successfully
       tei-embed:
