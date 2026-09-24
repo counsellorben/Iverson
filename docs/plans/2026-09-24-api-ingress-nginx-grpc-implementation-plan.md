@@ -65,6 +65,8 @@ The following were verified by `thorough-brainstorming`/critical-design-review a
 | 13 | Consumer impact (totality) | The new `ssl-redirect` annotation doesn't collide with any overlay's admin-ui annotations | `command grep -rn ssl-redirect deploy/helm/iverson/`: only AWS's distinct `alb.ingress.kubernetes.io/ssl-redirect` (different prefix, different Ingress) |
 | 14 | Path / symbol | `Iverson.AdminUI/Dockerfile` exists; `charts/admin-ui/values.yaml` resolves image to `repository: "iverson-admin-ui"`, `tag: "0.1.0"` | Read both |
 | 15 | Integration | All five profiles render, all pass kubeconform, and every annotation/path cell matches the spec's Testing criteria, with Task 1's edits applied together | Ran the full render loop in a throwaway worktree: `local` — `t-api` `backend-protocol=GRPC`, `tls=True`, no `/v1/traces`; `t-admin-ui` `ssl-redirect=false`; `t-admin-api` unaffected (keeps `/v1/traces`). `laptop` — `t-api` same fix, no admin-ui/admin-api rendered. `aws`/`azure`/`gcp` — `t-api` loses `/v1/traces` only (`backend-protocol`/`ssl-redirect` correctly absent, non-nginx classes); `t-admin-api` unaffected. kubeconform: `Invalid: 0` on all five (local 92/0/0/6, laptop 72/0/0/5, aws/azure/gcp 98/0/0/6 each) |
+| 16 | Cross-task interface | Task 2's `helm upgrade --install` finds Task 1's freshly-built `charts/*.tgz` current — both tasks run in the same worktree/branch, and Task 2 introduces no chart-file edits | Task 2's Files list is `deploy/kind/setup.sh` only; no chart template or values file is touched between Task 1's `helm dependency update` and Task 2's install |
+| 17 | Command | Local Go (1.22, `GOTOOLCHAIN=auto`) can build `grpcurl@latest` | Ran `GOBIN=/tmp/grpcurl-bin go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest`: auto-switches to go1.26.8, produces a working binary |
 
 ## Tasks
 
@@ -257,10 +259,11 @@ The following were verified by `thorough-brainstorming`/critical-design-review a
   bash Iverson.Server/deploy/kind/build-and-load-image.sh 0.1.0 iverson \
     --dockerfile Iverson.AdminUI/Dockerfile --image-name iverson-admin-ui
   cd Iverson.Server/deploy/helm/iverson
-  helm upgrade --install iverson . -f values-local.yaml -n iverson --timeout 15m
+  helm upgrade --install iverson . -f values-local.yaml -n iverson --timeout 15m \
+    --set global.engagementEnabled=false
   ```
 
-  This box's resources don't fit the full profile at once (established during design-phase live verification). Scale down what isn't on the path being tested:
+  This box's resources don't fit the full `local` profile (established during critical-implementation-review: StarRocks alone requests 4Gi per pod, and `values-local.yaml` states this profile needs a ≥16GB machine). `--set global.engagementEnabled=false` drops StarRocks from the deploy and from readiness entirely; every Ingress under test, admin-ui included, renders byte-identical either way, so nothing being verified here changes. Scale down the rest of what isn't on the path being tested:
   ```bash
   kubectl scale statefulset -n iverson iverson-ollama --replicas=0
   kubectl scale statefulset -n iverson iverson-tei-bge-base --replicas=0
@@ -268,15 +271,20 @@ The following were verified by `thorough-brainstorming`/critical-design-review a
   kubectl scale deployment -n iverson iverson-jaeger --replicas=0
   ```
 
-  Wait for `iverson-api` to be Ready (`kubectl wait --for=condition=Ready pod -l app=api -n iverson --timeout=10m`), confirming Kestrel is listening on both 8080 and 8081 (this depends on Postgres/StarRocks/Kafka/Authentik/tei-embed all coming up first, per the bootstrap-DDL comment in `docker-compose.yml`).
+  Wait for `iverson-api` to be Ready (`kubectl wait --for=condition=Ready pod -l app=iverson-api -n iverson --timeout=10m`), confirming Kestrel is listening on both 8080 and 8081 (this depends on Postgres/Kafka/Authentik/tei-embed all coming up first, per the bootstrap-DDL comment in `docker-compose.yml`; StarRocks is skipped entirely under `--set global.engagementEnabled=false`, and `ReadinessPolicyTests.Evaluate_EngagementDisabled_UnhealthyStarRocksDoesNotBlockReadiness` confirms readiness no longer gates on it).
 
-  Install `grpcurl` and make a real external call over the new TLS listener:
+  Install `grpcurl` and make a real, unauthenticated external call to a routed method over the new TLS listener (not `list` — the API offers no reflection service, so a reflection call can't tell a working proxy from a broken one). Run from the repo root, since `-import-path` is repo-root-relative:
   ```bash
   GOBIN=/tmp/grpcurl-bin go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest
-  /tmp/grpcurl-bin/grpcurl -insecure -authority iverson.local -H 'Host: iverson.local' \
-    localhost:8443 list
+  cd /home/ben/repositories/Iverson
+  /tmp/grpcurl-bin/grpcurl -insecure -authority iverson.local \
+    -import-path Iverson.Clients/Common/Proto -proto tenant_lifecycle.proto \
+    -d '{}' localhost:8443 iverson.TenantLifecycleGrpcService/ListTenants
   ```
-  Expected: a real gRPC reflection-or-error response (a genuine `grpc-status`), not `400 An HTTP/1.x request was sent to an HTTP/2 only endpoint`.
+  This call carries no token, so a response from Kestrel is an authentication rejection — `TenantLifecycleGrpcService` requires `RequireAuthorization("Operator")` (`Program.cs:721`). Expected: `Code: Unauthenticated`, either as a genuine grpc-status or as grpcurl's `unexpected HTTP status code received from server: 401 (Unauthorized)` — either counts as a pass, since both mean the request reached Kestrel with real gRPC framing. Fail signatures:
+  - `…: 400 (Bad Request)`: the `backend-protocol: GRPC` annotation isn't in effect.
+  - `…: 404 (Not Found)`: the path isn't routed.
+  - `…: 502`/`503`/`504`, or a TLS/handshake error: no Ready backend.
 
   Confirm admin-ui didn't get redirected:
   ```bash
