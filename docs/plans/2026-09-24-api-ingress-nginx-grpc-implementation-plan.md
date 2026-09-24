@@ -259,9 +259,11 @@ The following were verified by `thorough-brainstorming`/critical-design-review a
   bash Iverson.Server/deploy/kind/build-and-load-image.sh 0.1.0 iverson \
     --dockerfile Iverson.AdminUI/Dockerfile --image-name iverson-admin-ui
   cd Iverson.Server/deploy/helm/iverson
-  helm upgrade --install iverson . -f values-local.yaml -n iverson --timeout 15m \
+  helm upgrade --install iverson . -f values-local.yaml -n iverson --timeout 30m \
     --set global.engagementEnabled=false
   ```
+
+  On a fresh cluster, `helm` blocks on the `iverson-authentik-revoke-cross-db` post-install hook until Postgres is up. Postgres's image pull waits behind the ollama/TEI pulls, which the scale-downs below only remove after helm returns, and this took ~15m22s on this host (measured during critical-implementation-review round 2). Hence 30m.
 
   This box's resources don't fit the full `local` profile (established during critical-implementation-review: StarRocks alone requests 4Gi per pod, and `values-local.yaml` states this profile needs a ≥16GB machine). `--set global.engagementEnabled=false` drops StarRocks from the deploy and from readiness entirely; every Ingress under test, admin-ui included, renders byte-identical either way, so nothing being verified here changes. Scale down the rest of what isn't on the path being tested:
   ```bash
