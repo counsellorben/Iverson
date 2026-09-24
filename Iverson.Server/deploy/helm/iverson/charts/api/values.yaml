@@ -42,6 +42,6 @@ adminApiIngress:
 #
 # When false: Program.cs registers no CORS policy at all rather than falling back to
 # something permissive, so cross-origin calls fail closed; and the admin-api Ingress does
-# not render, so a console-less profile does not expose /admin and /health (ANONYMOUS) on a
-# public hostname for nobody to call.
+# not render, so a console-less profile does not expose /admin, /health (ANONYMOUS) and
+# /v1/traces on a public hostname for nobody to call.
 adminConsoleEnabled: false
