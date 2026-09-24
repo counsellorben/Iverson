@@ -1,11 +1,15 @@
 # kind local profile — laptop-sized resources, kind's built-in StorageClass,
 # ingress-nginx instead of a cloud LB controller.
 #
-# tlsSecretName is intentionally left empty here: local dev has no
-# cert-manager/ACME issuer, so the api Ingress renders without a tls: block
-# and is reached over plain HTTP at https://iverson.local — acceptable only
-# because this profile never leaves localhost. Every cloud overlay in the
-# companion Terraform plan sets a real tlsSecretName.
+# tlsSecretName is now a real self-signed dev cert (deploy/kind/setup.sh
+# generates it), because external gRPC clients need genuine HTTP/2 from the
+# first byte, which ingress-nginx never offers over a plaintext connection —
+# see docs/specs/2026-09-24-api-ingress-nginx-grpc-design.md. Everything else
+# on this profile still stays plain HTTP: admin-api/authentik are on
+# different hostnames with no certificate, and admin-ui's Ingress carries its
+# own ssl-redirect: "false" annotation to stay off the redirect this
+# certificate would otherwise trigger on their shared iverson.local host.
+# global.externalScheme is untouched, still "http".
 
 # 172.18.0.0/16 is kind's Docker bridge network — the *node* IP range the
 # kubelet probes api from, not kind's pod CIDR (10.244.0.0/16) or service CIDR
@@ -113,7 +117,7 @@ api:
   ingress:
     className: "nginx"
     annotations: {}
-    tlsSecretName: ""
+    tlsSecretName: "iverson-api-tls"
   # Stated explicitly (even though it matches the api subchart's own nginx/no-TLS
   # default) for the same self-contained-overlay reason api.ingress above is
   # restated in full: an operator reading this file shouldn't have to open

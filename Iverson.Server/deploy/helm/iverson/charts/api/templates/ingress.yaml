@@ -23,6 +23,7 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
     {{- if eq .Values.ingress.className "nginx" }}
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
     nginx.ingress.kubernetes.io/configuration-snippet: |
       more_set_headers "X-Frame-Options: DENY";
       more_set_headers "X-Content-Type-Options: nosniff";
@@ -86,13 +87,6 @@ spec:
                 port:
                   number: 8080
           - path: /iverson.TenantAdminGrpcService
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ .Release.Name }}-api
-                port:
-                  number: 8080
-          - path: /v1/traces
             pathType: Prefix
             backend:
               service:

@@ -94,7 +94,7 @@ api:
   ingress:
     className: "nginx"
     annotations: {}
-    tlsSecretName: ""
+    tlsSecretName: "iverson-api-tls"
 
 worker:
   replicas: 1
