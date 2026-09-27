@@ -198,12 +198,17 @@ run log.
 ## 5. [pod] Smoke-test one query against the real model
 
 ```bash
-python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
+setsid nohup python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
   --corpus $B/beir/corpus.jsonl --queries $B/beir/queries.jsonl \
   --base-url http://127.0.0.1:8000 --model <model-id> --seed 7 --shuffle-seed 7 \
   --subsample 1 --subsample-seed 7 \
   --vllm-version <ver> --quantisation mxfp4 --instance-type <sku> \
-  --responses $A/smoke.responses.jsonl --out $A/smoke.chunks.trec
+  --responses $A/smoke.responses.jsonl --out $A/smoke.chunks.trec \
+  > $A/smoke.log 2>&1 < /dev/null &
+disown
+PATTERN="teacher_rerank.py.*--responses $A/smoke.responses.jsonl"
+until pgrep -f "$PATTERN" > /dev/null; do sleep 1; done
+while pgrep -f "$PATTERN" > /dev/null; do sleep 15; done
 ```
 
 This costs pennies and exercises the one path the free gate structurally cannot: the real model's
@@ -215,11 +220,16 @@ reply shape. Read `$A/smoke.responses.jsonl` and confirm the reply is a 50-eleme
 ## 6. [pod] The main run — 300 queries
 
 ```bash
-python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
+setsid nohup python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
   --corpus $B/beir/corpus.jsonl --queries $B/beir/queries.jsonl \
   --base-url http://127.0.0.1:8000 --model <model-id> --seed 20260920 --shuffle-seed 20260920 \
   --vllm-version <ver> --quantisation mxfp4 --instance-type <sku> \
-  --responses $A/main.responses.jsonl --out $A/teacher-ceiling.chunks.trec
+  --responses $A/main.responses.jsonl --out $A/teacher-ceiling.chunks.trec \
+  > $A/main.log 2>&1 < /dev/null &
+disown
+PATTERN="teacher_rerank.py.*--responses $A/main.responses.jsonl"
+until pgrep -f "$PATTERN" > /dev/null; do sleep 1; done
+while pgrep -f "$PATTERN" > /dev/null; do sleep 15; done
 ```
 
 `--out` **must** end `.chunks.trec` or the sidecar is not found (`report.py` derives it by stripping
@@ -397,3 +407,51 @@ preserved run file reproduces the same p.
   gate.
 - The real model's reply shape is exercised for the first time at step 5. That is why step 5 exists
   and why it is one query, not three hundred.
+
+---
+
+## 11. [pod] Attempt-failure-rate measurement batch (8 queries)
+
+Free-standing addendum, added 2026-09-21. Answers: before raising `RETRY_BUDGET` or
+`MAX_COMPLETION_TOKENS`, or relaxing spec §6 row 2's refusal rule, how often does a real query
+actually need more than 2 attempts? 8 new queries (seeds 101–108), 2 invocations each (4 attempts
+total) of the unmodified script -- see
+`docs/specs/2026-09-21-teacher-ceiling-attempt-measurement-design.md` for why 2 invocations, not a
+new `--retry-budget` flag.
+
+```bash
+for SEED in 101 102 103 104 105 106 107 108; do
+  for PASS in 1 2; do
+    setsid nohup python3 $S/teacher_rerank.py \
+      --run $B/runs/rerank-a0prime.chunks.trec \
+      --corpus $B/beir/corpus.jsonl --queries $B/beir/queries.jsonl \
+      --base-url http://127.0.0.1:8000 --model <model-id> \
+      --seed $SEED --shuffle-seed $SEED --subsample 1 --subsample-seed $SEED \
+      --vllm-version <ver> --quantisation mxfp4 --instance-type <sku> \
+      --responses $A/q$SEED.responses.jsonl --out $A/q$SEED.chunks.trec \
+      > $A/q$SEED.pass$PASS.log 2>&1 < /dev/null &
+    disown
+    PATTERN="teacher_rerank.py.*--responses $A/q$SEED.responses.jsonl"
+    until pgrep -f "$PATTERN" > /dev/null; do sleep 1; done
+    while pgrep -f "$PATTERN" > /dev/null; do sleep 15; done
+    echo "seed $SEED pass $PASS done -- $(tail -1 $A/q$SEED.pass$PASS.log)"
+  done
+done
+```
+
+Each query's second invocation is unconditional, even if the first already succeeded -- an accepted
+entry short-circuits with no model call, so it costs seconds, not minutes.
+
+Then run the summarizer (copy it up with `runpodctl send`/`receive`, same as `teacher_rerank.py`):
+
+```bash
+python3 $S/summarize_teacher_attempts.py $A/q101.responses.jsonl $A/q102.responses.jsonl \
+  $A/q103.responses.jsonl $A/q104.responses.jsonl $A/q105.responses.jsonl \
+  $A/q106.responses.jsonl $A/q107.responses.jsonl $A/q108.responses.jsonl
+```
+
+To fold in the 2 queries already tested live in the prior session (query 936's ledger and the
+token-budget-exceeded query's), pass their `--responses` paths as additional arguments -- whatever
+they were named in that session's `$A`.
+
+Pull the 8 new ledgers down (`runpodctl send`) before terminating the instance, same as step 9.
