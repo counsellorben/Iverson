@@ -49,9 +49,9 @@ Newly introduced by this plan and verified at plan-write time (not covered by th
 | 1b | File path / content | `teacher_rerank.py`'s exact current text at every line range Task 1 diffs against (`:39`, `:42-80`, `:372-403`, `:299-307`, `:434-463`, `:526-529`), and `test_teacher_rerank.py`'s at `:379-392` and each of the 8 `ScriptedTeacher` sites, matches byte-for-byte what this plan's code blocks show as "current" | Read both files in full (629 and 939 lines respectively) directly in this session, immediately before drafting Task 1 |
 | 2 | Function signature | `ScriptedTeacher.__call__` (`test_teacher_rerank.py:310-314`) returns `self.replies.pop(0)` directly as `call_teacher`'s stand-in — a queued tuple, not a wrapped call | Read `:297-314` |
 | 3 | Sibling-set (all 8 non-empty `ScriptedTeacher` sites) | Every one of the 8 non-empty reply lists (`:408, 427, 504, 552, 586, 671, 889, 924`) contains only 2-element `(content_or_None, finish_reason)` tuples — no 3+-element or differently-shaped tuple exists among them | Read the exact text at each of the 8 line numbers directly (including the varied shapes: `None` content at `:552`, malformed-JSON strings at `:586`, `"length"` finish_reason at `:889`, single-line formatting at `:924`) |
-| 4 | Test command | `python3 -m pytest Iverson.Server/Iverson.LoadTest/scripts/test_teacher_rerank.py -q` is the real, documented invocation | Read the test file's own module docstring, line 3 |
+| 4 | Test command | `python3 -m pytest Iverson.Server/Iverson.LoadTest/scripts/test_teacher_rerank.py -q` is the real, documented invocation | Read the test file's own module docstring, line 4 |
 | 5 | Task ordering | Task 1 (Python) and Task 2 (bash) have no hidden cross-dependency — `run_measurement_batch.sh` references none of the symbols Task 1 changes | `grep -n "RESPONSE_SCHEMA\|STRUCTURED_OUTPUT_PARAM\|structured_outputs\|MAX_COMPLETION_TOKENS\|completion_tokens\|reasoning\|http_error" run_measurement_batch.sh` → no hits |
-| 6 | Code-in-plan validity | The bash array-chunking technique (`"${SEED_ARR[@]:$i:$CONCURRENCY}"`, then `wait "${PIDS[@]}"`) splits 8 seeds into batches of 6 then 2, correctly | Ran the exact snippet locally: produced `batch: 101 102 103 104 105 106` then `batch: 107 108` |
+| 6 | Code-in-plan validity | The bash array-chunking technique (`"${SEED_ARR[@]:$i:$CONCURRENCY}"`) splits 8 seeds into batches of 6 then 2, correctly; separately, `wait "${PIDS[@]}"` alone (without `\|\| true`) would return only the *last-listed* PID's exit status, silently swallowing a non-last job's failure while aborting the whole script under `set -e` if the last-listed job fails — confirmed via critical-implementation-review round 1 (3 real bash experiments: middle-job failure swallowed, last-job failure aborts regardless of real completion order, `set -e` isolated as the causal factor) | Ran the chunking snippet locally: produced `batch: 101 102 103 104 105 106` then `batch: 107 108`. Aggregation-under-`set -e` behavior verified in `/tmp/cir-teacher-ceiling-scratch/bashtest/`, per the round-1 review file — `wait "${PIDS[@]}" \|\| true` (now in Task 2 Step 2) confirmed to restore tolerant behavior in the same harness |
 | 7 | Consumer impact (Cat 6 — Task 1 modifies existing code) | `teacher_rerank` has exactly 2 importers repo-wide: `test_teacher_rerank.py` (handled by this plan's own Task 1) and `summarize_teacher_attempts.py`, which uses only `tr.read_responses_ledger`/`tr.accepted_entry` — neither touched by this plan | `grep -rn "import teacher_rerank\|from teacher_rerank"` across `Iverson.Server/`; then `grep -n "\btr\."` inside `summarize_teacher_attempts.py` → only those 2 calls |
 | 8 | Consumer impact (Cat 6) | No test asserts on a ledger record's full dict equality or exact key set — adding 3 new keys to every `make_record` output breaks nothing | `grep -n "assert records ==\|assert record ==\|== \[{"` and `grep -n "\.keys()\|record\["` in `test_teacher_rerank.py` → no hits either way |
 | 9 | Code-in-plan validity | `teacher_rerank.py`'s existing imports (`:33-40`) are already fully explicit per-submodule (`import urllib.request`, not `import urllib`) — this plan's new `import urllib.error` line matches that established convention, rather than relying on `urllib.request`'s transitive exposure of it | Read `:33-40`: every import is a specific module/submodule, none is a bare package import relying on attribute access into a submodule |
@@ -327,7 +327,7 @@ Newly introduced by this plan and verified at plan-write time (not covered by th
           > "$A/q$SEED.pass$PASS.log" 2>&1 < /dev/null &
         PIDS+=("$!")
       done
-      wait "${PIDS[@]}"
+      wait "${PIDS[@]}" || true
       for SEED in "${BATCH[@]}"; do
         echo "seed $SEED pass $PASS done -- $(tail -1 "$A/q$SEED.pass$PASS.log")"
       done
@@ -340,6 +340,17 @@ Newly introduced by this plan and verified at plan-write time (not covered by th
   comment) and `wait` on tracked PIDs replaces polling for a batch's completion. Per-query file
   isolation is unchanged (each `--responses`/`--out` pair is still seed-specific), so no new
   coordination between concurrently-running queries is introduced.
+
+  `wait "${PIDS[@]}" || true` — bash's multi-PID `wait` returns only the *last-listed* PID's exit
+  status, not "any failure." Under the script's own pre-existing `set -euo pipefail` (unchanged by
+  this task), a bare `wait "${PIDS[@]}"` would silently swallow a non-last job's failure while
+  aborting the entire script the moment the *last-listed* job in any batch exits non-zero —
+  exactly what happens whenever `teacher_rerank.py` exhausts a query's retry budget (a real,
+  spec-anticipated outcome per Design §4's "Known issues", not hypothetical). Since Task 2's whole
+  point is running this fully detached and unattended, that abort would be silent and would kill
+  every later batch, the second pass, and the summarizer — a regression the original sequential
+  script didn't have, since it never called `wait` at all. `|| true` restores the original script's
+  own tolerance (it never inspected exit codes either).
 
 - [ ] **Step 3: Commit**
   ```bash
