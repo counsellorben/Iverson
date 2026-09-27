@@ -32,6 +32,30 @@ public sealed class ChunkRowSourceIntegrationTests(QdrantContainerFixture fixtur
                 ["chunk_index"] = index.ToString(), ["ownerId"] = owner,
             });
 
+    /// <summary>Bulk-seeds many chunks in a handful of Qdrant calls (500 points/call) rather than one round
+    /// trip per point — used only by the page-boundary tests below, which need hundreds to over a thousand
+    /// points and would otherwise dominate the run time.</summary>
+    private async Task SeedBulkAsync(string collection, IEnumerable<(string Parent, int Index)> chunks,
+        string vectorName = "body_vector", string field = "Body", string owner = "u1")
+    {
+        var points = new List<PointStruct>();
+        foreach (var (parent, index) in chunks)
+        {
+            var named = new NamedVectors();
+            named.Vectors[vectorName] = new float[] { 1f, 0f, 0f, index };
+            var point = new PointStruct { Id = _nextId++, Vectors = new Vectors { Vectors_ = named } };
+            point.Payload["text"] = IntelligenceVectorService.ToQdrantValue($"{parent}#{index}");
+            point.Payload["parent_id"] = IntelligenceVectorService.ToQdrantValue(parent);
+            point.Payload["field"] = IntelligenceVectorService.ToQdrantValue(field);
+            point.Payload["chunk_index"] = IntelligenceVectorService.ToQdrantValue(index.ToString());
+            point.Payload["ownerId"] = IntelligenceVectorService.ToQdrantValue(owner);
+            points.Add(point);
+        }
+
+        foreach (var batch in points.Chunk(500))
+            await fixture.Client.UpsertAsync(collection, batch);
+    }
+
     private static async Task<List<ChunkRow>> ReadAllAsync(IChunkRowSource source, ChunkRowQuery query)
     {
         var rows = new List<ChunkRow>();
@@ -139,5 +163,52 @@ public sealed class ChunkRowSourceIntegrationTests(QdrantContainerFixture fixtur
 
         rows.Should().HaveCount(5);
         phaseTwo.Should().Be(expectedPhaseTwoScrolls);
+    }
+
+    // ── Page-boundary coverage (fix round 1) ───────────────────────────────
+    //
+    // Every test above stays inside one page of ParentPageSize (1024) or ChunkPageSize (256), so none
+    // of them can tell a correct `offset = page.NextOffset` continuation from one that always stops
+    // after the first page. These three seed past each loop's page size and check every row still
+    // arrives, in order.
+
+    [Fact]
+    public async Task Phase_one_scan_pages_past_ParentPageSize_and_returns_every_parent_in_order()
+    {
+        var col = await CollectionAsync();
+        const int parentCount = 1_100; // > ParentPageSize (1024)
+        var parents = Enumerable.Range(0, parentCount).Select(i => $"p{i:D4}").ToList();
+        await SeedBulkAsync(col, parents.Select(p => (p, 0)));
+
+        var rows = await ReadAllAsync(Source(), Query(col));
+
+        rows.Select(r => r.ParentKey).Should().Equal(parents.OrderBy(p => p, StringComparer.Ordinal));
+        rows.Should().OnlyContain(r => r.ChunkIndex == 0);
+    }
+
+    [Fact]
+    public async Task Phase_two_normal_scroll_pages_past_ChunkPageSize_within_one_batch()
+    {
+        var col = await CollectionAsync();
+        const int chunkCount = 300; // > ChunkPageSize (256)
+        await SeedBulkAsync(col, Enumerable.Range(0, chunkCount).Select(i => ("a", i)));
+
+        var rows = await ReadAllAsync(Source(), Query(col, vectorName: "body_vector"));
+
+        rows.Select(r => r.ChunkIndex).Should().Equal(Enumerable.Range(0, chunkCount));
+        rows.Should().OnlyContain(r => r.Vector != null);
+    }
+
+    [Fact]
+    public async Task Phase_two_vector_fallback_scroll_pages_past_ChunkPageSize_within_one_batch()
+    {
+        var col = await CollectionAsync(vectorName: "other_vector");
+        const int chunkCount = 300; // > ChunkPageSize (256)
+        await SeedBulkAsync(col, Enumerable.Range(0, chunkCount).Select(i => ("a", i)), vectorName: "other_vector");
+
+        var rows = await ReadAllAsync(Source(), Query(col, vectorName: "body_vector"));
+
+        rows.Select(r => r.ChunkIndex).Should().Equal(Enumerable.Range(0, chunkCount));
+        rows.Should().OnlyContain(r => r.Vector == null);
     }
 }
