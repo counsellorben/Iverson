@@ -49,7 +49,16 @@ MAX_MODEL_LEN = 131072  # vLLM's --max-model-len for this teacher (128K); record
 # writing (spec A14). The executing session (Task 3, against a rented instance) MUST confirm this
 # name against the installed vLLM version before the paid run, updating this constant if it has
 # changed, and record the confirmed name in the run log and the sidecar.
-STRUCTURED_OUTPUT_PARAM = "guided_json"
+#
+# CONFIRMED against this session's vLLM 0.30.0 via its own /openapi.json (2026-09-27): `guided_json`
+# is absent from every request schema (ChatCompletionRequest, CompletionRequest, ...);
+# `structured_outputs` is present. It is not a bare rename -- the value shape changed too:
+# `structured_outputs` is a `StructuredOutputsParams` OBJECT whose `json` field takes the schema
+# value `guided_json` used to take directly (confirmed by reading that schema's own definition in
+# the same /openapi.json). call_teacher's body-building line below wraps RESPONSE_SCHEMA in
+# {"json": ...} accordingly -- if a future session reverts this constant to "guided_json" for an
+# older vLLM, that wrapping must be reverted with it, not left in place.
+STRUCTURED_OUTPUT_PARAM = "structured_outputs"
 
 # Item type pinned to string (spec: "Pin the guided-decoding schema's item type to string") -- the
 # model may still emit unquoted JSON numbers regardless of the schema hint (P22), which
@@ -378,7 +387,7 @@ def call_teacher(base_url, model, prompt, seed, api_key=None):
         "stream": False,
         "max_tokens": MAX_COMPLETION_TOKENS,
         "seed": seed,
-        STRUCTURED_OUTPUT_PARAM: RESPONSE_SCHEMA,
+        STRUCTURED_OUTPUT_PARAM: {"json": RESPONSE_SCHEMA},
     }
     req = urllib.request.Request(
         f"{base_url}/v1/chat/completions",
