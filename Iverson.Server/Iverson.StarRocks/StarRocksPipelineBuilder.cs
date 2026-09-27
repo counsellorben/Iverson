@@ -36,7 +36,7 @@ internal static class StarRocksPipelineBuilder
     // so it can never be referenced downstream (select/where/derive/join/etc.) — the key column
     // is never excluded, per IRowFieldAuthorizationEvaluator's existing contract (a caller always
     // sees the primary key even under field restriction).
-    private static Dictionary<string, string> ColumnsFor(
+    internal static Dictionary<string, string> ColumnsFor(
         EngagementQuerySchema schema, AuthorizationConstraint? constraint = null)
     {
         var cols = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
