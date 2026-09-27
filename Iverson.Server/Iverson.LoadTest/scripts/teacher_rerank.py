@@ -36,44 +36,17 @@ import json
 import os
 import random
 import sys
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
 # ── Serving constants (spec §4) ──────────────────────────────────────────────────────────────
 
-MAX_COMPLETION_TOKENS = 8192  # NOT enrich_bench.py's MAX_TOKENS=256 -- sized for a 2-3 sentence
-# reply, not one 569-594-character listwise answer plus a reasoning trace sharing the same budget.
+MAX_COMPLETION_TOKENS = 32768  # raised from 8192 (fixes design doc §2): the largest real prompt
+# measured live (23,427 tokens) plus this budget is 56,195, well under MAX_MODEL_LEN's 131,072.
+# Reasoning and the final answer share this one budget -- a reasoning model's chain-of-thought
+# can consume a large, variable share of it before any answer text appears.
 MAX_MODEL_LEN = 131072  # vLLM's --max-model-len for this teacher (128K); recorded in the sidecar.
-
-# vLLM's guided-decoding parameter is mid-rename (`guided_json` -> `structured_outputs`) as of this
-# writing (spec A14). The executing session (Task 3, against a rented instance) MUST confirm this
-# name against the installed vLLM version before the paid run, updating this constant if it has
-# changed, and record the confirmed name in the run log and the sidecar.
-#
-# CONFIRMED against this session's vLLM 0.30.0 via its own /openapi.json (2026-09-27): `guided_json`
-# is absent from every request schema (ChatCompletionRequest, CompletionRequest, ...);
-# `structured_outputs` is present. It is not a bare rename -- the value shape changed too:
-# `structured_outputs` is a `StructuredOutputsParams` OBJECT whose `json` field takes the schema
-# value `guided_json` used to take directly (confirmed by reading that schema's own definition in
-# the same /openapi.json). call_teacher's body-building line below wraps RESPONSE_SCHEMA in
-# {"json": ...} accordingly -- if a future session reverts this constant to "guided_json" for an
-# older vLLM, that wrapping must be reverted with it, not left in place.
-STRUCTURED_OUTPUT_PARAM = "structured_outputs"
-
-# Item type pinned to string (spec: "Pin the guided-decoding schema's item type to string") -- the
-# model may still emit unquoted JSON numbers regardless of the schema hint (P22), which
-# validate_permutation's str() normalisation handles independently of this schema.
-RESPONSE_SCHEMA = {"type": "array", "items": {"type": "string"}, "minItems": 50, "maxItems": 50}
-# minItems/maxItems added after live evidence: at temperature 0 with a fixed seed, gpt-oss-120b
-# twice returned a well-formed 46-element array for the same query (different ids dropped each
-# time -- not deterministic despite the fixed seed), which passed guided-JSON validation and only
-# failed Python-side length validation after a full ~3-6 minute generation. Constraining array
-# length in the schema itself should make vLLM's guided decoder refuse to terminate the array
-# below 50 elements, catching this at generation time instead of after paying for it.
-# UNVERIFIED: whether this vLLM version's guided-decoding backend actually enforces minItems/
-# maxItems on structured JSON output -- no vLLM is reachable on the dev box to confirm. If it
-# does not enforce them, this is a no-op and the post-hoc length check in validate_permutation
-# remains the real defense, as it was before this change.
 
 RETRY_BUDGET = 2  # one initial attempt + one retry (spec §6 row 1: "One retry ... on a second
 # failure the query is recorded unscored"). A resumed invocation gets a FRESH budget of 2, never a
@@ -296,7 +269,8 @@ def append_response(path, record):
         f.write(json.dumps(record) + "\n")
 
 
-def make_record(query_id, status, content, order, reason, pass_id):
+def make_record(query_id, status, content, order, reason, pass_id,
+                 reasoning=None, completion_tokens=None, prompt_tokens=None):
     return {
         "query_id": str(query_id),
         "status": status,
@@ -304,6 +278,9 @@ def make_record(query_id, status, content, order, reason, pass_id):
         "order": order,
         "reason": reason,
         "pass": pass_id,
+        "reasoning": reasoning,
+        "completion_tokens": completion_tokens,
+        "prompt_tokens": prompt_tokens,
     }
 
 
@@ -372,14 +349,32 @@ def build_prompt(query_text, shuffled_doc_ids, corpus):
 def call_teacher(base_url, model, prompt, seed, api_key=None):
     """POSTs to `{base_url}/v1/chat/completions` with stdlib `urllib.request`, the same transport
     shape as `enrich_bench.py:56-62` (temperature 0, stream false), plus `max_tokens:
-    MAX_COMPLETION_TOKENS` (NOT enrich_bench.py's 256, spec §4), a fixed `seed`, and vLLM guided
-    decoding to `RESPONSE_SCHEMA` under `STRUCTURED_OUTPUT_PARAM`. Returns (content, finish_reason);
-    the caller checks `finish_reason == "length"` before ever parsing `content` (spec §6 row 1).
+    MAX_COMPLETION_TOKENS` (NOT enrich_bench.py's 256, spec §4) and a fixed `seed`. Returns
+    `(content, finish_reason, reasoning, completion_tokens, prompt_tokens)` -- one consistent
+    5-tuple shape across every path: a normal completion, a `finish_reason="length"` truncation,
+    and a caught HTTP/timeout error (`finish_reason="http_error"`, with `reasoning`/
+    `completion_tokens`/`prompt_tokens` all `None` -- no usage data exists for a failed request).
+    The caller checks `finish_reason in ("length", "http_error")` before ever parsing `content`
+    (spec §6 row 1 / design doc §4).
+
+    `usage`/`reasoning` are read defensively (`.get()` chains, never direct indexing) so a reply
+    missing either key degrades to `None` instead of raising `KeyError` -- vLLM 0.30.0 exposes
+    `message.reasoning` (not `reasoning_content`) and a top-level `usage.completion_tokens`/
+    `usage.prompt_tokens`; `usage.completion_tokens_details.reasoning_tokens` was checked live
+    and found unreliable (read 0 on a response that plainly contained reasoning text), so it is
+    not used.
 
     `api_key`, when given, is sent as `Authorization: Bearer <api_key>` -- some vLLM deployments
     (e.g. a RunPod template that launches `vllm serve --api-key` from a `VLLM_API_KEY` env var
     before the operator ever runs this script) require it; the header is simply omitted when
-    `api_key` is None, so unauthenticated servers are unaffected."""
+    `api_key` is None, so unauthenticated servers are unaffected.
+
+    HTTP-level failures are caught, not left to crash the whole run (design doc §4): `HTTPError`
+    (e.g. an xgrammar/Harmony FSM crash a `structured_outputs` request used to raise) records the
+    status/reason/body; the broader `OSError` (covers `socket.timeout`/`TimeoutError`, an
+    `OSError` subclass, and any other network-level failure `urlopen` can raise) records
+    `str(e)`. `HTTPError` must stay listed first -- it is itself an `OSError` subclass, so the
+    more specific clause has to come before the broader catch-all to be distinguished."""
     body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -387,7 +382,6 @@ def call_teacher(base_url, model, prompt, seed, api_key=None):
         "stream": False,
         "max_tokens": MAX_COMPLETION_TOKENS,
         "seed": seed,
-        STRUCTURED_OUTPUT_PARAM: {"json": RESPONSE_SCHEMA},
     }
     req = urllib.request.Request(
         f"{base_url}/v1/chat/completions",
@@ -397,10 +391,23 @@ def call_teacher(base_url, model, prompt, seed, api_key=None):
     req.add_header("Content-Type", "application/json")
     if api_key:
         req.add_header("Authorization", f"Bearer {api_key}")
-    with urllib.request.urlopen(req, timeout=600) as resp:
-        parsed = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            parsed = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace")[:2000]
+        return f"HTTP {e.code}: {e.reason} -- {body_text}", "http_error", None, None, None
+    except OSError as e:
+        return str(e), "http_error", None, None, None
     choice = parsed["choices"][0]
-    return choice["message"]["content"], choice.get("finish_reason")
+    usage = parsed.get("usage") or {}
+    return (
+        choice["message"]["content"],
+        choice.get("finish_reason"),
+        choice["message"].get("reasoning"),
+        usage.get("completion_tokens"),
+        usage.get("prompt_tokens"),
+    )
 
 
 # ── Per-query scoring: resume + retry budget (spec §6 rows 1 and 4) ────────────────────────────
@@ -433,7 +440,7 @@ def score_query(query_id, expected_ids, query_text, corpus, args, ledger):
 
     last_reason = None
     for _attempt in range(RETRY_BUDGET):
-        content, finish_reason = call_teacher(
+        content, finish_reason, reasoning, completion_tokens, prompt_tokens = call_teacher(
             args.base_url, args.model, prompt, args.seed, api_key=args.api_key
         )
         if finish_reason == "length":
@@ -443,22 +450,37 @@ def score_query(query_id, expected_ids, query_text, corpus, args, ledger):
                 f"A prompt over the {MAX_MODEL_LEN}-token max_model_len is the SEPARATE HTTP 400 "
                 "failure, not this one.)"
             )
-            append_response(args.responses, make_record(query_id, "rejected", content, None, last_reason, pass_id))
+            append_response(args.responses, make_record(
+                query_id, "rejected", content, None, last_reason, pass_id,
+                reasoning, completion_tokens, prompt_tokens))
+            continue
+
+        if finish_reason == "http_error":
+            last_reason = f"http_error: {content}"
+            append_response(args.responses, make_record(
+                query_id, "rejected", content, None, last_reason, pass_id,
+                reasoning, completion_tokens, prompt_tokens))
             continue
 
         ids, parse_error = parse_json_array(content)
         if parse_error is not None:
             last_reason = parse_error
-            append_response(args.responses, make_record(query_id, "rejected", content, None, last_reason, pass_id))
+            append_response(args.responses, make_record(
+                query_id, "rejected", content, None, last_reason, pass_id,
+                reasoning, completion_tokens, prompt_tokens))
             continue
 
         ok, result = validate_permutation(ids, expected_ids)
         if ok:
-            append_response(args.responses, make_record(query_id, "accepted", content, result, None, pass_id))
+            append_response(args.responses, make_record(
+                query_id, "accepted", content, result, None, pass_id,
+                reasoning, completion_tokens, prompt_tokens))
             return result, None
 
         last_reason = result
-        append_response(args.responses, make_record(query_id, "rejected", content, None, last_reason, pass_id))
+        append_response(args.responses, make_record(
+            query_id, "rejected", content, None, last_reason, pass_id,
+            reasoning, completion_tokens, prompt_tokens))
 
     return None, last_reason
 
@@ -525,7 +547,6 @@ def write_sidecar(out_path, args):
             "shuffleSeed": args.shuffle_seed,
             "maxModelLen": MAX_MODEL_LEN,
             "maxCompletionTokens": MAX_COMPLETION_TOKENS,
-            "structuredOutputParam": STRUCTURED_OUTPUT_PARAM,
             "promptTemplateSha256": PROMPT_TEMPLATE_SHA256,
             "instanceType": args.instance_type,
             "subsample": args.subsample,

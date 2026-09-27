@@ -377,21 +377,6 @@ DOC_ID_IN_PROMPT = re.compile(r"^\[(\S+)\]", re.M)
 
 
 # --------------------------------------------------------------------------------------------
-# RESPONSE_SCHEMA must constrain array length to exactly the pool size (50), not just item type.
-# Live evidence (2026-09-21, gpt-oss-120b on vLLM 0.29.0): at temperature 0 with a fixed seed,
-# two separate attempts for the same query both returned well-formed 46-element arrays -- valid
-# against an unconstrained schema, invalid against the 50-id pool -- each costing a full
-# multi-minute generation before Python-side validation caught it.
-# --------------------------------------------------------------------------------------------
-
-def test_response_schema_constrains_array_length_to_exactly_fifty():
-    assert tr.RESPONSE_SCHEMA["minItems"] == 50
-    assert tr.RESPONSE_SCHEMA["maxItems"] == 50
-    assert tr.RESPONSE_SCHEMA["type"] == "array"
-    assert tr.RESPONSE_SCHEMA["items"] == {"type": "string"}
-
-
-# --------------------------------------------------------------------------------------------
 # --api-key: some vLLM deployments require Authorization: Bearer <key> (e.g. a RunPod template
 # that launches `vllm serve --api-key` from VLLM_API_KEY before the operator runs this script).
 # The plumbing test proves args.api_key reaches call_teacher through main(), via ScriptedTeacher
@@ -406,8 +391,8 @@ def test_main_passes_api_key_through_to_call_teacher(tmp_path, monkeypatch):
     out_path = str(tmp_path / "teacher.chunks.trec")
 
     scripted = ScriptedTeacher([
-        ('["d1", "d2", "d3"]', "stop"),
-        ('["e1", "e2", "e3"]', "stop"),
+        ('["d1", "d2", "d3"]', "stop", None, None, None),
+        ('["e1", "e2", "e3"]', "stop", None, None, None),
     ])
     monkeypatch.setattr(tr, "call_teacher", scripted)
 
@@ -425,8 +410,8 @@ def test_main_omits_api_key_when_not_given(tmp_path, monkeypatch):
     out_path = str(tmp_path / "teacher.chunks.trec")
 
     scripted = ScriptedTeacher([
-        ('["d1", "d2", "d3"]', "stop"),
-        ('["e1", "e2", "e3"]', "stop"),
+        ('["d1", "d2", "d3"]', "stop", None, None, None),
+        ('["e1", "e2", "e3"]', "stop", None, None, None),
     ])
     monkeypatch.setattr(tr, "call_teacher", scripted)
 
@@ -502,8 +487,8 @@ def test_main_presents_documents_to_the_model_in_shuffled_not_fusion_order(tmp_p
     out_path = str(tmp_path / "teacher.chunks.trec")
 
     scripted = ScriptedTeacher([
-        ('["d2", "d3", "d1"]', "stop"),
-        ('["e2", "e3", "e1"]', "stop"),
+        ('["d2", "d3", "d1"]', "stop", None, None, None),
+        ('["e2", "e3", "e1"]', "stop", None, None, None),
     ])
     monkeypatch.setattr(tr, "call_teacher", scripted)
 
@@ -550,9 +535,9 @@ def test_main_records_a_null_content_reply_to_responses_instead_of_crashing(tmp_
     # landed in reasoning_content) -- q1 is left unscored, but must not crash, and every attempt
     # must still be durably logged.
     scripted = ScriptedTeacher([
-        (None, "stop"),
-        (None, "stop"),
-        ('["e2", "e3", "e1"]', "stop"),
+        (None, "stop", None, None, None),
+        (None, "stop", None, None, None),
+        ('["e2", "e3", "e1"]', "stop", None, None, None),
     ])
     monkeypatch.setattr(tr, "call_teacher", scripted)
 
@@ -584,9 +569,9 @@ def test_main_refuses_to_write_a_run_file_when_any_query_is_unscored(tmp_path, m
     # attempts and is therefore left unscored -- the run file must not be written even though q1
     # itself scored fine, and never filled from fusion order for the query that failed.
     scripted = ScriptedTeacher([
-        ('["d3", "d1", "d2"]', "stop"),
-        ("not valid json", "stop"),
-        ("still not valid json", "stop"),
+        ('["d3", "d1", "d2"]', "stop", None, None, None),
+        ("not valid json", "stop", None, None, None),
+        ("still not valid json", "stop", None, None, None),
     ])
     monkeypatch.setattr(tr, "call_teacher", scripted)
 
@@ -669,7 +654,7 @@ def test_main_resumes_skipping_accepted_and_reissuing_all_rejected_queries(tmp_p
     # (wrongly) treated as already exhausted, this test would fail -- either by call count or by
     # a SystemExit for an unscored q2.
     scripted = ScriptedTeacher([
-        ('["e2", "e1", "e3"]', "stop"),
+        ('["e2", "e1", "e3"]', "stop", None, None, None),
     ])
     monkeypatch.setattr(tr, "call_teacher", scripted)
 
@@ -887,9 +872,9 @@ def test_length_finish_reason_blames_max_tokens_not_the_prompt(tmp_path, monkeyp
     out_path = str(tmp_path / "teacher.chunks.trec")
 
     scripted = ScriptedTeacher([
-        ('["d2", "d3"', "length"),   # q1: truncated completion, both attempts
-        ('["d2", "d3"', "length"),
-        ('["e2", "e3", "e1"]', "stop"),
+        ('["d2", "d3"', "length", None, None, None),   # q1: truncated completion, both attempts
+        ('["d2", "d3"', "length", None, None, None),
+        ('["e2", "e3", "e1"]', "stop", None, None, None),
     ])
     monkeypatch.setattr(tr, "call_teacher", scripted)
 
@@ -921,7 +906,7 @@ def test_main_stamps_each_ledger_record_with_this_pass_and_resumes_from_it(tmp_p
     responses_path = str(tmp_path / "responses.jsonl")
     out_path = str(tmp_path / "teacher.chunks.trec")
 
-    scripted = ScriptedTeacher([('["d2", "d3", "d1"]', "stop"), ('["e2", "e3", "e1"]', "stop")])
+    scripted = ScriptedTeacher([('["d2", "d3", "d1"]', "stop", None, None, None), ('["e2", "e3", "e1"]', "stop", None, None, None)])
     monkeypatch.setattr(tr, "call_teacher", scripted)
     argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
     tr.main(argv)
