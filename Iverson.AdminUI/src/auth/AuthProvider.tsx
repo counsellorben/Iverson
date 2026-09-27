@@ -35,11 +35,13 @@ export function onSigninCallback(): void {
 // errors on a timer. We do NOT loosen the CSP to allow it (that would trade
 // a smaller token-storage exposure for a larger framing/clickjacking one).
 // So `automaticSilentRenew` is off, and the session simply ends at
-// access-token expiry, requiring a fresh login. That's an accepted tradeoff
-// for an admin console whose pages are currently stubs rendering no tenant
-// data; revisit if silent renewal becomes worth reintroducing (e.g. via a
-// backend-mediated refresh that never puts the refresh token in the
-// browser).
+// access-token expiry, requiring a fresh login. The landing page now renders
+// real tenant/schema data (TenantRosterWidget, SchemaCatalogWidget, etc.), so
+// the "nothing to lose" framing this comment used to carry no longer holds —
+// what still holds is the XSS-exfiltration risk above and the CSP tradeoff:
+// neither depends on how much data the console shows. Revisit if silent
+// renewal becomes worth reintroducing (e.g. via a backend-mediated refresh
+// that never puts the refresh token in the browser).
 const oidcConfig = {
   authority: config.oidcAuthority,
   client_id: config.oidcClientId,
