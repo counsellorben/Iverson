@@ -16,4 +16,6 @@
   <Project Path="Iverson.StarRocks.Tests/Iverson.StarRocks.Tests.csproj" />
   <Project Path="Iverson.LoadTest/Iverson.LoadTest.csproj" />
   <Project Path="Iverson.LoadTest.Tests/Iverson.LoadTest.Tests.csproj" />
+  <Project Path="Iverson.Patterns/Iverson.Patterns.csproj" />
+  <Project Path="Iverson.Patterns.Tests/Iverson.Patterns.Tests.csproj" />
 </Solution>

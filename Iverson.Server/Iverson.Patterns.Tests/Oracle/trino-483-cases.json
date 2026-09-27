@@ -1,0 +1,9962 @@
+[
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "90"
+   ],
+   [
+    "6",
+    "50"
+   ],
+   [
+    "7",
+    "40"
+   ],
+   [
+    "8",
+    "60"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "MATCH_NUMBER()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "CLASSIFIER()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A B+ C+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testSimpleQuery",
+  "index": 0,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 90), (6, 50), (7, 40), (8, 60) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES MATCH_NUMBER() AS match, RUNNING LAST(value) AS val, CLASSIFIER() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (A B+ C+) DEFINE /* A defaults to True, matches any row */ B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "() | A",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testRowPattern",
+  "index": 0,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (() | A) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "^A",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testRowPattern",
+  "index": 1,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (^A) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A^",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testRowPattern",
+  "index": 2,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (A^) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "^A^",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testRowPattern",
+  "index": 3,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (^A^) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A$",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testRowPattern",
+  "index": 4,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (A$) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "$A",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testRowPattern",
+  "index": 5,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ($A) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "$A$",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testRowPattern",
+  "index": 6,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ($A$) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A B C",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value = PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testRowPattern",
+  "index": 7,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (A B C) DEFINE B AS B.value < PREV (B.value), C AS C.value = PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B | C | A",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value <= PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testRowPattern",
+  "index": 8,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B | C | A) DEFINE B AS B.value < PREV (B.value), C AS C.value <= PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "PERMUTE(B, C)",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value < PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testRowPattern",
+  "index": 9,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (PERMUTE(B, C)) DEFINE B AS B.value < PREV (B.value), C AS C.value < PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "((A) (B (C)))",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value = PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testRowPattern",
+  "index": 10,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (((A) (B (C)))) DEFINE B AS B.value < PREV (B.value), C AS C.value = PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B*",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 0,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B*) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B*?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 1,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B*?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 2,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B+) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B+?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 3,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B+?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 4,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B??",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 5,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B??) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{,}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 6,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{,}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{,}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 7,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{,}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{1,}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 8,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{1,}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{1,}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 9,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{1,}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{2,}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 10,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{2,}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{2,}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 11,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{2,}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{5,}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 12,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{5,}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{5,}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 13,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{5,}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{,1}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 14,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{,1}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{,1}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 15,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{,1}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{,2}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 16,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{,2}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{,2}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 17,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{,2}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{,5}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 18,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{,5}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{,5}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 19,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{,5}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{1,1}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 20,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{1,1}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{1,1}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 21,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{1,1}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{1,5}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 22,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{1,5}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{1,5}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 23,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{1,5}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{5,7}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 24,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{5,7}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{5,7}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 25,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{5,7}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{1}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 26,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{1}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{1}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 27,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{1}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{2}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 28,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{2}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{2}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 29,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{2}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{5}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 30,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{5}) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B{5}?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value <= PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPatternQuantifiers",
+  "index": 31,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B{5}?) DEFINE B AS B.value <= PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "90"
+   ],
+   [
+    "6",
+    "50"
+   ],
+   [
+    "7",
+    "40"
+   ],
+   [
+    "8",
+    "60"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A B+ C+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testExclusionSyntax",
+  "index": 0,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 90), (6, 50), (7, 40), (8, 60) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (A B+ C+) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "90"
+   ],
+   [
+    "6",
+    "50"
+   ],
+   [
+    "7",
+    "40"
+   ],
+   [
+    "8",
+    "60"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A {- B+ -} C+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testExclusionSyntax",
+  "index": 1,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 90), (6, 50), (7, 40), (8, 60) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (A {- B+ -} C+) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "90"
+   ],
+   [
+    "6",
+    "50"
+   ],
+   [
+    "7",
+    "40"
+   ],
+   [
+    "8",
+    "60"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "{- A -} {- B+ -} C+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testExclusionSyntax",
+  "index": 2,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 90), (6, 50), (7, 40), (8, 60) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ({- A -} {- B+ -} C+) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "90"
+   ],
+   [
+    "6",
+    "50"
+   ],
+   [
+    "7",
+    "40"
+   ],
+   [
+    "8",
+    "60"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A {- {- B+ -} C+ -}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testExclusionSyntax",
+  "index": 3,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 90), (6, 50), (7, 40), (8, 60) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (A {- {- B+ -} C+ -}) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "90"
+   ],
+   [
+    "6",
+    "50"
+   ],
+   [
+    "7",
+    "40"
+   ],
+   [
+    "8",
+    "60"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "{- A B+ C+ -}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testExclusionSyntax",
+  "index": 4,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 90), (6, 50), (7, 40), (8, 60) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ({- A B+ C+ -}) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "90"
+   ],
+   [
+    "6",
+    "50"
+   ],
+   [
+    "7",
+    "40"
+   ],
+   [
+    "8",
+    "60"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A B+ {- ()* -} C+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testExclusionSyntax",
+  "index": 5,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 90), (6, 50), (7, 40), (8, 60) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (A B+ {- ()* -} C+) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "90"
+   ],
+   [
+    "6",
+    "50"
+   ],
+   [
+    "7",
+    "40"
+   ],
+   [
+    "8",
+    "60"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A {- B -}+ {- C -}+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testExclusionSyntax",
+  "index": 6,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 90), (6, 50), (7, 40), (8, 60) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ( A {- B -}+ {- C -}+) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "90"
+   ],
+   [
+    "6",
+    "50"
+   ],
+   [
+    "7",
+    "40"
+   ],
+   [
+    "8",
+    "60"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A {- B -}* {- C -}*",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testExclusionSyntax",
+  "index": 7,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 90), (6, 50), (7, 40), (8, 60) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ( A {- B -}* {- C -}*) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "90"
+   ],
+   [
+    "6",
+    "50"
+   ],
+   [
+    "7",
+    "40"
+   ],
+   [
+    "8",
+    "60"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A {- B -}{1,2} {- C -}{1,2}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testExclusionSyntax",
+  "index": 8,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 90), (6, 50), (7, 40), (8, 60) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ( A {- B -}{1,2} {- C -}{1,2}) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "90"
+   ],
+   [
+    "6",
+    "50"
+   ],
+   [
+    "7",
+    "40"
+   ],
+   [
+    "8",
+    "60"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A {- C -}{2,3} {- B -}{2,3}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testExclusionSyntax",
+  "index": 9,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 90), (6, 50), (7, 40), (8, 60) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ( A {- C -}{2,3} {- B -}{2,3}) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "value"
+  ],
+  "rows": [
+   [
+    "1"
+   ],
+   [
+    "1"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [],
+  "measures": [
+   [
+    "classy",
+    "CLASSIFIER()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "(A | B)* X",
+  "subsets": [],
+  "define": [
+   [
+    "X",
+    "value = A.value"
+   ]
+  ],
+  "select": [
+   [
+    "value",
+    "value"
+   ],
+   [
+    "classy",
+    "classy"
+   ]
+  ],
+  "method": "testBackReference",
+  "index": 0,
+  "sql": "SELECT value, classy FROM (VALUES 1, 1) t(value) MATCH_RECOGNIZE ( MEASURES CLASSIFIER() AS classy ALL ROWS PER MATCH PATTERN ((A | B)* X) DEFINE X AS value = A.value )"
+ },
+ {
+  "columns": [
+   "value"
+  ],
+  "rows": [
+   [
+    "1"
+   ],
+   [
+    "1"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [],
+  "measures": [
+   [
+    "classy",
+    "CLASSIFIER()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "(A | B)* X",
+  "subsets": [],
+  "define": [
+   [
+    "X",
+    "value = B.value"
+   ]
+  ],
+  "select": [
+   [
+    "value",
+    "value"
+   ],
+   [
+    "classy",
+    "classy"
+   ]
+  ],
+  "method": "testBackReference",
+  "index": 1,
+  "sql": "SELECT value, classy FROM (VALUES 1, 1) t(value) MATCH_RECOGNIZE ( MEASURES CLASSIFIER() AS classy ALL ROWS PER MATCH PATTERN ((A | B)* X) DEFINE X AS value = B.value )"
+ },
+ {
+  "columns": [
+   "value"
+  ],
+  "rows": [
+   [
+    "1"
+   ],
+   [
+    "2"
+   ],
+   [
+    "3"
+   ],
+   [
+    "4"
+   ],
+   [
+    "5"
+   ],
+   [
+    "6"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "value",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "classy",
+    "CLASSIFIER()"
+   ],
+   [
+    "defining_condition",
+    "PREV(LAST(A.value), 3) + FIRST(A.value) + PREV(LAST(B.value), 2)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "(A | B)* X",
+  "subsets": [],
+  "define": [
+   [
+    "X",
+    "value = PREV(LAST(A.value), 3) + FIRST(A.value) + PREV(LAST(B.value), 2)"
+   ]
+  ],
+  "select": [
+   [
+    "value",
+    "value"
+   ],
+   [
+    "classy",
+    "classy"
+   ],
+   [
+    "defining_condition",
+    "defining_condition"
+   ]
+  ],
+  "method": "testBackReference",
+  "index": 2,
+  "sql": "SELECT value, classy, defining_condition FROM (VALUES 1, 2, 3, 4, 5, 6) t(value) MATCH_RECOGNIZE ( ORDER BY value MEASURES CLASSIFIER() AS classy, PREV(LAST(A.value), 3) + FIRST(A.value) + PREV(LAST(B.value), 2) AS defining_condition ALL ROWS PER MATCH PATTERN ((A | B)* X) DEFINE X AS value = PREV(LAST(A.value), 3) + FIRST(A.value) + PREV(LAST(B.value), 2) )"
+ },
+ {
+  "columns": [
+   "value"
+  ],
+  "rows": [
+   [
+    "1"
+   ],
+   [
+    "2"
+   ],
+   [
+    "3"
+   ],
+   [
+    "4"
+   ],
+   [
+    "5"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "value",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "classy",
+    "CLASSIFIER()"
+   ],
+   [
+    "defining_condition",
+    "PREV(CLASSIFIER(U), 1) = 'A' AND LAST(CLASSIFIER(), 3) = 'B' AND FIRST(CLASSIFIER(U)) = 'B'"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "(A | B)* X $",
+  "subsets": [
+   [
+    "U",
+    [
+     "A",
+     "B"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "X",
+    "PREV(CLASSIFIER(U), 1) = 'A' AND LAST(CLASSIFIER(), 3) = 'B' AND FIRST(CLASSIFIER(U)) = 'B'"
+   ]
+  ],
+  "select": [
+   [
+    "value",
+    "value"
+   ],
+   [
+    "classy",
+    "classy"
+   ],
+   [
+    "defining_condition",
+    "defining_condition"
+   ]
+  ],
+  "method": "testBackReference",
+  "index": 3,
+  "sql": "SELECT value, classy, defining_condition FROM (VALUES 1, 2, 3, 4, 5) t(value) MATCH_RECOGNIZE ( ORDER BY value MEASURES CLASSIFIER() AS classy, PREV(CLASSIFIER(U), 1) = 'A' AND LAST(CLASSIFIER(), 3) = 'B' AND FIRST(CLASSIFIER(U)) = 'B' AS defining_condition ALL ROWS PER MATCH PATTERN ((A | B)* X $) SUBSET U = (A, B) DEFINE X AS PREV(CLASSIFIER(U), 1) = 'A' AND LAST(CLASSIFIER(), 3) = 'B' AND FIRST(CLASSIFIER(U)) = 'B' )"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "()* | B",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 0,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (()* | B) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "()+ | B",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 1,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (()+ | B) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "(){5,} | B",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 2,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ((){5,} | B) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B | ()*",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 3,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B | ()*) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "(B ()*)*",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 4,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ((B ()*)*) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "(B ()*)*?",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 5,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ((B ()*)*?) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "^* | B",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 6,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (^* | B) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "^+ | B",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 7,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (^+ | B) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "^* A B",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 8,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (^* A B) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "$* | B",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 9,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ($* | B) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "$+ | B",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 10,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN ($+ | B) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B A $+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyCycle",
+  "index": 11,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B A $+) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "OneRow",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B*",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testOutputModes",
+  "index": 0,
+  "sql": "SELECT m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B*) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "OneRow",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B*",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testOutputModes",
+  "index": 1,
+  "sql": "SELECT m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label AFTER MATCH SKIP PAST LAST ROW PATTERN (B*) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "OneRow",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testOutputModes",
+  "index": 2,
+  "sql": "SELECT m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B+) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B*",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testOutputModes",
+  "index": 3,
+  "sql": "SELECT m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B*) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testOutputModes",
+  "index": 4,
+  "sql": "SELECT m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B+) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B*",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testOutputModes",
+  "index": 5,
+  "sql": "SELECT m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH SHOW EMPTY MATCHES AFTER MATCH SKIP PAST LAST ROW PATTERN (B*) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsOmitEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B*",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testOutputModes",
+  "index": 6,
+  "sql": "SELECT m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH OMIT EMPTY MATCHES AFTER MATCH SKIP PAST LAST ROW PATTERN (B*) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsOmitEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testOutputModes",
+  "index": 7,
+  "sql": "SELECT m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH OMIT EMPTY MATCHES AFTER MATCH SKIP PAST LAST ROW PATTERN (B+) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "70"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsWithUnmatched",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testOutputModes",
+  "index": 8,
+  "sql": "SELECT m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 70) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH WITH UNMATCHED ROWS AFTER MATCH SKIP PAST LAST ROW PATTERN (B+) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 0,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "ToNextRow",
+  "skipVariable": "",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 1,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP TO NEXT ROW PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "ToFirst",
+  "skipVariable": "C",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 2,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP TO FIRST C PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "ToFirst",
+  "skipVariable": "c",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 3,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP TO FIRST c PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "ToLast",
+  "skipVariable": "B",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 4,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP TO LAST B PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "ToLast",
+  "skipVariable": "b",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 5,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP TO LAST b PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "ToLast",
+  "skipVariable": "B",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 6,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP TO B PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "ToLast",
+  "skipVariable": "b",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 7,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP TO b PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "ToLast",
+  "skipVariable": "U",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 8,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP TO U PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "ToLast",
+  "skipVariable": "u",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 9,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP TO u PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "ToLast",
+  "skipVariable": "A",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 10,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP TO A PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "ToLast",
+  "skipVariable": "D",
+  "pattern": "A B+ C+ D?",
+  "subsets": [
+   [
+    "U",
+    [
+     "C",
+     "D"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ],
+   [
+    "D",
+    "false"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testAfterMatchSkip",
+  "index": 11,
+  "sql": "SELECT m.id, m.match, m.val, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80), (5, 70), (6, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP TO D PATTERN (A B+ C+ D?) SUBSET U = (C, D) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value), D AS false ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "100"
+   ],
+   [
+    "2",
+    "100"
+   ],
+   [
+    "3",
+    "90"
+   ],
+   [
+    "4",
+    "80"
+   ],
+   [
+    "5",
+    "70"
+   ],
+   [
+    "6",
+    "100"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsWithUnmatched",
+  "skip": "ToNextRow",
+  "skipVariable": "",
+  "pattern": "A B{2}",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "value",
+    "value"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testEmptyMatches",
+  "index": 0,
+  "sql": "SELECT m.id, m.match, m.value, m.label FROM (VALUES (1, 100), (2, 100), (3, 90), (4, 80), (5, 70), (6, 100) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, classifier() AS label ALL ROWS PER MATCH WITH UNMATCHED ROWS AFTER MATCH SKIP TO NEXT ROW PATTERN (A B{2}) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "lower_or_higher",
+    "classifier(U)"
+   ],
+   [
+    "label",
+    "classifier(W)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "(L | H) A",
+  "subsets": [
+   [
+    "U",
+    [
+     "L",
+     "H"
+    ]
+   ],
+   [
+    "W",
+    [
+     "A",
+     "L",
+     "H"
+    ]
+   ]
+  ],
+  "define": [
+   [
+    "A",
+    "A.value = 80"
+   ],
+   [
+    "L",
+    "L.value < 80"
+   ],
+   [
+    "H",
+    "H.value > 80"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "lower_or_higher",
+    "lower_or_higher"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testUnionVariable",
+  "index": 0,
+  "sql": "SELECT m.id, m.match, m.val, m.lower_or_higher, m.label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier(U) AS lower_or_higher, classifier(W) AS label ALL ROWS PER MATCH PATTERN ((L | H) A) SUBSET U = (L, H), W = (A, L, H) DEFINE A AS A.value = 80, L AS L.value < 80, H AS H.value > 80 ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "value"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 0,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES value AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "LAST(value)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 1,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES LAST(value) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "RUNNING LAST(value)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 2,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES RUNNING LAST(value) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "FINAL LAST(value)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 3,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES FINAL LAST(value) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "FIRST(value)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 4,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES FIRST(value) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "RUNNING FIRST(value)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 5,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES RUNNING FIRST(value) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "FINAL FIRST(value)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 6,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES FINAL FIRST(value) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "FINAL LAST(value, 2)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 7,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES FINAL LAST(value, 2) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "FIRST(value, 2)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 8,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES FIRST(value, 2) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "LAST(value, 10)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 9,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES LAST(value, 10) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "FIRST(value, 10)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 10,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES FIRST(value, 10) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "PREV(value)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 11,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES PREV(value) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "NEXT(value)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 12,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES NEXT(value) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "NEXT(FIRST(value), 2)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 13,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES NEXT(FIRST(value), 2) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "NEXT(FIRST(value), 10)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 14,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES NEXT(FIRST(value), 10) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "PREV(FIRST(value), 10)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 15,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES PREV(FIRST(value), 10) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "PREV(FIRST(value, 10), 2)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 16,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES PREV(FIRST(value, 10), 2) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "PREV(LAST(value, 10), 2)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 17,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES PREV(LAST(value, 10), 2) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "PREV(B.value, 4)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 18,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES PREV(B.value, 4) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "PREV(B.value, 3)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 19,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES PREV(B.value, 3) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "PREV(B.value, 2)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 20,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES PREV(B.value, 2) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "NEXT(B.value, 1)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 21,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES NEXT(B.value, 1) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "10"
+   ],
+   [
+    "2",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "measure",
+    "NEXT(B.value, 2)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "measure",
+    "measure"
+   ]
+  ],
+  "method": "testNavigationFunctions",
+  "index": 22,
+  "sql": "SELECT m.id, m.measure FROM (VALUES (1, 10), (2, 20), (3, 30) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES NEXT(B.value, 2) AS measure ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "label",
+    "CLASSIFIER()"
+   ],
+   [
+    "next_label",
+    "NEXT(CLASSIFIER())"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A B+ C+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV(B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV(C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "value",
+    "value"
+   ],
+   [
+    "label",
+    "label"
+   ],
+   [
+    "next_label",
+    "next_label"
+   ]
+  ],
+  "method": "testClassifierFunctionPastCurrentRow",
+  "index": 0,
+  "sql": "SELECT m.id, m.value, m.label, m.next_label FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES CLASSIFIER() AS label, NEXT(CLASSIFIER()) AS next_label ALL ROWS PER MATCH PATTERN (A B+ C+) DEFINE B AS B.value < PREV(B.value), C AS C.value > PREV(C.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "80"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "val",
+    "value"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "NEXT(CLASSIFIER()) = 'A'"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "val",
+    "val"
+   ]
+  ],
+  "method": "testClassifierFunctionPastCurrentRow",
+  "index": 1,
+  "sql": "SELECT m.id, m.val FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 80) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES value AS val ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS NEXT(CLASSIFIER()) = 'A' ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "90"
+   ],
+   [
+    "2",
+    "80"
+   ],
+   [
+    "3",
+    "70"
+   ],
+   [
+    "4",
+    "100"
+   ],
+   [
+    "5",
+    "200"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "label",
+    "CLASSIFIER()"
+   ],
+   [
+    "final_label",
+    "FINAL LAST(CLASSIFIER())"
+   ],
+   [
+    "running_value",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "final_value",
+    "FINAL LAST(value)"
+   ],
+   [
+    "A_running_value",
+    "RUNNING LAST(A.value)"
+   ],
+   [
+    "A_final_value",
+    "FINAL LAST(A.value)"
+   ],
+   [
+    "B_running_value",
+    "RUNNING LAST(B.value)"
+   ],
+   [
+    "B_final_value",
+    "FINAL LAST(B.value)"
+   ],
+   [
+    "C_running_value",
+    "RUNNING LAST(C.value)"
+   ],
+   [
+    "C_final_value",
+    "FINAL LAST(C.value)"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A B+ C+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ],
+   [
+    "C",
+    "C.value > PREV (C.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "id"
+   ],
+   [
+    "label",
+    "label"
+   ],
+   [
+    "final_label",
+    "final_label"
+   ],
+   [
+    "running_value",
+    "running_value"
+   ],
+   [
+    "final_value",
+    "final_value"
+   ],
+   [
+    "A_running_value",
+    "A_running_value"
+   ],
+   [
+    "A_final_value",
+    "A_final_value"
+   ],
+   [
+    "B_running_value",
+    "B_running_value"
+   ],
+   [
+    "B_final_value",
+    "B_final_value"
+   ],
+   [
+    "C_running_value",
+    "C_running_value"
+   ],
+   [
+    "C_final_value",
+    "C_final_value"
+   ]
+  ],
+  "method": "testRunningAndFinal",
+  "index": 0,
+  "sql": "SELECT id, label, final_label, running_value,final_value, A_running_value, A_final_value, B_running_value, B_final_value, C_running_value, C_final_value FROM (VALUES (1, 90), (2, 80), (3, 70), (4, 100), (5, 200) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES CLASSIFIER() AS label, FINAL LAST(CLASSIFIER()) AS final_label, RUNNING LAST(value) AS running_value, FINAL LAST(value) AS final_value, RUNNING LAST(A.value) AS A_running_value, FINAL LAST(A.value) AS A_final_value, RUNNING LAST(B.value) AS B_running_value, FINAL LAST(B.value) AS B_final_value, RUNNING LAST(C.value) AS C_running_value, FINAL LAST(C.value) AS C_final_value ALL ROWS PER MATCH PATTERN (A B+ C+) DEFINE B AS B.value < PREV (B.value), C AS C.value > PREV (C.value) )"
+ },
+ {
+  "columns": [
+   "id",
+   "part",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "'p1'",
+    "90"
+   ],
+   [
+    "2",
+    "'p1'",
+    "80"
+   ],
+   [
+    "6",
+    "'p1'",
+    "80"
+   ],
+   [
+    "2",
+    "'p2'",
+    "20"
+   ],
+   [
+    "2",
+    "'p3'",
+    "60"
+   ],
+   [
+    "1",
+    "'p3'",
+    "50"
+   ],
+   [
+    "3",
+    "'p1'",
+    "70"
+   ],
+   [
+    "4",
+    "'p1'",
+    "80"
+   ],
+   [
+    "5",
+    "'p1'",
+    "90"
+   ],
+   [
+    "1",
+    "'p2'",
+    "20"
+   ],
+   [
+    "3",
+    "'p3'",
+    "70"
+   ],
+   [
+    "3",
+    "'p2'",
+    "10"
+   ]
+  ],
+  "partitionBy": [
+   "part"
+  ],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "PREV(RUNNING LAST(value))"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "part",
+    "partition"
+   ],
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPartitioningAndOrdering",
+  "index": 0,
+  "sql": "SELECT m.part as partition, m.id AS row_id, m.match, m.val, m.label FROM (VALUES (1, 'p1', 90), (2, 'p1', 80), (6, 'p1', 80), (2, 'p2', 20), (2, 'p3', 60), (1, 'p3', 50), (3, 'p1', 70), (4, 'p1', 80), (5, 'p1', 90), (1, 'p2', 20), (3, 'p3', 70), (3, 'p2', 10) ) t(id, part, value) MATCH_RECOGNIZE ( PARTITION BY part ORDER BY id MEASURES match_number() AS match, PREV(RUNNING LAST(value)) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B+) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "5",
+    "10"
+   ],
+   [
+    "2",
+    "90"
+   ],
+   [
+    "1",
+    "80"
+   ],
+   [
+    "4",
+    "20"
+   ],
+   [
+    "3",
+    "30"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "match",
+    "match_number()"
+   ],
+   [
+    "val",
+    "RUNNING LAST(value)"
+   ],
+   [
+    "label",
+    "classifier()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "match",
+    "match"
+   ],
+   [
+    "val",
+    "val"
+   ],
+   [
+    "label",
+    "label"
+   ]
+  ],
+  "method": "testPartitioningAndOrdering",
+  "index": 2,
+  "sql": "SELECT m.id AS row_id, m.match, m.val, m.label FROM (VALUES (5, 10), (2, 90), (1, 80), (4, 20), (3, 30) )t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES match_number() AS match, RUNNING LAST(value) AS val, classifier() AS label ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B+) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "part",
+   "value"
+  ],
+  "rows": [
+   [
+    "5",
+    "'p2'",
+    "10"
+   ],
+   [
+    "2",
+    "'p1'",
+    "90"
+   ],
+   [
+    "1",
+    "'p1'",
+    "80"
+   ],
+   [
+    "4",
+    "'p2'",
+    "20"
+   ],
+   [
+    "3",
+    "'p1'",
+    "30"
+   ]
+  ],
+  "partitionBy": [
+   "part"
+  ],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "B+",
+  "subsets": [],
+  "define": [
+   [
+    "B",
+    "B.value < PREV (B.value)"
+   ]
+  ],
+  "select": [
+   [
+    "id",
+    "row_id"
+   ],
+   [
+    "part",
+    "partition"
+   ]
+  ],
+  "method": "testPartitioningAndOrdering",
+  "index": 3,
+  "sql": "SELECT m.id AS row_id, m.part as partition FROM (VALUES (5, 'p2', 10), (2, 'p1', 90), (1, 'p1', 80), (4, 'p2', 20), (3, 'p1', 30) )t(id, part, value) MATCH_RECOGNIZE ( PARTITION BY part ORDER BY id ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW PATTERN (B+) DEFINE B AS B.value < PREV (B.value) ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "part",
+   "value"
+  ],
+  "rows": [
+   [
+    "'ordering'",
+    "'partitioning'",
+    "90"
+   ]
+  ],
+  "partitionBy": [
+   "part"
+  ],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "classy",
+    "CLASSIFIER()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "*",
+    "*"
+   ]
+  ],
+  "method": "testOutputLayout",
+  "index": 0,
+  "sql": "SELECT * FROM (VALUES ('ordering', 'partitioning', 90) ) t(id, part, value) MATCH_RECOGNIZE ( PARTITION BY part ORDER BY id MEASURES CLASSIFIER() AS classy ALL ROWS PER MATCH PATTERN (A) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "part",
+   "value"
+  ],
+  "rows": [
+   [
+    "'ordering'",
+    "'partitioning'",
+    "90"
+   ]
+  ],
+  "partitionBy": [
+   "part"
+  ],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "classy",
+    "CLASSIFIER()"
+   ]
+  ],
+  "rowsPerMatch": "OneRow",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "*",
+    "*"
+   ]
+  ],
+  "method": "testOutputLayout",
+  "index": 1,
+  "sql": "SELECT * FROM (VALUES ('ordering', 'partitioning', 90) ) t(id, part, value) MATCH_RECOGNIZE ( PARTITION BY part ORDER BY id MEASURES CLASSIFIER() AS classy ONE ROW PER MATCH PATTERN (A) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "part",
+   "value"
+  ],
+  "rows": [
+   [
+    "'ordering'",
+    "'partitioning'",
+    "90"
+   ]
+  ],
+  "partitionBy": [
+   "part"
+  ],
+  "orderBy": [
+   [
+    "id",
+    false
+   ],
+   [
+    "id",
+    true
+   ]
+  ],
+  "measures": [
+   [
+    "classy",
+    "CLASSIFIER()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "A",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "*",
+    "*"
+   ]
+  ],
+  "method": "testOutputLayout",
+  "index": 2,
+  "sql": "SELECT * FROM (VALUES ('ordering', 'partitioning', 90) ) t(id, part, value) MATCH_RECOGNIZE ( PARTITION BY part ORDER BY id ASC, id DESC MEASURES CLASSIFIER() AS classy ALL ROWS PER MATCH PATTERN (A) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "100"
+   ],
+   [
+    "2",
+    "200"
+   ],
+   [
+    "3",
+    "300"
+   ],
+   [
+    "4",
+    "400"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "val",
+    "FIRST(A.value) IN (300, LAST(A.value))"
+   ]
+  ],
+  "rowsPerMatch": "OneRow",
+  "skip": "ToNextRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "val",
+    "val"
+   ]
+  ],
+  "method": "testInPredicateWithoutSubquery",
+  "index": 0,
+  "sql": "SELECT m.val FROM (VALUES (1, 100), (2, 200), (3, 300), (4, 400) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES FIRST(A.value) IN (300, LAST(A.value)) AS val ONE ROW PER MATCH AFTER MATCH SKIP TO NEXT ROW PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "id",
+   "value"
+  ],
+  "rows": [
+   [
+    "1",
+    "100"
+   ],
+   [
+    "2",
+    "200"
+   ],
+   [
+    "3",
+    "300"
+   ],
+   [
+    "4",
+    "400"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "id",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "val",
+    "MATCH_NUMBER() IN (0, MATCH_NUMBER())"
+   ]
+  ],
+  "rowsPerMatch": "OneRow",
+  "skip": "ToNextRow",
+  "skipVariable": "",
+  "pattern": "A+",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "val",
+    "val"
+   ]
+  ],
+  "method": "testInPredicateWithoutSubquery",
+  "index": 2,
+  "sql": "SELECT m.val FROM (VALUES (1, 100), (2, 200), (3, 300), (4, 400) ) t(id, value) MATCH_RECOGNIZE ( ORDER BY id MEASURES MATCH_NUMBER() IN (0, MATCH_NUMBER()) AS val ONE ROW PER MATCH AFTER MATCH SKIP TO NEXT ROW PATTERN (A+) DEFINE A AS true ) AS m"
+ },
+ {
+  "columns": [
+   "value"
+  ],
+  "rows": [
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ],
+   [
+    "1"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [],
+  "measures": [
+   [
+    "classy",
+    "CLASSIFIER()"
+   ]
+  ],
+  "rowsPerMatch": "OneRow",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "(A+)+ B",
+  "subsets": [],
+  "define": [
+   [
+    "A",
+    "value = 1"
+   ],
+   [
+    "B",
+    "value = 2"
+   ]
+  ],
+  "select": [
+   [
+    "classy",
+    "classy"
+   ]
+  ],
+  "method": "testPotentiallyExponentialMatch",
+  "index": 0,
+  "sql": "SELECT m.classy FROM (VALUES (1), (1), (1), (1), (1), (1), (1), (1), (1), (1), (1), (1), (1), (1), (1), (1), (1), (1), (1), (1)) t(value) MATCH_RECOGNIZE ( MEASURES CLASSIFIER() AS classy PATTERN ((A+)+ B) DEFINE A AS value = 1, B AS value = 2 ) AS m"
+ },
+ {
+  "columns": [
+   "value"
+  ],
+  "rows": [
+   [
+    "1"
+   ],
+   [
+    "2"
+   ],
+   [
+    "3"
+   ],
+   [
+    "4"
+   ],
+   [
+    "5"
+   ],
+   [
+    "6"
+   ],
+   [
+    "7"
+   ],
+   [
+    "8"
+   ],
+   [
+    "9"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [
+   [
+    "value",
+    false
+   ]
+  ],
+  "measures": [
+   [
+    "classy",
+    "CLASSIFIER()"
+   ]
+  ],
+  "rowsPerMatch": "AllRowsShowEmpty",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "(A | B)+ LAST",
+  "subsets": [],
+  "define": [
+   [
+    "LAST",
+    "FIRST(CLASSIFIER()) = 'B' AND FIRST(CLASSIFIER(), 1) = 'B' AND FIRST(CLASSIFIER(), 2) = 'B' AND FIRST(CLASSIFIER(), 3) = 'B' AND FIRST(CLASSIFIER(), 4) = 'B' AND FIRST(CLASSIFIER(), 5) = 'B' AND FIRST(CLASSIFIER(), 6) = 'B' AND FIRST(CLASSIFIER(), 7) = 'B'"
+   ]
+  ],
+  "select": [
+   [
+    "classy",
+    "classy"
+   ]
+  ],
+  "method": "testExponentialMatch",
+  "index": 0,
+  "sql": "SELECT m.classy FROM (VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9)) t(value) MATCH_RECOGNIZE ( ORDER BY value MEASURES CLASSIFIER() AS classy ALL ROWS PER MATCH PATTERN ((A | B)+ LAST) DEFINE LAST AS FIRST(CLASSIFIER()) = 'B' AND FIRST(CLASSIFIER(), 1) = 'B' AND FIRST(CLASSIFIER(), 2) = 'B' AND FIRST(CLASSIFIER(), 3) = 'B' AND FIRST(CLASSIFIER(), 4) = 'B' AND FIRST(CLASSIFIER(), 5) = 'B' AND FIRST(CLASSIFIER(), 6) = 'B' AND FIRST(CLASSIFIER(), 7) = 'B' ) AS m"
+ },
+ {
+  "columns": [
+   "_col0"
+  ],
+  "rows": [
+   [
+    "1"
+   ],
+   [
+    "2"
+   ],
+   [
+    "3"
+   ],
+   [
+    "4"
+   ],
+   [
+    "5"
+   ]
+  ],
+  "partitionBy": [],
+  "orderBy": [],
+  "measures": [
+   [
+    "foo",
+    "'foo'"
+   ]
+  ],
+  "rowsPerMatch": "OneRow",
+  "skip": "PastLastRow",
+  "skipVariable": "",
+  "pattern": "(Y?){2,}",
+  "subsets": [],
+  "define": [
+   [
+    "Y",
+    "true"
+   ]
+  ],
+  "select": [
+   [
+    "*",
+    "*"
+   ]
+  ],
+  "method": "testKillThread",
+  "index": 0,
+  "sql": "SELECT * FROM (VALUES 1, 2, 3, 4, 5) MATCH_RECOGNIZE ( MEASURES 'foo' AS foo PATTERN ((Y?){2,}) DEFINE Y AS true)"
+ }
+]
