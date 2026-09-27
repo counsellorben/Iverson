@@ -76,19 +76,26 @@ After `RETRY_BUDGET` rejected attempts, a query is a **fallback**: it is written
   300; 2 of a 50-query repeat; 0 for any invocation under 20 queries, including every single-query
   measurement invocation, which therefore behaves exactly as today). Over the cap, the run file and
   sidecar are **not written**, exit non-zero, and every failed query is listed with its last
-  reason — today's refusal, now triggered by the cap instead of by the first failure.
+  reason — today's refusal, now triggered by the cap (or by a corrupt resumed entry, below) instead
+  of by the first failure.
 - At or under the cap: the run file is written, stdout prints the fallback count and ids, and the
   sidecar records `"fallbackQueryIds": [...]` (empty list when none).
 - The ledger gets no fallback record. A fallback is decided at write time from the ledger's
   all-rejected state, so resuming an interrupted pass re-attempts those queries with a fresh budget,
   as §6 row 4 already does for any all-rejected query.
+- **A corrupt resumed entry is never a fallback** (Ben, 2026-09-27, CDR-1 §3.1). When a query's
+  accepted ledger entry fails the resume re-check (`teacher_rerank.py:433-435`), the run is refused —
+  no run file, no sidecar — whatever the fallback count. Only budget exhaustion (`:485`) produces a
+  fallback. `score_query` returns the same `(None, reason)` shape for both today, so it must also
+  report which of the two happened.
 
 **Why this does not reopen `TeiRerankClient`'s objection.** §6 forbade "fill from fusion order"
 because a silent fallback "writes a run file indistinguishable from a reranked one". This fallback
 is counted, printed, recorded in the sidecar, and capped; the verdict doc reports it. The §11 dry-run
-gate still catches a discarded-reply bug: its two pinned pairs (identity 0.6980 / 0.9193, reversed
-0.0032 / 0.9193) move if even one query falls back, so both dry runs must now also print
-`0 fallbacks`.
+gate still catches a discarded-reply bug, but through a new check: the reversed pair (0.0032 /
+0.9193) moves if a query falls back, while the identity pair (0.6980 / 0.9193) cannot, because a
+fallback writes A0′ order — exactly what the identity stub returns. Both dry runs must therefore
+also print `0 fallbacks`.
 
 **Bias bound.** A fallback query counts as delta 0, but the teacher's true delta on it is unknown in
 either direction, so the reported delta can be off by at most the fallback fraction times the
@@ -146,8 +153,8 @@ two 50-query repeats) at the measured ≈ 453 s per query would take ≈ 50 hour
 
   | Quantity | Value | Source |
   |---|---|---|
-  | Largest prompt of the 300 | 30,716 tokens (query 852, 138,174 chars) | `build_prompt` over the pod's own corpus, at the most conservative measured 4.498 chars/token (range 4.498–4.584 over 3 live probes, whose local char counts match the pod's exactly) |
-  | Per-request worst case | 30,716 + 16,384 = 47,100 tokens | §5 cap |
+  | Largest prompt of the 300 | 30,719 tokens (query 852, 138,174 chars) | `build_prompt` over the pod's own corpus, at the most conservative measured 4.498 chars/token (range 4.498–4.584 over 3 live probes, whose local char counts match the pod's exactly) |
+  | Per-request worst case | 30,719 + 16,384 = 47,103 tokens | §5 cap |
   | KV-cache pool | 655,317 tokens | `/metrics` `kv_cache_size_tokens` on the v2 pod |
   | 90% of pool ÷ worst case | 12.5 → **12** | |
 
@@ -166,7 +173,7 @@ two 50-query repeats) at the measured ≈ 453 s per query would take ≈ 50 hour
   is a permutation of the query's pool, so pool invariance and R@50 = 0.9193 are untouched. A
   fallback query counts as unreordered for check 2's ≥ 25% floor; at ≤ 5% fallbacks that floor is
   not in reach of the fallback count.
-- **New check 6: fallback count ≤ `floor(0.05 × n)`** — enforced by the script (§3); the verdict doc
+- **New check 6: fallback count ≤ `floor(0.05 × n)`, and no corrupt resumed entry** — enforced by the script (§3); the verdict doc
   records the count and ids from the sidecar.
 - Spec A27's premise ("§6 row 2 forbids a partial run file, so the intersection is all 300") still
   holds: a fallback query is written, so the run file is always complete.
@@ -179,7 +186,8 @@ two 50-query repeats) at the measured ≈ 453 s per query would take ≈ 50 hour
 - New: the lenient-prefix function (full permutation; prefix exactly at threshold; one below; stop
   at first duplicate; stop at first invented id; `min(20, pool size)` on a 3-document pool); fallback
   under and over the cap on a ≥ 20-query fixture (the existing fixtures have < 20 queries, so their
-  cap is 0 and every existing refusal test keeps its meaning); sidecar `fallbackQueryIds`;
+  cap is 0 and every existing refusal test keeps its meaning); a corrupt resumed entry still refuses
+  on a ≥ 20-query fixture whose fallbacks are under the cap (§3); sidecar `fallbackQueryIds`;
   `--concurrency` output identical to sequential; `elapsed_s` and `prefix_len` recorded.
 - Changed: every test whose `ScriptedTeacher` queue is sized to two attempts for a failing query —
   under `RETRY_BUDGET` 4 a failing query consumes the next query's replies (e.g.
@@ -220,7 +228,9 @@ Verified 2026-09-27 against the repo (`main` at `7cb008ff`) and the v2 artifacts
 | L14 | Nothing outside these scripts imports `teacher_rerank` | `grep -rl teacher_rerank Iverson.Server` → only `run_measurement_batch.sh`, `stub_vllm_server.py`, `summarize_teacher_attempts.py`, `teacher_rerank.py`, `test_teacher_rerank.py` |
 | L15 | The stub's two dry-run modes still pin their numbers | `stub_vllm_server.py` replies with each query's full 50 ids (`:136-145`), a prefix of 50 → written unchanged; fallbacks 0 |
 | L16 | Per-request decode ≈ 24.8 tok/s, flat across 1–5 concurrent | Timing fit over all 16 invocations (§5): each end time = `Σ completion_tokens / 24.8 + 600 s × timeouts` from its batch start, within ≈ 8 s |
-| L17 | Largest prompt 30,716 tokens; KV pool 655,317 | `build_prompt` over `scifact-run-2026-08-26/beir/corpus.jsonl` for all 300 queries: max 138,174 chars (query 852); local chars equal the pod's for 770/51/783 (105,386 / 90,082 / 83,749); `/metrics` `kv_cache_size_tokens="655317"` |
+| L17 | Largest prompt 30,719 tokens; KV pool 655,317 | `build_prompt` over `scifact-run-2026-08-26/beir/corpus.jsonl` for all 300 queries: max 138,174 chars (query 852); local chars equal the pod's for 770/51/783 (105,386 / 90,082 / 83,749); `/metrics` `kv_cache_size_tokens="655317"` |
 | L18 | The lenient rule accepts 19/23 real lists and 8/8 queries | Re-applied to the v2 ledgers: prefix ≥ 20 on 19 of 23 lists; every query has ≥ 1 |
 | L19 | Threaded appends are safe with a lock | Probe: 12 threads × 150 × 120 KB records, 0 corrupt lines without a lock (twice); the lock covers filesystems the probe did not |
 | L20 | Whether vLLM aborts a request on non-streaming client disconnect | **Unverified, and designed around** (§5): the cap/timeout pair ends generation server-side first |
+| L21 | `score_query` has exactly two producers of an unscored query, indistinguishable to `main` today | Read `teacher_rerank.py:433-435` (resume re-check failure) and `:485` (budget exhausted): both return `(None, str)`; the only caller is `main` at `:631` (`command grep -n "score_query("` over `scripts/`) |
+| L22 | Every real pool has exactly 50 ids, so §2's threshold is always 20 | `load_run` over all 300 queries of the A0′ run: pool sizes `{50}` (CDR-1 U3, re-run) |
