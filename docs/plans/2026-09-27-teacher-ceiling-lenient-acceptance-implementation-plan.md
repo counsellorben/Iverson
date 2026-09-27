@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Source spec:** `docs/specs/2026-09-27-teacher-ceiling-lenient-acceptance-design.md` (commit SHA: `f2e52130362186cdd8406136d14100a03f35d110`)
+**Source spec:** `docs/specs/2026-09-27-teacher-ceiling-lenient-acceptance-design.md` (commit SHA: `684c06b8`)
 
 **Goal:** Make `teacher_rerank.py` produce a 300-query run file from gpt-oss-120b's real reply behaviour — lenient prefix acceptance, a capped per-query fallback, a 4-attempt budget, a completion cap the server always hits before the client timeout, and `--concurrency N` — and bring the Task 3 runbook in line.
 
@@ -17,7 +17,7 @@
 - Stdlib + pytest only — no new dependency (base spec §4, `teacher_rerank.py:17`).
 - `validate_permutation` is unchanged; it keeps guarding the resume path (spec §2).
 - The prompt is unchanged, so `PROMPT_TEMPLATE_SHA256` is unchanged (spec §2).
-- Values, verbatim from the spec: prefix threshold `min(20, pool size)`; fallback cap `floor(0.05 × n)`; `RETRY_BUDGET = 4`; `MAX_COMPLETION_TOKENS = 16384`; client timeout 1,200 s; recommended `--concurrency 12`.
+- Values, verbatim from the spec: prefix threshold `min(20, pool size)`; fallback cap `floor(0.05 × n)`; `RETRY_BUDGET = 4`; `MAX_COMPLETION_TOKENS = 16384`; client timeout 1,200 s; the production run uses an H200 SXM at `--concurrency 24` (Ben, 2026-09-27; spec §6), with the KV pool checked at launch.
 - A corrupt resumed accepted entry refuses the run whatever the fallback count (spec §3, CDR-1 §3.1).
 - Every diff below was applied in sequence with `git apply` to a clean copy of `HEAD` (`f2e52130`) and tested there. Apply them exactly. Hand edits are fine only if the result is byte-identical.
 
@@ -53,6 +53,8 @@ Verified by `thorough-brainstorming` and CDR-1 at spec-write time (spec §10) an
 - **L20** vLLM abort-on-disconnect is unverified and designed around.
 - **L21** `score_query` has exactly two unscored producers (`:433-435`, `:485`), indistinguishable to `main` today; one caller (`main`, `:631`).
 - **L22** Every real pool has exactly 50 ids.
+- **L23** The pod's KV pool is readable as the `kv_cache_size_tokens` label on vLLM's `/metrics`, with no API key.
+- **L24** The H200's KV pool is ≈ 1.95M tokens — an estimate, checked at launch.
 
 ## Verified plan-level assumptions
 
@@ -74,6 +76,7 @@ Verified by `thorough-brainstorming` and CDR-1 at spec-write time (spec §10) an
 | 14 | Command | The two shell one-liners Task 4 adds to the runbook run as written | Ran both against sample files: `1 4960 200.0 24.8` and `['q7']` |
 | 15 | Commit convention | Subjects are lowercase imperative with no prefix, ending with a `Co-Authored-By` trailer; `docs/plans` is gitignored and needs `git add -f` | `git log --oneline -15`; base spec A22 |
 | 16 | Consumer impact | Every runbook passage that restates a value the spec changed (reply shape, `length` handling, attempts, budget, timeout, cost, check count, fallbacks) is edited by Task 4 | CIR-1 span check: all 498 lines of the applied runbook read, every restating passage dispositioned (review §2.1 matrix); the two it found unedited (`:7` budget, `:219-221` smoke check) are now Task 4 hunks, confirmed by row 13's grep |
+| 17 | Command | The runbook's pre-launch check `curl -s http://127.0.0.1:8000/metrics \| grep -o 'kv_cache_size_tokens="[0-9]*"'` prints the pool, and 24 worst-case requests need ≥ 1,256,080 tokens | Ran the `grep -o` over the `vllm:cache_config_info{…}` line captured from the v2 pod: prints `kv_cache_size_tokens="655317"`; spec L23 (no API key needed); 24 × 47,103 ÷ 0.9 = 1,256,080 |
 
 ## Tasks
 
@@ -945,7 +948,7 @@ Expected: `2 failed, 56 passed` (argparse rejects `--concurrency`).
      ap.add_argument("--quantisation", default=None, help="serving identity recorded verbatim in the sidecar's reranker block; omit to record null")
      ap.add_argument("--api-key", default=None, help="sent as 'Authorization: Bearer <key>' if given; omitted otherwise (some vLLM deployments require it, e.g. RunPod's VLLM_API_KEY template)")
      ap.add_argument("--instance-type", default=None, help="serving identity recorded verbatim in the sidecar's reranker block; omit to record null")
-+    ap.add_argument("--concurrency", type=int, default=1, help="queries scored in parallel (default 1); 12 for the production run, bounded by KV-cache memory (lenient-acceptance design §6)")
++    ap.add_argument("--concurrency", type=int, default=1, help="queries scored in parallel (default 1); 24 for the production run on an H200 SXM, bounded by KV-cache memory (lenient-acceptance design §6)")
      return ap
  
  
@@ -1021,7 +1024,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: the `--concurrency` flag (Task 3), the stdout line and `fallback` lines, `fallbackQueryIds` (Task 2), `elapsed_s` (Task 1), and the 58-test count.
 
-The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks` expectation for both dry runs (and why the identity pair cannot see a fallback); step 5's smoke-test expectations (a reply shorter than 50 ids is normal); `--concurrency 12` in steps 6 and 8; step 6's decode-rate check and how to drop to `--concurrency 6` by resuming; check 6 in step 7 with its sidecar one-liner; per-pass fallbacks in step 8; fallbacks and the bias bound in step 10's verdict; the corrected `length` playbook row plus rows for timeouts, the cap refusal and a corrupt entry; the unverified-list entry for speed at 12.
+The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks` expectation for both dry runs (and why the identity pair cannot see a fallback); step 5's smoke-test expectations (a reply shorter than 50 ids is normal); the H200 SXM in step 2; step 6's KV-cache check before launch; `--concurrency 24` in steps 6 and 8; step 6's decode-rate check and how to drop to `--concurrency 12` by resuming; check 6 in step 7 with its sidecar one-liner; per-pass fallbacks in step 8; fallbacks and the bias bound in step 10's verdict; the corrected `length` playbook row plus rows for timeouts, the cap refusal and a corrupt entry; the unverified-list entries for speed at 24 and the estimated H200 pool.
 
 - [ ] **Step 1: Apply the runbook diff**
 
@@ -1033,9 +1036,9 @@ The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks
  
  **The meter runs from step 2 to step 9.** Everything before step 2 is free and must pass first.
 -Budget: $2–5 per pass, under $20 including one failed pass and the repeat.
-+Budget: ≈ 4.2 GPU-hours for the main run plus both repeats at `--concurrency 12` (≈ 8.4 at 6), from
-+lenient-acceptance design §6, which replaces the earlier "$2–5 per pass" estimate. Multiply by the
-+rental rate confirmed in step 2.
++Budget: ≈ 2.1 GPU-hours for the main run plus both repeats at `--concurrency 24` on an H200 SXM
++(≈ 4.2 at 12), from lenient-acceptance design §6, which replaces the earlier "$2–5 per pass"
++estimate. At the quoted $4.61/hr that is ≈ $12 with ≈ 0.5 h of setup; confirm the rate at rental.
  
  ## Which machine runs what
  
@@ -1075,7 +1078,28 @@ The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks
  **Check the `build` line, not just the two numbers.** A wrong sidecar composite still scores
  0.6980/0.9193 but prints `BUILD MISMATCH` on every Task 3 comparison. Cheap to catch here, annoying
  to catch later.
-@@ -212,8 +219,12 @@
+@@ -96,14 +103,16 @@
+ 
+ ## 2. [dashboard] Provision
+ 
+-**It must be an H100 (or H200/B200) — not an A100.** gpt-oss-120b ships MXFP4-quantised, and vLLM's
++**Rent an H200 SXM (141 GB)** — Ben, 2026-09-27, quoted at $4.61/hr. The run's speed comes from how
++many queries run at once, which KV-cache memory bounds, and the H200 holds ≈ 7× the cache of an
++80 GB H100 SXM for ≈ 1.3× the price (lenient-acceptance design §6). Steps 6 and 8 assume it: on an
++80 GB H100, `--concurrency 24` would overrun the cache.
++
++**Never an A100.** gpt-oss-120b ships MXFP4-quantised, and vLLM's
+ MXFP4 kernels target Hopper and Blackwell; the A100 (SM80) is not on the supported list. Dequantising
+ to bf16 would need ~240 GB, so it does not fit one card either. An A100 is the cheaper rental and it
+ will not serve this model.
+ 
+-One 80 GB **H100**, per-second billing: RunPod Community ≈ $1.99/hr, Vast.ai from ~$1.49/hr
+-(third-party listings from August 2026 — confirm the rate at rental).
+-
+ If only A100s are available, switch to the spec's fallback — a 32B-class reasoning model in FP8 —
+ and record the substitution in the sidecar's `--model` and the verdict doc. Do not try to force
+ gpt-oss-120b onto SM80.
+@@ -212,18 +221,32 @@
  ```
  
  This costs pennies and exercises the one path the free gate structurally cannot: the real model's
@@ -1090,22 +1114,34 @@ The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks
  
  ---
  
-@@ -223,7 +234,7 @@
+ ## 6. [pod] The main run — 300 queries
+ 
++**First confirm the KV cache holds 24 worst-case requests.** The H200's pool was estimated, not
++measured (lenient-acceptance design §6):
++
++```bash
++curl -s http://127.0.0.1:8000/metrics | grep -o 'kv_cache_size_tokens="[0-9]*"'
++```
++
++It must print at least `1256080` (24 × 47,103 ÷ 0.9; ≈ 1.95M expected). If it is smaller, use
++`--concurrency` = ⌊0.9 × pool ÷ 47,103⌋ in this step and in step 8 instead of 24.
++
+ ```bash
  setsid nohup python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
    --corpus $B/beir/corpus.jsonl --queries $B/beir/queries.jsonl \
    --base-url http://127.0.0.1:8000 --model <model-id> --seed 20260920 --shuffle-seed 20260920 \
 -  --vllm-version <ver> --quantisation mxfp4 --instance-type <sku> \
-+  --vllm-version <ver> --quantisation mxfp4 --instance-type <sku> --concurrency 12 \
++  --vllm-version <ver> --quantisation mxfp4 --instance-type <sku> --concurrency 24 \
    --responses $A/main.responses.jsonl --out $A/teacher-ceiling.chunks.trec \
    > $A/main.log 2>&1 < /dev/null &
  disown
-@@ -238,9 +249,29 @@
+@@ -238,9 +261,29 @@
  If the instance dies mid-run, re-issue the **identical** command. Resume is enforced, not advisory:
  the ledger records the run path and both seeds, and refuses loudly if you change any of them.
  
-+**Check the decode rate once the first attempts land** (≈ 5 minutes in). `--concurrency 12` is sized
-+from KV-cache memory; per-request speed was measured only up to 5–6 concurrent (lenient-acceptance
-+design §6). The last column is tokens/s per request, ≈ 24.8 at 1–5 concurrent:
++**Check the decode rate once the first attempts land** (≈ 5 minutes in). `--concurrency 24` is sized
++from the H200's KV-cache memory; per-request speed was measured only up to 5–6 concurrent
++(lenient-acceptance design §6). The last column is tokens/s per request, ≈ 24.8 at 1–5 concurrent:
 +
 +```bash
 +python3 -c "import json
@@ -1115,7 +1151,7 @@ The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks
 +```
 +
 +Below ≈ 14 tokens/s a runaway generation can outlive the 1,200 s client timeout. Stop the run
-+(`pkill -f "$PATTERN"`) and re-issue the same command with `--concurrency 6`. `--concurrency` is not
++(`pkill -f "$PATTERN"`) and re-issue the same command with `--concurrency 12`. `--concurrency` is not
 +part of the pass identity, so this resumes; queries in flight when you stopped are asked again with a
 +fresh budget.
 +
@@ -1130,7 +1166,7 @@ The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks
  
  Bring the run file **and its sidecar** down — `report.py` finds the sidecar by filename, so a run
  file without its `.meta.json` scores fine but prints `BUILD UNKNOWN`:
-@@ -274,6 +305,7 @@
+@@ -274,6 +317,7 @@
  | 3 | `R@50` identical to `0.9193` at 4 dp | read off `[scores]`; a deviation means the pool was corrupted |
  | 4 | No result above the oracle **0.9196** | above it means label leakage, not a good teacher — stop and investigate |
  | 5 | Zero duplicate `(qid, score)` pairs | **`report.py` does not compute this** — it counts duplicate `(query_id, doc_id)`. Run it yourself (below) |
@@ -1138,7 +1174,7 @@ The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks
  
  Check 5, explicitly — expect `0`:
  
-@@ -281,7 +313,13 @@
+@@ -281,7 +325,13 @@
  awk '{print $1, $5}' $A/teacher-ceiling.chunks.trec | sort | uniq -d | wc -l
  ```
  
@@ -1153,16 +1189,16 @@ The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks
  ties are structurally impossible, and any duplicate means a writer bug. The same command on
  `rerank-a0prime.chunks.trec` returns `7` — those are real ties in the fusion scores, all at rank ≥23,
  and they are a property of the baseline, not a defect.
-@@ -297,7 +335,7 @@
+@@ -297,7 +347,7 @@
    python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
      --corpus $B/beir/corpus.jsonl --queries $B/beir/queries.jsonl \
      --base-url http://127.0.0.1:8000 --model <model-id> --seed 20260920 --shuffle-seed 20260920 \
 -    --subsample 50 --subsample-seed 20260920 \
-+    --subsample 50 --subsample-seed 20260920 --concurrency 12 \
++    --subsample 50 --subsample-seed 20260920 --concurrency 24 \
      --responses $A/repeat-$P.responses.jsonl --out $A/repeat-$P.chunks.trec
  done
  ```
-@@ -326,6 +364,10 @@
+@@ -326,6 +376,10 @@
  
  Reported, not gating. Confirm `distinct queries 50` and `covered by this run 50 / 50` in the output.
  
@@ -1173,7 +1209,7 @@ The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks
  ---
  
  ## 9. [both] Preserve and destroy
-@@ -367,8 +409,10 @@
+@@ -367,8 +421,10 @@
  ```
  
  Write `docs/plans/2026-09-GATE-teacher-ceiling.md` in the form of
@@ -1186,7 +1222,7 @@ The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks
  
  **PASS requires both:** permutation `p < 0.05` **and** delta ≥ **+0.055** (nDCG@10 ≥ 0.753).
  They are independent — the Phase 1 A2 arm cleared significance with a delta of −0.1126.
-@@ -386,7 +430,10 @@
+@@ -386,7 +442,10 @@
  
  | Symptom | Cause | Do |
  |---|---|---|
@@ -1198,15 +1234,17 @@ The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks
  | HTTP 400 from vLLM | prompt exceeded `max_model_len` | raise `--max-model-len`; unlikely at 128K |
  | `ledger records a different pass` + exit 1 | you reused a `--responses` path, or changed a seed or `--run` mid-pass | use a fresh path per pass; do not edit seeds to "retry" |
  | `<path>:<line>: malformed ledger line` | crash mid-append | delete that last line and re-run; it is by definition not an accepted entry |
-@@ -402,9 +449,8 @@
+@@ -402,9 +461,10 @@
  
  ## What is still unverified going in
  
 -- The `8192` completion budget was never measured — no tokenizer is reachable on the dev box. An
 -  inadequate budget costs a pass, loudly, via `finish_reason=length`; it cannot silently corrupt the
 -  gate.
-+- Per-request speed at `--concurrency 12`: ≈ 24.8 tokens/s was measured only up to 5–6 concurrent.
++- Per-request speed at `--concurrency 24`: ≈ 24.8 tokens/s was measured only up to 5–6 concurrent.
 +  Step 6's rate check covers it.
++- The H200's KV-cache pool (≈ 1.95M tokens) is an estimate from the H100 NVL measurement. Step 6
++  reads the real value before the main run.
  - The real model's reply shape is exercised for the first time at step 5. That is why step 5 exists
    and why it is one query, not three hundred.
  
@@ -1221,7 +1259,7 @@ Expected: `0` (grep exits 1 on zero matches; that is the expected result).
 
 ```bash
 git add -f docs/plans/2026-09-20-teacher-ceiling-task3-runbook.md
-git commit -m "update the teacher-ceiling runbook for lenient acceptance, fallbacks and --concurrency 12
+git commit -m "update the teacher-ceiling runbook for lenient acceptance, fallbacks, and an H200 SXM at --concurrency 24
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" -- docs/plans/2026-09-20-teacher-ceiling-task3-runbook.md
 ```
@@ -1230,7 +1268,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" -- docs/pl
 
 - **`--enforce-eager`** in the pod's start command (`vllm serve ... --enforce-eager ...`) is the
   likely cause of the ≈ 25 tokens/s per-request rate. Dropping it could shorten the run several-fold,
-  but it is untested, and CUDA graphs take GPU memory, shrinking the KV pool that §6's N = 12 is
+  but it is untested, and CUDA graphs take GPU memory, shrinking the KV pool that §6's N = 24 is
   computed from. If it is tried, re-read `kv_cache_size_tokens` after launch and recompute N.
 - A top-k prompt ("return the 20 most relevant ids"). The lenient rule keeps the measured prompt;
   a new prompt would be untested.
