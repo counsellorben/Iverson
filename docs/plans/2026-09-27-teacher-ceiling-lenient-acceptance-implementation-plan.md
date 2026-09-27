@@ -70,9 +70,10 @@ Verified by `thorough-brainstorming` and CDR-1 at spec-write time (spec §10) an
 | 10 | Code validity | The new tests catch the defects they exist for | Seven mutations of the final code, each killed: keeping ids after a duplicate (1 failure); threshold without `min` (17); dropping `elapsed_s` from the `http_error` site (1); cap `n // 10` (2); corrupt entry counted as a fallback (1); `--concurrency` ignored (1, via the barrier); fallback written reversed (1). Removing the lock is not caught — accepted per spec L19 |
 | 11 | Code validity | With the final code, the runbook's free dry-run gate still reproduces both pinned pairs and prints `0 fallbacks`, at `--concurrency 4` | Ran against the real A0′ pool and `stub_vllm_server.py`: identity `nDCG@10 0.6980`, `R@50 0.9193`; reversed `0.0032`, `0.9193`; `build 31583db5aea49136` and `(300 queries, 0 fallbacks)` both times |
 | 12 | Consumer impact | `run_measurement_batch.sh` reads only `tail -1` of each pass log, and single-query invocations have a cap of 0, so no `fallback` line ever follows the `wrote` line there | `run_measurement_batch.sh:88`; `n // 20 = 0` for n = 1 |
-| 13 | File path | Every runbook anchor Task 4 edits is present exactly once, and after the edit no `8192` or "five checks" text remains | Applied the edits to a copy with a uniqueness assertion per anchor; `command grep -c "8192\|five"` → 0 |
+| 13 | File path | Every runbook anchor Task 4 edits is present exactly once, and after the edit no `8192`, "five checks", "50-element" or "Budget: $2–5" text remains | Applied the edits to a copy with a uniqueness assertion per anchor; `command grep -c "8192\|five\|50-element\|Budget: \$2–5"` → 0 (6 on the original); the diff `git apply`s to the original runbook and is byte-identical to the edited copy |
 | 14 | Command | The two shell one-liners Task 4 adds to the runbook run as written | Ran both against sample files: `1 4960 200.0 24.8` and `['q7']` |
 | 15 | Commit convention | Subjects are lowercase imperative with no prefix, ending with a `Co-Authored-By` trailer; `docs/plans` is gitignored and needs `git add -f` | `git log --oneline -15`; base spec A22 |
+| 16 | Consumer impact | Every runbook passage that restates a value the spec changed (reply shape, `length` handling, attempts, budget, timeout, cost, check count, fallbacks) is edited by Task 4 | CIR-1 span check: all 498 lines of the applied runbook read, every restating passage dispositioned (review §2.1 matrix); the two it found unedited (`:7` budget, `:219-221` smoke check) are now Task 4 hunks, confirmed by row 13's grep |
 
 ## Tasks
 
@@ -1020,14 +1021,25 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: the `--concurrency` flag (Task 3), the stdout line and `fallback` lines, `fallbackQueryIds` (Task 2), `elapsed_s` (Task 1), and the 58-test count.
 
-The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (and why the identity pair cannot see a fallback); `--concurrency 12` in steps 6 and 8; step 6's decode-rate check and how to drop to `--concurrency 6` by resuming; check 6 in step 7 with its sidecar one-liner; per-pass fallbacks in step 8; fallbacks and the bias bound in step 10's verdict; the corrected `length` playbook row plus rows for timeouts, the cap refusal and a corrupt entry; the unverified-list entry for speed at 12.
+The edits: the budget line's cost estimate; step 1's test count and `0 fallbacks` expectation for both dry runs (and why the identity pair cannot see a fallback); step 5's smoke-test expectations (a reply shorter than 50 ids is normal); `--concurrency 12` in steps 6 and 8; step 6's decode-rate check and how to drop to `--concurrency 6` by resuming; check 6 in step 7 with its sidecar one-liner; per-pass fallbacks in step 8; fallbacks and the bias bound in step 10's verdict; the corrected `length` playbook row plus rows for timeouts, the cap refusal and a corrupt entry; the unverified-list entry for speed at 12.
 
 - [ ] **Step 1: Apply the runbook diff**
 
 ````diff
 --- a/docs/plans/2026-09-20-teacher-ceiling-task3-runbook.md
 +++ b/docs/plans/2026-09-20-teacher-ceiling-task3-runbook.md
-@@ -61,7 +61,7 @@
+@@ -4,7 +4,9 @@
+ Tasks 1–2 are already built and committed on branch `teacher-ceiling`.
+ 
+ **The meter runs from step 2 to step 9.** Everything before step 2 is free and must pass first.
+-Budget: $2–5 per pass, under $20 including one failed pass and the repeat.
++Budget: ≈ 4.2 GPU-hours for the main run plus both repeats at `--concurrency 12` (≈ 8.4 at 6), from
++lenient-acceptance design §6, which replaces the earlier "$2–5 per pass" estimate. Multiply by the
++rental rate confirmed in step 2.
+ 
+ ## Which machine runs what
+ 
+@@ -61,7 +63,7 @@
  Run all three. If any disagrees, stop: the pipeline is wrong and renting a GPU would measure nothing.
  
  ```bash
@@ -1036,7 +1048,7 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
  ```
  
  **Both halves of the gate.** Start the stub, note the port it prints, run against it, score it.
-@@ -75,7 +75,8 @@
+@@ -75,7 +77,8 @@
          --responses /tmp/pre-id.jsonl --out /tmp/pre-id.chunks.trec
  python3 $S/report.py --run /tmp/pre-id.chunks.trec --qrels $B/qrels.trec
  ```
@@ -1046,7 +1058,7 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
  
  Repeat with `--order reversed` on the stub and a **fresh** `--responses` path:
  ```bash
-@@ -83,11 +84,15 @@
+@@ -83,11 +86,15 @@
          --queries $B/beir/queries.jsonl --order reversed
  # ... same teacher_rerank.py call, but --responses /tmp/pre-rev.jsonl --out /tmp/pre-rev.chunks.trec
  ```
@@ -1063,7 +1075,22 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
  **Check the `build` line, not just the two numbers.** A wrong sidecar composite still scores
  0.6980/0.9193 but prints `BUILD MISMATCH` on every Task 3 comparison. Cheap to catch here, annoying
  to catch later.
-@@ -223,7 +228,7 @@
+@@ -212,8 +219,12 @@
+ ```
+ 
+ This costs pennies and exercises the one path the free gate structurally cannot: the real model's
+-reply shape. Read `$A/smoke.responses.jsonl` and confirm the reply is a 50-element JSON array and
+-`finish_reason` is `stop`, not `length`.
++reply shape. Expect `$A/smoke.log`'s last line to end `(1 queries, 0 fallbacks)`, and the `accepted`
++record in `$A/smoke.responses.jsonl` to carry `prefix_len` ≥ 20. A reply shorter than 50 ids is
++normal: its valid prefix is kept and the rest of the pool follows in A0′ order (lenient-acceptance
++design §2). Rejected attempts before it (`finish_reason=length`, `valid prefix too short`,
++`http_error`) are one failed attempt each. `1 / 1 queries unscored` means all 4 attempts failed (a
++single-query invocation has a fallback cap of 0), so read their reasons before starting step 6.
+ 
+ ---
+ 
+@@ -223,7 +234,7 @@
  setsid nohup python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
    --corpus $B/beir/corpus.jsonl --queries $B/beir/queries.jsonl \
    --base-url http://127.0.0.1:8000 --model <model-id> --seed 20260920 --shuffle-seed 20260920 \
@@ -1072,7 +1099,7 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
    --responses $A/main.responses.jsonl --out $A/teacher-ceiling.chunks.trec \
    > $A/main.log 2>&1 < /dev/null &
  disown
-@@ -238,9 +243,29 @@
+@@ -238,9 +249,29 @@
  If the instance dies mid-run, re-issue the **identical** command. Resume is enforced, not advisory:
  the ledger records the run path and both seeds, and refuses loudly if you change any of them.
  
@@ -1103,7 +1130,7 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
  
  Bring the run file **and its sidecar** down — `report.py` finds the sidecar by filename, so a run
  file without its `.meta.json` scores fine but prints `BUILD UNKNOWN`:
-@@ -274,6 +299,7 @@
+@@ -274,6 +305,7 @@
  | 3 | `R@50` identical to `0.9193` at 4 dp | read off `[scores]`; a deviation means the pool was corrupted |
  | 4 | No result above the oracle **0.9196** | above it means label leakage, not a good teacher — stop and investigate |
  | 5 | Zero duplicate `(qid, score)` pairs | **`report.py` does not compute this** — it counts duplicate `(query_id, doc_id)`. Run it yourself (below) |
@@ -1111,7 +1138,7 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
  
  Check 5, explicitly — expect `0`:
  
-@@ -281,7 +307,13 @@
+@@ -281,7 +313,13 @@
  awk '{print $1, $5}' $A/teacher-ceiling.chunks.trec | sort | uniq -d | wc -l
  ```
  
@@ -1126,7 +1153,7 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
  ties are structurally impossible, and any duplicate means a writer bug. The same command on
  `rerank-a0prime.chunks.trec` returns `7` — those are real ties in the fusion scores, all at rank ≥23,
  and they are a property of the baseline, not a defect.
-@@ -297,7 +329,7 @@
+@@ -297,7 +335,7 @@
    python3 $S/teacher_rerank.py --run $B/runs/rerank-a0prime.chunks.trec \
      --corpus $B/beir/corpus.jsonl --queries $B/beir/queries.jsonl \
      --base-url http://127.0.0.1:8000 --model <model-id> --seed 20260920 --shuffle-seed 20260920 \
@@ -1135,7 +1162,7 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
      --responses $A/repeat-$P.responses.jsonl --out $A/repeat-$P.chunks.trec
  done
  ```
-@@ -326,6 +358,10 @@
+@@ -326,6 +364,10 @@
  
  Reported, not gating. Confirm `distinct queries 50` and `covered by this run 50 / 50` in the output.
  
@@ -1146,7 +1173,7 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
  ---
  
  ## 9. [both] Preserve and destroy
-@@ -367,8 +403,10 @@
+@@ -367,8 +409,10 @@
  ```
  
  Write `docs/plans/2026-09-GATE-teacher-ceiling.md` in the form of
@@ -1159,7 +1186,7 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
  
  **PASS requires both:** permutation `p < 0.05` **and** delta ≥ **+0.055** (nDCG@10 ≥ 0.753).
  They are independent — the Phase 1 A2 arm cleared significance with a delta of −0.1126.
-@@ -386,7 +424,10 @@
+@@ -386,7 +430,10 @@
  
  | Symptom | Cause | Do |
  |---|---|---|
@@ -1171,7 +1198,7 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
  | HTTP 400 from vLLM | prompt exceeded `max_model_len` | raise `--max-model-len`; unlikely at 128K |
  | `ledger records a different pass` + exit 1 | you reused a `--responses` path, or changed a seed or `--run` mid-pass | use a fresh path per pass; do not edit seeds to "retry" |
  | `<path>:<line>: malformed ledger line` | crash mid-append | delete that last line and re-run; it is by definition not an accepted entry |
-@@ -402,9 +443,8 @@
+@@ -402,9 +449,8 @@
  
  ## What is still unverified going in
  
@@ -1187,7 +1214,7 @@ The edits: step 1's test count and `0 fallbacks` expectation for both dry runs (
 
 - [ ] **Step 2: Check no stale values remain**
 
-Run: `command grep -c "8192\|five" docs/plans/2026-09-20-teacher-ceiling-task3-runbook.md`
+Run: `command grep -c "8192\|five\|50-element\|Budget: \$2–5" docs/plans/2026-09-20-teacher-ceiling-task3-runbook.md`
 Expected: `0` (grep exits 1 on zero matches; that is the expected result).
 
 - [ ] **Step 3: Commit**
