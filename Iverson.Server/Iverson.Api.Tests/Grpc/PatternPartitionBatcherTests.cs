@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using FluentAssertions;
 using Iverson.Api.Grpc;
 using Iverson.Patterns;
@@ -27,6 +28,20 @@ public sealed class PatternPartitionBatcherTests
             onEach?.Invoke();
             await Task.Yield();
             yield return row;
+        }
+    }
+
+    /// <summary>An endless single-partition source that actually observes its enumerator's cancellation token —
+    /// via <see cref="EnumeratorCancellationAttribute"/>, the same mechanism <c>BatchAsync</c>'s
+    /// <c>rows.WithCancellation(ct)</c> call is supposed to feed. If that call is ever dropped, this source never
+    /// sees cancellation and loops forever instead of throwing.</summary>
+    private static async IAsyncEnumerable<PatternInputRow> InfiniteRows([EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var id = 0;
+        while (true)
+        {
+            await Task.Delay(10, ct);
+            yield return Row("k0", id++);
         }
     }
 
@@ -114,5 +129,30 @@ public sealed class PatternPartitionBatcherTests
             produced.Should().BeLessThan(5_000, "rows stream through; the batcher never buffers the whole source");
             break;
         }
+    }
+
+    [Fact]
+    public async Task Cancelling_the_token_stops_enumeration()
+    {
+        using var cts = new CancellationTokenSource();
+
+        Func<Task> act = async () =>
+        {
+            await foreach (var _ in PatternPartitionBatcher.BatchAsync(InfiniteRows(), ["p"], 2_000, 10_000, null, cts.Token))
+            {
+            }
+        };
+
+        var enumerationTask = act();
+        await Task.Delay(20);
+        cts.Cancel();
+
+        // Bounded wait: if cancellation stopped reaching the source, the loop above runs forever instead of
+        // throwing, so this must fail on a timeout rather than hang the test run.
+        var finished = await Task.WhenAny(enumerationTask, Task.Delay(TimeSpan.FromSeconds(5)));
+        finished.Should().Be(enumerationTask, "cancellation should stop the stream instead of hanging forever");
+
+        Func<Task> awaitResult = () => enumerationTask;
+        await awaitResult.Should().ThrowAsync<OperationCanceledException>();
     }
 }
