@@ -43,6 +43,7 @@
     <ProjectReference Include="..\Iverson.Sql\Iverson.Sql.csproj" />
     <ProjectReference Include="..\Iverson.StarRocks\Iverson.StarRocks.csproj" />
     <ProjectReference Include="..\Iverson.Vector\Iverson.Vector.csproj" />
+    <ProjectReference Include="..\Iverson.Patterns\Iverson.Patterns.csproj" />
     <ProjectReference Include="..\Iverson.Events\Iverson.Events.csproj" />
     <ProjectReference Include="..\..\Iverson.Clients\DotNet\Iverson.Client.Contracts\Iverson.Client.Contracts.csproj" />
   </ItemGroup>

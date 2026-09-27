@@ -29,7 +29,7 @@ namespace Iverson.Api.Grpc;
 ///   SearchSimilar — Embeds the query text and searches the entity's Qdrant named vector collection.
 ///   SearchChunks  — Embeds the query text and searches the {collection}_chunks Qdrant collection.
 /// </summary>
-public sealed class ObjectSearchGrpcService(
+public sealed partial class ObjectSearchGrpcService(
     SchemaRegistry registry,
     IEngagementStoreSearchService search,
     IVectorQueryService vector,
