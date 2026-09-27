@@ -43,7 +43,9 @@ public sealed partial class ObjectSearchGrpcService(
     IOptions<VectorRankingOptions> rankingOptions,
     IOptions<DecayOptions> decayOptions,
     IOptions<PopularitySignalOptions> popularitySignalOptions,
-    EngagementQueryLimitOptions queryLimits)
+    EngagementQueryLimitOptions queryLimits,
+    PatternQueryLimitOptions? patternLimits = null,
+    IChunkRowSource? chunkRows = null)
     : ObjectSearchService.ObjectSearchServiceBase
 {
     private readonly DecayOptions _decayOptions = decayOptions.Value;

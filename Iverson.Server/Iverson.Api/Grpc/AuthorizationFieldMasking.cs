@@ -207,8 +207,8 @@ internal static class AuthorizationFieldMasking
     }
 
     /// <summary>
-    /// Row-dictionary counterpart of <see cref="RemoveTenantColumn(Struct)"/>, for the three
-    /// streaming SQL RPCs (Search, GroupBy, Pipeline) that build a response from the StarRocks row
+    /// Row-dictionary counterpart of <see cref="RemoveTenantColumn(Struct)"/>, for the four
+    /// streaming SQL RPCs (Search, GroupBy, Pipeline, MatchPattern) that build a response from the StarRocks row
     /// dictionary and never reach <see cref="MaskDisallowedFields"/>. Same reserved-name rule, so
     /// the decision of WHICH name is server-owned stays defined in exactly one place.
     /// </summary>

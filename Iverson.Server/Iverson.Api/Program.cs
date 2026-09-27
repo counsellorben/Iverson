@@ -312,6 +312,25 @@ builder.Services.AddQdrant(
     cfg["Qdrant:ApiKey"],
     cfg["Qdrant:CertPath"]);
 
+// Spec §5: MatchPattern's limits, read one value at a time like EngagementQueryLimitOptions above.
+builder.Services.AddSingleton(new PatternQueryLimitOptions
+{
+    MaxPatternLength       = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxPatternLength", PatternQueryLimitOptions.Default.MaxPatternLength),
+    MaxProgramInstructions = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxProgramInstructions", PatternQueryLimitOptions.Default.MaxProgramInstructions),
+    MaxExpressionLength    = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxExpressionLength", PatternQueryLimitOptions.Default.MaxExpressionLength),
+    MaxDefines             = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxDefines", PatternQueryLimitOptions.Default.MaxDefines),
+    MaxMeasures            = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxMeasures", PatternQueryLimitOptions.Default.MaxMeasures),
+    MaxSubsets             = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxSubsets", PatternQueryLimitOptions.Default.MaxSubsets),
+    MaxSimilarityTerms     = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxSimilarityTerms", PatternQueryLimitOptions.Default.MaxSimilarityTerms),
+    MaxOutputRows          = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxOutputRows", PatternQueryLimitOptions.Default.MaxOutputRows),
+    MaxRowsScanned         = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxRowsScanned", PatternQueryLimitOptions.Default.MaxRowsScanned),
+    MaxPartitionRows       = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxPartitionRows", PatternQueryLimitOptions.Default.MaxPartitionRows),
+    MaxActiveThreads       = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxActiveThreads", PatternQueryLimitOptions.Default.MaxActiveThreads),
+    MaxSteps               = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxSteps", PatternQueryLimitOptions.Default.MaxSteps),
+    TimeoutSeconds         = cfg.GetValue($"{PatternQueryLimitOptions.Section}:TimeoutSeconds", PatternQueryLimitOptions.Default.TimeoutSeconds),
+    BatchRows              = cfg.GetValue($"{PatternQueryLimitOptions.Section}:BatchRows", PatternQueryLimitOptions.Default.BatchRows),
+});
+
 builder.Services.AddVectorRanking(cfg);
 builder.Services.AddDecayOptions(cfg);
 builder.Services.AddPopularitySignalOptions(cfg);
