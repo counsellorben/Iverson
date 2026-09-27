@@ -322,6 +322,11 @@ public sealed class MatchPatternGrpcServiceTests
             MaxPatternLength = 10, MaxExpressionLength = 10, MaxDefines = 1, MaxMeasures = 1, MaxSubsets = 1, MaxOutputRows = 5,
         };
         var clause = new SearchClause { Property = "Title", Operator = SearchOperator.Equals, Value = new SearchValue { StringVal = "x" } };
+        var keyClause = new SearchClause
+        {
+            Property = "Id", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "0190a1b2-0000-7000-8000-000000000001" },
+        };
         var request = violation switch
         {
             "pattern" => Req("A B C D E F", type: "Article"),
@@ -335,7 +340,8 @@ public sealed class MatchPatternGrpcServiceTests
             "type-rows-no-order-by" => Req("A", type: "Article", orderBy: []),
             "chunks-partition-by" => Req("A", type: "Article", source: PatternRowSource.Chunks, chunkProperty: "Body", partitionBy: ["Title"]),
             "chunks-order-by" => Req("A", type: "Article", source: PatternRowSource.Chunks, chunkProperty: "Body", orderBy: ["Title"]),
-            _ => WithWhere(Req("A", type: "Article", source: PatternRowSource.Chunks, chunkProperty: "Body"), [clause, clause], SearchLogic.Or),
+            // On the key column, which BuildChunksFilter accepts, so only the OR rejection can yield InvalidArgument.
+            _ => WithWhere(Req("A", type: "Article", source: PatternRowSource.Chunks, chunkProperty: "Body"), [keyClause, keyClause], SearchLogic.Or),
         };
 
         (await StatusOfAsync(request, limits)).Should().Be(StatusCode.InvalidArgument);
@@ -600,5 +606,24 @@ public sealed class MatchPatternGrpcServiceTests
         await RunAsync(Req("A"));
 
         sent!.ExcludedColumns.Should().BeEquivalentTo(["Avatar"]);
+    }
+
+    [Fact]
+    public async Task Chunks_read_carries_the_owner_filter_when_the_callers_rule_requires_ownership()
+    {
+        // test-user's only group is "test-bypass", which this rule set does not grant read-all, so with an OwnerField
+        // the evaluator requires ownership and the owner value is the principal's "sub".
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with
+        {
+            Authorization = new AuthorizationRules("AuthorId", [new RowPermission("admin", true, true, true)], []),
+        });
+        ChunkRowQuery? query = null;
+        _chunkRows.ReadAsync(Arg.Do<ChunkRowQuery>(q => query = q), Arg.Any<CancellationToken>())
+            .Returns(_ => Async(Array.Empty<ChunkRow>()));
+
+        await RunAsync(Req("A", type: "Article", source: PatternRowSource.Chunks, chunkProperty: "Body"));
+
+        query!.Filter.Should().NotBeNull();
+        query.Filter!.Must.Should().ContainSingle(c => c.Field.Key == "authorId" && c.Field.Match.Keyword == "test-user");
     }
 }
