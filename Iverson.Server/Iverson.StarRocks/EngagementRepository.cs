@@ -1,3 +1,4 @@
+using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -291,7 +292,13 @@ public sealed class EngagementRepository(
         try
         {
             if (reader is not null) await reader.DisposeAsync();
-            await conn.ExecuteAsync("SET ROLE NONE");
+            // A connection that never reached Open (e.g. OpenAsync itself timed out or threw) must not be
+            // reopened here: Dapper's ExecuteAsync opens a closed connection by itself, which against a
+            // frozen/unreachable server makes a second, uncancellable connection attempt on top of the
+            // one that already failed or was cancelled — CIR-1 Finding 1. Only a connection that is
+            // actually Open can have an active role to clear.
+            if (conn.State == ConnectionState.Open)
+                await conn.ExecuteAsync("SET ROLE NONE");
         }
         catch (Exception ex)
         {
