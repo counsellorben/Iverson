@@ -149,23 +149,31 @@ two 50-query repeats) at the measured ≈ 453 s per query would take ≈ 50 hour
   side effect, `append_response`, takes a module-level `threading.Lock`. Local probe: 12 threads ×
   150 appends of 120 KB records produced 0 unparseable lines without a lock, twice — but the pod's
   `/workspace` may be a network volume with weaker append semantics, and the lock is two lines.
-- **Recommended N = 12 for the production run**, bounded by KV-cache memory, not speed:
+- **The production run uses an H200 SXM (141 GB) at N = 24** (Ben, 2026-09-27). Concurrency is
+  bounded by KV-cache memory, not speed, and the H200's pool is ≈ 7× an 80 GB H100 SXM's for
+  ≈ 1.3× the price ($4.61/hr against $3.51/hr quoted), so it is the cheaper card for this run:
 
   | Quantity | Value | Source |
   |---|---|---|
   | Largest prompt of the 300 | 30,719 tokens (query 852, 138,174 chars) | `build_prompt` over the pod's own corpus, at the most conservative measured 4.498 chars/token (range 4.498–4.584 over 3 live probes, whose local char counts match the pod's exactly) |
   | Per-request worst case | 30,719 + 16,384 = 47,103 tokens | §5 cap |
-  | KV-cache pool | 655,317 tokens | `/metrics` `kv_cache_size_tokens` on the v2 pod |
-  | 90% of pool ÷ worst case | 12.5 → **12** | |
+  | Measured KV-cache pool, H100 NVL (94 GB) | 655,317 tokens | `/metrics` `kv_cache_size_tokens` on the v2 pod |
+  | KV bytes per token | 36,864 | gpt-oss-120b's 18 full-attention layers × 8 KV heads × 64 dims × 2 (K, V) × 2 bytes; the other 18 layers use a 128-token sliding window |
+  | Model footprint outside the KV cache | ≈ 66.4 GiB | 0.95 × 95,830 MiB (NVL) − 655,317 × 36,864 B |
+  | Estimated KV-cache pool, H200 (143,771 MiB) | ≈ 1.95M tokens | (0.95 × 143,771 MiB − 66.4 GiB) ÷ 36,864 B |
+  | Worst case at N = 24 | 24 × 47,103 = 1,130,472 tokens, ≈ 58% of the estimated pool | |
 
-  Speed is only measured to 5–6 concurrent; 12 is an extrapolation on speed, not on memory. The
-  ledger therefore gains **`elapsed_s`** per attempt (wall time around the `call_teacher` call,
-  measured in `score_query` so `call_teacher`'s return tuple is unchanged), making the per-request
-  rate at 12 directly readable from the first completed attempts.
-- **Estimated runtime** at 12 concurrent: 400 query-runs × ≈ 453 s ÷ 12 ≈ **4.2 GPU-hours** (≈ 8.4 at
-  6). Per-query 453 s = expected 1.56 attempts × mean 291 s per attempt, the latter from the v2
-  mix (23 lists at a mean 4,427 tokens ÷ 24.8 = 178 s; 7 runaways at ≈ 661 s under §5's cap). This
-  replaces §11's "$2–5 per pass" estimate.
+  The H200 pool is an **estimate** until the pod is up; the runbook reads `kv_cache_size_tokens`
+  after launch and lowers N to `floor(0.9 × pool ÷ 47,103)` if the pool is under 1,256,080 tokens.
+  Speed is only measured to 5–6 concurrent, so 24 is an extrapolation on speed, not on memory: §5's
+  guarantee needs the per-request rate to stay above ≈ 13.7 tokens/s. The ledger therefore gains
+  **`elapsed_s`** per attempt (wall time around the `call_teacher` call, measured in `score_query`
+  so `call_teacher`'s return tuple is unchanged), making the per-request rate at 24 directly
+  readable from the first completed attempts; below ≈ 14 tokens/s the run is resumed at N = 12.
+- **Estimated runtime** at 24 concurrent: 400 query-runs × ≈ 453 s ÷ 24 ≈ **2.1 GPU-hours** (≈ 4.2 at
+  12), if the per-request rate holds. Per-query 453 s = expected 1.56 attempts × mean 291 s per
+  attempt, the latter from the v2 mix (23 lists at a mean 4,427 tokens ÷ 24.8 = 178 s; 7 runaways
+  at ≈ 661 s under §5's cap). This replaces §11's "$2–5 per pass" estimate.
 
 ## 7. Amended structural and repeat checks (§8)
 
@@ -200,7 +208,7 @@ two 50-query repeats) at the measured ≈ 453 s per query would take ≈ 50 hour
 
 - **`--enforce-eager`** in the pod's start command (`vllm serve ... --enforce-eager ...`) is the
   likely cause of the ≈ 25 tokens/s per-request rate. Dropping it could shorten the run several-fold,
-  but it is untested, and CUDA graphs take GPU memory, shrinking the KV pool that §6's N = 12 is
+  but it is untested, and CUDA graphs take GPU memory, shrinking the KV pool that §6's N = 24 is
   computed from. If it is tried, re-read `kv_cache_size_tokens` after launch and recompute N.
 - A top-k prompt ("return the 20 most relevant ids"). The lenient rule keeps the measured prompt;
   a new prompt would be untested.
@@ -234,3 +242,5 @@ Verified 2026-09-27 against the repo (`main` at `7cb008ff`) and the v2 artifacts
 | L20 | Whether vLLM aborts a request on non-streaming client disconnect | **Unverified, and designed around** (§5): the cap/timeout pair ends generation server-side first |
 | L21 | `score_query` has exactly two producers of an unscored query, indistinguishable to `main` today | Read `teacher_rerank.py:433-435` (resume re-check failure) and `:485` (budget exhausted): both return `(None, str)`; the only caller is `main` at `:631` (`command grep -n "score_query("` over `scripts/`) |
 | L22 | Every real pool has exactly 50 ids, so §2's threshold is always 20 | `load_run` over all 300 queries of the A0′ run: pool sizes `{50}` (CDR-1 U3, re-run) |
+| L23 | The pod's KV pool is readable as a label on vLLM's `/metrics`, with no API key | Live v2 pod, vLLM 0.30.0: `curl -s http://127.0.0.1:8000/metrics` returned `vllm:cache_config_info{…,kv_cache_size_tokens="655317",…}` without an `Authorization` header |
+| L24 | The H200's KV pool is ≈ 1.95M tokens | **Estimate, checked at launch** (§6): derived from L17's measured NVL pool and the 36,864 B/token layout; `(0.95 × 143,771 MiB − 66.4 GiB) ÷ 36,864 B` = 1,951K. The runbook reads the real value before step 6 |
