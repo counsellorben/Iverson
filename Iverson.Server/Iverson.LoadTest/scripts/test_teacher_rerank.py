@@ -531,6 +531,59 @@ def test_call_teacher_catches_oserror_and_returns_http_error_finish_reason(monke
     assert content == "simulated connection failure"
 
 
+class _UsageReasoningHandler(http.server.BaseHTTPRequestHandler):
+    """Echoes back a valid chat-completion reply carrying DISTINCT `usage.completion_tokens` /
+    `usage.prompt_tokens` values and a distinct `message.reasoning` string -- final whole-branch
+    review, Finding 2: a swap between the two numeric fields, or reading `reasoning_content`
+    instead of `reasoning`, left every existing test green, since none of them inspected these
+    three fields at all."""
+
+    def do_POST(self):
+        length = int(self.headers["Content-Length"])
+        self.rfile.read(length)  # drain the request body
+        reply = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {"content": "[]", "reasoning": "distinct reasoning text"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"completion_tokens": 111, "prompt_tokens": 222},
+            }
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(reply)))
+        self.end_headers()
+        self.wfile.write(reply)
+
+    def log_message(self, *args):  # silence stdout during the test run
+        pass
+
+
+def test_call_teacher_returns_reasoning_and_token_counts_in_the_right_position():
+    """Against a real HTTP server (not a mock of urllib), asserts completion_tokens, prompt_tokens
+    and reasoning each land in their own position of the 5-tuple, with distinct values so a swap
+    between completion_tokens/prompt_tokens -- or reading `reasoning_content` instead of
+    `reasoning` -- would fail this assertion."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _UsageReasoningHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        content, finish_reason, reasoning, completion_tokens, prompt_tokens = tr.call_teacher(
+            f"http://127.0.0.1:{port}", "m", "p", 0
+        )
+        assert finish_reason == "stop"
+        assert reasoning == "distinct reasoning text"
+        assert completion_tokens == 111
+        assert prompt_tokens == 222
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
 def test_main_records_http_error_to_responses_and_continues_retry_loop(tmp_path, monkeypatch):
     """The http_error finish_reason from call_teacher must be handled as a retriable failure
     (like finish_reason='length'), recording a rejected entry and continuing the retry loop.
@@ -1019,3 +1072,41 @@ def test_main_stamps_each_ledger_record_with_this_pass_and_resumes_from_it(tmp_p
     tr.main(argv)
     assert scripted_again.calls == 0
     assert open(out_path, encoding="utf-8").read() == first_output
+
+
+# --------------------------------------------------------------------------------------------
+# Final whole-branch review, Finding 2: the accepted-branch make_record call site in score_query
+# must actually carry reasoning/completion_tokens/prompt_tokens through to the --responses
+# ledger. Dropping the three fields from that call, or hard-coding `"reasoning": None` inside
+# make_record itself, left the earlier length/http_error-branch tests green -- those branches
+# pass None for all three fields regardless, so only the accepted branch, with distinct non-None
+# values, can catch either mutation.
+# --------------------------------------------------------------------------------------------
+
+def test_main_records_reasoning_and_token_counts_for_an_accepted_reply(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    scripted = ScriptedTeacher([
+        ('["d1", "d2", "d3"]', "stop", "some reasoning text", 111, 222),
+        ('["e1", "e2", "e3"]', "stop", "other reasoning text", 333, 444),
+    ])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    tr.main(argv)
+
+    with open(responses_path, encoding="utf-8") as f:
+        records = [json.loads(line) for line in f if line.strip()]
+    q1_record = next(r for r in records if r["query_id"] == "q1")
+    assert q1_record["status"] == "accepted"
+    assert q1_record["reasoning"] == "some reasoning text"
+    assert q1_record["completion_tokens"] == 111
+    assert q1_record["prompt_tokens"] == 222
+
+    q2_record = next(r for r in records if r["query_id"] == "q2")
+    assert q2_record["status"] == "accepted"
+    assert q2_record["reasoning"] == "other reasoning text"
+    assert q2_record["completion_tokens"] == 333
+    assert q2_record["prompt_tokens"] == 444

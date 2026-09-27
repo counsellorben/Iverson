@@ -8,6 +8,7 @@
 # Usage (after the runbook's steps 2-4: pod provisioned, vLLM serving, structured-output param
 # and seed support confirmed) -- run the WHOLE script detached, not just each invocation inside
 # it, so an SSH disconnect can't kill the loop between seeds:
+#   mkdir -p /workspace/artifacts-v2 &&
 #   setsid nohup bash -c 'MODEL_ID=<model-id> VLLM_VERSION=<ver> INSTANCE_SKU=<sku> \
 #     bash run_measurement_batch.sh' > /workspace/artifacts-v2/batch.log 2>&1 < /dev/null &
 #   disown
@@ -41,6 +42,7 @@ S="${S:-/workspace}"
 B="${B:-/workspace/inputs}"
 A="${A:-/workspace/artifacts-v2}"
 CONCURRENCY="${CONCURRENCY:-6}"
+[[ "$CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || { echo "CONCURRENCY must be a positive integer, got: $CONCURRENCY" >&2; exit 1; }
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
 SEEDS="${SEEDS:-101 102 103 104 105 106 107 108}"
 RUN_SUMMARIZER="${RUN_SUMMARIZER:-1}"
