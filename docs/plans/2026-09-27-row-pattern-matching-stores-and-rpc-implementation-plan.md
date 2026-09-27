@@ -111,7 +111,7 @@ These assumptions are introduced by this plan and were verified on 2026-09-27 at
 
 | # | Category | Assumption | Evidence |
 |---|---|---|---|
-| 1 | File path | None of the Create paths listed under File Structure exists yet, and `IChunkRowSource`, `ScrollAsync`, `MatchRowsAsync` and `PatternQueryLimitOptions` appear nowhere in the repository | Plan-2 dossiers (StarRocks, Vector, Api): repository-wide greps for each symbol returned 0 hits outside `.worktrees/` |
+| 1 | File path | None of the Create paths listed under File Structure exists yet, and `IChunkRowSource`, `MatchRowsAsync` and `PatternQueryLimitOptions` appear nowhere in the repository. `ScrollAsync` appears once, as a call to Qdrant's own `QdrantClient.ScrollAsync` (`IntelligenceCollectionManager.cs:179`); that is a different type, so the new `IVectorQueryService.ScrollAsync` does not collide with it | Plan-2 dossiers (StarRocks, Vector, Api): repository-wide greps for each symbol returned 0 hits outside `.worktrees/`. CIR-1 §1: `command grep -rn --include=*.cs "\bScrollAsync\b" Iverson.Server Iverson.Clients` finds only that call, and a scratch build of all seven tasks has 0 production errors |
 | 2 | File path | Every Modify path exists at the stated location, including the two hand-written test fakes of `IEngagementStoreSearchService` (`AdminConsoleDataVolumeEndpointTests.cs:108-134` `SearchServiceBase`; `Helpers/AdminConsoleTestWebApplicationFactory.cs:185-221` `AdminConsoleSearchService`) | StarRocks dossier §2: grep `": .*IEngagementStoreSearchService"` finds 4 real implementers. The positive control is `EngagementRepository.cs:17`; the other hits are `Substitute.For` mocks |
 | 3 | Signature | `IEngagementStoreSearchService` today has `SearchAsync`, `AggregateAsync`, `GroupByAsync` and `PipelineAsync`, and no member returns `IAsyncEnumerable` | `IEngagementStoreRoles.cs:45-77` read |
 | 4 | Signature | `StarRocksPipelineBuilder` and `StarRocksQueryBuilder` are `internal static` classes. `ColumnsFor(EngagementQuerySchema, AuthorizationConstraint?)` is `private static` and returns an `OrdinalIgnoreCase` dictionary mapping each name to its canonical spelling; it includes the key and excludes the tenant column and disallowed fields. `BuildWhere(schema, clauses, logic, DynamicParameters, out int, tableMap, authz)` is `internal static`, returns only the fragment, binds parameters into the caller's `DynamicParameters`, throws `EngagementQueryTranslationException` for a disallowed field, and silently skips an unresolvable property | `StarRocksPipelineBuilder.cs:19,39-58`; `StarRocksQueryBuilder.cs:16,555-601,616-655` |
@@ -140,6 +140,13 @@ These assumptions are introduced by this plan and were verified on 2026-09-27 at
 | 27 | Code validity | `SchemaFixtures.ArticleSchema()` has key `Id`, the scalars `Title`, `Body` and `AuthorId`, a `Title` vector (768), a `Body` chunk field and `CollectionName "articles"`. `AuthorSchema()` has `Name` and `Bio` and no collection. Both grant `test-bypass`. `ActingUserFixtures.Principal("test-user", "test-bypass")` carries `tenant_id = "test-tenant"`, and `TestServerCallContext.Create(ct)` passes a token | `Helpers/SchemaFixtures.cs:39-76`; `Helpers/ActingUserFixtures.cs:11-18`; `Helpers/TestServerCallContext.cs` |
 | 28 | Ordering | Task dependencies: 1 → all; 2 → 3; 4 → 5; {3, 4, 5, 6} → 7. Tasks 2, 4 and 6 do not depend on each other | Each task's Interfaces section |
 | 29 | Code validity | Primary-constructor parameters of a `partial` class are in scope in every part, so `ObjectSearchGrpcService.MatchPattern.cs` can read `registry`, `search`, `vector`, `resolver`, `tenantScope`, `patternLimits` and `chunkRows` and initialise fields from them | Scratch net10.0 probe: two `partial` files, where the second part reads the first part's primary-constructor parameters and fields, printed `r:0:default:r` |
+| 30 | Code validity | `Iverson.Api.Schema` and `Iverson.Client.Contracts` both declare `AuthorizationRules`, `RowPermission` and `FieldPermission`, so a test file that imports both namespaces aliases the three schema types | `SchemaDescriptor.cs:145,169,171`; CIR-1 scratch: without the aliases `MatchPatternGrpcServiceTests.cs` has 6× CS0104, with them `Iverson.Api.Tests` builds with 0 errors |
+| 31 | Code validity | In FluentAssertions 8.11, `Should().Equal(null, null)` on a `double?[]` is ambiguous (CS0121) between `Equal(params T[])` and `Equal(IEnumerable<T>, string, params object[])`; an explicit `new double?[] { null, null }` resolves it | CIR-1 scratch: CS0121 at the bare form; with the array, `SimilarityResolverIntegrationTests` passes 8/8 against Qdrant 1.18.2 |
+| 32 | Code validity | `IntelligenceCollectionManager` creates collections with `Distance.Cosine`, and Qdrant normalises a vector to unit length on write in a Cosine collection, so a vector read back equals the input divided by its magnitude (`[0.5,0,0,3]` → `[0.164,0,0,0.986]`). Cosine scoring is unaffected | `IntelligenceCollectionManager.cs:17,257`; CIR-1 scratch: the raw-vector assertion fails 2/2, the normalised assertion passes (`ChunkRowSourceIntegrationTests` 9/9) |
+| 33 | Code validity | DI activation of `ObjectSearchGrpcService` fills an unregistered optional constructor parameter with its default: with `PatternQueryLimitOptions` registered and `IChunkRowSource` unregistered, `_chunkRows` is the default `QdrantChunkRowSource` | CIR-1 probe: `ActivatorUtilities.GetServiceOrCreateInstance<ObjectSearchGrpcService>` gave `_patternLimits.MaxOutputRows == 7` (the registered value) and a `QdrantChunkRowSource` |
+| 34 | Code validity | Dapper 2.1.89's `DbWrappedReader.DisposeAsync()` is `return _reader.DisposeAsync();`, so option B's detached `ReleaseDetachedAsync` returns a pending task while StarRocks is paused instead of blocking the RPC | Decompiled Dapper 2.1.89 (CIR-1 D3); the pause test observes disposal pending until unpause |
+| 35 | Code validity | Qdrant 1.18.2 stores a zero vector with zero magnitude, so the `NaN` similarity path is reachable | CIR-1 scratch: `A_stored_zero_vector_scores_NaN` passes |
+| 36 | Code validity | Each of Task 7's three order-sensitive branches has a test that fails when the branch is broken: moving the timeout catch below the other catches fails `Any_exception_raised_after_the_timeout_token_fires_is_DeadlineExceeded(failure: "budget")` (ResourceExhausted); building `PatternBudget` without `ct` fails `The_budget_token_stops_a_matching_heavy_run_that_writes_no_row` (the unbounded run exceeds 10 s against a 1 s timeout); checking denial before `ValidateMatchPatternLimits` fails `Validation_precedes_the_denial_check` | CIR-1 UIP scratch: plan code 46/46; each mutant 45/46 with only its test failing |
 
 ## Tasks
 
@@ -1187,8 +1194,9 @@ public sealed class ChunkRowSourceIntegrationTests(QdrantContainerFixture fixtur
         await AddChunkAsync(col, "a", 3, first: 0.5f);
 
         (await ReadAllAsync(Source(), Query(col))).Single().Vector.Should().BeNull();
+        // Qdrant's Cosine collections store the vector normalised to unit length.
         (await ReadAllAsync(Source(), Query(col, vectorName: "body_vector"))).Single().Vector
-            .Should().Equal(0.5f, 0f, 0f, 3f);
+            .Should().Equal(new[] { 0.5f, 0f, 0f, 3f }.Select(x => x / MathF.Sqrt(9.25f)), (a, e) => Math.Abs(a - e) < 1e-6f);
     }
 
     [Fact]
@@ -1465,7 +1473,7 @@ public sealed class SimilarityResolverIntegrationTests(QdrantGrpcContainerFixtur
 
         scores[0][0].Should().BeApproximately(1.0, 1e-6);
         scores[0][1].Should().BeApproximately(0.0, 1e-6);
-        scores[1].Should().Equal(null, null);
+        scores[1].Should().Equal(new double?[] { null, null });
     }
 
     [Fact]
@@ -1844,6 +1852,9 @@ using NSubstitute;
 using NSubstitute.ExceptionExtensions;
 using Xunit;
 using ProtoRowsPerMatch = Iverson.Client.Contracts.RowsPerMatch;
+using AuthorizationRules = Iverson.Api.Schema.AuthorizationRules;
+using RowPermission = Iverson.Api.Schema.RowPermission;
+using FieldPermission = Iverson.Api.Schema.FieldPermission;
 
 namespace Iverson.Api.Tests.Grpc;
 
@@ -2120,6 +2131,15 @@ public sealed class MatchPatternGrpcServiceTests
         _embedding.ReceivedCalls().Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Validation_precedes_the_denial_check()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _actingUserAccessor.ActingUser = null;
+
+        (await StatusOfAsync(Req("A |"))).Should().Be(StatusCode.InvalidArgument);
+    }
+
     public static TheoryData<string> LimitViolations() => new()
     {
         "pattern", "expression", "defines", "measures", "subsets", "where", "limit-high", "limit-negative",
@@ -2293,19 +2313,28 @@ public sealed class MatchPatternGrpcServiceTests
         (await StatusOfAsync(Req("A", [("A", "SIMILARITY(Title, 'q') > 0")], type: "Article"))).Should().Be(expected);
     }
 
-    [Fact]
-    public async Task Any_exception_raised_after_the_timeout_token_fires_is_DeadlineExceeded()
+    [Theory]
+    [InlineData("other")]
+    [InlineData("budget")]
+    public async Task Any_exception_raised_after_the_timeout_token_fires_is_DeadlineExceeded(string failure)
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _search.MatchRowsAsync(default!, default!, default!, default).ReturnsForAnyArgs(ci => WaitThenFail(ci.ArgAt<CancellationToken>(3)));
+        _search.MatchRowsAsync(default!, default!, default!, default)
+            .ReturnsForAnyArgs(ci => WaitThenFail(ci.ArgAt<CancellationToken>(3), failure));
 
         (await StatusOfAsync(Req("A"), new PatternQueryLimitOptions { TimeoutSeconds = 1 })).Should().Be(StatusCode.DeadlineExceeded);
 
-        static async IAsyncEnumerable<IDictionary<string, object?>> WaitThenFail(CancellationToken ct)
+        static async IAsyncEnumerable<IDictionary<string, object?>> WaitThenFail(CancellationToken ct, string failure)
         {
             try { await Task.Delay(Timeout.Infinite, ct); } catch (OperationCanceledException) { }
             if (ct.IsCancellationRequested)
-                throw new InvalidOperationException("a cancelled StarRocks read surfaces as some other exception (spec §3.2)");
+            {
+                // "budget": a §6 row the timeout rule must still win over, so the catch order is pinned.
+                Exception ex = failure == "budget"
+                    ? new Iverson.Patterns.PatternBudgetExceededException("MaxRowsScanned")
+                    : new InvalidOperationException("a cancelled StarRocks read surfaces as some other exception (spec §3.2)");
+                throw ex;
+            }
             yield break;
         }
     }
@@ -2324,6 +2353,18 @@ public sealed class MatchPatternGrpcServiceTests
 
         status.Should().Be(StatusCode.DeadlineExceeded);
         watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5), "the token is checked before each output row");
+    }
+
+    [Fact]
+    public async Task The_budget_token_stops_a_matching_heavy_run_that_writes_no_row()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        SourceRows(Enumerable.Range(0, 3_000).Select(i => Row(("Id", $"{i:D5}"), ("Name", "a"), ("x", 1L))).ToArray());
+
+        var status = await StatusOfAsync(Req("A+ B", [("A", "SUM(A.x) >= 0"), ("B", "FALSE")]),
+            new PatternQueryLimitOptions { TimeoutSeconds = 1 }).WaitAsync(TimeSpan.FromSeconds(10));
+
+        status.Should().Be(StatusCode.DeadlineExceeded);
     }
 
     [Fact]
