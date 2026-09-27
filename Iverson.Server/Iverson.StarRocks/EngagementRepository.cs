@@ -1,4 +1,6 @@
+using System.Data.Common;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Dapper;
 using Iverson.Client.Contracts;
@@ -215,6 +217,107 @@ public sealed class EngagementRepository(
             }
             throw;
         }
+    }
+
+    /// <summary>
+    /// Streams a tenant-scoped query row by row (spec §3.2). Unlike <see cref="RunTenantScopedAsync{T}"/>, the
+    /// resilience pipeline wraps only open, <c>SET ROLE</c> and query start; a failure after that propagates. The
+    /// connection is held until enumeration ends, then <c>SET ROLE NONE</c> runs with the same failure-swallowing
+    /// discipline. <paramref name="ct"/> reaches the query start and every read, and is checked before each row.
+    /// </summary>
+    internal async IAsyncEnumerable<IDictionary<string, object?>> StreamTenantScopedAsync(
+        string activityName, string tenantId, string sql, object param,
+        Func<Exception, bool> isExpectedMissingResource, [EnumeratorCancellation] CancellationToken ct)
+    {
+        if (!TenantIdentifier.IsValid(tenantId))
+            throw new ArgumentException($"Invalid tenant ID: '{tenantId}'", nameof(tenantId));
+
+        using var activity = Telemetry.Source.StartActivity(activityName, ActivityKind.Client);
+        activity?.SetTag("db.system", "starrocks");
+        activity?.SetTag("db.statement", sql);
+
+        MySqlConnection? conn = null;
+        DbDataReader? reader = null;
+        try
+        {
+            (conn, reader) = await RunAsync(async () =>
+            {
+                var c = CreateConnection();
+                try
+                {
+                    await c.OpenAsync(ct);
+                    await c.ExecuteAsync(new CommandDefinition(
+                        $"SET ROLE `{TenantIdentifier.RoleName(tenantId)}`", cancellationToken: ct));
+                    var r = await c.ExecuteReaderAsync(new CommandDefinition(sql, param, cancellationToken: ct));
+                    return (c, r);
+                }
+                catch
+                {
+                    await ReleaseAsync(c, null);
+                    throw;
+                }
+            });
+        }
+        catch (Exception ex) when (isExpectedMissingResource(ex))
+        {
+            activity?.SetStatus(ActivityStatusCode.Ok);   // an unprovisioned tenant or missing table: empty, as SearchAsync
+        }
+
+        if (reader is null) yield break;
+
+        try
+        {
+            while (await reader.ReadAsync(ct))
+            {
+                ct.ThrowIfCancellationRequested();
+                var row = new Dictionary<string, object?>(reader.FieldCount, StringComparer.OrdinalIgnoreCase);
+                for (var i = 0; i < reader.FieldCount; i++)
+                {
+                    var value = reader.GetValue(i);
+                    row[reader.GetName(i)] = value is DBNull ? null : value;   // spec §3.2: SQL NULL is C# null
+                }
+                yield return row;
+            }
+            activity?.SetStatus(ActivityStatusCode.Ok);
+        }
+        finally
+        {
+            await ReleaseAsync(conn!, reader);
+        }
+    }
+
+    private async Task ReleaseAsync(MySqlConnection conn, DbDataReader? reader)
+    {
+        try
+        {
+            if (reader is not null) await reader.DisposeAsync();
+            await conn.ExecuteAsync("SET ROLE NONE");
+        }
+        catch (Exception ex)
+        {
+            // Same discipline as RunTenantScopedAsync: releasing must never replace the read's own outcome.
+            logger.LogWarning(ex, "Releasing a tenant-scoped StarRocks reader failed (SET ROLE NONE or reader disposal)");
+        }
+        finally
+        {
+            await conn.DisposeAsync();
+        }
+    }
+
+    public async IAsyncEnumerable<IDictionary<string, object?>> MatchRowsAsync(
+        EngagementQuerySchema schema,
+        MatchRowsRequest request,
+        IReadOnlyDictionary<string, AuthorizationConstraint> authz,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var tenantId = authz.GetValueOrDefault(schema.TypeName)?.TenantValue;
+        if (tenantId is null || !TenantIdentifier.IsValid(tenantId))
+            yield break;
+
+        var (sql, param) = MatchRowsQueryBuilder.Build(schema, request, authz, TenantIdentifier.DatabaseName(tenantId));
+
+        await foreach (var row in StreamTenantScopedAsync("sr.match_rows", tenantId, sql, param, IsExpectedMissingResourceError, ct))
+            yield return row;
     }
 
     public async Task UpsertAsync(EngagementTableSchema schema, string payloadJson, string tenantId)

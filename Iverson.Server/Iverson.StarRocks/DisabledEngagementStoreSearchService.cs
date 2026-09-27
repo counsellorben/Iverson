@@ -10,7 +10,7 @@ internal sealed class DisabledEngagementStoreSearchService : IEngagementStoreSea
 {
     private const string Message =
         "The engagement store is not deployed in this instance (Engagement__Enabled=false). " +
-        "Search, aggregate, group-by and pipeline queries require StarRocks.";
+        "Search, aggregate, group-by, pipeline and match-pattern queries require StarRocks.";
 
     public Task<IEnumerable<dynamic>> SearchAsync(
         EngagementQuerySchema schema, SearchQuery? query, int page, int pageSize,
@@ -36,5 +36,10 @@ internal sealed class DisabledEngagementStoreSearchService : IEngagementStoreSea
         EngagementQuerySchema schema, PipelineRequest request,
         Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
+        => throw new EngagementStoreDisabledException(Message);
+
+    public IAsyncEnumerable<IDictionary<string, object?>> MatchRowsAsync(
+        EngagementQuerySchema schema, MatchRowsRequest request,
+        IReadOnlyDictionary<string, AuthorizationConstraint> authz, CancellationToken ct = default)
         => throw new EngagementStoreDisabledException(Message);
 }

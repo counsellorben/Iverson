@@ -81,6 +81,12 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
         Repository = new EngagementRepository(ConnectionString, NullLogger<EngagementRepository>.Instance);
     }
 
+    /// <summary>Freezes the StarRocks container (spec §9.3 pause test). Always pair with <see cref="UnpauseAsync"/>
+    /// in a <c>finally</c>: every StarRocks test class shares this one container.</summary>
+    public Task PauseAsync() => _container.PauseAsync();
+
+    public Task UnpauseAsync() => _container.UnpauseAsync();
+
     private async Task WaitUntilQueryReadyAsync(TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
