@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import threading
+import urllib.request
 from argparse import Namespace
 
 import pytest
@@ -470,6 +471,102 @@ def test_call_teacher_omits_authorization_header_when_api_key_is_none():
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+class _HTTPErrorResponseHandler(http.server.BaseHTTPRequestHandler):
+    """Responds with a non-2xx status to test the HTTPError exception handler."""
+
+    def do_POST(self):
+        length = int(self.headers["Content-Length"])
+        self.rfile.read(length)  # drain the request body
+        error_body = "Server internal error: FSM crash"
+        self.send_response(500)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(error_body)))
+        self.end_headers()
+        self.wfile.write(error_body.encode("utf-8"))
+
+    def log_message(self, *args):  # silence stdout during the test run
+        pass
+
+
+def test_call_teacher_catches_http_error_and_returns_http_error_finish_reason():
+    """A real HTTP server responding with 5xx status triggers urllib.error.HTTPError.
+    The exception must be caught and returned as a 5-tuple with finish_reason='http_error'
+    and content containing the status code and reason."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _HTTPErrorResponseHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        content, finish_reason, reasoning, completion_tokens, prompt_tokens = tr.call_teacher(
+            f"http://127.0.0.1:{port}", "m", "p", 0
+        )
+        assert finish_reason == "http_error"
+        assert reasoning is None
+        assert completion_tokens is None
+        assert prompt_tokens is None
+        assert "500" in content, f"HTTP status code 500 must be in error content: {content}"
+        assert "Server internal error" in content, f"Error body must be in content: {content}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_call_teacher_catches_oserror_and_returns_http_error_finish_reason(monkeypatch):
+    """OSError (including socket.timeout, TimeoutError, and connection failures) must be
+    caught and returned as a 5-tuple with finish_reason='http_error' and content as str(e)."""
+    def mock_urlopen(req, timeout=None):
+        raise OSError("simulated connection failure")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    content, finish_reason, reasoning, completion_tokens, prompt_tokens = tr.call_teacher(
+        "http://unused.invalid", "m", "p", 0
+    )
+    assert finish_reason == "http_error"
+    assert reasoning is None
+    assert completion_tokens is None
+    assert prompt_tokens is None
+    assert content == "simulated connection failure"
+
+
+def test_main_records_http_error_to_responses_and_continues_retry_loop(tmp_path, monkeypatch):
+    """The http_error finish_reason from call_teacher must be handled as a retriable failure
+    (like finish_reason='length'), recording a rejected entry and continuing the retry loop.
+    A query with http_error on both attempts must be left unscored (refusal-to-write rule)."""
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    responses_path = str(tmp_path / "responses.jsonl")
+    out_path = str(tmp_path / "teacher.chunks.trec")
+
+    # q1: both attempts return http_error; q2: succeeds on first attempt
+    scripted = ScriptedTeacher([
+        ("HTTP 500: Internal Server Error -- FSM crash", "http_error", None, None, None),
+        ("HTTP 502: Bad Gateway", "http_error", None, None, None),
+        ('["e2", "e3", "e1"]', "stop", None, None, None),
+    ])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+
+    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
+    with pytest.raises(SystemExit) as exc_info:
+        tr.main(argv)  # refused -- q1 unscored due to http_error on both attempts
+
+    assert exc_info.value.code != 0
+    message = str(exc_info.value)
+    assert "q1" in message
+    assert "1 / 2" in message  # "1 / 2 queries unscored"
+    assert not os.path.exists(out_path), "no run file may be written when any query is unscored"
+    assert scripted.calls == 3
+
+    # Verify q1's two http_error attempts were durably logged
+    with open(responses_path, encoding="utf-8") as f:
+        records = [json.loads(line) for line in f if line.strip()]
+    q1_records = [r for r in records if r["query_id"] == "q1"]
+    assert len(q1_records) == 2
+    assert all(r["status"] == "rejected" for r in q1_records)
+    assert all("http_error:" in r["reason"] for r in q1_records), (
+        "reason must start with 'http_error:' followed by the error details"
+    )
 
 
 def test_main_presents_documents_to_the_model_in_shuffled_not_fusion_order(tmp_path, monkeypatch):
