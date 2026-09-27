@@ -152,11 +152,19 @@ independently reproduced (unlike query 51's, see Background), so whether droppin
 also fixes it is an inference, not a confirmed fact, and `call_teacher` has zero exception handling on
 this path either way.
 
-`call_teacher` wraps its `urllib.request.urlopen(req, timeout=600)` call in `try`/`except
-urllib.error.HTTPError as e`. On catching it, it returns the sentinel described in Design §2 —
-`finish_reason="http_error"`, with `content` built from `e.code`, `e.reason`, and `e.read()` (decoded,
-reasonably truncated) so the ledger gets a real, inspectable error body, mirroring how a
-`finish_reason="length"` rejection already records truncated content. The usage-derived fields stay
+`call_teacher` wraps its `urllib.request.urlopen(req, timeout=600)` call in two `except` clauses, both
+mapping to the same sentinel described in Design §2 — `finish_reason="http_error"` — so no new
+dispatch mechanism is needed, only wider coverage of which exceptions reach it:
+- `except urllib.error.HTTPError as e:` — `content` built from `e.code`, `e.reason`, and `e.read()`
+  (decoded, reasonably truncated), giving the ledger a real, inspectable error body, mirroring how a
+  `finish_reason="length"` rejection already records truncated content.
+- `except OSError as e:` — covers a read-phase timeout (`socket.timeout`/`TimeoutError`, which is an
+  `OSError` subclass, confirmed: `socket.timeout is TimeoutError` → `True`, aliased since Python
+  3.10) and any other network-level failure `urlopen` can raise; `content` is `str(e)`. `HTTPError`
+  must stay listed first — it is itself an `OSError` subclass, so the more specific clause has to
+  come before the broader catch-all to be distinguished.
+
+Both branches leave the usage-derived fields (`reasoning`/`completion_tokens`/`prompt_tokens`) as
 `None` — no usage data exists for a failed request.
 
 `score_query` gains one new branch alongside its existing `finish_reason == "length"` check: `elif
@@ -164,9 +172,13 @@ finish_reason == "http_error":` records the rejection through the same `append_r
 `make_record` shape as the other rejection branches (Design §2), then continues the existing retry
 loop — no new retry mechanism.
 
-Scoped to `HTTPError` only, not the broader `urllib.error.URLError` (e.g. connection drops, timeouts)
-— that's not the failure this decision addresses, and broadening further isn't evidenced by anything
-observed so far.
+**Known issue, accepted as out of scope:** `timeout=600` itself stays unchanged despite Design §2's
+4x larger completion budget and Design §3's 6-way concurrency — no wall-clock generation timing exists
+anywhere in this document or the results doc to justify raising it, and obtaining that measurement is
+out of scope for this design step (no live pod). If a legitimate long generation hits this ceiling
+before finishing, the broadened guard above now records it as an ordinary rejection rather than
+crashing — a truncation failure disguised as a timeout, not lost data. Revisit if the re-measurement
+shows this actually occurring.
 
 ## Verified assumptions
 
@@ -185,3 +197,4 @@ observed so far.
 | 11 | No accepted upstream fix exists for the xgrammar/gpt-oss FSM failure that would let `structured_outputs` be kept safely | Web research: `vllm-project/vllm#22513` (exact symptom match, gpt-oss 20b/120b) — closed without a confirmed general fix; the one reported workaround (`--async-scheduling` removal) doesn't apply since this session's server never used that flag. `#37359` (related mechanism, `is_reasoning_end()`/Harmony channel detection) closed stale, unresolved. Explicitly setting `--reasoning-parser openai_gptoss` is reported elsewhere to cause a *different* error in non-streaming mode, so it is not a workaround either. |
 | 12 | Both `finish_reason=length` and the query-51 degenerate loop trace to vLLM's xgrammar backend rejecting a token mid-generation, not to budget size alone — the load-bearing claim behind Scope item 1 | Reproduced live against query 51's exact prompt; server-side log captured verbatim: `(EngineCore pid=806) ERROR ... [backend_xgrammar.py:168] Failed to advance FSM for request ... tokens 200012. Please file an issue.` / `(EngineCore pid=806) ERROR ... grammar rejected tokens [200012] for request ... Terminating request.` / `(APIServer pid=44) ERROR ... Request ... failed with an internal error during generation` — retrieved from the pod's own container logs after the client side only showed a generic HTTP 500. |
 | 13 | `urllib.error.HTTPError` instances expose `.code`, `.reason`, and `.read()` for the response status/body, supporting Design §4's error-recording sentinel | Constructed a real instance (`HTTPError('http://x', 500, 'Internal Server Error', {}, io.BytesIO(b'...'))`) and read them directly: `code` → `500`, `reason` → `'Internal Server Error'`, `read()` → the body bytes, `str()` → `'HTTP Error 500: Internal Server Error'` — matches the exact traceback text this session captured live from the real query-521-class crash. |
+| 14 | A read-phase `urlopen(req, timeout=N)` timeout raises a bare exception that `except HTTPError` alone does not catch, and `except OSError` catches it plus `HTTPError` itself | `socket.timeout is TimeoutError` → `True` (aliased since Python 3.10); `TimeoutError.__mro__` shows it is a direct `OSError` subclass; `issubclass(urllib.error.HTTPError, OSError)` and `issubclass(urllib.error.URLError, OSError)` both → `True`. Confirms `except (HTTPError, OSError)` (`HTTPError` first) is the correct, minimal broadening. |
