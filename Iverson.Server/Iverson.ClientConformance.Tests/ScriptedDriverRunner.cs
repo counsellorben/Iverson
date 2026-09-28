@@ -1,4 +1,5 @@
 using System.Text.Json;
+using FluentAssertions;
 using Iverson.ClientConformance;
 
 namespace Iverson.ClientConformance.Tests;
@@ -120,5 +121,60 @@ public sealed class RecordingReregistrar : IReregistrar
 
         Calls.Add((actingToken, ownerField, modelId, typeName));
         return Throws is not null ? Task.FromException(Throws) : Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Drives a register-once scenario (<c>query</c>, <c>vector-search</c>, <c>match-pattern</c>)
+/// through <c>RunAsync</c> to a write step that reports <c>ok: false</c>, with no live stack.
+///
+/// <para>The .NET driver registers successfully (a descriptor <c>Verifier.ParseDescriptor</c>
+/// accepts), the <see cref="RecordingReregistrar"/> accepts the re-registration, and ONE language's
+/// write phase reports the scenario's write step failed with <see cref="Error"/>. The projection
+/// wait then probes an unreachable channel under <see cref="OneAttemptWaiter"/>, so it gives up
+/// after a single refused attempt and the read phase never runs.</para>
+///
+/// <para>Every cell therefore fails on the wait's timeout regardless, so a test built on this must
+/// assert on the WRITE step's own assertion and on the cell detail, not on the status alone:
+/// the timeout detail names neither the write step nor <see cref="Error"/>.</para>
+/// </summary>
+internal static class FailedWriteScript
+{
+    /// <summary>The error the failing write step reports — distinctive, so a detail can be searched for it.</summary>
+    internal const string Error = "scripted write failure: the store refused the row";
+
+    /// <summary>The register phase succeeds, then <paramref name="language"/>'s write step fails.</summary>
+    internal static ScriptedDriverRunner Runner(string registerStepName, string writeStepName, string language) =>
+        new ScriptedDriverRunner()
+            .Script(Phase.Register, new DriverPhaseOutcome.Success("dotnet", new PhaseDocument("dotnet", "register",
+            [
+                new StepResult(registerStepName, true,
+                    TypeDescriptor: JsonDocument.Parse("""{"typeName":"Scripted"}""").RootElement.Clone()),
+            ])))
+            .Script(Phase.Write, new DriverPhaseOutcome.Success(language, new PhaseDocument(language, "write",
+            [
+                new StepResult(writeStepName, false, Error: Error),
+            ])));
+
+    /// <summary>A waiter that probes exactly once and gives that attempt at most five seconds.</summary>
+    internal static ProjectionWaiter OneAttemptWaiter() => new(TimeSpan.Zero, TimeSpan.FromSeconds(5));
+
+    /// <summary>A search client on a port nothing listens on, so every projection probe is refused at once.</summary>
+    internal static Iverson.Client.Contracts.ObjectSearchService.ObjectSearchServiceClient UnreachableSearch() =>
+        new(Grpc.Net.Client.GrpcChannel.ForAddress("http://localhost:1"));
+
+    /// <summary>
+    /// <paramref name="language"/>'s cell fails, its write-step assertion is present and FAILED, and
+    /// the cell detail names the write step and carries <see cref="Error"/>. The middle clause is
+    /// what reddens when the scenario grades the step as passed regardless of <c>step.Ok</c>.
+    /// </summary>
+    internal static void ShouldCarryTheWriteFailure(
+        IReadOnlyList<ReportCell> cells, string language, string writeStepName)
+    {
+        var cell = cells.Should().ContainSingle(c => c.Language == language).Subject;
+        cell.Status.Should().Be(CellStatus.Fail);
+        cell.Assertions.Should().ContainSingle(a => a.Name == $"step '{writeStepName}' succeeded")
+            .Which.Passed.Should().BeFalse("the driver reported the write step with ok: false");
+        cell.Detail.Should().Contain($"'{writeStepName}'").And.Contain(Error);
     }
 }
