@@ -207,7 +207,7 @@ public sealed partial class ObjectSearchGrpcService
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "[MatchPattern] releasing the row source failed.");
+                logger.LogWarning(ex, "[MatchPattern] disposing the batch enumerator failed.");
             }
 
             // Read only now: on the limit path it is batches.DisposeAsync() above that disposes the input.
@@ -217,7 +217,7 @@ public sealed partial class ObjectSearchGrpcService
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "[MatchPattern] releasing the row source failed.");
+                logger.LogWarning(ex, "[MatchPattern] the row source's detached disposal failed.");
             }
         }
         finally

@@ -647,9 +647,11 @@ public sealed class MatchPatternGrpcServiceTests
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (!logs.Entries.Any(IsTheDrainFailure) && DateTime.UtcNow < deadline)
             await Task.Delay(10);
-        logs.Entries.Where(IsTheDrainFailure).Select(e => e.Level).Should().Equal(LogLevel.Warning);
+        // Logged at the source stage, distinguishable from a failure disposing the batch enumerator.
+        logs.Entries.Where(IsTheDrainFailure).Select(e => (e.Level, e.Message))
+            .Should().Equal((LogLevel.Warning, "[MatchPattern] the row source's detached disposal failed."));
 
-        static bool IsTheDrainFailure((LogLevel Level, Exception? Exception) e) =>
+        static bool IsTheDrainFailure((LogLevel Level, string Message, Exception? Exception) e) =>
             e.Exception is InvalidOperationException { Message: "drain failed" };
 
         static async IAsyncEnumerable<IDictionary<string, object?>> DrainFails(TaskCompletionSource release)
@@ -672,9 +674,9 @@ public sealed class MatchPatternGrpcServiceTests
 
     private sealed class RecordingLogger : ILogger<ObjectSearchGrpcService>
     {
-        private readonly System.Collections.Concurrent.ConcurrentQueue<(LogLevel Level, Exception? Exception)> _entries = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(LogLevel Level, string Message, Exception? Exception)> _entries = new();
 
-        public IReadOnlyCollection<(LogLevel Level, Exception? Exception)> Entries => _entries.ToArray();
+        public IReadOnlyCollection<(LogLevel Level, string Message, Exception? Exception)> Entries => _entries.ToArray();
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -683,7 +685,7 @@ public sealed class MatchPatternGrpcServiceTests
         public void Log<TState>(
             LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter) =>
-            _entries.Enqueue((logLevel, exception));
+            _entries.Enqueue((logLevel, formatter(state, exception), exception));
     }
 
     private const string TimeoutSourceOutlivesTheDrain =
