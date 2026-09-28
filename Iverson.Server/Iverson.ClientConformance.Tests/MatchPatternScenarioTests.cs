@@ -652,21 +652,22 @@ public class MatchPatternScenarioTests
     }
 
     /// <summary>
-    /// THE mutation this test exists for: grading the write step as passed regardless of
-    /// <c>step.Ok</c> in <c>RunAsync</c>. A language whose driver failed to seed its rows must say
-    /// so in its own cell, naming the write step and the driver's error.
+    /// THE mutations this test exists for: grading the write step as passed, or as failed,
+    /// regardless of <c>step.Ok</c> in <c>RunAsync</c>. A language whose driver failed to seed its
+    /// rows must say so in its own cell, naming the write step and the driver's error, while a
+    /// language whose write succeeded must have that step graded passed.
     /// </summary>
     [Fact]
-    public async Task RunAsync_ALanguagesWriteStepFails_ItsCellFailsNamingTheStepAndTheError()
+    public async Task RunAsync_EachWriteStepIsGradedByItsOwnOk_AFailedOneNamingTheStepAndTheError()
     {
         var scenario = new MatchPatternScenario(
-            FailedWriteScript.Runner(MatchPatternScenario.RegisterStepName, MatchPatternScenario.WriteStepName, "python"),
+            FailedWriteScript.Runner(MatchPatternScenario.RegisterStepName, MatchPatternScenario.WriteStepName),
             new RecordingReregistrar(),
             FailedWriteScript.UnreachableSearch(),
             FailedWriteScript.OneAttemptWaiter());
 
-        var cells = await scenario.RunAsync(["python"], Context(), "acting-token");
+        var cells = await scenario.RunAsync(FailedWriteScript.Languages, Context(), "acting-token");
 
-        FailedWriteScript.ShouldCarryTheWriteFailure(cells, "python", MatchPatternScenario.WriteStepName);
+        FailedWriteScript.ShouldCarryTheWriteFailure(cells, MatchPatternScenario.WriteStepName);
     }
 }
