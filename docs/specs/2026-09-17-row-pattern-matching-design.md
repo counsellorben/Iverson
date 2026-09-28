@@ -287,7 +287,8 @@ chunk point IDs are hashes. The source therefore reads in two phases:
    `field = chunkDesc.PropertyName` (the canonical spelling resolved in §3.4 step 3) AND the
    ownership filter (`ApplyOwnership`), returning only the
    `parent_id` payload and no vectors. Collect the distinct parent keys, counting chunks against
-   `MaxRowsScanned`, then sort the keys ordinally.
+   `MaxRowsScanned` and each parent's chunks against `MaxPartitionRows`, then sort the keys
+   ordinally. Both checks complete before any phase-2 read.
 2. For each batch of parent keys (bounded by `BatchRows` chunks, using the phase-1 per-parent
    counts), scroll with the same filter AND `parent_id ∈ batch` (`Conditions.Match(field, list)`),
    returning `text`, `parent_id`, `chunk_index` and, when the request uses `SIMILARITY`, the
@@ -303,9 +304,11 @@ A chunks collection that does not exist (Qdrant `NotFound`) yields an empty sequ
 `ObjectSearchGrpcService` builds the CHUNKS filter (`BuildChunksFilter` + `ApplyOwnership`), the
 canonical `field` value and the vector name, and passes them to `IChunkRowSource`.
 `IChunkRowSource` stays in `Iverson.Vector`; its inputs are the resolved chunks collection name,
-the `Filter`, the `field` value, the optional vector name, the `BatchRows` bound and the
-`MaxRowsScanned` bound. When phase 1 counts more chunks than `MaxRowsScanned`, the source throws
-`PatternBudgetExceededException`; `Iverson.Vector` therefore gains a project reference to
+the `Filter`, the `field` value, the optional vector name, the `BatchRows` bound, the
+`MaxPartitionRows` bound and the `MaxRowsScanned` bound. When phase 1 counts more chunks than
+`MaxRowsScanned`, or more chunks for one parent than `MaxPartitionRows`, the source throws
+`PatternBudgetExceededException` naming that limit before phase 2 reads any chunk text or vector
+(§4: an oversized parent is never loaded); `Iverson.Vector` therefore gains a project reference to
 `Iverson.Patterns`, which has no store dependencies and so introduces no cycle.
 
 #### 3.3 `SimilarityResolver` (`Iverson.Api`)
@@ -495,7 +498,8 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
    - `IChunkRowSource`: both phases; `chunk_index` sorted numerically (`10` after `2`); a missing
      collection returns empty; the ownership filter is applied; OR-filter rejection; a collection
      lacking the vector re-issues the phase-2 scroll without it; phase 1 over `MaxRowsScanned`
-     chunks raises the budget exception.
+     chunks, or one parent over `MaxPartitionRows` chunks, raises the budget exception before any
+     phase-2 read.
    - `SimilarityResolver`: scores for every present vector; an absent point gives `NULL`; a
      missing object collection and an unconfigured vector give `NULL`; any other retrieve failure
      propagates (it is not treated as `NULL`).
