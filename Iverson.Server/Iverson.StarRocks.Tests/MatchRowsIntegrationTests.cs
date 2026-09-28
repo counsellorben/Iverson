@@ -273,16 +273,11 @@ public sealed class MatchRowsIntegrationTests
         }
         finally
         {
-            try
-            {
-                await _fx.UnpauseAsync();
-            }
-            finally
-            {
-                // Awaited (bounded) on every path, the failed assertion's included, so the reader's release never
-                // finishes unobserved on the shared container while the next test runs.
-                await dispose.WaitAsync(TimeSpan.FromSeconds(90));
-            }
+            // A failed unpause surfaces as itself: the dispose wait is skipped, since it could only time out against a
+            // paused container. Otherwise dispose is awaited (bounded) even when the assertion above failed, so the
+            // reader's release never finishes unobserved on the shared container while the next test runs.
+            await _fx.UnpauseAsync();
+            await dispose.WaitAsync(TimeSpan.FromSeconds(90));
         }
     }
 
