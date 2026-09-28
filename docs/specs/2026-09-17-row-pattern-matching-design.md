@@ -287,7 +287,8 @@ chunk point IDs are hashes. The source therefore reads in two phases:
    `field = chunkDesc.PropertyName` (the canonical spelling resolved in §3.4 step 3) AND the
    ownership filter (`ApplyOwnership`), returning only the
    `parent_id` payload and no vectors. Collect the distinct parent keys, counting chunks against
-   `MaxRowsScanned`, then sort the keys ordinally.
+   `MaxRowsScanned` and each parent's chunks against `MaxPartitionRows`, then sort the keys
+   ordinally. Both checks complete before any phase-2 read.
 2. For each batch of parent keys (bounded by `BatchRows` chunks, using the phase-1 per-parent
    counts), scroll with the same filter AND `parent_id ∈ batch` (`Conditions.Match(field, list)`),
    returning `text`, `parent_id`, `chunk_index` and, when the request uses `SIMILARITY`, the
@@ -303,9 +304,11 @@ A chunks collection that does not exist (Qdrant `NotFound`) yields an empty sequ
 `ObjectSearchGrpcService` builds the CHUNKS filter (`BuildChunksFilter` + `ApplyOwnership`), the
 canonical `field` value and the vector name, and passes them to `IChunkRowSource`.
 `IChunkRowSource` stays in `Iverson.Vector`; its inputs are the resolved chunks collection name,
-the `Filter`, the `field` value, the optional vector name, the `BatchRows` bound and the
-`MaxRowsScanned` bound. When phase 1 counts more chunks than `MaxRowsScanned`, the source throws
-`PatternBudgetExceededException`; `Iverson.Vector` therefore gains a project reference to
+the `Filter`, the `field` value, the optional vector name, the `BatchRows` bound, the
+`MaxPartitionRows` bound and the `MaxRowsScanned` bound. When phase 1 counts more chunks than
+`MaxRowsScanned`, or more chunks for one parent than `MaxPartitionRows`, the source throws
+`PatternBudgetExceededException` naming that limit before phase 2 reads any chunk text or vector
+(§4: an oversized parent is never loaded); `Iverson.Vector` therefore gains a project reference to
 `Iverson.Patterns`, which has no store dependencies and so introduces no cycle.
 
 #### 3.3 `SimilarityResolver` (`Iverson.Api`)
@@ -495,7 +498,8 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
    - `IChunkRowSource`: both phases; `chunk_index` sorted numerically (`10` after `2`); a missing
      collection returns empty; the ownership filter is applied; OR-filter rejection; a collection
      lacking the vector re-issues the phase-2 scroll without it; phase 1 over `MaxRowsScanned`
-     chunks raises the budget exception.
+     chunks, or one parent over `MaxPartitionRows` chunks, raises the budget exception before any
+     phase-2 read.
    - `SimilarityResolver`: scores for every present vector; an absent point gives `NULL`; a
      missing object collection and an unconfigured vector give `NULL`; any other retrieve failure
      propagates (it is not treated as `NULL`).
@@ -527,9 +531,18 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
   unroll, so `MaxProgramInstructions` rejects with `InvalidArgument` some patterns well inside
   `MaxPatternLength`: at the default, `PERMUTE(A, B, C, D, E, F)` (5,759 instructions), `A{10000}`
   and `(A{0,100}){0,100}`.
-- Open, decided by the §9.3 pause test: if StarRocks stops responding after a request has written
-  `limit` rows, disposing the reader drains until StarRocks answers again, and no MySqlConnector
-  call bounds it, so the request does not complete until then.
+- Decided by the §9.3 pause test: if StarRocks stops responding while a reader still has unread
+  rows, disposing the reader drains until StarRocks answers again, and no MySqlConnector call
+  bounds it. The RPC therefore never awaits the row source's disposal: after `limit`, and on any
+  error raised above the store (the batcher's budgets, `define`/`measures` evaluation, scoring),
+  it returns its status and the drain finishes in the background, logged if it fails, with the
+  request's timeout token disposed only after the drain ends. A drained connection is held until
+  then. One narrow case still drains inline: a failure inside the store itself while the
+  connection is open with rows unread (the token cancelled while rows are already buffered on the
+  client, or a value-conversion error mid-row) runs the store's own release before the exception
+  leaves it, so against a StarRocks frozen at that moment the status waits for the drain. A row
+  read that times out is not this case: the timeout closes the socket, and the release then does
+  no network I/O.
 - The `CHUNKS` source scans the filtered chunk set twice (the phase-1 parent list, then the batched
   phase-2 reads) to keep memory bounded.
 - `NaN` from a zero-magnitude vector is kept (§2): `NOT`/`<>` predicates over it with a non-`NULL`

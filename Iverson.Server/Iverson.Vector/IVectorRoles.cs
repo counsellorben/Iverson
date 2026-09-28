@@ -17,7 +17,8 @@ public interface IVectorQueryService
     Task<IReadOnlyDictionary<ulong, float[]>> RetrieveNamedVectorAsync(
         string collectionName,
         IReadOnlyList<ulong> ids,
-        string vectorName);
+        string vectorName,
+        CancellationToken ct = default);
 
     /// <summary>Approximate point count of a collection (Qdrant collection info).</summary>
     Task<ulong> GetPointCountAsync(string collectionName);
@@ -28,6 +29,20 @@ public interface IVectorQueryService
     /// </summary>
     Task<IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>> RetrievePayloadAsync(
         string collectionName, IReadOnlyList<ulong> ids);
+
+    /// <summary>
+    /// One page of the points matching <paramref name="filter"/>, returning only <paramref name="payloadFields"/>
+    /// and, when <paramref name="vectorName"/> is set, that named vector. Pass the previous page's
+    /// <see cref="VectorScrollPage.NextOffset"/> as <paramref name="offset"/>; null starts at the beginning.
+    /// </summary>
+    Task<VectorScrollPage> ScrollAsync(
+        string collectionName,
+        Filter? filter,
+        IReadOnlyList<string> payloadFields,
+        string? vectorName,
+        uint pageSize,
+        PointId? offset = null,
+        CancellationToken ct = default);
 }
 
 public interface IVectorSchemaManager

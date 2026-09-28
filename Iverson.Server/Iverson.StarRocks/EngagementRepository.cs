@@ -1,4 +1,7 @@
+using System.Data;
+using System.Data.Common;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Dapper;
 using Iverson.Client.Contracts;
@@ -33,9 +36,11 @@ public sealed class EngagementRepository(
     // Every real StarRocks operation routes through here: first the one-time cold-start
     // gate (near-instant no-op after the first success), then the circuit-breaker+retry
     // pipeline for ongoing protection against a backend that later goes unhealthy.
-    private async Task<T> RunAsync<T>(Func<Task<T>> operation)
+    // `ct` cuts only this caller's wait at the gate short. It is not handed to EnsureReadyAsync: the gate's one
+    // wait is shared, so a token passed there would cancel it for every concurrent caller.
+    private async Task<T> RunAsync<T>(Func<Task<T>> operation, CancellationToken ct = default)
     {
-        await _readinessGate.EnsureReadyAsync().ConfigureAwait(false);
+        await _readinessGate.EnsureReadyAsync().WaitAsync(ct).ConfigureAwait(false);
 
         try
         {
@@ -215,6 +220,141 @@ public sealed class EngagementRepository(
             }
             throw;
         }
+    }
+
+    /// <summary>
+    /// Streams a tenant-scoped query row by row (spec §3.2). Unlike <see cref="RunTenantScopedAsync{T}"/>, the
+    /// resilience pipeline wraps only open, <c>SET ROLE</c> and query start; a failure after that propagates. The
+    /// connection is held until enumeration ends, then <c>SET ROLE NONE</c> runs with the same failure-swallowing
+    /// discipline. <paramref name="ct"/> reaches the query start and every read, and is checked before each row.
+    /// </summary>
+    internal async IAsyncEnumerable<IDictionary<string, object?>> StreamTenantScopedAsync(
+        string activityName, string tenantId, string sql, object param,
+        Func<Exception, bool> isExpectedMissingResource, [EnumeratorCancellation] CancellationToken ct)
+    {
+        if (!TenantIdentifier.IsValid(tenantId))
+            throw new ArgumentException($"Invalid tenant ID: '{tenantId}'", nameof(tenantId));
+
+        using var activity = Telemetry.Source.StartActivity(activityName, ActivityKind.Client);
+        activity?.SetTag("db.system", "starrocks");
+        activity?.SetTag("db.statement", sql);
+
+        MySqlConnection? conn = null;
+        DbDataReader? reader = null;
+        try
+        {
+            (conn, reader) = await RunAsync(async () =>
+            {
+                var c = CreateConnection();
+                try
+                {
+                    await c.OpenAsync(ct);
+                    await c.ExecuteAsync(new CommandDefinition(
+                        $"SET ROLE `{TenantIdentifier.RoleName(tenantId)}`", cancellationToken: ct));
+                    var r = await c.ExecuteReaderAsync(new CommandDefinition(sql, param, cancellationToken: ct));
+                    return (c, r);
+                }
+                catch
+                {
+                    await ReleaseAsync(c, null);
+                    throw;
+                }
+            }, ct);
+        }
+        catch (Exception ex) when (isExpectedMissingResource(ex))
+        {
+            activity?.SetStatus(ActivityStatusCode.Ok);   // an unprovisioned tenant or missing table: empty, as SearchAsync
+        }
+        catch (Exception ex)
+        {
+            MarkFailed(activity, ex);
+            throw;
+        }
+
+        if (reader is null) yield break;
+
+        try
+        {
+            while (await ReadRowAsync(reader, activity, ct) is { } row)
+                yield return row;
+            activity?.SetStatus(ActivityStatusCode.Ok);
+        }
+        finally
+        {
+            await ReleaseAsync(conn!, reader);
+        }
+    }
+
+    /// <summary>
+    /// The next row, or null at the end. A read failure marks <paramref name="activity"/> failed here, because the
+    /// iterator above cannot catch around its <c>yield return</c>; a failure in the consumer is not the read's.
+    /// </summary>
+    private static async ValueTask<IDictionary<string, object?>?> ReadRowAsync(DbDataReader reader, Activity? activity, CancellationToken ct)
+    {
+        try
+        {
+            if (!await reader.ReadAsync(ct)) return null;
+            ct.ThrowIfCancellationRequested();
+            var row = new Dictionary<string, object?>(reader.FieldCount, StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < reader.FieldCount; i++)
+            {
+                var value = reader.GetValue(i);
+                row[reader.GetName(i)] = value is DBNull ? null : value;   // spec §3.2: SQL NULL is C# null
+            }
+            return row;
+        }
+        catch (Exception ex)
+        {
+            MarkFailed(activity, ex);
+            throw;
+        }
+    }
+
+    /// <summary>As <see cref="RunTenantScopedAsync{T}"/> marks an unexpected failure.</summary>
+    private static void MarkFailed(Activity? activity, Exception ex)
+    {
+        activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+        activity?.RecordException(ex);
+    }
+
+    private async Task ReleaseAsync(MySqlConnection conn, DbDataReader? reader)
+    {
+        try
+        {
+            if (reader is not null) await reader.DisposeAsync();
+            // A connection that never reached Open (e.g. OpenAsync itself timed out or threw) must not be
+            // reopened here: Dapper's ExecuteAsync opens a closed connection by itself, which against a
+            // frozen/unreachable server makes a second, uncancellable connection attempt on top of the
+            // one that already failed or was cancelled — CIR-1 Finding 1. Only a connection that is
+            // actually Open can have an active role to clear.
+            if (conn.State == ConnectionState.Open)
+                await conn.ExecuteAsync("SET ROLE NONE");
+        }
+        catch (Exception ex)
+        {
+            // Same discipline as RunTenantScopedAsync: releasing must never replace the read's own outcome.
+            logger.LogWarning(ex, "Releasing a tenant-scoped StarRocks reader failed (SET ROLE NONE or reader disposal)");
+        }
+        finally
+        {
+            await conn.DisposeAsync();
+        }
+    }
+
+    public async IAsyncEnumerable<IDictionary<string, object?>> MatchRowsAsync(
+        EngagementQuerySchema schema,
+        MatchRowsRequest request,
+        IReadOnlyDictionary<string, AuthorizationConstraint> authz,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var tenantId = authz.GetValueOrDefault(schema.TypeName)?.TenantValue;
+        if (tenantId is null || !TenantIdentifier.IsValid(tenantId))
+            yield break;
+
+        var (sql, param) = MatchRowsQueryBuilder.Build(schema, request, authz, TenantIdentifier.DatabaseName(tenantId));
+
+        await foreach (var row in StreamTenantScopedAsync("sr.match_rows", tenantId, sql, param, IsExpectedMissingResourceError, ct))
+            yield return row;
     }
 
     public async Task UpsertAsync(EngagementTableSchema schema, string payloadJson, string tenantId)

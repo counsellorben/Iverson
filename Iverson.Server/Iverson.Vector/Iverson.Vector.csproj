@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../Iverson.Clients/DotNet/Iverson.Client.Contracts/Iverson.Client.Contracts.csproj" />
+    <ProjectReference Include="../Iverson.Patterns/Iverson.Patterns.csproj" />
   </ItemGroup>
 
 </Project>

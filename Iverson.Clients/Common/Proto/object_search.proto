@@ -13,6 +13,7 @@ service ObjectSearchService {
     rpc Aggregate      (AggregateRequest)     returns (AggregateResponse);
     rpc GroupBy        (GroupByRequest)       returns (stream SearchResponse);
     rpc Pipeline       (PipelineRequest)      returns (stream SearchResponse);
+    rpc MatchPattern   (MatchPatternRequest)  returns (stream MatchPatternResponse);
 }
 
 message SearchRequest {
@@ -337,4 +338,40 @@ enum DateTrunc {
     MONTH   = 5;
     QUARTER = 6;
     YEAR    = 7;
+}
+
+// ── MatchPattern (SQL:2016 row pattern recognition) ─────────────────────────
+
+message MatchPatternRequest {
+    string                 type_name      = 1;
+    PatternRowSource       source         = 2;  // default TYPE_ROWS
+    string                 chunk_property = 3;  // CHUNKS only: an [IversonChunk] property
+    repeated SearchClause  where          = 4;  // pre-filter
+    SearchLogic            where_logic    = 5;
+    repeated string        partition_by   = 6;  // TYPE_ROWS only
+    repeated SearchSort    order_by       = 7;  // TYPE_ROWS: required, >= 1 entry
+    string                 pattern        = 8;
+    repeated PatternSubset subsets        = 9;
+    repeated NamedExpr     define         = 10;
+    repeated NamedExpr     measures       = 11;
+    RowsPerMatch           rows_per_match = 12; // default ONE_ROW
+    AfterMatchSkip         after_match    = 13; // default PAST_LAST_ROW
+    int32                  limit          = 14; // output rows; 0 = default
+    string                 trace_id       = 15;
+}
+
+enum PatternRowSource   { TYPE_ROWS = 0; CHUNKS = 1; }
+enum RowsPerMatch       { ONE_ROW = 0; ALL_ROWS_SHOW_EMPTY = 1; ALL_ROWS_OMIT_EMPTY = 2;
+                          ALL_ROWS_WITH_UNMATCHED = 3; }
+enum AfterMatchSkipKind { PAST_LAST_ROW = 0; TO_NEXT_ROW = 1; TO_FIRST = 2; TO_LAST = 3; }
+
+message PatternSubset  { string name = 1; repeated string variables = 2; }
+message NamedExpr      { string name = 1; string expr = 2; }
+message AfterMatchSkip { AfterMatchSkipKind kind = 1; string variable = 2; } // variable: TO_FIRST/TO_LAST only
+
+message MatchPatternResponse {
+    google.protobuf.Struct data         = 1;
+    int64                  match_number = 2; // 0 for an unmatched row
+    string                 classifier   = 3; // ALL_ROWS_* only; empty for unmatched rows and ONE_ROW
+    string                 trace_id     = 4;
 }

@@ -131,6 +131,11 @@ public class AdminConsoleDataVolumeEndpointTests
             Func<string, EngagementQuerySchema?> registry,
             IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
             => throw new NotSupportedException();
+
+        public IAsyncEnumerable<IDictionary<string, object?>> MatchRowsAsync(
+            EngagementQuerySchema schema, MatchRowsRequest request,
+            IReadOnlyDictionary<string, AuthorizationConstraint> authz, CancellationToken ct = default)
+            => throw new NotSupportedException();
     }
 
     private sealed class ThrowingSearchService(Func<Exception> factory) : SearchServiceBase

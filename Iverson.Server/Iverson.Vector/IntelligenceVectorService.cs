@@ -156,7 +156,8 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
     public async Task<IReadOnlyDictionary<ulong, float[]>> RetrieveNamedVectorAsync(
         string collectionName,
         IReadOnlyList<ulong> ids,
-        string vectorName)
+        string vectorName,
+        CancellationToken ct = default)
     {
         using var activity = Telemetry.Source.StartActivity("qdrant.retrieve_named_vector", ActivityKind.Client);
         activity?.SetTag("db.system", "qdrant");
@@ -173,18 +174,59 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
                 collectionName,
                 batch.Select(id => (PointId)id).ToList(),
                 payloadSelector: false,
-                vectorSelector:  new[] { vectorName });
+                vectorSelector:  new[] { vectorName },
+                cancellationToken: ct);
 
             foreach (var p in points)
             {
                 if (p.Vectors?.Vectors?.Vectors.TryGetValue(vectorName, out var v) != true) continue;
-                var data = v.Dense?.Data ?? v.Data;      // 1.18 exposes both; read whichever is set
-                if (data is { Count: > 0 }) result[p.Id.Num] = data.ToArray();
+                if (DenseValues(v) is { } values) result[p.Id.Num] = values;
             }
         }
 
         activity?.SetStatus(ActivityStatusCode.Ok);
         return result;
+    }
+
+    public async Task<VectorScrollPage> ScrollAsync(
+        string collectionName,
+        Filter? filter,
+        IReadOnlyList<string> payloadFields,
+        string? vectorName,
+        uint pageSize,
+        PointId? offset = null,
+        CancellationToken ct = default)
+    {
+        using var activity = Telemetry.Source.StartActivity("qdrant.scroll", ActivityKind.Client);
+        activity?.SetTag("db.system", "qdrant");
+        activity?.SetTag("qdrant.collection", collectionName);
+
+        WithVectorsSelector vectors = vectorName is null ? false : new[] { vectorName };
+        var response = await client.ScrollAsync(
+            collectionName, filter, pageSize, offset,
+            payloadSelector: payloadFields.ToArray(), vectorsSelector: vectors, cancellationToken: ct);
+
+        var points = new List<ScrolledPoint>(response.Result.Count);
+        foreach (var p in response.Result)
+        {
+            float[]? vector = null;
+            if (vectorName is not null && p.Vectors?.Vectors?.Vectors.TryGetValue(vectorName, out var v) == true)
+                vector = DenseValues(v);
+            points.Add(new ScrolledPoint(
+                p.Id.Num, p.Payload.ToDictionary(kvp => kvp.Key, kvp => ToCanonicalString(kvp.Value)), vector));
+        }
+
+        activity?.SetStatus(ActivityStatusCode.Ok);
+        return new VectorScrollPage(points, response.NextPageOffset);
+    }
+
+    /// <summary>A dense vector's values, or null when it has none.</summary>
+    private static float[]? DenseValues(VectorOutput v)
+    {
+#pragma warning disable CS0612 // VectorOutput.Data is obsolete in 1.18 but still set by servers that predate Dense
+        var data = v.Dense?.Data ?? v.Data;      // 1.18 exposes both; read whichever is set
+#pragma warning restore CS0612
+        return data is { Count: > 0 } ? data.ToArray() : null;
     }
 
     public async Task<ulong> GetPointCountAsync(string collectionName)

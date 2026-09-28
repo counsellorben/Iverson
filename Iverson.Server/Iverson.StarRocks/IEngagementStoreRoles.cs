@@ -53,4 +53,17 @@ public interface IEngagementStoreSearchService
         PipelineRequest request,
         Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null);
+
+    /// <summary>
+    /// The TYPE_ROWS source for MatchPattern (spec §3.2). Validates <paramref name="request"/> against
+    /// <c>ColumnsFor</c> minus <see cref="MatchRowsRequest.ExcludedColumns"/> and streams the tenant's rows ordered by
+    /// partition, order and key, each as an <c>OrdinalIgnoreCase</c> dictionary with SQL <c>NULL</c> as <c>null</c>.
+    /// Reads at most <see cref="MatchRowsRequest.MaxRowsScanned"/> + 1 rows; the caller detects the overflow.
+    /// A null or invalid tenant, an unprovisioned tenant or a missing table yields an empty sequence.
+    /// </summary>
+    IAsyncEnumerable<IDictionary<string, object?>> MatchRowsAsync(
+        EngagementQuerySchema schema,
+        MatchRowsRequest request,
+        IReadOnlyDictionary<string, AuthorizationConstraint> authz,
+        CancellationToken ct = default);
 }

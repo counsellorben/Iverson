@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Threading;
 using FluentAssertions;
 using Iverson.StarRocks;
@@ -76,4 +77,61 @@ public class StarRocksReadinessGateTests
 
         attempt.Should().Be(3);
     }
+
+    [Fact]
+    public async Task A_shared_wait_its_only_waiter_abandoned_is_still_observed_when_it_fails()
+    {
+        // RunAsync stops waiting on the gate with WaitAsync(ct); if that caller was the only waiter, nothing awaits
+        // the shared wait's failure. It must not surface as an UnobservedTaskException once the task is collected.
+        var marker = "gate-" + Guid.NewGuid().ToString("N");
+        var unobserved = 0;
+        EventHandler<UnobservedTaskExceptionEventArgs> handler = (_, e) =>
+        {
+            if (e.Exception.InnerExceptions.Any(x => x is EngagementNotReadyException { InnerException.Message: var m } && m == marker))
+                Interlocked.Increment(ref unobserved);
+        };
+        TaskScheduler.UnobservedTaskException += handler;
+        try
+        {
+            var wait = AbandonTheOnlyWaiter(marker);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!HasFaulted(wait) && DateTime.UtcNow < deadline)
+                await Task.Delay(10);
+            HasFaulted(wait).Should().BeTrue("the gate gives up after its timeout");
+
+            for (var i = 0; i < 3; i++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+            IsCollected(wait).Should().BeTrue("otherwise this test proves nothing about observation");
+
+            unobserved.Should().Be(0);
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= handler;
+        }
+    }
+
+    // Separate, non-inlined frames, so no local of the test method keeps the gate's task reachable.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<Task> AbandonTheOnlyWaiter(string marker)
+    {
+        var gate = new StarRocksReadinessGate(
+            checkAliveOnceAsync: _ => throw new InvalidOperationException(marker),
+            timeout: TimeSpan.FromMilliseconds(100),
+            pollInterval: TimeSpan.FromMilliseconds(10));
+        using var cts = new CancellationTokenSource();
+        var shared = gate.EnsureReadyAsync();
+        _ = shared.WaitAsync(cts.Token);
+        cts.Cancel();                                                   // the only waiter stops waiting
+        return new WeakReference<Task>(shared);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool HasFaulted(WeakReference<Task> wait) => wait.TryGetTarget(out var t) && t.IsFaulted;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool IsCollected(WeakReference<Task> wait) => !wait.TryGetTarget(out _);
 }
