@@ -104,6 +104,7 @@ These assumptions are introduced by this plan and were verified on 2026-09-27 an
 | 24 | Command | Live run: compose file `Iverson.Server/docker-compose.yml`; `docker compose build iverson-api` then `docker compose up -d` (api and worker share the image); the orchestrator finds the repository by walking up to `Iverson.slnx` | Compose comment `:433-443`; `DriverRunner.cs:94-121` |
 | 25 | Ordering | Task 1 precedes Tasks 4, 5, 6 and 8; Task 2 creates the fixtures Tasks 3–6 read; Task 7 needs only the generated .NET client, which exists today; Task 8 needs Tasks 2–6 (SDK APIs) and Task 7 (literals); Task 9 is last | Each task's Interfaces section; the Task 8 prototype applied the Task 2–6 patches in order |
 | 26 | Command | Commit messages are lowercase imperative subject lines | `git log --format=%s -15` |
+| 27 | Consumer impact | Dependencies the scenario relies on without stating them: (1) `ProjectionWaiter.WaitAsync` catches every probe exception per attempt and keeps polling, so a failing probe cannot escape the wait; (2) the probe's `limit` of 10,000 is within the server's `MaxOutputRows` default of 10,000 (no override); (3) one `IdPrefix` per scenario run, so every language's read sees every language's rows; (4) the expected sets come from write-phase keys (`MergeKeys`), never from the read being judged; (5) `CompiledPattern.Run` is called per partition, so `MATCH_NUMBER()` is 1 in every language's partition; (6) each SDK's new call carries the acting user exactly as its `Pipeline` call does — required, because the server answers a denied caller with an empty stream, not an error | CIR-1 (2026-09-28) in-round verification: `ProjectionWaiter.cs` per-attempt `catch (Exception)`; `PatternQueryLimitOptions.MaxOutputRows` default; `Program.cs` `BuildContext` `IdPrefix`; `DriverRunner.MergeKeys`; per-partition `Run` in `ObjectSearchGrpcService.MatchPattern.cs`; each SDK's `MatchPattern` call path |
 
 ## Tasks
 
@@ -2048,6 +2049,18 @@ type mockMatchPatternStream struct {
 	responses []*pb.MatchPatternResponse
 	idx       int
 	streamErr error
+}
+
+func (m *mockMatchPatternStream) Recv() (*pb.MatchPatternResponse, error) {
+	if m.idx < len(m.responses) {
+		r := m.responses[m.idx]
+		m.idx++
+		return r, nil
+	}
+	if m.streamErr != nil {
+		return nil, m.streamErr
+	}
+	return nil, io.EOF
 }
 ```
 
