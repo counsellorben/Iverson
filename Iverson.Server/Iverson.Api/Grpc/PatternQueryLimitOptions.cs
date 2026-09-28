@@ -27,4 +27,37 @@ public sealed class PatternQueryLimitOptions
     public int BatchRows { get; init; } = 2_000;
 
     public static PatternQueryLimitOptions Default { get; } = new();
+
+    /// <summary>
+    /// Throws <see cref="InvalidOperationException"/> naming every invalid key: every limit must be greater than 0, and
+    /// <see cref="MaxRowsScanned"/> less than <see cref="int.MaxValue"/>, since the row read asks for one row more.
+    /// </summary>
+    public void Validate()
+    {
+        var invalid = new List<string>();
+        void Positive(string key, long value)
+        {
+            if (value <= 0) invalid.Add($"{Section}:{key} must be greater than 0 (got {value})");
+        }
+
+        Positive(nameof(MaxPatternLength), MaxPatternLength);
+        Positive(nameof(MaxProgramInstructions), MaxProgramInstructions);
+        Positive(nameof(MaxExpressionLength), MaxExpressionLength);
+        Positive(nameof(MaxDefines), MaxDefines);
+        Positive(nameof(MaxMeasures), MaxMeasures);
+        Positive(nameof(MaxSubsets), MaxSubsets);
+        Positive(nameof(MaxSimilarityTerms), MaxSimilarityTerms);
+        Positive(nameof(MaxOutputRows), MaxOutputRows);
+        Positive(nameof(MaxRowsScanned), MaxRowsScanned);
+        if (MaxRowsScanned == int.MaxValue)
+            invalid.Add($"{Section}:{nameof(MaxRowsScanned)} must be less than {int.MaxValue}: the row read asks for one row more");
+        Positive(nameof(MaxPartitionRows), MaxPartitionRows);
+        Positive(nameof(MaxActiveThreads), MaxActiveThreads);
+        Positive(nameof(MaxSteps), MaxSteps);
+        Positive(nameof(TimeoutSeconds), TimeoutSeconds);
+        Positive(nameof(BatchRows), BatchRows);
+
+        if (invalid.Count > 0)
+            throw new InvalidOperationException($"Invalid MatchPattern limits: {string.Join("; ", invalid)}.");
+    }
 }

@@ -313,7 +313,7 @@ builder.Services.AddQdrant(
     cfg["Qdrant:CertPath"]);
 
 // Spec §5: MatchPattern's limits, read one value at a time like EngagementQueryLimitOptions above.
-builder.Services.AddSingleton(new PatternQueryLimitOptions
+var patternLimits = new PatternQueryLimitOptions
 {
     MaxPatternLength       = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxPatternLength", PatternQueryLimitOptions.Default.MaxPatternLength),
     MaxProgramInstructions = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxProgramInstructions", PatternQueryLimitOptions.Default.MaxProgramInstructions),
@@ -329,7 +329,9 @@ builder.Services.AddSingleton(new PatternQueryLimitOptions
     MaxSteps               = cfg.GetValue($"{PatternQueryLimitOptions.Section}:MaxSteps", PatternQueryLimitOptions.Default.MaxSteps),
     TimeoutSeconds         = cfg.GetValue($"{PatternQueryLimitOptions.Section}:TimeoutSeconds", PatternQueryLimitOptions.Default.TimeoutSeconds),
     BatchRows              = cfg.GetValue($"{PatternQueryLimitOptions.Section}:BatchRows", PatternQueryLimitOptions.Default.BatchRows),
-});
+};
+patternLimits.Validate();                                     // fail at startup, not on every request
+builder.Services.AddSingleton(patternLimits);
 
 builder.Services.AddVectorRanking(cfg);
 builder.Services.AddDecayOptions(cfg);
