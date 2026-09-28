@@ -77,4 +77,17 @@ public sealed class PatternQueryLimitOptionsTests
             .Should().Throw<InvalidOperationException>().WithMessage("*Patterns:Limits:MaxRowsScanned *");
         With("MaxRowsScanned", int.MaxValue - 1).Invoking(o => o.Validate()).Should().NotThrow();
     }
+
+    [Fact]
+    public void TimeoutSeconds_is_bounded_by_what_CancelAfter_accepts()
+    {
+        With("TimeoutSeconds", 4_294_967).Invoking(o => o.Validate()).Should().NotThrow();
+        With("TimeoutSeconds", 4_294_968).Invoking(o => o.Validate())
+            .Should().Throw<InvalidOperationException>().WithMessage("*Patterns:Limits:TimeoutSeconds *");
+
+        // The bound is CancelAfter's own: the largest accepted value works, one more second does not.
+        using var cts = new CancellationTokenSource();
+        cts.Invoking(c => c.CancelAfter(TimeSpan.FromSeconds(4_294_967))).Should().NotThrow();
+        cts.Invoking(c => c.CancelAfter(TimeSpan.FromSeconds(4_294_968))).Should().Throw<ArgumentOutOfRangeException>();
+    }
 }

@@ -28,9 +28,13 @@ public sealed class PatternQueryLimitOptions
 
     public static PatternQueryLimitOptions Default { get; } = new();
 
+    /// <summary>The largest <see cref="TimeoutSeconds"/> <c>CancelAfter</c> accepts (its limit is 4,294,967,294 ms).</summary>
+    public const int MaxTimeoutSeconds = 4_294_967;
+
     /// <summary>
     /// Throws <see cref="InvalidOperationException"/> naming every invalid key: every limit must be greater than 0, and
-    /// <see cref="MaxRowsScanned"/> less than <see cref="int.MaxValue"/>, since the row read asks for one row more.
+    /// <see cref="MaxRowsScanned"/> less than <see cref="int.MaxValue"/>, since the row read asks for one row more, and
+    /// <see cref="TimeoutSeconds"/> at most <see cref="MaxTimeoutSeconds"/>, or every request's <c>CancelAfter</c> throws.
     /// </summary>
     public void Validate()
     {
@@ -55,6 +59,8 @@ public sealed class PatternQueryLimitOptions
         Positive(nameof(MaxActiveThreads), MaxActiveThreads);
         Positive(nameof(MaxSteps), MaxSteps);
         Positive(nameof(TimeoutSeconds), TimeoutSeconds);
+        if (TimeoutSeconds > MaxTimeoutSeconds)
+            invalid.Add($"{Section}:{nameof(TimeoutSeconds)} must be at most {MaxTimeoutSeconds} (got {TimeoutSeconds})");
         Positive(nameof(BatchRows), BatchRows);
 
         if (invalid.Count > 0)
