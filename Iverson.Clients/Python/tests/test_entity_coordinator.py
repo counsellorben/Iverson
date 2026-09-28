@@ -1,5 +1,5 @@
 """Tests for EntityCoordinator's search-family execution methods (search, search_similar,
-group_by, aggregate, search_chunks, pipeline). No existing EntityCoordinator execution
+group_by, aggregate, search_chunks, pipeline, match_pattern). No existing EntityCoordinator execution
 tests existed before this task (only builder tests) — this file establishes that pattern,
 following test_schema_registrar.py's mocking convention."""
 from __future__ import annotations
@@ -17,7 +17,7 @@ from iverson_client.annotations import (
     one_to_many,
     one_to_one,
 )
-from iverson_client.core import EntityCoordinator, _entity_to_struct
+from iverson_client.core import EntityCoordinator, MatchPatternResult, _entity_to_struct
 from iverson_client.generated import (
     object_mapping_pb2 as mapping_pb,
     object_retrieval_pb2 as retrieval_pb,
@@ -128,6 +128,31 @@ class TestEntityCoordinatorSearchFamily:
         results = coordinator.pipeline(pb.PipelineRequest(type_name="CoordArticle"))
 
         assert results == [{"Rank": 1.0}]
+
+    def test_match_pattern_pairs_each_row_with_its_match_number_and_classifier(self):
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token")
+        coordinator._search = MagicMock()
+        first = struct_pb2.Struct()
+        first.fields["Label"].string_value = "pat-python"
+        first.fields["Seq"].number_value = 1
+        second = struct_pb2.Struct()
+        second.fields["Label"].string_value = "pat-python"
+        second.fields["Seq"].number_value = 2
+        coordinator._search.MatchPattern.return_value = iter([
+            pb.MatchPatternResponse(data=first, match_number=1, classifier="A"),
+            pb.MatchPatternResponse(data=second, match_number=1, classifier="B"),
+        ])
+        request = pb.MatchPatternRequest(type_name="CoordArticle", pattern="A B+")
+
+        results = coordinator.match_pattern(request)
+
+        assert results == [
+            MatchPatternResult({"Label": "pat-python", "Seq": 1.0}, 1, "A"),
+            MatchPatternResult({"Label": "pat-python", "Seq": 2.0}, 1, "B"),
+        ]
+        coordinator._search.MatchPattern.assert_called_once_with(
+            request, metadata=(("x-acting-user-authorization", "Bearer ambient-token"),))
 
     def test_search_chunks_returns_flat_messages_as_is(self):
         coordinator = make_coordinator()
