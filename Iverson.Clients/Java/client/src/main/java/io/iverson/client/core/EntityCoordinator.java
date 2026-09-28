@@ -7,6 +7,7 @@ import io.iverson.client.annotations.IversonKey;
 import io.iverson.client.search.AggregateBuilder;
 import io.iverson.client.search.ChunksBuilder;
 import io.iverson.client.search.GroupByBuilder;
+import io.iverson.client.search.MatchPatternBuilder;
 import io.iverson.client.search.PipelineBuilder;
 import io.iverson.client.search.QueryBuilder;
 import io.iverson.client.search.SimilarBuilder;
@@ -281,6 +282,25 @@ public final class EntityCoordinator<T> {
         return results;
     }
 
+    /**
+     * Executes a row pattern match (MATCH_RECOGNIZE) and returns every output row. Columns
+     * depend on the request's rows-per-match mode and measures, so each row's data comes back
+     * as a string-keyed map, same as {@link #pipeline(PipelineBuilder)}.
+     */
+    public List<MatchPatternResult> matchPattern(MatchPatternBuilder builder) throws StatusRuntimeException {
+        ObjectSearch.MatchPatternRequest request = builder.build();
+        Iterator<ObjectSearch.MatchPatternResponse> stream = stubFor(null).matchPattern(request);
+        List<MatchPatternResult> results = new ArrayList<>();
+        while (stream.hasNext()) {
+            ObjectSearch.MatchPatternResponse response = stream.next();
+            results.add(new MatchPatternResult(
+                StructConverter.fromStructAsMap(response.getData()),
+                response.getMatchNumber(),
+                response.getClassifier()));
+        }
+        return results;
+    }
+
     /** Executes a Qdrant vector similarity search and returns matching entities with scores. */
     public List<SearchResult<T>> searchSimilar(SimilarBuilder builder) throws StatusRuntimeException {
         ObjectSearch.SearchSimilarRequest request = builder.build();
@@ -368,4 +388,11 @@ public final class EntityCoordinator<T> {
 
     /** Wraps a chunk/RAG search hit with its parent entity key, passage text, and relevance score. */
     public record ChunkSearchResult(String parentKey, String chunkText, float score) {}
+
+    /**
+     * One row pattern match output row: its columns (raw keys, no casing transform), its match
+     * number (0 for an unmatched row) and its classifier (the pattern variable the row matched;
+     * empty for ONE_ROW and for unmatched rows).
+     */
+    public record MatchPatternResult(Map<String, Object> data, long matchNumber, String classifier) {}
 }
