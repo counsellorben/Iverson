@@ -17,8 +17,19 @@ internal sealed class StarRocksReadinessGate(
         lock (_lock)
         {
             if (_confirmedReady) return Task.CompletedTask;
-            return _pendingWait ??= WaitUntilReadyAsync(ct);
+            return _pendingWait ??= Observe(WaitUntilReadyAsync(ct));
         }
+    }
+
+    // A caller may stop waiting (RunAsync's WaitAsync(ct)) and leave the shared wait with no one to await it; its
+    // failure is then observed here, once, instead of surfacing as an UnobservedTaskException when it is collected.
+    // The original task is returned, so every waiter still sees the same outcome.
+    private static Task Observe(Task wait)
+    {
+        wait.ContinueWith(t => _ = t.Exception,
+            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return wait;
     }
 
     private async Task WaitUntilReadyAsync(CancellationToken ct)
