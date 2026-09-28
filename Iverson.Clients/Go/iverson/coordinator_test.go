@@ -653,6 +653,24 @@ func (m *mockChunkSearchStream) Recv() (*pb.ChunkSearchResponse, error) {
 	return nil, io.EOF
 }
 
+type mockMatchPatternStream struct {
+	responses []*pb.MatchPatternResponse
+	idx       int
+	streamErr error
+}
+
+func (m *mockMatchPatternStream) Recv() (*pb.MatchPatternResponse, error) {
+	if m.idx < len(m.responses) {
+		r := m.responses[m.idx]
+		m.idx++
+		return r, nil
+	}
+	if m.streamErr != nil {
+		return nil, m.streamErr
+	}
+	return nil, io.EOF
+}
+
 type mockSearchClient struct {
 	searchStream   *mockSearchStream
 	searchErr      error
@@ -667,12 +685,16 @@ type mockSearchClient struct {
 	aggregateResp  *pb.AggregateResponse
 	aggregateErr   error
 
+	matchPatternStream *mockMatchPatternStream
+	matchPatternErr    error
+
 	capturedSearch        *pb.SearchRequest
 	capturedSearchSimilar *pb.SearchSimilarRequest
 	capturedSearchChunks  *pb.SearchChunksRequest
 	capturedGroupBy       *pb.GroupByRequest
 	capturedPipeline      *pb.PipelineRequest
 	capturedAggregate     *pb.AggregateRequest
+	capturedMatchPattern  *pb.MatchPatternRequest
 }
 
 func (m *mockSearchClient) Search(_ context.Context, req *pb.SearchRequest) (SearchStream, error) {
@@ -721,6 +743,14 @@ func (m *mockSearchClient) Pipeline(_ context.Context, req *pb.PipelineRequest) 
 		return nil, m.pipelineErr
 	}
 	return m.pipelineStream, nil
+}
+
+func (m *mockSearchClient) MatchPattern(_ context.Context, req *pb.MatchPatternRequest) (MatchPatternStream, error) {
+	m.capturedMatchPattern = req
+	if m.matchPatternErr != nil {
+		return nil, m.matchPatternErr
+	}
+	return m.matchPatternStream, nil
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -930,6 +960,67 @@ func TestCoordinatorPipeline_PropagatesInitialError(t *testing.T) {
 	_, err := c.Pipeline(context.Background(), &pb.PipelineRequest{})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// ── MatchPattern ──────────────────────────────────────────────────────────────
+
+func TestCoordinatorMatchPattern_ReturnsResults(t *testing.T) {
+	search := &mockSearchClient{
+		matchPatternStream: &mockMatchPatternStream{responses: []*pb.MatchPatternResponse{
+			{Data: mustStruct(t, map[string]interface{}{"Label": "pat-go", "n": 3.0}), MatchNumber: 1},
+			{Data: mustStruct(t, map[string]interface{}{"Seq": 2.0}), MatchNumber: 2, Classifier: "B"},
+		}},
+	}
+	c := newTestCoordinator(t, search)
+	req := NewMatchPattern("coordinatorArticle").OrderBy("Seq", false).Pattern("A B+").Build("trace-1")
+
+	results, err := c.MatchPattern(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].Data["Label"] != "pat-go" || results[0].Data["n"] != 3.0 ||
+		results[0].MatchNumber != 1 || results[0].Classifier != "" {
+		t.Errorf("unexpected result 0: %+v", results[0])
+	}
+	if results[1].Data["Seq"] != 2.0 || results[1].MatchNumber != 2 || results[1].Classifier != "B" {
+		t.Errorf("unexpected result 1: %+v", results[1])
+	}
+	if search.capturedMatchPattern != req {
+		t.Errorf("request not passed through unchanged: %+v", search.capturedMatchPattern)
+	}
+}
+
+func TestCoordinatorMatchPattern_WrapsInitialError(t *testing.T) {
+	boom := errors.New("boom")
+	search := &mockSearchClient{matchPatternErr: boom}
+	c := newTestCoordinator(t, search)
+
+	_, err := c.MatchPattern(context.Background(), &pb.MatchPatternRequest{})
+	if !errors.Is(err, boom) || !strings.HasPrefix(err.Error(), "MatchPattern: ") {
+		t.Fatalf("expected wrapped \"MatchPattern: boom\", got %v", err)
+	}
+}
+
+func TestCoordinatorMatchPattern_WrapsStreamError(t *testing.T) {
+	boom := errors.New("stream boom")
+	search := &mockSearchClient{
+		matchPatternStream: &mockMatchPatternStream{
+			responses: []*pb.MatchPatternResponse{{Data: mustStruct(t, map[string]interface{}{"n": 1.0}), MatchNumber: 1}},
+			streamErr: boom,
+		},
+	}
+	c := newTestCoordinator(t, search)
+
+	results, err := c.MatchPattern(context.Background(), &pb.MatchPatternRequest{})
+	if !errors.Is(err, boom) || !strings.HasPrefix(err.Error(), "MatchPattern stream: ") {
+		t.Fatalf("expected wrapped \"MatchPattern stream: stream boom\", got %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected no partial results on a stream error, got %+v", results)
 	}
 }
 
