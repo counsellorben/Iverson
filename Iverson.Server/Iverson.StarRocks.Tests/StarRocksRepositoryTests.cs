@@ -1,5 +1,7 @@
+using Dapper;
 using FluentAssertions;
 using Iverson.StarRocks;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
 
@@ -111,6 +113,36 @@ public class EngagementRepositoryTests
         {
             var dict = (IDictionary<string, object>)r;
             dict.Keys.Should().BeEquivalentTo(["Id"]);
+        }
+    }
+
+    // ── the cold-start gate honours a streaming read's token ─────────────────────
+
+    [Fact]
+    public async Task A_streaming_reads_token_cuts_only_its_own_wait_at_the_cold_start_gate_short()
+    {
+        // Port 1 refuses at once, so the gate keeps polling until BackendReadyTimeout; no StarRocks is needed.
+        var repo = new EngagementRepository("Server=127.0.0.1;Port=1;User ID=x;Password=x;Connection Timeout=1",
+            NullLogger<EngagementRepository>.Instance,
+            new EngagementResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(3) });
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+
+        // The cancelled read starts first, so it is the one that starts the gate's shared wait.
+        var cancelled = ReadAllAsync(repo.StreamTenantScopedAsync("sr.test", "t1", "SELECT 1", new DynamicParameters(), _ => false, cts.Token));
+        var other = ReadAllAsync(repo.StreamTenantScopedAsync("sr.test", "t1", "SELECT 1", new DynamicParameters(), _ => false, default));
+
+        var act = () => cancelled.WaitAsync(TimeSpan.FromSeconds(2));
+        await act.Should().ThrowAsync<OperationCanceledException>();
+
+        // The shared wait belongs to every caller: the other read still gets the gate's own verdict.
+        var rest = () => other.WaitAsync(TimeSpan.FromSeconds(15));
+        await rest.Should().ThrowAsync<EngagementNotReadyException>();
+
+        static async Task<int> ReadAllAsync(IAsyncEnumerable<IDictionary<string, object?>> rows)
+        {
+            var n = 0;
+            await foreach (var _ in rows) n++;
+            return n;
         }
     }
 }

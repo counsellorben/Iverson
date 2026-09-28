@@ -36,9 +36,11 @@ public sealed class EngagementRepository(
     // Every real StarRocks operation routes through here: first the one-time cold-start
     // gate (near-instant no-op after the first success), then the circuit-breaker+retry
     // pipeline for ongoing protection against a backend that later goes unhealthy.
-    private async Task<T> RunAsync<T>(Func<Task<T>> operation)
+    // `ct` cuts only this caller's wait at the gate short. It is not handed to EnsureReadyAsync: the gate's one
+    // wait is shared, so a token passed there would cancel it for every concurrent caller.
+    private async Task<T> RunAsync<T>(Func<Task<T>> operation, CancellationToken ct = default)
     {
-        await _readinessGate.EnsureReadyAsync().ConfigureAwait(false);
+        await _readinessGate.EnsureReadyAsync().WaitAsync(ct).ConfigureAwait(false);
 
         try
         {
@@ -257,34 +259,62 @@ public sealed class EngagementRepository(
                     await ReleaseAsync(c, null);
                     throw;
                 }
-            });
+            }, ct);
         }
         catch (Exception ex) when (isExpectedMissingResource(ex))
         {
             activity?.SetStatus(ActivityStatusCode.Ok);   // an unprovisioned tenant or missing table: empty, as SearchAsync
+        }
+        catch (Exception ex)
+        {
+            MarkFailed(activity, ex);
+            throw;
         }
 
         if (reader is null) yield break;
 
         try
         {
-            while (await reader.ReadAsync(ct))
-            {
-                ct.ThrowIfCancellationRequested();
-                var row = new Dictionary<string, object?>(reader.FieldCount, StringComparer.OrdinalIgnoreCase);
-                for (var i = 0; i < reader.FieldCount; i++)
-                {
-                    var value = reader.GetValue(i);
-                    row[reader.GetName(i)] = value is DBNull ? null : value;   // spec §3.2: SQL NULL is C# null
-                }
+            while (await ReadRowAsync(reader, activity, ct) is { } row)
                 yield return row;
-            }
             activity?.SetStatus(ActivityStatusCode.Ok);
         }
         finally
         {
             await ReleaseAsync(conn!, reader);
         }
+    }
+
+    /// <summary>
+    /// The next row, or null at the end. A read failure marks <paramref name="activity"/> failed here, because the
+    /// iterator above cannot catch around its <c>yield return</c>; a failure in the consumer is not the read's.
+    /// </summary>
+    private static async Task<IDictionary<string, object?>?> ReadRowAsync(DbDataReader reader, Activity? activity, CancellationToken ct)
+    {
+        try
+        {
+            if (!await reader.ReadAsync(ct)) return null;
+            ct.ThrowIfCancellationRequested();
+            var row = new Dictionary<string, object?>(reader.FieldCount, StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < reader.FieldCount; i++)
+            {
+                var value = reader.GetValue(i);
+                row[reader.GetName(i)] = value is DBNull ? null : value;   // spec §3.2: SQL NULL is C# null
+            }
+            return row;
+        }
+        catch (Exception ex)
+        {
+            MarkFailed(activity, ex);
+            throw;
+        }
+    }
+
+    /// <summary>As <see cref="RunTenantScopedAsync{T}"/> marks an unexpected failure.</summary>
+    private static void MarkFailed(Activity? activity, Exception ex)
+    {
+        activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+        activity?.RecordException(ex);
     }
 
     private async Task ReleaseAsync(MySqlConnection conn, DbDataReader? reader)

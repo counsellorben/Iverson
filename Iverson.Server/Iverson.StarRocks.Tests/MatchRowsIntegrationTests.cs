@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using Dapper;
@@ -275,6 +276,48 @@ public sealed class MatchRowsIntegrationTests
             await _fx.UnpauseAsync();
         }
         await dispose.WaitAsync(TimeSpan.FromSeconds(90));
+    }
+
+    [Fact]
+    public async Task The_stream_activity_fails_on_an_open_or_read_failure_and_not_on_an_expected_missing_resource()
+    {
+        var (tenant, _) = await SeedAsync();
+        var prefix = "sr.test-" + Guid.NewGuid().ToString("N")[..8] + ".";
+        var stopped = new ConcurrentQueue<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "Iverson.StarRocks",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = a => { if (a.OperationName.StartsWith(prefix, StringComparison.Ordinal)) stopped.Enqueue(a); },
+        };
+        ActivitySource.AddActivityListener(listener);
+        IAsyncEnumerable<IDictionary<string, object?>> Stream(string name, string sql, bool expected, CancellationToken ct = default) =>
+            _appRepo.StreamTenantScopedAsync(prefix + name, tenant, sql, new DynamicParameters(), _ => expected, ct);
+
+        var open = () => ReadAllAsync(Stream("open", "SELEC 1", expected: false));
+        await open.Should().ThrowAsync<MySqlException>();
+        (await ReadAllAsync(Stream("expected", "SELEC 1", expected: true))).Should().BeEmpty();
+        using var cts = new CancellationTokenSource();
+        var read = async () =>
+        {
+            await foreach (var _ in Stream("read", "SELECT 1 AS a UNION ALL SELECT 2 AS a", expected: false, cts.Token))
+                cts.Cancel();                                   // the next read fails
+        };
+        await read.Should().ThrowAsync<OperationCanceledException>();
+        (await ReadAllAsync(Stream("ok", "SELECT 1 AS a", expected: false))).Should().ContainSingle();
+
+        var byName = stopped.ToDictionary(a => a.OperationName[prefix.Length..]);
+        byName.Keys.Should().BeEquivalentTo(["open", "expected", "read", "ok"]);
+        foreach (var failed in new[] { byName["open"], byName["read"] })
+        {
+            failed.Status.Should().Be(ActivityStatusCode.Error);
+            failed.Events.Should().Contain(e => e.Name == "exception");
+        }
+        foreach (var fine in new[] { byName["expected"], byName["ok"] })
+        {
+            fine.Status.Should().Be(ActivityStatusCode.Ok);
+            fine.Events.Should().BeEmpty();
+        }
     }
 
     // CIR-1 Finding 2(a): StreamTenantScopedAsync's ReleaseAsync runs `SET ROLE NONE` before returning its
