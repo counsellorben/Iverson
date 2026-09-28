@@ -180,8 +180,7 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
             foreach (var p in points)
             {
                 if (p.Vectors?.Vectors?.Vectors.TryGetValue(vectorName, out var v) != true) continue;
-                var data = v.Dense?.Data ?? v.Data;      // 1.18 exposes both; read whichever is set
-                if (data is { Count: > 0 }) result[p.Id.Num] = data.ToArray();
+                if (DenseValues(v) is { } values) result[p.Id.Num] = values;
             }
         }
 
@@ -212,16 +211,22 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
         {
             float[]? vector = null;
             if (vectorName is not null && p.Vectors?.Vectors?.Vectors.TryGetValue(vectorName, out var v) == true)
-            {
-                var data = v.Dense?.Data ?? v.Data;      // 1.18 exposes both; read whichever is set
-                if (data is { Count: > 0 }) vector = data.ToArray();
-            }
+                vector = DenseValues(v);
             points.Add(new ScrolledPoint(
                 p.Id.Num, p.Payload.ToDictionary(kvp => kvp.Key, kvp => ToCanonicalString(kvp.Value)), vector));
         }
 
         activity?.SetStatus(ActivityStatusCode.Ok);
         return new VectorScrollPage(points, response.NextPageOffset);
+    }
+
+    /// <summary>A dense vector's values, or null when it has none.</summary>
+    private static float[]? DenseValues(VectorOutput v)
+    {
+#pragma warning disable CS0612 // VectorOutput.Data is obsolete in 1.18 but still set by servers that predate Dense
+        var data = v.Dense?.Data ?? v.Data;      // 1.18 exposes both; read whichever is set
+#pragma warning restore CS0612
+        return data is { Count: > 0 } ? data.ToArray() : null;
     }
 
     public async Task<ulong> GetPointCountAsync(string collectionName)

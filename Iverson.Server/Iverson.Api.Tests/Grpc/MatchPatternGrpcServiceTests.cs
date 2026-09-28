@@ -498,7 +498,7 @@ public sealed class MatchPatternGrpcServiceTests
 
         (await StatusOfAsync(Req("A"), new PatternQueryLimitOptions { TimeoutSeconds = 1 })).Should().Be(StatusCode.DeadlineExceeded);
 
-        static async IAsyncEnumerable<IDictionary<string, object?>> WaitThenFail(CancellationToken ct, string failure)
+        static async IAsyncEnumerable<IDictionary<string, object?>> WaitThenFail([EnumeratorCancellation] CancellationToken ct, string failure)
         {
             try { await Task.Delay(Timeout.Infinite, ct); } catch (OperationCanceledException) { }
             if (ct.IsCancellationRequested)
