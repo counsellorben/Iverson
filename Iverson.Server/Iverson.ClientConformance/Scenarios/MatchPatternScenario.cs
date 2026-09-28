@@ -74,6 +74,12 @@ public sealed class MatchPatternScenario(
     internal const string SeqProperty = "Seq";
 
     /// <summary>
+    /// The property every pattern query partitions by: each language stamps its own
+    /// <see cref="LabelFor"/> value here, so its three rows form one partition.
+    /// </summary>
+    internal const string PartitionProperty = "Label";
+
+    /// <summary>
     /// The query text of every <c>SIMILARITY</c> term — the drivers' similarity step and the
     /// orchestrator's probe alike. Each seeded <c>Title</c> is <c>"a note about row pattern
     /// matching, part &lt;n&gt;"</c>, so the text is close to every row without equalling any.
@@ -331,7 +337,7 @@ public sealed class MatchPatternScenario(
 
         foreach (var label in expectedLabels.Order(StringComparer.Ordinal))
         {
-            var matches = rows.Where(r => StringField(r.Data, "Label") == label).ToList();
+            var matches = rows.Where(r => StringField(r.Data, PartitionProperty) == label).ToList();
             if (matches.Count != 1)
             {
                 problems.Add($"'{label}': {matches.Count} match(es), expected exactly 1");
@@ -356,7 +362,7 @@ public sealed class MatchPatternScenario(
         }
 
         var unexpected = rows
-            .Select(r => StringField(r.Data, "Label") ?? "(no Label)")
+            .Select(r => StringField(r.Data, PartitionProperty) ?? "(no Label)")
             .Where(l => !expectedLabels.Contains(l))
             .Distinct(StringComparer.Ordinal)
             .ToList();
@@ -408,7 +414,7 @@ public sealed class MatchPatternScenario(
                 problems.Add($"{where}: {scoreProblem}");
 
             if (id is { } key && expectedRows.TryGetValue(key, out var writer)
-                && StringField(row.Data, "Label") is var label && label != LabelFor(writer))
+                && StringField(row.Data, PartitionProperty) is var label && label != LabelFor(writer))
             {
                 problems.Add($"{where}: Label '{label ?? "(none)"}', but '{LabelFor(writer)}' wrote that row");
             }
