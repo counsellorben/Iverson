@@ -289,7 +289,7 @@ public sealed class EngagementRepository(
     /// The next row, or null at the end. A read failure marks <paramref name="activity"/> failed here, because the
     /// iterator above cannot catch around its <c>yield return</c>; a failure in the consumer is not the read's.
     /// </summary>
-    private static async Task<IDictionary<string, object?>?> ReadRowAsync(DbDataReader reader, Activity? activity, CancellationToken ct)
+    private static async ValueTask<IDictionary<string, object?>?> ReadRowAsync(DbDataReader reader, Activity? activity, CancellationToken ct)
     {
         try
         {
