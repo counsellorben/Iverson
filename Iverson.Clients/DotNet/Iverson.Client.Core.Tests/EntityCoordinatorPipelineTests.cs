@@ -66,4 +66,50 @@ public class EntityCoordinatorPipelineTests
 
         rows.Should().ContainSingle(r => r.AuthorId == "A" && r.Articles == 4);
     }
+
+    // Both overloads resolve their own headers and call search.Pipeline separately, so each is
+    // pinned. Catches either call passing a fresh Metadata instead of the resolved headers: the
+    // server would then run the pipeline with no end-user identity at all.
+
+    private static Func<Metadata?> CapturePipelineHeaders(ObjectSearchService.ObjectSearchServiceClient search)
+    {
+        Metadata? captured = null;
+        search.Pipeline(
+                Arg.Any<PipelineRequest>(),
+                Arg.Do<Metadata>(h => captured = h),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+              .Returns(MakeCall(new List<SearchResponse>()));
+        return () => captured;
+    }
+
+    [Fact]
+    public async Task PipelineAsync_SendsTheBoundActingUser()
+    {
+        var search = Substitute.For<ObjectSearchService.ObjectSearchServiceClient>();
+        var headers = CapturePipelineHeaders(search);
+
+        var coordinator = TestCoordinatorFactory.Create<TestArticle>(search)
+            .WithActingUser(() => Task.FromResult("bound-token"));
+
+        await foreach (var _ in coordinator.PipelineAsync(Query.Pipeline<TestArticle>())) { }
+
+        headers().Should().NotBeNull();
+        headers()!.Get(ActingUserMetadata.MetadataKey)!.Value.Should().Be("Bearer bound-token");
+    }
+
+    [Fact]
+    public async Task PipelineAsyncTyped_SendsTheBoundActingUser()
+    {
+        var search = Substitute.For<ObjectSearchService.ObjectSearchServiceClient>();
+        var headers = CapturePipelineHeaders(search);
+
+        var coordinator = TestCoordinatorFactory.Create<TestArticle>(search)
+            .WithActingUser(() => Task.FromResult("bound-token"));
+
+        await foreach (var _ in coordinator.PipelineAsync<AuthorArticleCount>(Query.Pipeline<TestArticle>())) { }
+
+        headers().Should().NotBeNull();
+        headers()!.Get(ActingUserMetadata.MetadataKey)!.Value.Should().Be("Bearer bound-token");
+    }
 }
