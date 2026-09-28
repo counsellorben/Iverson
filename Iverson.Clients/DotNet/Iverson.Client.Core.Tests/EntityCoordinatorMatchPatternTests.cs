@@ -101,4 +101,27 @@ public class EntityCoordinatorMatchPatternTests
         captured.Should().NotBeNull();
         captured!.TraceId.Should().NotBeEmpty().And.Be(activity.TraceId.ToString());
     }
+
+    [Fact]
+    public async Task MatchPatternAsync_SendsTheBoundActingUser()
+    {
+        // Catches the call passing a fresh Metadata instead of the resolved headers: the server
+        // would then evaluate the pattern with no end-user identity at all.
+        var search = Substitute.For<ObjectSearchService.ObjectSearchServiceClient>();
+        Metadata? capturedHeaders = null;
+        search.MatchPattern(
+                Arg.Any<MatchPatternRequest>(),
+                Arg.Do<Metadata>(h => capturedHeaders = h),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+              .Returns(MakeCall(new List<MatchPatternResponse>()));
+
+        var coordinator = TestCoordinatorFactory.Create<TestArticle>(search)
+            .WithActingUser(() => Task.FromResult("bound-token"));
+
+        await foreach (var _ in coordinator.MatchPatternAsync(Query.MatchPattern<TestArticle>().Pattern("A"))) { }
+
+        capturedHeaders.Should().NotBeNull();
+        capturedHeaders!.Get(ActingUserMetadata.MetadataKey)!.Value.Should().Be("Bearer bound-token");
+    }
 }
