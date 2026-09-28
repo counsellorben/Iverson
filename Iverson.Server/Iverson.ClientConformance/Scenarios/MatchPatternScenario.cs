@@ -83,19 +83,56 @@ public sealed class MatchPatternScenario(
     /// <summary>The <c>SIMILARITY</c> term, spelled exactly as the drivers spell it.</summary>
     internal const string SimilarityExpression = "SIMILARITY(Title, '" + SimilarityText + "')";
 
+    // ── the two patterns, spelled once here and verbatim in every driver ─────────────────────
+    //
+    // Every literal a driver must send is a const, so the orchestrator's judgement and the
+    // offline driver-parity test (MatchPatternDriverLiteralsTests) read the same source of truth.
+
+    /// <summary><c>match_pattern_scalar</c>'s pattern: a start row, then a strictly increasing run.</summary>
+    internal const string ScalarPattern = "A B+";
+
+    /// <summary><c>match_pattern_scalar</c>'s define for <c>B</c>.</summary>
+    internal const string ScalarDefine = SeqProperty + " > PREV(" + SeqProperty + ")";
+
+    /// <summary><c>match_pattern_scalar</c>'s measures, name then expression.</summary>
+    internal const string CountMeasureName = "n";
+    internal const string CountMeasure = "COUNT(*)";
+    internal const string FirstSeqMeasureName = "first_seq";
+    internal const string FirstSeqMeasure = "FIRST(A." + SeqProperty + ")";
+    internal const string LastSeqMeasureName = "last_seq";
+    internal const string LastSeqMeasure = "LAST(B." + SeqProperty + ")";
+
+    /// <summary><c>match_pattern_similarity</c>'s pattern: every scoreable row, one run.</summary>
+    internal const string SimilarityPattern = "A+";
+
+    /// <summary>
+    /// <c>match_pattern_similarity</c>'s define for <c>A</c> — and the orchestrator's probe's, so a
+    /// row the probe calls scoreable is exactly a row the drivers' pattern can classify.
+    /// </summary>
+    internal const string SimilarityDefine = SimilarityExpression + " IS NOT NULL";
+
+    /// <summary>The name <c>match_pattern_similarity</c> measures its score under; the expression is <see cref="SimilarityExpression"/>.</summary>
+    internal const string ScoreMeasureName = "s";
+
+    /// <summary>The prefix of every logical key name below; each driver appends the row's Seq.</summary>
+    internal const string RowKeyPrefix = "pattern_doc_";
+
     /// <summary>The logical key names every driver reports its three seeded rows under, Seq 1..3.</summary>
-    internal static readonly string[] RowKeyNames = ["pattern_doc_1", "pattern_doc_2", "pattern_doc_3"];
+    internal static readonly string[] RowKeyNames = [RowKeyPrefix + "1", RowKeyPrefix + "2", RowKeyPrefix + "3"];
 
     internal const string RegisterStepName = "register_pattern_doc";
     internal const string WriteStepName = "write_pattern_docs";
     internal const string ScalarStepName = "match_pattern_scalar";
     internal const string SimilarityStepName = "match_pattern_similarity";
 
+    /// <summary>The prefix of every <see cref="LabelFor"/> value; each driver appends its language.</summary>
+    internal const string LabelPrefix = "pat-";
+
     /// <summary>
     /// The <c>Label</c> value a given language's driver stamps on its three rows — and therefore the
     /// partition key that language's rows form. Spelled once here and mirrored in each driver.
     /// </summary>
-    internal static string LabelFor(string language) => $"pat-{language}";
+    internal static string LabelFor(string language) => LabelPrefix + language;
 
     /// <summary>
     /// Why the wait is as patient as vector-search's: the probe is gated on the same embedding work
@@ -305,7 +342,8 @@ public sealed class MatchPatternScenario(
             if (match.MatchNumber != 1)
                 problems.Add($"'{label}': matchNumber {match.MatchNumber}, expected 1");
 
-            foreach (var (measure, expected) in new[] { ("n", 3.0), ("first_seq", 1.0), ("last_seq", 3.0) })
+            foreach (var (measure, expected) in new[]
+                     { (CountMeasureName, 3.0), (FirstSeqMeasureName, 1.0), (LastSeqMeasureName, 3.0) })
             {
                 var actual = NumberField(match.Data, measure);
                 if (actual != expected)
@@ -397,13 +435,13 @@ public sealed class MatchPatternScenario(
     /// </summary>
     private static string? ScoreProblem(JsonElement data)
     {
-        if (!data.TryGetProperty("s", out var s))
-            return "has no score 's'";
+        if (!data.TryGetProperty(ScoreMeasureName, out var s))
+            return $"has no score '{ScoreMeasureName}'";
 
         if (s.ValueKind != JsonValueKind.Number || !s.TryGetDouble(out var score) || !double.IsFinite(score))
-            return $"score 's' is not a finite number (got {s.GetRawText()})";
+            return $"score '{ScoreMeasureName}' is not a finite number (got {s.GetRawText()})";
 
-        return score is < -1 or > 1 ? $"score 's' = {score} is outside [-1, 1]" : null;
+        return score is < -1 or > 1 ? $"score '{ScoreMeasureName}' = {score} is outside [-1, 1]" : null;
     }
 
     /// <summary>The step's rows, or why there are none to judge.</summary>
@@ -570,7 +608,7 @@ public sealed class MatchPatternScenario(
         },
         OrderBy = { new SearchSort { Property = SeqProperty } },
         Pattern = "A",
-        Define = { new NamedExpr { Name = "A", Expr = SimilarityExpression + " IS NOT NULL" } },
+        Define = { new NamedExpr { Name = "A", Expr = SimilarityDefine } },
         Measures = { new NamedExpr { Name = "id", Expr = "FIRST(A.Id)" } },
         RowsPerMatch = RowsPerMatch.OneRow,
         Limit = 100,
