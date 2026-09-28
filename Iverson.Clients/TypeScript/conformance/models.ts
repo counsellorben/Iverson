@@ -202,6 +202,40 @@ export class VectorDoc {
 }
 
 /**
+ * S13 `match-pattern`'s subject type. Every one of the five drivers declares the same type name and
+ * shape; only the .NET driver ever registers it (register-once rule, as for `VectorDoc`), and every
+ * driver writes three rows into it and then matches over them.
+ *
+ * Deliberately relation-free and chunk-free: both requests read TYPE_ROWS. `marker` carries the
+ * run's `--id-prefix` and is `@IversonMetadata()` exactly as on `VectorDoc`; `label` is the row's
+ * per-language identity and the PARTITION BY column, and its spelling must match
+ * `MatchPatternScenario.LabelFor`; `seq` is the ORDER BY column that `DEFINE B AS Seq > PREV(Seq)`
+ * compares; `title` is the embedding source the similarity request's `SIMILARITY(Title, ...)`
+ * scores. `seq` is a plain `number`: TypeScript cannot declare an integer, which is harmless here
+ * because only the .NET descriptor is ever registered — this driver sends a JSON number either way.
+ */
+@IversonEntity()
+export class PatternDoc {
+    @IversonKey()
+    @IversonGuid()
+    id: string = '';
+
+    tenantId: string = '';
+
+    ownerId: string = '';
+
+    @IversonMetadata()
+    marker: string = '';
+
+    label: string = '';
+
+    seq: number = 0;
+
+    @IversonEmbedding()
+    title: string = '';
+}
+
+/**
  * S8 `identity`'s subject type. Every one of the five drivers declares the same type name and
  * shape; only the .NET driver ever registers it (register-once rule), and every driver writes one
  * row into it, reads that row back, and then attempts one update under a deliberately wrong acting

@@ -21,8 +21,9 @@ from iverson_client.annotations import (
     FieldMeta,
 )
 from iverson_client.auth import IversonClientCredentials
-from iverson_client.core import IversonClient, EntityCoordinator, SchemaRegistrar, SearchResult
+from iverson_client.core import IversonClient, EntityCoordinator, MatchPatternResult, SchemaRegistrar, SearchResult
 from iverson_client.group_by import GroupByBuilder
+from iverson_client.match_pattern import MatchPatternBuilder, match_pattern
 from iverson_client.pipeline import PipelineBuilder, PipelineStepBuilder, pipeline
 from iverson_client.search import QueryBuilder
 from iverson_client.search import group_by as group_by
@@ -51,12 +52,15 @@ __all__ = [
     "EntityCoordinator",
     "SchemaRegistrar",
     "SearchResult",
+    "MatchPatternResult",
     "QueryBuilder",
     "GroupByBuilder",
     "group_by",
     "PipelineBuilder",
     "PipelineStepBuilder",
     "pipeline",
+    "MatchPatternBuilder",
+    "match_pattern",
     "SimilarBuilder",
     "ChunksBuilder",
     "similar",

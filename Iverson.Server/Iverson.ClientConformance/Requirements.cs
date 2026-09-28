@@ -389,6 +389,52 @@ public static class Requirements
     /// </summary>
     public const string QryAggregateCountsExactlyMatchingRows = "IVC-QRY-004";
 
+    /// <summary>
+    /// A row pattern match is reachable through the client's public API. Discharged by
+    /// <c>MatchPatternScenario.Judge</c>'s two "a scalar / a SIMILARITY row pattern match is
+    /// reachable through the client's public API" assertions, over each driver's own
+    /// <c>match_pattern_scalar</c> and <c>match_pattern_similarity</c> steps — the driver builds each
+    /// request with its own client library's pattern builder (<c>Query.MatchPattern(...)</c>,
+    /// <c>match_pattern(...)</c>, <c>matchPattern(...)</c>, <c>iverson.NewMatchPattern(...)</c>,
+    /// <c>Query.matchPattern(...)</c>) and executes it through that library's own
+    /// <c>MatchPattern</c> entry point, never through a raw generated stub. This is a
+    /// <c>Capability</c>: it is satisfied by the call completing, and says nothing about what came
+    /// back — that is <c>IVC-QRY-006</c> and <c>IVC-QRY-007</c>. Distinct from <c>IVC-QRY-001</c>
+    /// because <c>MatchPattern</c> is its own RPC with its own request and response shapes; a client
+    /// can reach <c>Search</c> without it. A driver reporting that its client cannot express the
+    /// pattern at all is a FAIL, not a skip.
+    /// </summary>
+    public const string QryMatchPatternReachable = "IVC-QRY-005";
+
+    /// <summary>
+    /// A row pattern match over scalar columns returns exactly one match per partition the pattern
+    /// matches, with measures computed from exactly that partition's ordered rows. Discharged by
+    /// <c>MatchPatternScenario.Judge</c>'s "the scalar row pattern returned exactly one expected
+    /// match per seeded language" assertion: every language seeds one three-row partition
+    /// (<c>Label = "pat-&lt;lang&gt;"</c>, <c>Seq</c> 1..3) under the run's marker, and the pattern
+    /// <c>A B+</c> with <c>B AS Seq &gt; PREV(Seq)</c> must yield, for each seeded language, exactly
+    /// one row with <c>n = 3</c>, <c>first_seq = 1</c>, <c>last_seq = 3</c> and match number 1 — and
+    /// no row for any label no seeded language wrote. The measures depend on the filter, the
+    /// partitioning and the ordering all being carried through the client unchanged, so a client
+    /// that drops or reorders any of them disagrees here. The expected labels come from
+    /// <c>DriverRunner.KeysByLanguage</c> (<c>MatchPatternScenario.ExpectedRows</c>), never from the
+    /// read phase being judged.
+    /// </summary>
+    public const string QryMatchPatternReturnsExactlyExpectedMatches = "IVC-QRY-006";
+
+    /// <summary>
+    /// A row pattern match whose definitions use <c>SIMILARITY</c> returns every row its filter
+    /// admits, each with a finite score in [-1, 1]. Discharged by <c>MatchPatternScenario.Judge</c>'s "the SIMILARITY row
+    /// pattern scored exactly the seeded rows" assertion, over the pattern <c>A+</c> with
+    /// <c>A AS SIMILARITY(Title, '…') IS NOT NULL</c> and all rows per match: the set of returned
+    /// <c>Id</c>s must equal exactly the row keys the WRITE phase reported (both directions), and
+    /// every row must carry classifier <c>A</c>, match number 1, a score <c>s</c> that is a finite
+    /// number in [-1, 1], and the <c>Label</c> of the language that wrote it. Scores are never
+    /// compared to absolute values: they belong to the embedding model, and the requirement
+    /// constrains only that the client carries every scored row back intact.
+    /// </summary>
+    public const string QryMatchPatternSimilarityScoresEveryFilteredRow = "IVC-QRY-007";
+
     // ── VEC — Vector ────────────────────────────────────────────────────────────────────────
 
     /// <summary>

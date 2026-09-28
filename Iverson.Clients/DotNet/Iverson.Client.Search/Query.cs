@@ -26,6 +26,15 @@ public static class Query
     public static PipelineBuilder Pipeline<T>() where T : class => new(typeof(T).Name);
 
     /// <summary>
+    /// Entry point for the row pattern matching (MATCH_RECOGNIZE) DSL. String-based like
+    /// Pipeline; pattern and expression strings are validated by the server.
+    /// </summary>
+    public static MatchPatternBuilder MatchPattern(string typeName) => new(typeName);
+
+    /// <summary>Entry point for the row pattern matching DSL, typed on the matched entity.</summary>
+    public static MatchPatternBuilder MatchPattern<T>() where T : class => new(typeof(T).Name);
+
+    /// <summary>
     /// Entry point for Qdrant vector similarity search on a property annotated with
     /// <c>[IversonEmbedding]</c>.
     /// </summary>

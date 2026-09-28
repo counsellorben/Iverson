@@ -69,6 +69,7 @@ try
         InteropScenario.Name, SchemaCatalogScenario.Name, QueryScenario.Name,
         VectorSearchScenario.Name, IdentityScenario.Name, ErrorContractScenario.Name,
         TenantRejectedScenario.Name, ModelRejectedScenario.Name, InheritedModelScenario.Name,
+        MatchPatternScenario.Name,
     ];
     var scenarios = flags.Scenarios ?? recognizedScenarios;
 
@@ -125,6 +126,10 @@ try
     var modelRejected = new ModelRejectedScenario(
         runner, new Reregistrar(mapping), new SchemaProbe(postgresCs), log: Console.WriteLine);
     var inheritedModel = new InheritedModelScenario(runner, log: Console.WriteLine);
+    var matchPattern = new MatchPatternScenario(
+        runner, new Reregistrar(mapping),
+        new ObjectSearchService.ObjectSearchServiceClient(channel),
+        log: Console.WriteLine);
 
     DriverContext BuildContext(string scenarioName) => new(
         Scenario: scenarioName,
@@ -257,6 +262,18 @@ try
         }
     }
 
+    // As with the blocks above, this dispatch — not `recognizedScenarios` — is what actually runs
+    // the scenario.
+    if (scenarios.Contains(MatchPatternScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{MatchPatternScenario.Name}'...");
+        foreach (var cell in await matchPattern.RunAsync(
+                     languages, BuildContext(MatchPatternScenario.Name), actingToken))
+        {
+            report.Add(cell);
+        }
+    }
+
     foreach (var unknown in scenarios.Where(s => !recognizedScenarios.Contains(s, StringComparer.OrdinalIgnoreCase)))
         Console.Error.WriteLine($"  unknown scenario '{unknown}' — ignored");
 }
@@ -311,7 +328,11 @@ static void PrintUsage() => Console.WriteLine("""
       IVERSON_CLIENT_SCOPE must be "schema_admin tenant_id_loadtest" — the provider's two
       property_mappings in that file. Without schema_admin the token is accepted and then
       refused on RegisterSchema, which reads as a driver defect rather than a missing export.
-      Every IVERSON_ACTING_USER_* has a working compose default (TokenBroker.cs).
+      IVERSON_ACTING_USER_BYPASS_PASSWORD and IVERSON_OTHER_TENANT_PASSWORD have NO default and
+      are required (TokenBroker.cs throws without them): the compose stack's Authentik passwords
+      are generated per stack, so read them out of Iverson.Server/.env — IVERSON_BYPASS_PASSWORD
+      and IVERSON_SMOKE_TEST_PASSWORD respectively. Every other IVERSON_ACTING_USER_* and
+      IVERSON_OTHER_TENANT_* variable has a working compose default.
       Full procedure: docs/runbooks/client-conformance-matrix.md
     """);
 

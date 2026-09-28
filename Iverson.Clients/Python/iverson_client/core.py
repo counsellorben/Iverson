@@ -591,6 +591,21 @@ class SearchResult(Generic[T]):
     score: float
 
 
+@dataclass(frozen=True)
+class MatchPatternResult:
+    """One MatchPattern output row: its columns (partition keys, measures and, for the
+    ALL_ROWS modes, the row's own columns) with the match it belongs to and the pattern
+    variable it was classified as (empty for ONE_ROW and for unmatched rows).
+
+    Mirrors the DotNet ``MatchPatternResult`` record, Go ``MatchPatternResult`` struct,
+    and Java ``MatchPatternResult`` record.
+    """
+
+    data: dict
+    match_number: int
+    classifier: str
+
+
 # ── EntityCoordinator ──────────────────────────────────────────────────────────
 
 class EntityCoordinator(Generic[T]):
@@ -803,6 +818,16 @@ class EntityCoordinator(Generic[T]):
         ``T``'s own fields, so each row is converted via ``_struct_to_dict`` instead
         of ``_from_struct``."""
         return [_struct_to_dict(row.data) for row in self._search.Pipeline(request, metadata=self._acting_user_metadata())]
+
+    def match_pattern(self, request: search_pb.MatchPatternRequest) -> List[MatchPatternResult]:
+        """Execute a MatchPattern request. Rows carry partition keys and measures (and,
+        for the ALL_ROWS modes, the row's own columns), so they are not ``T``-shaped:
+        each row's data is converted via ``_struct_to_dict`` and paired with its match
+        number and classifier in a ``MatchPatternResult``."""
+        return [
+            MatchPatternResult(_struct_to_dict(row.data), row.match_number, row.classifier)
+            for row in self._search.MatchPattern(request, metadata=self._acting_user_metadata())
+        ]
 
     def _from_struct(self, s: struct_pb2.Struct) -> T:
         """Construct an entity instance from a Struct proto, hydrating any

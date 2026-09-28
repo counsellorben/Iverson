@@ -65,6 +65,11 @@ class ObjectSearchServiceStub:
                 request_serializer=object__search__pb2.PipelineRequest.SerializeToString,
                 response_deserializer=object__search__pb2.SearchResponse.FromString,
                 _registered_method=True)
+        self.MatchPattern = channel.unary_stream(
+                '/iverson.ObjectSearchService/MatchPattern',
+                request_serializer=object__search__pb2.MatchPatternRequest.SerializeToString,
+                response_deserializer=object__search__pb2.MatchPatternResponse.FromString,
+                _registered_method=True)
 
 
 class ObjectSearchServiceServicer:
@@ -107,6 +112,12 @@ class ObjectSearchServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def MatchPattern(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ObjectSearchServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -139,6 +150,11 @@ def add_ObjectSearchServiceServicer_to_server(servicer, server):
                     servicer.Pipeline,
                     request_deserializer=object__search__pb2.PipelineRequest.FromString,
                     response_serializer=object__search__pb2.SearchResponse.SerializeToString,
+            ),
+            'MatchPattern': grpc.unary_stream_rpc_method_handler(
+                    servicer.MatchPattern,
+                    request_deserializer=object__search__pb2.MatchPatternRequest.FromString,
+                    response_serializer=object__search__pb2.MatchPatternResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -304,6 +320,33 @@ class ObjectSearchService:
             '/iverson.ObjectSearchService/Pipeline',
             object__search__pb2.PipelineRequest.SerializeToString,
             object__search__pb2.SearchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MatchPattern(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/iverson.ObjectSearchService/MatchPattern',
+            object__search__pb2.MatchPatternRequest.SerializeToString,
+            object__search__pb2.MatchPatternResponse.FromString,
             options,
             channel_credentials,
             insecure,

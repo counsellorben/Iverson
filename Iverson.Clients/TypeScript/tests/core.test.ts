@@ -1,7 +1,7 @@
 /**
  * Tests for IversonClient's execution-level behavior:
  *  - acting-user token threading through EntityCoordinator's CRUD calls (persist/getMany)
- *  - the 6 search-family execution methods (search/searchSimilar/searchChunks/groupBy/aggregate/pipeline)
+ *  - the 7 search-family execution methods (search/searchSimilar/searchChunks/groupBy/aggregate/pipeline/matchPattern)
  *  - non-breaking constructor shape
  */
 import 'reflect-metadata';
@@ -29,6 +29,7 @@ import {
 } from '../src/annotations.js';
 import { ACTING_USER_METADATA_KEY } from '../src/auth.js';
 import { describeEntity, EntityCoordinator, IversonClient } from '../src/core.js';
+import type { MatchPatternResult } from '../src/index.js';
 
 import {
     MappingGetRequest,
@@ -50,7 +51,11 @@ import {
     AggregateResponse,
     ChunkSearchResponse,
     GroupByRequest,
+    MatchPatternRequest,
+    MatchPatternResponse,
+    PatternRowSource,
     PipelineRequest,
+    RowsPerMatch,
     SearchChunksRequest,
     SearchLogic,
     SearchRequest,
@@ -404,6 +409,35 @@ describe('IversonClient — search-family execution methods', () => {
         const results = await client.pipeline(req);
 
         expect(results).toEqual([{ rank: 1, total: 100 }]);
+
+        client.close();
+    });
+
+    it('matchPattern() pairs each row with its match number and classifier', async () => {
+        const rows: MatchPatternResponse[] = [
+            { data: { Label: 'pat-typescript', Seq: 1 }, matchNumber: 1, classifier: 'A', traceId: '' },
+            { data: { Label: 'pat-typescript', Seq: 2 }, matchNumber: 1, classifier: 'B', traceId: '' },
+        ];
+        const { fn, calls } = makeStreamStub<MatchPatternRequest, MatchPatternResponse>(rows);
+        const client = new IversonClient('localhost', 0, false);
+        (client as unknown as { _searchClient: unknown })._searchClient = { matchPattern: fn, close: vi.fn() };
+        (client as unknown as { _actingUserToken: unknown })._actingUserToken = 'tok-mp';
+
+        const req: MatchPatternRequest = {
+            typeName: 'SearchArticle', source: PatternRowSource.TYPE_ROWS, chunkProperty: '', where: [], whereLogic: SearchLogic.AND,
+            partitionBy: [], orderBy: [{ property: 'Seq', descending: false }], pattern: 'A B+', subsets: [],
+            define: [], measures: [], rowsPerMatch: RowsPerMatch.ALL_ROWS_SHOW_EMPTY, afterMatch: undefined,
+            limit: 0, traceId: '',
+        };
+        const results = await client.matchPattern(req);
+
+        const expected: MatchPatternResult[] = [
+            { data: { Label: 'pat-typescript', Seq: 1 }, matchNumber: 1, classifier: 'A' },
+            { data: { Label: 'pat-typescript', Seq: 2 }, matchNumber: 1, classifier: 'B' },
+        ];
+        expect(results).toEqual(expected);
+        expect(calls[0].req).toBe(req);
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer tok-mp']);
 
         client.close();
     });

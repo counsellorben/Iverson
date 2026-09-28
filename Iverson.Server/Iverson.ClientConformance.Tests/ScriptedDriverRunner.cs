@@ -1,4 +1,5 @@
 using System.Text.Json;
+using FluentAssertions;
 using Iverson.ClientConformance;
 
 namespace Iverson.ClientConformance.Tests;
@@ -120,5 +121,84 @@ public sealed class RecordingReregistrar : IReregistrar
 
         Calls.Add((actingToken, ownerField, modelId, typeName));
         return Throws is not null ? Task.FromException(Throws) : Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Drives a register-once scenario (<c>query</c>, <c>vector-search</c>, <c>match-pattern</c>)
+/// through <c>RunAsync</c> to a write step that reports <c>ok: false</c>, with no live stack.
+///
+/// <para>The .NET driver registers successfully (a descriptor <c>Verifier.ParseDescriptor</c>
+/// accepts), the <see cref="RecordingReregistrar"/> accepts the re-registration, and in the write
+/// phase <see cref="Succeeds"/> reports the scenario's write step ok while <see cref="Fails"/>
+/// reports it failed with <see cref="Error"/>. Both are needed: the failing language alone pins
+/// "a failed step is graded failed", the succeeding one pins "a succeeded step is graded passed",
+/// and only together do they pin that the grade follows <c>step.Ok</c>. The projection
+/// wait then probes an unreachable channel under <see cref="OneAttemptWaiter"/>, so it gives up
+/// after a single refused attempt and the read phase never runs.</para>
+///
+/// <para>Every cell therefore fails on the wait's timeout regardless, so a test built on this must
+/// assert on the WRITE step's own assertion and on the cell detail, not on the status alone:
+/// the timeout detail names neither the write step nor <see cref="Error"/>.</para>
+/// </summary>
+internal static class FailedWriteScript
+{
+    /// <summary>The error the failing write step reports — distinctive, so a detail can be searched for it.</summary>
+    internal const string Error = "scripted write failure: the store refused the row";
+
+    /// <summary>The language whose write step reports <c>ok: true</c>.</summary>
+    internal const string Succeeds = "dotnet";
+
+    /// <summary>The language whose write step reports <c>ok: false</c>.</summary>
+    internal const string Fails = "python";
+
+    /// <summary>The languages a test built on this script runs.</summary>
+    internal static readonly string[] Languages = [Succeeds, Fails];
+
+    /// <summary>The register phase succeeds, then <see cref="Succeeds"/>'s write step passes and <see cref="Fails"/>'s fails.</summary>
+    internal static ScriptedDriverRunner Runner(string registerStepName, string writeStepName) =>
+        new ScriptedDriverRunner()
+            .Script(Phase.Register, new DriverPhaseOutcome.Success("dotnet", new PhaseDocument("dotnet", "register",
+            [
+                new StepResult(registerStepName, true,
+                    TypeDescriptor: JsonDocument.Parse("""{"typeName":"Scripted"}""").RootElement.Clone()),
+            ])))
+            .Script(Phase.Write,
+                new DriverPhaseOutcome.Success(Succeeds, new PhaseDocument(Succeeds, "write",
+                [
+                    new StepResult(writeStepName, true),
+                ])),
+                new DriverPhaseOutcome.Success(Fails, new PhaseDocument(Fails, "write",
+                [
+                    new StepResult(writeStepName, false, Error: Error),
+                ])));
+
+    /// <summary>A waiter that probes exactly once and gives that attempt at most five seconds.</summary>
+    internal static ProjectionWaiter OneAttemptWaiter() => new(TimeSpan.Zero, TimeSpan.FromSeconds(5));
+
+    /// <summary>A search client on a port nothing listens on, so every projection probe is refused at once.</summary>
+    internal static Iverson.Client.Contracts.ObjectSearchService.ObjectSearchServiceClient UnreachableSearch() =>
+        new(Grpc.Net.Client.GrpcChannel.ForAddress("http://localhost:1"));
+
+    /// <summary>
+    /// <see cref="Fails"/>'s cell fails, its write-step assertion is present and FAILED, and the
+    /// cell detail names the write step and carries <see cref="Error"/>; <see cref="Succeeds"/>'s
+    /// write-step assertion is present and PASSED. The FAILED clause reddens when the scenario
+    /// grades the step as passed regardless of <c>step.Ok</c>; the PASSED clause when it grades it
+    /// as failed regardless.
+    /// </summary>
+    internal static void ShouldCarryTheWriteFailure(IReadOnlyList<ReportCell> cells, string writeStepName)
+    {
+        var assertionName = $"step '{writeStepName}' succeeded";
+
+        var failed = cells.Should().ContainSingle(c => c.Language == Fails).Subject;
+        failed.Status.Should().Be(CellStatus.Fail);
+        failed.Assertions.Should().ContainSingle(a => a.Name == assertionName)
+            .Which.Passed.Should().BeFalse("the driver reported the write step with ok: false");
+        failed.Detail.Should().Contain($"'{writeStepName}'").And.Contain(Error);
+
+        cells.Should().ContainSingle(c => c.Language == Succeeds).Subject
+            .Assertions.Should().ContainSingle(a => a.Name == assertionName)
+            .Which.Passed.Should().BeTrue("the driver reported the write step with ok: true");
     }
 }

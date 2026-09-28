@@ -73,6 +73,10 @@ var supportedScenarios = map[string]bool{
 	// parent S12DeclaredGo, and reports the descriptor it sent so the orchestrator can assert the
 	// inherited model landed on the embedding/chunk properties. No write/read phase.
 	"model-inherited": true,
+	// match-pattern (S13) is register-phase-NEVER for this driver: only .NET registers PatternDoc
+	// (register-once rule). This driver seeds three rows and then issues a scalar row pattern
+	// match and a SIMILARITY-backed one through the client library's own MatchPatternBuilder.
+	"match-pattern": true,
 }
 
 // identityWrongTenant is the tenant value every driver stamps on the IdentityDoc row it creates:
@@ -94,6 +98,25 @@ const (
 	vectorQueryText = "a short note about vector search conformance"
 	vectorTopK      = uint32(50)
 )
+
+// patternDocLabel is the Label every PatternDoc row this driver writes carries: the PARTITION BY
+// column, so this language's three rows form one partition. Must stay in step with
+// MatchPatternScenario.LabelFor.
+const patternDocLabel = "pat-" + language
+
+// matchRowsReport is {"rows":[{"matchNumber","classifier","data"}, ...]} in stream order, every
+// MatchPatternResult copied verbatim — data's keys are the server's, untouched.
+func matchRowsReport(rows []iverson.MatchPatternResult) json.RawMessage {
+	reported := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		reported = append(reported, map[string]interface{}{
+			"matchNumber": row.MatchNumber,
+			"classifier":  row.Classifier,
+			"data":        row.Data,
+		})
+	}
+	return entityJSON(map[string]interface{}{"rows": reported})
+}
 
 // catalogueType/catalogueField/catalogueRelation are the deliberately minimal,
 // cross-language-identical projection of a GetSchema catalogue that all five drivers report. Names
@@ -682,6 +705,105 @@ func run(argv []string) int {
 			}
 			out := okStep("search_chunks_by_marker")
 			out.Entity = entityJSON(map[string]interface{}{"parentKeys": parentKeys})
+			return out
+		}())
+
+	case phase == "write" && sc == "match-pattern":
+		// S13 match-pattern: three rows, Seq 1..3, stamped with the run's marker and this
+		// language's label. Every key Persist returned is reported, also when a later row failed —
+		// it is the orchestrator's expected-set accounting for the similarity match.
+		patCoord, patCoordErr := iverson.NewEntityCoordinator(client, PatternDoc{})
+		var patStep stepResult
+		if patCoordErr != nil {
+			patStep = failStep("write_pattern_docs", patCoordErr)
+		} else {
+			keys := map[string]string{}
+			written := make([]PatternDoc, 0, 3)
+			var writeErr error
+			for seq := int32(1); seq <= 3; seq++ {
+				entity := PatternDoc{
+					TenantId: tenant,
+					OwnerId:  ownerID,
+					Marker:   idPrefix,
+					Label:    patternDocLabel,
+					Seq:      seq,
+					Title:    fmt.Sprintf("a note about row pattern matching, part %d", seq),
+				}
+				key, err := patCoord.Persist(ctx, entity)
+				if key != "" {
+					keys[fmt.Sprintf("pattern_doc_%d", seq)] = key
+				}
+				if err != nil {
+					writeErr = err
+					break
+				}
+				written = append(written, entity)
+			}
+			if writeErr != nil {
+				patStep = failStep("write_pattern_docs", writeErr)
+			} else {
+				patStep = okStep("write_pattern_docs")
+				patStep.Entity = entityJSON(written)
+			}
+			if len(keys) > 0 {
+				patStep.Keys = keys
+			}
+		}
+		steps = append(steps, patStep)
+
+	case phase == "read" && sc == "match-pattern":
+		// Both requests are built with the client library's own builder (iverson.NewMatchPattern)
+		// and executed through EntityCoordinator.MatchPattern, never through the generated stub.
+		// Every output row is reported in stream order; the orchestrator decides what they mean.
+		// Where takes a *pb.SearchValue directly, like Go's aggregate builder (see the query read).
+		patCoord, patCoordErr := iverson.NewEntityCoordinator(client, PatternDoc{})
+		marker := &pb.SearchValue{Kind: &pb.SearchValue_StringVal{StringVal: idPrefix}}
+
+		steps = append(steps, func() stepResult {
+			if patCoordErr != nil {
+				return failStep("match_pattern_scalar", patCoordErr)
+			}
+			req := iverson.NewMatchPattern("PatternDoc").
+				Where("Marker", pb.SearchOperator_EQUALS, marker).
+				PartitionBy("Label").
+				OrderBy("Seq", false).
+				Pattern("A B+").
+				Define("B", "Seq > PREV(Seq)").
+				Measure("n", "COUNT(*)").
+				Measure("first_seq", "FIRST(A.Seq)").
+				Measure("last_seq", "LAST(B.Seq)").
+				RowsPerMatch(pb.RowsPerMatch_ONE_ROW).
+				Limit(100).
+				Build()
+			rows, err := patCoord.MatchPattern(ctx, req)
+			if err != nil {
+				return failStep("match_pattern_scalar", err)
+			}
+			out := okStep("match_pattern_scalar")
+			out.Entity = matchRowsReport(rows)
+			return out
+		}())
+
+		steps = append(steps, func() stepResult {
+			if patCoordErr != nil {
+				return failStep("match_pattern_similarity", patCoordErr)
+			}
+			req := iverson.NewMatchPattern("PatternDoc").
+				Where("Marker", pb.SearchOperator_EQUALS, marker).
+				PartitionBy("Label").
+				OrderBy("Seq", false).
+				Pattern("A+").
+				Define("A", "SIMILARITY(Title, 'a note about row pattern matching') IS NOT NULL").
+				Measure("s", "SIMILARITY(Title, 'a note about row pattern matching')").
+				RowsPerMatch(pb.RowsPerMatch_ALL_ROWS_SHOW_EMPTY).
+				Limit(100).
+				Build()
+			rows, err := patCoord.MatchPattern(ctx, req)
+			if err != nil {
+				return failStep("match_pattern_similarity", err)
+			}
+			out := okStep("match_pattern_similarity")
+			out.Entity = matchRowsReport(rows)
 			return out
 		}())
 

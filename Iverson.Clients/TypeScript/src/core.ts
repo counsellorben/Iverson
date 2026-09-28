@@ -42,6 +42,8 @@ import {
     AggregateResponse,
     ChunkSearchResponse,
     GroupByRequest,
+    MatchPatternRequest,
+    MatchPatternResponse,
     ObjectSearchServiceClient,
     PipelineRequest,
     SearchChunksRequest,
@@ -169,6 +171,17 @@ export type ActingUserToken = string | (() => Promise<string>);
 export interface SearchResult<T> {
     entity: T;
     score: number;
+}
+
+/**
+ * A single MatchPattern result row: its columns (partition keys, measures and, for the ALL_ROWS
+ * modes, the row's own columns) with the match it belongs to and the pattern variable it was
+ * classified as (empty for ONE_ROW and for unmatched rows).
+ */
+export interface MatchPatternResult {
+    data: Record<string, unknown>;
+    matchNumber: number;
+    classifier: string;
 }
 
 /** Resolve an optional acting-user token (awaiting it if it's a function) into call metadata. */
@@ -952,22 +965,38 @@ export class IversonClient {
         );
     }
 
+    /** Execute a MatchPattern request. Rows carry partition keys and measures (and, for the ALL_ROWS
+     * modes, the row's own columns), so they are not entity-shaped: each row's data is returned as a
+     * plain record, paired with its match number and classifier. */
+    async matchPattern(request: MatchPatternRequest): Promise<MatchPatternResult[]> {
+        return this._collectSearchStream<MatchPatternRequest, MatchPatternResult, MatchPatternResponse>(
+            (req, metadata, options) => this._searchClient.matchPattern(req, metadata, options),
+            request,
+            (row) => ({
+                data: (row.data ?? {}) as Record<string, unknown>,
+                matchNumber: row.matchNumber,
+                classifier: row.classifier,
+            }),
+        );
+    }
+
     /**
      * Shared streaming path for the search-family RPCs (Search/SearchSimilar/GroupBy/Pipeline, all
-     * of which respond with SearchResponse): opens the stream with the acting-user token resolved
-     * into metadata, then applies the caller-supplied `map` to each response row. Search/SearchSimilar
-     * map to a `SearchResult<T>` (entity converted via payloadToEntity, plus the row's score); GroupBy/
+     * of which respond with SearchResponse, and MatchPattern, which responds with
+     * MatchPatternResponse): opens the stream with the acting-user token resolved into metadata,
+     * then applies the caller-supplied `map` to each response row. Search/SearchSimilar map to a
+     * `SearchResult<T>` (entity converted via payloadToEntity, plus the row's score); GroupBy/
      * Pipeline map to a plain record, since aggregated/derived columns don't correspond to any entity's
-     * own fields or carry a meaningful per-row score.
+     * own fields or carry a meaningful per-row score; MatchPattern maps to a `MatchPatternResult`.
      */
-    private async _collectSearchStream<Req, T>(
+    private async _collectSearchStream<Req, T, Res = SearchResponse>(
         method: (
             req: Req,
             metadata: grpc.Metadata,
             options: Partial<grpc.CallOptions>,
-        ) => grpc.ClientReadableStream<SearchResponse>,
+        ) => grpc.ClientReadableStream<Res>,
         request: Req,
-        map: (row: SearchResponse) => T,
+        map: (row: Res) => T,
     ): Promise<T[]> {
         const stream = await openStream(method, request, this._callCredentials, this._actingUserToken);
         return collectStream(stream, map);

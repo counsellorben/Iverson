@@ -1,0 +1,12 @@
+{
+    "typeName": "VectorDoc",
+    "source": "CHUNKS",
+    "chunkProperty": "Body",
+    "pattern": "A",
+    "define": [
+        {
+            "name": "A",
+            "expr": "SIMILARITY(text, 'refund') > 0.5"
+        }
+    ]
+}

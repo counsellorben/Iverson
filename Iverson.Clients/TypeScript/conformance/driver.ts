@@ -17,7 +17,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as grpc from '@grpc/grpc-js';
 
-import { IversonClient, SchemaRegistrar } from '../src/core.js';
+import { IversonClient, SchemaRegistrar, type MatchPatternResult } from '../src/core.js';
 import { createOAuth2ClientCredentials, createActingUserMetadata } from '../src/auth.js';
 import {
     ObjectMappingServiceClient,
@@ -27,10 +27,12 @@ import {
     TypeDescriptor,
 } from '../generated/object_mapping.js';
 
-import { ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, QueryDoc, S11ModelTypescript, S12InheritedTypescript, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag, VectorDoc } from './models.js';
+import { ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, PatternDoc, QueryDoc, S11ModelTypescript, S12InheritedTypescript, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag, VectorDoc } from './models.js';
 import { QueryBuilder, SearchOperator } from '../src/search.js';
 import { aggregate } from '../src/aggregate.js';
 import { chunks as chunksBuilder, similar as similarBuilder } from '../src/vector-search.js';
+import { matchPattern as matchPatternBuilder } from '../src/match-pattern.js';
+import { RowsPerMatch } from '../generated/object_search.js';
 
 const LANGUAGE = 'typescript';
 // naming-rejected (S2) is register-phase-only: the orchestrator never invokes this driver for
@@ -55,9 +57,12 @@ const LANGUAGE = 'typescript';
 // @IversonEmbeddingModel of its own and instead inherits 'BAAI/bge-base-en-v1.5' from its field-less
 // parent S12DeclaredTypescript, and reports the descriptor it sent so the orchestrator can assert
 // the inherited model landed on the embedding/chunk properties. No write/read phase.
+// match-pattern (S13): register (dotnet-only, register-once), write and read — this driver seeds
+// three PatternDoc rows and then issues a scalar row pattern match and a SIMILARITY-backed one
+// through the client library's own MatchPatternBuilder.
 const SCENARIOS = new Set([
     'crud-roundtrip', 'naming-rejected', 'interop', 'schema-catalog', 'query', 'vector-search',
-    'identity', 'error-contract', 'model-rejected', 'model-inherited',
+    'identity', 'error-contract', 'model-rejected', 'model-inherited', 'match-pattern',
 ]);
 
 /** S8 identity: the tenant value every driver stamps on the IdentityDoc row it creates —
@@ -75,6 +80,10 @@ const VECTOR_DOC_LABEL = `vec-${LANGUAGE}`;
  *  turn the orchestrator's exact set comparisons into prefix comparisons. */
 const VECTOR_QUERY_TEXT = 'a short note about vector search conformance';
 const VECTOR_TOP_K = 50;
+
+/** The Label every PatternDoc row this driver writes carries: the PARTITION BY column, so this
+ *  language's three rows form one partition. Must stay in step with `MatchPatternScenario.LabelFor`. */
+const PATTERN_DOC_LABEL = `pat-${LANGUAGE}`;
 
 // ── Argument parsing ────────────────────────────────────────────────────────────
 
@@ -141,6 +150,14 @@ function catalogueToReport(types: SchemaType[]): unknown {
             fields: t.fields.map((f) => ({ name: f.name })),
             relations: t.relations.map((r) => ({ propertyName: r.propertyName })),
         })),
+    };
+}
+
+/** `{"rows": [{matchNumber, classifier, data}, ...]}` in stream order, every `MatchPatternResult`
+ *  copied verbatim — `data`'s keys are the server's, untouched. */
+function matchRowsToReport(rows: MatchPatternResult[]): unknown {
+    return {
+        rows: rows.map((r) => ({ matchNumber: r.matchNumber, classifier: r.classifier, data: r.data })),
     };
 }
 
@@ -837,6 +854,71 @@ async function main(argv: string[]): Promise<number> {
             steps.push(step('search_chunks_by_marker', true, { entity: { parentKeys: found.map((c) => c.parentKey) } }));
         } catch (err) {
             steps.push(step('search_chunks_by_marker', false, { error: describe(err) }));
+        }
+    } else if (phase === 'write' && scenario === 'match-pattern') {
+        // Three rows, seq 1..3, stamped with the run's marker and this language's label. Every key
+        // persist() resolved with is reported, also when a later row failed — it is the
+        // orchestrator's expected-set accounting for the similarity match.
+        const patternDocKeys: Record<string, string> = {};
+        const written: Array<Record<string, unknown> | null> = [];
+        let result: StepResult;
+        try {
+            for (const seq of [1, 2, 3]) {
+                const entity = new PatternDoc();
+                entity.tenantId = tenant;
+                entity.ownerId = ownerId;
+                entity.marker = idPrefix;
+                entity.label = PATTERN_DOC_LABEL;
+                entity.seq = seq;
+                entity.title = `a note about row pattern matching, part ${seq}`;
+                patternDocKeys[`pattern_doc_${seq}`] = await client.coordinator(PatternDoc).persist(entity);
+                written.push(entityToPlain(entity));
+            }
+            result = step('write_pattern_docs', true, { entity: written });
+        } catch (err) {
+            result = step('write_pattern_docs', false, { error: describe(err) });
+        }
+        if (Object.keys(patternDocKeys).length > 0) result.keys = patternDocKeys;
+        steps.push(result);
+    } else if (phase === 'read' && scenario === 'match-pattern') {
+        // Both requests are built with the client library's own MatchPatternBuilder and executed
+        // through IversonClient's own matchPattern entry point, never through a raw generated
+        // stub. Every output row is reported in stream order; the orchestrator decides what they
+        // mean.
+        try {
+            const request = matchPatternBuilder('PatternDoc')
+                .where('Marker', SearchOperator.EQUALS, idPrefix)
+                .partitionBy('Label')
+                .orderBy('Seq')
+                .pattern('A B+')
+                .define('B', 'Seq > PREV(Seq)')
+                .measure('n', 'COUNT(*)')
+                .measure('first_seq', 'FIRST(A.Seq)')
+                .measure('last_seq', 'LAST(B.Seq)')
+                .rowsPerMatch(RowsPerMatch.ONE_ROW)
+                .limit(100)
+                .build();
+            const rows = await client.matchPattern(request);
+            steps.push(step('match_pattern_scalar', true, { entity: matchRowsToReport(rows) }));
+        } catch (err) {
+            steps.push(step('match_pattern_scalar', false, { error: describe(err) }));
+        }
+
+        try {
+            const request = matchPatternBuilder('PatternDoc')
+                .where('Marker', SearchOperator.EQUALS, idPrefix)
+                .partitionBy('Label')
+                .orderBy('Seq')
+                .pattern('A+')
+                .define('A', "SIMILARITY(Title, 'a note about row pattern matching') IS NOT NULL")
+                .measure('s', "SIMILARITY(Title, 'a note about row pattern matching')")
+                .rowsPerMatch(RowsPerMatch.ALL_ROWS_SHOW_EMPTY)
+                .limit(100)
+                .build();
+            const rows = await client.matchPattern(request);
+            steps.push(step('match_pattern_similarity', true, { entity: matchRowsToReport(rows) }));
+        } catch (err) {
+            steps.push(step('match_pattern_similarity', false, { error: describe(err) }));
         }
     } else if (phase === 'write') {
         // Keys are server-assigned: create requests must omit id entirely, and each row's key is

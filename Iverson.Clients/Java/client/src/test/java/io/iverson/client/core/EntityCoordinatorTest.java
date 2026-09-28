@@ -8,6 +8,7 @@ import io.iverson.client.annotations.IversonKey;
 import io.iverson.client.search.AggregateBuilder;
 import io.iverson.client.search.ChunksBuilder;
 import io.iverson.client.search.GroupByBuilder;
+import io.iverson.client.search.MatchPatternBuilder;
 import io.iverson.client.search.PipelineBuilder;
 import io.iverson.client.search.Query;
 import io.iverson.client.search.SimilarBuilder;
@@ -164,6 +165,58 @@ class EntityCoordinatorTest {
         sut.withActingUser("user-token-999").pipeline(builder);
 
         verify(mockStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "user-token-999");
+    }
+
+    // ── matchPattern ────────────────────────────────────────────────────────────
+
+    @Test
+    void matchPattern_streamsRowsAsResults() {
+        ObjectSearch.MatchPatternResponse first = ObjectSearch.MatchPatternResponse.newBuilder()
+            .setData(Struct.newBuilder()
+                .putFields("Label", Value.newBuilder().setStringValue("pat-java").build())
+                .putFields("Seq", Value.newBuilder().setNumberValue(1).build())
+                .build())
+            .setMatchNumber(1)
+            .setClassifier("A")
+            .build();
+        ObjectSearch.MatchPatternResponse second = ObjectSearch.MatchPatternResponse.newBuilder()
+            .setData(Struct.newBuilder()
+                .putFields("Seq", Value.newBuilder().setNumberValue(2).build())
+                .build())
+            .setMatchNumber(2)
+            .setClassifier("B")
+            .build();
+        when(mockStub.matchPattern(any())).thenReturn(List.of(first, second).iterator());
+
+        MatchPatternBuilder builder = Query.matchPattern("CoordinatorTestArticle")
+            .orderBy("Seq")
+            .pattern("A B+")
+            .define("B", "Seq > PREV(Seq)");
+        List<EntityCoordinator.MatchPatternResult> results = sut.matchPattern(builder);
+
+        assertEquals(2, results.size());
+        assertEquals("pat-java", results.get(0).data().get("Label"));
+        assertEquals(1.0, (Double) results.get(0).data().get("Seq"), 0.001);
+        assertEquals(1L, results.get(0).matchNumber());
+        assertEquals("A", results.get(0).classifier());
+        assertEquals(2.0, (Double) results.get(1).data().get("Seq"), 0.001);
+        assertEquals(2L, results.get(1).matchNumber());
+        assertEquals("B", results.get(1).classifier());
+
+        ArgumentCaptor<ObjectSearch.MatchPatternRequest> sent =
+            ArgumentCaptor.forClass(ObjectSearch.MatchPatternRequest.class);
+        verify(mockStub).matchPattern(sent.capture());
+        assertEquals(builder.build(), sent.getValue());
+    }
+
+    @Test
+    void matchPattern_withActingUserToken_usesWithOption() {
+        when(mockStub.matchPattern(any())).thenReturn(List.<ObjectSearch.MatchPatternResponse>of().iterator());
+
+        MatchPatternBuilder builder = Query.matchPattern("CoordinatorTestArticle").orderBy("Seq").pattern("A");
+        sut.withActingUser("user-token-555").matchPattern(builder);
+
+        verify(mockStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "user-token-555");
     }
 
     // ── searchSimilar ───────────────────────────────────────────────────────────

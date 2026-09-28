@@ -1,0 +1,64 @@
+{
+    "typeName": "PatternDoc",
+    "where": [
+        {
+            "property": "Marker",
+            "value": {
+                "stringVal": "m1"
+            }
+        },
+        {
+            "property": "Label",
+            "value": {
+                "stringVal": "skip"
+            },
+            "clauseType": "MUST_NOT"
+        }
+    ],
+    "whereLogic": "OR",
+    "partitionBy": [
+        "Label"
+    ],
+    "orderBy": [
+        {
+            "property": "Seq"
+        },
+        {
+            "property": "Id",
+            "descending": true
+        }
+    ],
+    "pattern": "A B+",
+    "subsets": [
+        {
+            "name": "AB",
+            "variables": [
+                "A",
+                "B"
+            ]
+        }
+    ],
+    "define": [
+        {
+            "name": "B",
+            "expr": "Seq > PREV(Seq)"
+        }
+    ],
+    "measures": [
+        {
+            "name": "n",
+            "expr": "COUNT(*)"
+        },
+        {
+            "name": "last_seq",
+            "expr": "LAST(B.Seq)"
+        }
+    ],
+    "rowsPerMatch": "ALL_ROWS_SHOW_EMPTY",
+    "afterMatch": {
+        "kind": "TO_FIRST",
+        "variable": "B"
+    },
+    "limit": 100,
+    "traceId": "trace-1"
+}

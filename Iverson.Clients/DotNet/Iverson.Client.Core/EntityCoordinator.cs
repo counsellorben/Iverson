@@ -332,6 +332,27 @@ public sealed class EntityCoordinator<T>(
     }
 
     /// <summary>
+    /// Executes a row pattern match (MATCH_RECOGNIZE) and streams one result per output row.
+    /// The column set depends on the pattern's measures and rows-per-match mode, so each row's
+    /// data comes back as a string-keyed dictionary with the server's keys unchanged.
+    /// </summary>
+    public async IAsyncEnumerable<MatchPatternResult> MatchPatternAsync(
+        MatchPatternBuilder pattern,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var request     = pattern.Build();
+        request.TraceId = CurrentTraceId();
+
+        logger.LogDebug("ObjectSearch.MatchPattern {Entity} pattern={Pattern}",
+            _descriptor.EntityName, request.Pattern);
+
+        var stream = search.MatchPattern(request, await ResolveHeadersAsync(null), cancellationToken: ct);
+        await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
+            yield return new MatchPatternResult(
+                StructConverter.ToDictionary(response.Data), response.MatchNumber, response.Classifier);
+    }
+
+    /// <summary>
     /// Executes a GROUP BY aggregation and streams untyped rows (one row per output group).
     /// Column set depends on the query's keys/metrics, so rows come back as string-keyed
     /// dictionaries, same as <see cref="PipelineAsync(PipelineBuilder,CancellationToken)"/>.
@@ -378,3 +399,9 @@ public sealed class EntityCoordinator<T>(
 }
 
 public sealed record SearchResult<T>(T Entity, float Score);
+
+/// <summary>
+/// One MatchPattern output row: its columns, the 1-based number of the match it belongs to
+/// (0 for an unmatched row) and the pattern variable it matched (empty for ONE_ROW and unmatched rows).
+/// </summary>
+public sealed record MatchPatternResult(IReadOnlyDictionary<string, object?> Data, long MatchNumber, string Classifier);

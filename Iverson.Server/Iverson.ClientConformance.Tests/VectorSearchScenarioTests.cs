@@ -472,4 +472,24 @@ public class VectorSearchScenarioTests
         cells.Should().NotContain(c => c.Status == CellStatus.Ok);
         cells.Should().OnlyContain(c => c.Scenario == VectorSearchScenario.Name);
     }
+
+    /// <summary>
+    /// THE mutations this test exists for: grading the write step as passed, or as failed,
+    /// regardless of <c>step.Ok</c> in <c>RunAsync</c>. A language whose driver failed to seed its
+    /// rows must say so in its own cell, naming the write step and the driver's error, while a
+    /// language whose write succeeded must have that step graded passed.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_EachWriteStepIsGradedByItsOwnOk_AFailedOneNamingTheStepAndTheError()
+    {
+        var scenario = new VectorSearchScenario(
+            FailedWriteScript.Runner(VectorSearchScenario.RegisterStepName, VectorSearchScenario.WriteStepName),
+            new RecordingReregistrar(),
+            FailedWriteScript.UnreachableSearch(),
+            FailedWriteScript.OneAttemptWaiter());
+
+        var cells = await scenario.RunAsync(FailedWriteScript.Languages, Context(), "acting-token");
+
+        FailedWriteScript.ShouldCarryTheWriteFailure(cells, VectorSearchScenario.WriteStepName);
+    }
 }

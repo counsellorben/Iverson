@@ -124,6 +124,26 @@ type VectorDoc struct {
 	Label    string
 }
 
+// PatternDoc is S13 match-pattern's subject type. Every one of the five drivers declares the same
+// type name and shape; only the .NET driver ever registers it (register-once rule, as for
+// VectorDoc), and every driver writes three rows into it and then matches over them.
+//
+// Deliberately relation-free and chunk-free: both requests read TYPE_ROWS. Marker carries the
+// run's --id-prefix and is iverson_meta exactly as on VectorDoc; Label is the row's per-language
+// identity and the PARTITION BY column, and its spelling must match MatchPatternScenario.LabelFor;
+// Seq is the ORDER BY column that DEFINE B AS Seq > PREV(Seq) compares — int32, because a Go int
+// maps to CLR_INT64; Title is the embedding source the similarity request's SIMILARITY(Title, ...)
+// scores.
+type PatternDoc struct {
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	TenantId string
+	OwnerId  string
+	Marker   string `iverson_meta:"true"`
+	Label    string
+	Seq      int32
+	Title    string `iverson_embedding:"true"`
+}
+
 // IdentityDoc is S8 identity's subject type. Every one of the five drivers declares the same type
 // name and shape; only the .NET driver ever registers it (register-once rule), and every driver
 // writes one row into it, reads that row back, and then attempts one update under a deliberately

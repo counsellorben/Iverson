@@ -58,6 +58,14 @@ public final class Query {
     }
 
     /**
+     * Creates a {@link MatchPatternBuilder} scoped to the given type name. Row pattern
+     * matching (SQL:2016 MATCH_RECOGNIZE) runs server-side over the type's rows or chunks.
+     */
+    public static MatchPatternBuilder matchPattern(String typeName) {
+        return new MatchPatternBuilder(typeName);
+    }
+
+    /**
      * Creates a {@link SimilarBuilder} for Qdrant vector similarity search on the given
      * embedded property.
      */

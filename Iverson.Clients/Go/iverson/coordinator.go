@@ -50,6 +50,7 @@ type SearchClient interface {
 	Aggregate(ctx context.Context, req *pb.AggregateRequest) (*pb.AggregateResponse, error)
 	GroupBy(ctx context.Context, req *pb.GroupByRequest) (SearchStream, error)
 	Pipeline(ctx context.Context, req *pb.PipelineRequest) (SearchStream, error)
+	MatchPattern(ctx context.Context, req *pb.MatchPatternRequest) (MatchPatternStream, error)
 }
 
 // SearchStream is the interface for the streaming Search/SearchSimilar/GroupBy/Pipeline
@@ -61,6 +62,11 @@ type SearchStream interface {
 // ChunkSearchStream is the interface for the streaming SearchChunks response.
 type ChunkSearchStream interface {
 	Recv() (*pb.ChunkSearchResponse, error)
+}
+
+// MatchPatternStream is the interface for the streaming MatchPattern response.
+type MatchPatternStream interface {
+	Recv() (*pb.MatchPatternResponse, error)
 }
 
 // IversonClient holds gRPC connections to the Iverson server services.
@@ -358,6 +364,16 @@ type SearchResult[T any] struct {
 	Score  float32
 }
 
+// MatchPatternResult is one MatchPattern output row: its columns (the partition columns and
+// measures for ONE_ROW, every visible column plus the measures for the ALL_ROWS modes), the
+// 1-based match number (0 for an unmatched row) and the row's pattern variable (ALL_ROWS
+// modes only; empty for ONE_ROW and unmatched rows).
+type MatchPatternResult struct {
+	Data        map[string]any
+	MatchNumber int64
+	Classifier  string
+}
+
 // Search executes a DSL-driven search request and returns matching entities with
 // relevance scores.
 func (c *EntityCoordinator[T]) Search(ctx context.Context, req *pb.SearchRequest) ([]SearchResult[T], error) {
@@ -474,6 +490,33 @@ func (c *EntityCoordinator[T]) Pipeline(ctx context.Context, req *pb.PipelineReq
 			return nil, fmt.Errorf("Pipeline stream: %w", err)
 		}
 		results = append(results, structToMap(resp.Data))
+	}
+	return results, nil
+}
+
+// MatchPattern executes a row pattern matching request and returns every output row, drained
+// from the stream. Columns depend on the measures and the rows-per-match mode, so each row's
+// Data is an untyped map, same as Pipeline.
+func (c *EntityCoordinator[T]) MatchPattern(ctx context.Context, req *pb.MatchPatternRequest) ([]MatchPatternResult, error) {
+	stream, err := c.deps.search.MatchPattern(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("MatchPattern: %w", err)
+	}
+
+	var results []MatchPatternResult
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("MatchPattern stream: %w", err)
+		}
+		results = append(results, MatchPatternResult{
+			Data:        structToMap(resp.Data),
+			MatchNumber: resp.MatchNumber,
+			Classifier:  resp.Classifier,
+		})
 	}
 	return results, nil
 }
@@ -827,7 +870,7 @@ func protoValueToGoValue(pbVal *structpb.Value, target reflect.Value, targetType
 
 // structToMap converts a google.protobuf.Struct to an untyped map, for results whose
 // columns are aggregated/aliased and don't correspond to any single entity's fields
-// (GroupBy, Pipeline) — unlike structToEntity[T], it isn't driven by a target reflect.Type.
+// (GroupBy, Pipeline, MatchPattern) — unlike structToEntity[T], it isn't driven by a target reflect.Type.
 func structToMap(s *structpb.Struct) map[string]any {
 	if s == nil {
 		return nil
@@ -920,4 +963,8 @@ func (a *searchAdapter) GroupBy(ctx context.Context, req *pb.GroupByRequest) (Se
 
 func (a *searchAdapter) Pipeline(ctx context.Context, req *pb.PipelineRequest) (SearchStream, error) {
 	return a.stub.Pipeline(ctx, req)
+}
+
+func (a *searchAdapter) MatchPattern(ctx context.Context, req *pb.MatchPatternRequest) (MatchPatternStream, error) {
+	return a.stub.MatchPattern(ctx, req)
 }
