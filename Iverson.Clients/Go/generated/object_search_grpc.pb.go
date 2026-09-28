@@ -25,6 +25,7 @@ const (
 	ObjectSearchService_Aggregate_FullMethodName     = "/iverson.ObjectSearchService/Aggregate"
 	ObjectSearchService_GroupBy_FullMethodName       = "/iverson.ObjectSearchService/GroupBy"
 	ObjectSearchService_Pipeline_FullMethodName      = "/iverson.ObjectSearchService/Pipeline"
+	ObjectSearchService_MatchPattern_FullMethodName  = "/iverson.ObjectSearchService/MatchPattern"
 )
 
 // ObjectSearchServiceClient is the client API for ObjectSearchService service.
@@ -39,6 +40,7 @@ type ObjectSearchServiceClient interface {
 	Aggregate(ctx context.Context, in *AggregateRequest, opts ...grpc.CallOption) (*AggregateResponse, error)
 	GroupBy(ctx context.Context, in *GroupByRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SearchResponse], error)
 	Pipeline(ctx context.Context, in *PipelineRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SearchResponse], error)
+	MatchPattern(ctx context.Context, in *MatchPatternRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MatchPatternResponse], error)
 }
 
 type objectSearchServiceClient struct {
@@ -154,6 +156,25 @@ func (c *objectSearchServiceClient) Pipeline(ctx context.Context, in *PipelineRe
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ObjectSearchService_PipelineClient = grpc.ServerStreamingClient[SearchResponse]
 
+func (c *objectSearchServiceClient) MatchPattern(ctx context.Context, in *MatchPatternRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MatchPatternResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ObjectSearchService_ServiceDesc.Streams[5], ObjectSearchService_MatchPattern_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[MatchPatternRequest, MatchPatternResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ObjectSearchService_MatchPatternClient = grpc.ServerStreamingClient[MatchPatternResponse]
+
 // ObjectSearchServiceServer is the server API for ObjectSearchService service.
 // All implementations must embed UnimplementedObjectSearchServiceServer
 // for forward compatibility.
@@ -166,6 +187,7 @@ type ObjectSearchServiceServer interface {
 	Aggregate(context.Context, *AggregateRequest) (*AggregateResponse, error)
 	GroupBy(*GroupByRequest, grpc.ServerStreamingServer[SearchResponse]) error
 	Pipeline(*PipelineRequest, grpc.ServerStreamingServer[SearchResponse]) error
+	MatchPattern(*MatchPatternRequest, grpc.ServerStreamingServer[MatchPatternResponse]) error
 	mustEmbedUnimplementedObjectSearchServiceServer()
 }
 
@@ -193,6 +215,9 @@ func (UnimplementedObjectSearchServiceServer) GroupBy(*GroupByRequest, grpc.Serv
 }
 func (UnimplementedObjectSearchServiceServer) Pipeline(*PipelineRequest, grpc.ServerStreamingServer[SearchResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method Pipeline not implemented")
+}
+func (UnimplementedObjectSearchServiceServer) MatchPattern(*MatchPatternRequest, grpc.ServerStreamingServer[MatchPatternResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method MatchPattern not implemented")
 }
 func (UnimplementedObjectSearchServiceServer) mustEmbedUnimplementedObjectSearchServiceServer() {}
 func (UnimplementedObjectSearchServiceServer) testEmbeddedByValue()                             {}
@@ -288,6 +313,17 @@ func _ObjectSearchService_Pipeline_Handler(srv interface{}, stream grpc.ServerSt
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ObjectSearchService_PipelineServer = grpc.ServerStreamingServer[SearchResponse]
 
+func _ObjectSearchService_MatchPattern_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(MatchPatternRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(ObjectSearchServiceServer).MatchPattern(m, &grpc.GenericServerStream[MatchPatternRequest, MatchPatternResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ObjectSearchService_MatchPatternServer = grpc.ServerStreamingServer[MatchPatternResponse]
+
 // ObjectSearchService_ServiceDesc is the grpc.ServiceDesc for ObjectSearchService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -324,6 +360,11 @@ var ObjectSearchService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Pipeline",
 			Handler:       _ObjectSearchService_Pipeline_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "MatchPattern",
+			Handler:       _ObjectSearchService_MatchPattern_Handler,
 			ServerStreams: true,
 		},
 	},
