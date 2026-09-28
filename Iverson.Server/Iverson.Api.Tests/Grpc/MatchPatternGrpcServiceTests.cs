@@ -230,6 +230,7 @@ public sealed class MatchPatternGrpcServiceTests
         query.Field.Should().Be("Body");
         query.VectorName.Should().Be("body_vector");
         query.BatchRows.Should().Be(PatternQueryLimitOptions.Default.BatchRows);
+        query.MaxPartitionRows.Should().Be(PatternQueryLimitOptions.Default.MaxPartitionRows);
         query.MaxRowsScanned.Should().Be(PatternQueryLimitOptions.Default.MaxRowsScanned);
     }
 

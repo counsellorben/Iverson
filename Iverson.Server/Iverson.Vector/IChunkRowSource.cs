@@ -11,9 +11,12 @@ public sealed record ChunkRow(string ParentKey, int ChunkIndex, string Text, flo
 /// <param name="Field">The chunk field's canonical property name, matched against the payload <c>field</c>.</param>
 /// <param name="VectorName">The chunk vector to return, or null when the request uses no SIMILARITY.</param>
 /// <param name="BatchRows">Phase-2 batch bound, in chunks (spec §4).</param>
+/// <param name="MaxPartitionRows">Per-parent bound, checked on phase 1's counts before any phase-2 read; a parent with
+/// more chunks than this throws <c>PatternBudgetExceededException</c> (spec §4).</param>
 /// <param name="MaxRowsScanned">Phase-1 bound; more chunks than this throws <c>PatternBudgetExceededException</c>.</param>
 public sealed record ChunkRowQuery(
-    string ChunksCollection, Filter? Filter, string Field, string? VectorName, int BatchRows, int MaxRowsScanned);
+    string ChunksCollection, Filter? Filter, string Field, string? VectorName, int BatchRows, int MaxPartitionRows,
+    int MaxRowsScanned);
 
 /// <summary>The CHUNKS source for MatchPattern (spec §3.2).</summary>
 public interface IChunkRowSource

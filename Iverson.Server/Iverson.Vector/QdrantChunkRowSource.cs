@@ -8,8 +8,9 @@ using Qdrant.Client.Grpc;
 namespace Iverson.Vector;
 
 /// <summary>The default <see cref="IChunkRowSource"/>: a two-phase Qdrant scroll (spec §3.2, §4).
-/// Phase 1 counts chunks per parent to enforce <see cref="ChunkRowQuery.MaxRowsScanned"/> and to build
-/// <see cref="ChunkRowQuery.BatchRows"/>-bounded batches of whole parents; phase 2 re-scrolls each batch for its
+/// Phase 1 counts chunks per parent to enforce <see cref="ChunkRowQuery.MaxRowsScanned"/> and
+/// <see cref="ChunkRowQuery.MaxPartitionRows"/> (before any phase-2 read, so an oversized parent is never loaded) and
+/// to build <see cref="ChunkRowQuery.BatchRows"/>-bounded batches of whole parents; phase 2 re-scrolls each batch for its
 /// chunk text (and vector, when requested), grouped and ordered for output.</summary>
 public sealed class QdrantChunkRowSource(IVectorQueryService vector, IntelligenceTenantScope tenantScope) : IChunkRowSource
 {
@@ -26,6 +27,11 @@ public sealed class QdrantChunkRowSource(IVectorQueryService vector, Intelligenc
 
         var (parentCounts, collectionExists) = await ScanParentsAsync(query, baseFilter, ct);
         if (!collectionExists) yield break;
+
+        // Spec §4 bounds memory at MaxPartitionRows: a parent over it must fail here, before phase 2 reads its chunks
+        // (text and vectors) in full — the batcher's own check would only fire once they were all in memory.
+        if (parentCounts.Values.Any(count => count > query.MaxPartitionRows))
+            throw new PatternBudgetExceededException("MaxPartitionRows");
 
         var sortedParents = parentCounts.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
         var batches = BuildBatches(sortedParents, parentCounts, query.BatchRows);

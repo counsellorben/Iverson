@@ -110,7 +110,7 @@ public sealed partial class ObjectSearchGrpcService
                     tenantScope.ResolveCollectionName(schema.CollectionName!, tenantValue, isChunks: true),
                     chunkFilter, chunkDesc!.PropertyName,
                     compiled.SimilarityTerms.Count > 0 ? chunkDesc.PropertyName.ToSnakeCase() + "_vector" : null,
-                    limits.BatchRows, limits.MaxRowsScanned), ct)
+                    limits.BatchRows, limits.MaxPartitionRows, limits.MaxRowsScanned), ct)
                 : TypeRowsInputAsync(schema, request, compiled, constraints, limits, ct);
 
             batches = PatternPartitionBatcher.BatchAsync(

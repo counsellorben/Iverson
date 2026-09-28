@@ -66,8 +66,8 @@ public sealed class ChunkRowSourceIntegrationTests(QdrantContainerFixture fixtur
     private QdrantChunkRowSource Source(IVectorQueryService? vector = null) => new(vector ?? _svc, _scope);
 
     private static ChunkRowQuery Query(string collection, string? vectorName = null, Filter? filter = null,
-        int batchRows = 2_000, int maxRowsScanned = 100_000) =>
-        new(collection, filter, "Body", vectorName, batchRows, maxRowsScanned);
+        int batchRows = 2_000, int maxPartitionRows = 100_000, int maxRowsScanned = 100_000) =>
+        new(collection, filter, "Body", vectorName, batchRows, maxPartitionRows, maxRowsScanned);
 
     [Fact]
     public async Task Chunks_arrive_grouped_by_parent_in_ordinal_order_and_by_numeric_chunk_index()
@@ -138,6 +138,37 @@ public sealed class ChunkRowSourceIntegrationTests(QdrantContainerFixture fixtur
 
         (await act.Should().ThrowAsync<PatternBudgetExceededException>()).Which.BudgetName.Should().Be("MaxRowsScanned");
         (await ReadAllAsync(Source(), Query(col, maxRowsScanned: 5))).Should().HaveCount(5);
+    }
+
+    [Fact]
+    public async Task A_parent_over_MaxPartitionRows_raises_the_budget_exception_before_any_phase_two_read()
+    {
+        // "a" (1 chunk) sorts before "b" (4 chunks) and is its own batch: were the check made only as phase 2 reached
+        // "b", "a" would already have been read and yielded.
+        var col = await CollectionAsync();
+        await AddChunkAsync(col, "a", 0);
+        for (var i = 0; i < 4; i++) await AddChunkAsync(col, "b", i);
+
+        var phaseTwo = 0;
+        var spy = Substitute.For<IVectorQueryService>();
+        spy.ScrollAsync(default!, default, default!, default, default, default, default).ReturnsForAnyArgs(ci =>
+        {
+            if (ci.ArgAt<IReadOnlyList<string>>(2).Contains("text")) phaseTwo++;
+            return _svc.ScrollAsync(ci.ArgAt<string>(0), ci.ArgAt<Filter?>(1), ci.ArgAt<IReadOnlyList<string>>(2),
+                ci.ArgAt<string?>(3), ci.ArgAt<uint>(4), ci.ArgAt<PointId?>(5), ci.ArgAt<CancellationToken>(6));
+        });
+        var yielded = new List<ChunkRow>();
+
+        var act = async () =>
+        {
+            await foreach (var row in Source(spy).ReadAsync(Query(col, vectorName: "body_vector", batchRows: 1, maxPartitionRows: 3)))
+                yielded.Add(row);
+        };
+
+        (await act.Should().ThrowAsync<PatternBudgetExceededException>()).Which.BudgetName.Should().Be("MaxPartitionRows");
+        phaseTwo.Should().Be(0, "the check runs on phase 1's counts, before any phase-2 read");
+        yielded.Should().BeEmpty();
+        (await ReadAllAsync(Source(), Query(col, maxPartitionRows: 4))).Should().HaveCount(5);
     }
 
     [Theory]
