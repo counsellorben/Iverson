@@ -75,7 +75,7 @@ Each requirement is one row in an axis's table:
 A requirement's rationale and evidence pointer (which orchestrator assertion(s) cite it) are not
 columns in the summary table; they are recorded as prose immediately below the table, or deferred
 to the `Requirements.cs` const's doc comment once the requirement is implemented. This document
-declares 46 `Active` requirements across nine axes; each takes a const in `Requirements.cs` and is
+declares 49 `Active` requirements across nine axes; each takes a const in `Requirements.cs` and is
 cited by at least one orchestrator assertion. An axis whose table is still empty remains legal, and
 the coverage gate must stay green in that state: an empty set of that axis's `Active` IDs compared
 against an empty set of its consts is a match, not a gap. What the gate rejects is a MISMATCH —
@@ -663,6 +663,9 @@ implemented requirement.
 | IVC-QRY-002 | Active | Behaviour | A filtered search returns exactly the rows whose stored values match the filter |
 | IVC-QRY-003 | Active | Capability | An aggregation over a filtered set is reachable through the client's public API |
 | IVC-QRY-004 | Active | Behaviour | An aggregation over a filtered set reports a value computed from exactly the rows that filter matches |
+| IVC-QRY-005 | Active | Capability | A row pattern match is reachable through the client's public API |
+| IVC-QRY-006 | Active | Behaviour | A row pattern match over scalar columns returns exactly one match per partition the pattern matches, with measures computed from exactly that partition's ordered rows |
+| IVC-QRY-007 | Active | Behaviour | A row pattern match whose definitions use `SIMILARITY` returns every row its filter admits, each with a finite score in [-1, 1] |
 
 `IVC-QRY-001`/`IVC-QRY-003` are the reachability half and `IVC-QRY-002`/`IVC-QRY-004` the content
 half, split the way `SCH` splits `IVC-SCH-001` from `IVC-SCH-002` and for the same reason: search
@@ -690,8 +693,36 @@ phase — a bounded poll with an explicit timeout, reported as a failed step whe
 never an indefinite wait and never a fixed sleep presented as determinism; see
 `ProjectionWaiter.cs`.
 
-Pagination, sort order, joins, bucketing aggregations and `HAVING` are deliberately not authored
-here; see the Coverage table below.
+`IVC-QRY-005` is the reachability half of row pattern matching (`MatchPattern`, SQL:2016
+`MATCH_RECOGNIZE`) and `IVC-QRY-006`/`IVC-QRY-007` its content half, split for the reason the
+search and aggregation requirements are: `MatchPattern` is its own RPC, and a client can reach it
+yet carry the wrong rows back. The `match-pattern` scenario has every language seed one three-row
+partition (`Label = "pat-<lang>"`, `Seq` 1..3) under a run-unique marker, and every client then
+issues the same two patterns over all seeded partitions, filtered on that marker, partitioned by
+`Label` and ordered by `Seq`.
+
+`IVC-QRY-006` uses a scalar pattern, `A B+` with `B AS Seq > PREV(Seq)`, one row per match. Over
+one strictly increasing three-row partition that is exactly one match with `n = COUNT(*) = 3`,
+`first_seq = FIRST(A.Seq) = 1` and `last_seq = LAST(B.Seq) = 3`. The measures depend on the
+filter, the partitioning and the ordering all reaching the server unchanged, so a client that
+drops or reorders any of them disagrees with the other four. Each seeded language must yield
+exactly one such match, and no label that no seeded language wrote may appear.
+
+`IVC-QRY-007` uses a `SIMILARITY` pattern, `A+` with
+`A AS SIMILARITY(Title, 'a note about row pattern matching') IS NOT NULL`, all rows per match. The
+set of returned `Id`s must equal exactly the row keys the write phase reported, in both directions.
+Every row must carry classifier `A`, match number 1, the `Label` of the language that wrote it,
+and a score `s` that is a finite number in [-1, 1]. Scores are never compared to absolute values,
+because they belong to the embedding model and not to any client.
+
+A TYPE_ROWS pattern reads its rows from StarRocks and resolves `SIMILARITY` against the Qdrant
+object vectors, so the `match-pattern` scenario's bounded wait polls the orchestrator's own
+`MatchPattern` probe. That probe matches a row only once it is both visible and scoreable, and it
+reports each such row's `Id`. The wait ends once every row key the write phase reported is among
+those ids. Rows from a language that did not report all three keys do not hold up the wait.
+
+Pagination, `Search` sort order, joins, bucketing aggregations and `HAVING` are deliberately not
+authored here; see the Coverage table below.
 
 #### Coverage
 
@@ -701,10 +732,11 @@ here; see the Coverage table below.
 | Filtered-search result set | Covered | IVC-QRY-002 |
 | Aggregation reachability | Covered | IVC-QRY-003 |
 | Aggregation value | Covered | IVC-QRY-004 |
-| Pagination and sort order | Deferred | Every client's query builder can express paging and sort (`page`/`limit`/`offset`, `orderBy`), but the `query` scenario seeds one row per language — far below any page boundary — so no assertion observes a page boundary or an ordering, and no requirement constrains them. Authoring them needs a seed set large enough that a wrong page size or a dropped sort is observable, which is a scenario change, not a wording change. |
+| Row pattern matching | Covered | IVC-QRY-005, IVC-QRY-006, IVC-QRY-007 |
+| Pagination and `Search` sort order | Deferred | Every client's query builder can express paging and sort for `Search` (`page`/`limit`/`offset`, `orderBy`), but the `query` scenario seeds one row per language — far below any page boundary — so no assertion observes a `Search` page boundary or a `Search` result ordering, and no requirement constrains them. Authoring them needs a seed set large enough that a wrong page size or a dropped sort is observable, which is a scenario change, not a wording change. `MatchPattern`'s `order_by` is not in this row: `IVC-QRY-006`'s measures are computed over the ordered partition, so a dropped or reversed ordering is observable there. `MatchPattern`'s output `limit` is never reached by the fixture and stays unconstrained. |
 | Joins and multi-type queries | Deferred | `JoinSpec` is expressible from all five builders, but the scenario's subject type is relation-free on purpose — which is what keeps `IVC-QRY-002`'s exact result-set comparison free of hydration effects — so no assertion observes a join and no requirement constrains one. |
 | Bucketing aggregations and HAVING | Deferred | Only the scalar count metric is exercised. `TERMS`/`DATE_HISTOGRAM`/`RANGE` bucket output and `HAVING` clauses reference server-fixed output aliases (`bucket_key`, `doc_count`, `metric_val`) that no assertion currently observes, so no requirement constrains them. |
-| Vector-backed query paths | Deferred | `SearchSimilar` and `SearchChunks` are served from Qdrant rather than StarRocks and belong to the `VEC` axis, not this one. |
+| Vector-backed query paths | Deferred | `SearchSimilar` and `SearchChunks` are served from Qdrant rather than StarRocks and belong to the `VEC` axis, not this one. The one vector-backed path this axis does cover is `SIMILARITY` inside a TYPE_ROWS row pattern (`IVC-QRY-007`), which scores StarRocks rows against their Qdrant object vectors. No assertion observes a score's value or a CHUNKS-source pattern (`source = CHUNKS`), and no requirement constrains either. |
 
 #### Backstop assertion (non-normative)
 
@@ -713,7 +745,9 @@ the set of row keys the harness itself observed the write phase produce. If that
 empty — every write denied, or every driver silently reporting no key — the set comparison would
 succeed against an empty result and the aggregate would match a count of zero: five clients
 agreeing on nothing, rendered green. `QueryScenario.Judge`'s "the run seeded at least one row for
-this query to match" assertion is therefore `QRY`'s backstop. It fires unconditionally, on every
+this query to match" assertion is therefore `QRY`'s backstop, and `MatchPatternScenario.Judge`'s
+"the run seeded at least one row for these pattern queries to match" assertion is the same backstop
+for `IVC-QRY-006` and `IVC-QRY-007`. It fires unconditionally, on every
 language, before and outside the comparisons, and is exactly the positive expected row count this
 axis's scenario requires. Like `REL`'s and `SCH`'s it carries no requirement ID: no `IVC-QRY-*`
 statement owns "the run seeded something" as such — it is a property of the harness's own fixture,
