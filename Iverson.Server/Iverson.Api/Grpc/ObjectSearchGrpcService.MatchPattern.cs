@@ -102,7 +102,6 @@ public sealed partial class ObjectSearchGrpcService
         var ct = timeout.Token;
         var budget = new PatternBudget(limits.MaxActiveThreads, limits.MaxSteps, ct);
         IAsyncEnumerator<PatternBatch>? batches = null;
-        var detach = false;
         try
         {
             var termVectors = await EmbedSimilarityTermsAsync(schema, compiled, ct);
@@ -142,10 +141,7 @@ public sealed partial class ObjectSearchGrpcService
                             },
                             context.CancellationToken);
                         if (++written == outputLimit)
-                        {
-                            detach = true;                                              // step 7
-                            return;
-                        }
+                            return;                                                     // step 7
                     }
                     offset += partition.Count;
                 }
@@ -181,20 +177,21 @@ public sealed partial class ObjectSearchGrpcService
         }
         finally
         {
-            if (batches is not null && detach)
-                _ = ReleaseDetachedAsync(batches, timeout);   // option B (§9.3 pause test): don't await the drain
+            // Option B (§9.3 pause test), on every exit with a live enumerator — limit, completion and every error
+            // status alike: don't await the drain, so a frozen StarRocks never delays the response or its status.
+            if (batches is not null)
+                _ = ReleaseDetachedAsync(batches, timeout);
             else
-            {
-                if (batches is not null) await batches.DisposeAsync();
                 timeout.Dispose();
-            }
         }
     }
 
     /// <summary>
-    /// After <c>limit</c> the RPC completes without awaiting the row source's disposal: against a StarRocks that has
-    /// stopped responding, disposing the reader drains until it answers again, and nothing bounds that (spec Known
-    /// issues). The drain holds one pooled connection until then; the timeout source lives until it ends.
+    /// The RPC completes — after <c>limit</c>, or with an error status mid-stream — without awaiting the row source's
+    /// disposal: against a StarRocks that has stopped responding, disposing the reader drains until it answers again,
+    /// and nothing bounds that (spec Known issues). The drain holds one pooled connection until then; the timeout
+    /// source lives until it ends and is disposed here, exactly once. A disposal failure is logged, never thrown, so
+    /// it cannot replace the status the caller already has.
     /// </summary>
     private async Task ReleaseDetachedAsync(IAsyncEnumerator<PatternBatch> batches, CancellationTokenSource timeout)
     {
@@ -204,7 +201,7 @@ public sealed partial class ObjectSearchGrpcService
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "[MatchPattern] releasing the row source after the output limit failed.");
+            logger.LogWarning(ex, "[MatchPattern] releasing the row source failed.");
         }
         finally
         {

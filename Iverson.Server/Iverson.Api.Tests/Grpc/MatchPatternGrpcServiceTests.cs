@@ -579,6 +579,49 @@ public sealed class MatchPatternGrpcServiceTests
         }
     }
 
+    [Fact]
+    public async Task A_mid_stream_error_returns_its_status_without_awaiting_the_row_source_disposal()
+    {
+        // The same frozen-StarRocks premise as the limit test above, on an error exit: a run-time evaluation error
+        // (a string compared with a number) raised by the engine while the row source is suspended mid-stream.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var release = new TaskCompletionSource();
+        var disposed = new TaskCompletionSource();
+        _search.MatchRowsAsync(default!, default!, default!, default).ReturnsForAnyArgs(_ => Endless(release, disposed));
+
+        try
+        {
+            var act = () => RunAsync(Req("A", [("A", "A.Name < 1")], partitionBy: ["Id"]), new PatternQueryLimitOptions { BatchRows = 1 })
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            (await act.Should().ThrowAsync<RpcException>()).Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+            disposed.Task.IsCompleted.Should().BeFalse("disposal is still draining");
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        await disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        static async IAsyncEnumerable<IDictionary<string, object?>> Endless(TaskCompletionSource release, TaskCompletionSource disposed)
+        {
+            try
+            {
+                for (var i = 0; ; i++)
+                {
+                    await Task.Yield();
+                    yield return Row(("Id", $"{i}"), ("Name", "a"));
+                }
+            }
+            finally
+            {
+                await release.Task;
+                disposed.SetResult();
+            }
+        }
+    }
+
     // ── ruling additions: branches the brief's tests did not cover ─────────
 
     [Fact]
