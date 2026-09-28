@@ -102,16 +102,17 @@ public sealed partial class ObjectSearchGrpcService
         var ct = timeout.Token;
         var budget = new PatternBudget(limits.MaxActiveThreads, limits.MaxSteps, ct);
         IAsyncEnumerator<PatternBatch>? batches = null;
+        DetachedDisposalInput? input = null;
         try
         {
             var termVectors = await EmbedSimilarityTermsAsync(schema, compiled, ct);
-            var input = chunks
+            input = new DetachedDisposalInput(chunks
                 ? ChunkInputAsync(new ChunkRowQuery(
                     tenantScope.ResolveCollectionName(schema.CollectionName!, tenantValue, isChunks: true),
                     chunkFilter, chunkDesc!.PropertyName,
                     compiled.SimilarityTerms.Count > 0 ? chunkDesc.PropertyName.ToSnakeCase() + "_vector" : null,
                     limits.BatchRows, limits.MaxPartitionRows, limits.MaxRowsScanned), ct)
-                : TypeRowsInputAsync(schema, request, compiled, constraints, limits, ct);
+                : TypeRowsInputAsync(schema, request, compiled, constraints, limits, ct));
 
             batches = PatternPartitionBatcher.BatchAsync(
                 input, chunks ? ["parent_key"] : request.PartitionBy.ToList(),
@@ -179,8 +180,10 @@ public sealed partial class ObjectSearchGrpcService
         {
             // Option B (§9.3 pause test), on every exit with a live enumerator — limit, completion and every error
             // status alike: don't await the drain, so a frozen StarRocks never delays the response or its status.
+            // An error the batcher raises while enumerating its input has already disposed that input by now; the
+            // adapter detached that disposal, and ReleaseDetachedAsync awaits it off the request path.
             if (batches is not null)
-                _ = ReleaseDetachedAsync(batches, timeout);
+                _ = ReleaseDetachedAsync(batches, input!, timeout);
             else
                 timeout.Dispose();
         }
@@ -193,19 +196,75 @@ public sealed partial class ObjectSearchGrpcService
     /// source lives until it ends and is disposed here, exactly once. A disposal failure is logged, never thrown, so
     /// it cannot replace the status the caller already has.
     /// </summary>
-    private async Task ReleaseDetachedAsync(IAsyncEnumerator<PatternBatch> batches, CancellationTokenSource timeout)
+    private async Task ReleaseDetachedAsync(
+        IAsyncEnumerator<PatternBatch> batches, DetachedDisposalInput input, CancellationTokenSource timeout)
     {
         try
         {
-            await batches.DisposeAsync();
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "[MatchPattern] releasing the row source failed.");
+            try
+            {
+                await batches.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "[MatchPattern] releasing the row source failed.");
+            }
+
+            // Read only now: on the limit path it is batches.DisposeAsync() above that disposes the input.
+            try
+            {
+                await input.Disposal;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "[MatchPattern] releasing the row source failed.");
+            }
         }
         finally
         {
-            timeout.Dispose();
+            timeout.Dispose();                                                         // after the drain: it may use the token
+        }
+    }
+
+    /// <summary>
+    /// The batcher's input, whose disposal never runs on the request path unless enumeration completed normally. C#'s
+    /// <c>await foreach</c> disposes its source before an exception it raises propagates — so without this, an error
+    /// <c>PatternPartitionBatcher.BatchAsync</c> raises mid-source (<c>MaxPartitionRows</c>, <c>MaxRowsScanned</c>)
+    /// would await the StarRocks reader's drain inside <c>batches.MoveNextAsync()</c>, before the RPC could answer.
+    /// Here that disposal is started, not awaited, and exposed as <see cref="Disposal"/> for
+    /// <see cref="ReleaseDetachedAsync"/> to await. Enumerated once; the batcher stays unaware of the policy.
+    /// </summary>
+    private sealed class DetachedDisposalInput(IAsyncEnumerable<PatternInputRow> inner) : IAsyncEnumerable<PatternInputRow>
+    {
+        /// <summary>The inner enumerator's disposal: completed unless a detached one is still running.</summary>
+        public Task Disposal { get; private set; } = Task.CompletedTask;
+
+        public IAsyncEnumerator<PatternInputRow> GetAsyncEnumerator(CancellationToken ct = default) =>
+            new Enumerator(this, inner.GetAsyncEnumerator(ct));
+
+        private sealed class Enumerator(DetachedDisposalInput owner, IAsyncEnumerator<PatternInputRow> inner)
+            : IAsyncEnumerator<PatternInputRow>
+        {
+            private bool _completed;
+
+            public PatternInputRow Current => inner.Current;
+
+            public async ValueTask<bool> MoveNextAsync()
+            {
+                var more = await inner.MoveNextAsync();
+                _completed = !more;
+                return more;
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                if (_completed) return inner.DisposeAsync();                        // exhausted: nothing left to drain
+                owner.Disposal = DisposeInnerAsync(inner);
+                return ValueTask.CompletedTask;
+            }
+
+            // An async method, so even a synchronous throw from DisposeAsync lands in the task, never on the caller.
+            private static async Task DisposeInnerAsync(IAsyncEnumerator<PatternInputRow> e) => await e.DisposeAsync();
         }
     }
 

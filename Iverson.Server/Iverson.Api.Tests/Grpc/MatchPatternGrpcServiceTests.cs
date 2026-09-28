@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using FluentAssertions;
 using Grpc.Core;
 using Iverson.Api.Authorization;
@@ -11,6 +12,7 @@ using Iverson.Embeddings;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NSubstitute;
@@ -44,8 +46,8 @@ public sealed class MatchPatternGrpcServiceTests
         _resolver.Get(Arg.Any<string?>()).Returns(_embedding);
     }
 
-    private ObjectSearchGrpcService Sut(PatternQueryLimitOptions? limits = null) => new(
-        _registry, _search, _vector, _resolver, NullLogger<ObjectSearchGrpcService>.Instance,
+    private ObjectSearchGrpcService Sut(PatternQueryLimitOptions? limits = null, ILogger<ObjectSearchGrpcService>? logger = null) => new(
+        _registry, _search, _vector, _resolver, logger ?? NullLogger<ObjectSearchGrpcService>.Instance,
         _actingUserAccessor, new RowFieldAuthorizationEvaluator(), _tenantScope,
         new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(),
         Options.Create(new VectorRankingOptions()), Options.Create(new DecayOptions()),
@@ -552,32 +554,16 @@ public sealed class MatchPatternGrpcServiceTests
         // (MatchRowsIntegrationTests proves the premise); the RPC must not wait with it.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var release = new TaskCompletionSource();
-        var disposed = new TaskCompletionSource();
-        _search.MatchRowsAsync(default!, default!, default!, default).ReturnsForAnyArgs(_ => Endless(release, disposed));
+        var disposed = new TaskCompletionSource<bool>();
+        _search.MatchRowsAsync(default!, default!, default!, default)
+            .ReturnsForAnyArgs(ci => DrainBlockedRows(ci.ArgAt<CancellationToken>(3), release, disposed));
 
         var rpc = RunAsync(Req("A", partitionBy: ["Id"], limit: 2), new PatternQueryLimitOptions { BatchRows = 1 });
 
         (await rpc.WaitAsync(TimeSpan.FromSeconds(5))).Should().HaveCount(2);
         disposed.Task.IsCompleted.Should().BeFalse("disposal is still draining");
         release.SetResult();
-        await disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        static async IAsyncEnumerable<IDictionary<string, object?>> Endless(TaskCompletionSource release, TaskCompletionSource disposed)
-        {
-            try
-            {
-                for (var i = 0; ; i++)
-                {
-                    await Task.Yield();
-                    yield return Row(("Id", $"{i}"), ("Name", "a"));
-                }
-            }
-            finally
-            {
-                await release.Task;
-                disposed.SetResult();
-            }
-        }
+        (await disposed.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue(TimeoutSourceOutlivesTheDrain);
     }
 
     [Fact]
@@ -587,8 +573,9 @@ public sealed class MatchPatternGrpcServiceTests
         // (a string compared with a number) raised by the engine while the row source is suspended mid-stream.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var release = new TaskCompletionSource();
-        var disposed = new TaskCompletionSource();
-        _search.MatchRowsAsync(default!, default!, default!, default).ReturnsForAnyArgs(_ => Endless(release, disposed));
+        var disposed = new TaskCompletionSource<bool>();
+        _search.MatchRowsAsync(default!, default!, default!, default)
+            .ReturnsForAnyArgs(ci => DrainBlockedRows(ci.ArgAt<CancellationToken>(3), release, disposed));
 
         try
         {
@@ -603,9 +590,69 @@ public sealed class MatchPatternGrpcServiceTests
             release.TrySetResult();
         }
 
-        await disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        (await disposed.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue(TimeoutSourceOutlivesTheDrain);
+    }
 
-        static async IAsyncEnumerable<IDictionary<string, object?>> Endless(TaskCompletionSource release, TaskCompletionSource disposed)
+    [Fact]
+    public async Task A_batcher_budget_error_returns_its_status_without_awaiting_the_row_source_disposal()
+    {
+        // The same frozen-StarRocks premise, on an error the batcher itself raises while it is enumerating the source:
+        // C#'s `await foreach` disposes its source before the exception leaves it, so without the detaching adapter
+        // the drain is awaited inside batches.MoveNextAsync(), on the request path, before the RPC's `finally` runs.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var release = new TaskCompletionSource();
+        var disposed = new TaskCompletionSource<bool>();
+        _search.MatchRowsAsync(default!, default!, default!, default)
+            .ReturnsForAnyArgs(ci => DrainBlockedRows(ci.ArgAt<CancellationToken>(3), release, disposed));
+
+        try
+        {
+            var act = () => RunAsync(Req("A", partitionBy: ["Name"]), new PatternQueryLimitOptions { MaxPartitionRows = 3 })
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var ex = (await act.Should().ThrowAsync<RpcException>()).Which;
+            ex.StatusCode.Should().Be(StatusCode.ResourceExhausted);
+            ex.Status.Detail.Should().Contain("MaxPartitionRows");
+            disposed.Task.IsCompleted.Should().BeFalse("disposal is still draining");
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        (await disposed.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue(TimeoutSourceOutlivesTheDrain);
+    }
+
+    [Fact]
+    public async Task A_failing_detached_drain_is_logged_and_never_replaces_the_status()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var release = new TaskCompletionSource();
+        _search.MatchRowsAsync(default!, default!, default!, default).ReturnsForAnyArgs(_ => DrainFails(release));
+        var logs = new RecordingLogger();
+
+        try
+        {
+            var act = () => Sut(new PatternQueryLimitOptions { MaxPartitionRows = 3 }, logs)
+                .MatchPattern(Req("A", partitionBy: ["Name"]), MakeStream().Writer, TestServerCallContext.Create())
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            (await act.Should().ThrowAsync<RpcException>()).Which.StatusCode.Should().Be(StatusCode.ResourceExhausted);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!logs.Entries.Any(IsTheDrainFailure) && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+        logs.Entries.Where(IsTheDrainFailure).Select(e => e.Level).Should().Equal(LogLevel.Warning);
+
+        static bool IsTheDrainFailure((LogLevel Level, Exception? Exception) e) =>
+            e.Exception is InvalidOperationException { Message: "drain failed" };
+
+        static async IAsyncEnumerable<IDictionary<string, object?>> DrainFails(TaskCompletionSource release)
         {
             try
             {
@@ -618,8 +665,60 @@ public sealed class MatchPatternGrpcServiceTests
             finally
             {
                 await release.Task;
-                disposed.SetResult();
+                throw new InvalidOperationException("drain failed");
             }
+        }
+    }
+
+    private sealed class RecordingLogger : ILogger<ObjectSearchGrpcService>
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(LogLevel Level, Exception? Exception)> _entries = new();
+
+        public IReadOnlyCollection<(LogLevel Level, Exception? Exception)> Entries => _entries.ToArray();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            _entries.Enqueue((logLevel, exception));
+    }
+
+    private const string TimeoutSourceOutlivesTheDrain =
+        "the request's timeout source must be disposed only after the drain, which may still use its token";
+
+    /// <summary>
+    /// A frozen-StarRocks stand-in: endless rows of one <c>Name</c> partition, one <c>Id</c> each, whose disposal
+    /// blocks until <paramref name="release"/> completes, then reports whether the source of <paramref name="ct"/>
+    /// (the request's timeout source) was still undisposed at that point.
+    /// </summary>
+    private static async IAsyncEnumerable<IDictionary<string, object?>> DrainBlockedRows(
+        [EnumeratorCancellation] CancellationToken ct, TaskCompletionSource release, TaskCompletionSource<bool> disposed)
+    {
+        try
+        {
+            for (var i = 0; ; i++)
+            {
+                await Task.Yield();
+                yield return Row(("Id", $"{i}"), ("Name", "a"));
+            }
+        }
+        finally
+        {
+            await release.Task;
+            bool tokenSourceAlive;
+            try
+            {
+                _ = ct.WaitHandle;                                          // throws once the owning source is disposed
+                tokenSourceAlive = true;
+            }
+            catch (ObjectDisposedException)
+            {
+                tokenSourceAlive = false;
+            }
+            disposed.SetResult(tokenSourceAlive);
         }
     }
 
