@@ -97,7 +97,7 @@ internal static class MatchRowsQueryBuilder
         return (sql, param);
     }
 
-    private static void RequireVisible(Dictionary<string, string> visible, string name, string slot)
+    private static void RequireVisible(IReadOnlyDictionary<string, string> visible, string name, string slot)
     {
         if (!visible.ContainsKey(name))
             throw new EngagementQueryTranslationException(

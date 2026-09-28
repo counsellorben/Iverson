@@ -37,9 +37,7 @@ internal static class PatternPartitionBatcher
             if (maxRowsScanned is { } max && scanned > max)
                 throw new PatternBudgetExceededException("MaxRowsScanned");
 
-            var key = partitionBy.Select(c => row.Columns[c]).ToArray();
-
-            if (currentPartition is null || !SameKey(currentKey!, key))
+            if (currentPartition is null || !SameKey(currentKey!, row.Columns, partitionBy))
             {
                 if (currentPartition is not null)
                 {
@@ -48,7 +46,7 @@ internal static class PatternPartitionBatcher
                 }
 
                 currentPartition = [];
-                currentKey = key;
+                currentKey = KeyOf(row.Columns, partitionBy);
             }
 
             currentPartition.Add(row);
@@ -66,10 +64,19 @@ internal static class PatternPartitionBatcher
             yield return new PatternBatch(pending);
     }
 
-    private static bool SameKey(object?[] a, object?[] b)
+    // The key is materialized once per partition, not per row: rows are compared against it in place.
+    private static object?[] KeyOf(IDictionary<string, object?> columns, IReadOnlyList<string> partitionBy)
     {
-        for (var i = 0; i < a.Length; i++)
-            if (!Equals(a[i], b[i]))
+        var key = new object?[partitionBy.Count];
+        for (var i = 0; i < key.Length; i++)
+            key[i] = columns[partitionBy[i]];
+        return key;
+    }
+
+    private static bool SameKey(object?[] key, IDictionary<string, object?> columns, IReadOnlyList<string> partitionBy)
+    {
+        for (var i = 0; i < key.Length; i++)
+            if (!Equals(key[i], columns[partitionBy[i]]))
                 return false;
         return true;
     }
