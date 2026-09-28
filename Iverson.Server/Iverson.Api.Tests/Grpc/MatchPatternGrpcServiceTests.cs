@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using FluentAssertions;
 using Grpc.Core;
 using Iverson.Api.Authorization;
@@ -512,19 +511,25 @@ public sealed class MatchPatternGrpcServiceTests
     }
 
     [Fact]
-    public async Task The_timeout_stops_an_output_heavy_run_within_about_one_output_row()
+    public async Task The_token_is_checked_before_each_output_row()
     {
         // CDR-8 P6's shape: one 10,000-row match, ALL_ROWS, 50 SUM measures — O(n²) measure work (576 s in full).
+        // Count-triggered rather than timed: the call token is cancelled as the 10th row is written, so the 11th
+        // row's check must stop the run with nothing more written, whatever the machine's load.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         SourceRows(Enumerable.Range(0, 10_000).Select(i => Row(("Id", $"{i:D5}"), ("Name", "a"), ("x", 1L))).ToArray());
         var measures = Enumerable.Range(0, 50).Select(i => ($"s{i}", "SUM(A.x)")).ToArray();
-        var watch = Stopwatch.StartNew();
+        using var deadline = new CancellationTokenSource();   // the call token the RPC links its timeout token to
+        var written = 0;
+        var writer = Substitute.For<IServerStreamWriter<MatchPatternResponse>>();
+        writer.WriteAsync(Arg.Do<MatchPatternResponse>(_ => { if (++written == 10) deadline.Cancel(); }), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
 
-        var status = await StatusOfAsync(Req("A+", measures: measures, rows: ProtoRowsPerMatch.AllRowsShowEmpty, limit: 10_000),
-            new PatternQueryLimitOptions { TimeoutSeconds = 1 });
+        var act = () => Sut().MatchPattern(Req("A+", measures: measures, rows: ProtoRowsPerMatch.AllRowsShowEmpty, limit: 10_000),
+            writer, TestServerCallContext.Create(deadline.Token)).WaitAsync(TimeSpan.FromSeconds(30));
 
-        status.Should().Be(StatusCode.DeadlineExceeded);
-        watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5), "the token is checked before each output row");
+        (await act.Should().ThrowAsync<RpcException>()).Which.StatusCode.Should().Be(StatusCode.DeadlineExceeded);
+        written.Should().Be(10, "the token is checked before each output row");
     }
 
     [Fact]
