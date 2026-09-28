@@ -122,6 +122,6 @@ public class EntityCoordinatorMatchPatternTests
         await foreach (var _ in coordinator.MatchPatternAsync(Query.MatchPattern<TestArticle>().Pattern("A"))) { }
 
         capturedHeaders.Should().NotBeNull();
-        capturedHeaders!.Get(ActingUserMetadata.MetadataKey)!.Value.Should().Be("Bearer bound-token");
+        capturedHeaders!.GetValue(ActingUserMetadata.MetadataKey).Should().Be("Bearer bound-token");
     }
 }

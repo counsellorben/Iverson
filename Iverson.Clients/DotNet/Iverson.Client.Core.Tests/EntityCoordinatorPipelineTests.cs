@@ -95,7 +95,7 @@ public class EntityCoordinatorPipelineTests
         await foreach (var _ in coordinator.PipelineAsync(Query.Pipeline<TestArticle>())) { }
 
         headers().Should().NotBeNull();
-        headers()!.Get(ActingUserMetadata.MetadataKey)!.Value.Should().Be("Bearer bound-token");
+        headers()!.GetValue(ActingUserMetadata.MetadataKey).Should().Be("Bearer bound-token");
     }
 
     [Fact]
@@ -110,6 +110,6 @@ public class EntityCoordinatorPipelineTests
         await foreach (var _ in coordinator.PipelineAsync<AuthorArticleCount>(Query.Pipeline<TestArticle>())) { }
 
         headers().Should().NotBeNull();
-        headers()!.Get(ActingUserMetadata.MetadataKey)!.Value.Should().Be("Bearer bound-token");
+        headers()!.GetValue(ActingUserMetadata.MetadataKey).Should().Be("Bearer bound-token");
     }
 }
