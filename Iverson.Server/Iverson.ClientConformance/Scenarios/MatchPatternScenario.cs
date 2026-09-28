@@ -357,8 +357,8 @@ public sealed class MatchPatternScenario(
 
             if (id is null)
                 problems.Add($"{where}: 'Id' is absent or not a UUID");
-            else
-                returned.Add(id.Value);
+            else if (!returned.Add(id.Value))
+                problems.Add($"{where}: returned more than once");
 
             if (row.Classifier != "A")
                 problems.Add($"{where}: classifier '{row.Classifier}', expected 'A'");

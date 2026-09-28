@@ -281,6 +281,22 @@ public class MatchPatternScenarioTests
     }
 
     [Fact]
+    public void Judge_SimilarityResultRepeatsASeededRow_Fails()
+    {
+        // "Exactly the seeded rows": a client that re-yields a buffered row must not pass on the
+        // strength of the Id set alone.
+        var assertions = JudgeSeeded(
+            GoodScalarStep(),
+            SimilarityStep(
+                SimilarityRow(D1, "pat-dotnet"), SimilarityRow(D2, "pat-dotnet"), SimilarityRow(D3, "pat-dotnet"),
+                SimilarityRow(P1, "pat-python"), SimilarityRow(P2, "pat-python"), SimilarityRow(P3, "pat-python"),
+                SimilarityRow(D1, "pat-dotnet")));
+
+        Similarity(assertions).Passed.Should().BeFalse();
+        Similarity(assertions).Detail.Should().Contain(D1.ToString()).And.Contain("more than once");
+    }
+
+    [Fact]
     public void Judge_SimilarityRowWithNoUsableId_Fails()
     {
         var noId = new
