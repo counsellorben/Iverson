@@ -564,6 +564,15 @@ public class MatchPatternScenarioTests
         MatchPatternScenario.ProjectionReady([], new HashSet<Guid> { Stranger }).Should().BeFalse();
     }
 
+    [Fact]
+    public void ProbeRequest_AsksForFarFewerRowsThanTheServersDefaultOutputCap()
+    {
+        // The marker filter bounds the probe to this run's rows (at most 15). A limit at the
+        // server's default MaxOutputRows (10,000) is refused with InvalidArgument by any
+        // deployment that lowers the cap, failing the probe on every attempt.
+        MatchPatternScenario.ProbeRequest("run-marker").Limit.Should().Be(100);
+    }
+
     // ── RunAsync plumbing and the read-phase grading seam ─────────────────────────────────────
 
     private static DriverContext Context() => new(

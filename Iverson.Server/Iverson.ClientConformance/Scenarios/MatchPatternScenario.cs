@@ -532,30 +532,8 @@ public sealed class MatchPatternScenario(
     /// </summary>
     private async Task<IReadOnlySet<Guid>> ScoreableIdsAsync(string marker, string actingToken, CancellationToken ct)
     {
-        var request = new MatchPatternRequest
-        {
-            TypeName = TypeName,
-            Source = PatternRowSource.TypeRows,
-            Where =
-            {
-                new SearchClause
-                {
-                    Property = MarkerProperty,
-                    Operator = SearchOperator.Equals,
-                    ClauseType = SearchClauseType.Filter,
-                    Value = new SearchValue { StringVal = marker },
-                },
-            },
-            OrderBy = { new SearchSort { Property = SeqProperty } },
-            Pattern = "A",
-            Define = { new NamedExpr { Name = "A", Expr = SimilarityExpression + " IS NOT NULL" } },
-            Measures = { new NamedExpr { Name = "id", Expr = "FIRST(A.Id)" } },
-            RowsPerMatch = RowsPerMatch.OneRow,
-            Limit = 10_000,
-        };
-
         var headers = new Metadata { { "x-acting-user-authorization", $"Bearer {actingToken}" } };
-        using var call = search.MatchPattern(request, headers, cancellationToken: ct);
+        using var call = search.MatchPattern(ProbeRequest(marker), headers, cancellationToken: ct);
 
         var ids = new HashSet<Guid>();
         while (await call.ResponseStream.MoveNext(ct))
@@ -569,6 +547,34 @@ public sealed class MatchPatternScenario(
 
         return ids;
     }
+
+    /// <summary>
+    /// The projection probe's request. The marker filter bounds it to the rows this run wrote, so
+    /// its <c>Limit</c> only has to cover those, and must stay well under the server's
+    /// <c>MaxOutputRows</c> cap: a limit above a deployment's cap is refused with
+    /// <c>InvalidArgument</c>, and the probe would then fail on every attempt.
+    /// </summary>
+    internal static MatchPatternRequest ProbeRequest(string marker) => new()
+    {
+        TypeName = TypeName,
+        Source = PatternRowSource.TypeRows,
+        Where =
+        {
+            new SearchClause
+            {
+                Property = MarkerProperty,
+                Operator = SearchOperator.Equals,
+                ClauseType = SearchClauseType.Filter,
+                Value = new SearchValue { StringVal = marker },
+            },
+        },
+        OrderBy = { new SearchSort { Property = SeqProperty } },
+        Pattern = "A",
+        Define = { new NamedExpr { Name = "A", Expr = SimilarityExpression + " IS NOT NULL" } },
+        Measures = { new NamedExpr { Name = "id", Expr = "FIRST(A.Id)" } },
+        RowsPerMatch = RowsPerMatch.OneRow,
+        Limit = 100,
+    };
 
     // ── register-phase descriptor capture ────────────────────────────────────────────────────
 
