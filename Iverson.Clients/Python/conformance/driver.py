@@ -37,10 +37,12 @@ from iverson_client.generated import object_mapping_pb2_grpc as mapping_grpc
 from iverson_client.search import QueryBuilder, SearchOperator
 
 from iverson_client.vector_search import chunks as chunks_builder, similar as similar_builder
+from iverson_client.match_pattern import match_pattern as match_pattern_builder
+from iverson_client.generated import object_search_pb2 as search_pb
 
 from conformance.models import (
-    ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, PyArticle, PyAuthor, PyBadArticle, PyTag,
-    QueryDoc, S11ModelPython, S12InheritedPython, SharedArticle, SharedAuthor, VectorDoc,
+    ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, PatternDoc, PyArticle, PyAuthor, PyBadArticle,
+    PyTag, QueryDoc, S11ModelPython, S12InheritedPython, SharedArticle, SharedAuthor, VectorDoc,
 )
 
 LANGUAGE = "python"
@@ -63,9 +65,12 @@ LANGUAGE = "python"
 # and instead inherits "BAAI/bge-base-en-v1.5" from its field-less parent S12DeclaredPython, and
 # reports the descriptor it sent so the orchestrator can assert the inherited model landed on the
 # embedding/chunk properties. No write/read phase.
+# match-pattern (S13) is register-phase-NEVER for this driver in a harness run: only .NET registers
+# PatternDoc (register-once rule). This driver seeds three rows and then issues a scalar row pattern
+# match and a SIMILARITY-backed one through the client library's own MatchPatternBuilder.
 SCENARIOS = {
     "crud-roundtrip", "naming-rejected", "interop", "schema-catalog", "query", "vector-search",
-    "identity", "error-contract", "model-rejected", "model-inherited",
+    "identity", "error-contract", "model-rejected", "model-inherited", "match-pattern",
 }
 
 # S8 identity: the tenant value every driver stamps on the IdentityDoc row it creates —
@@ -83,6 +88,10 @@ VECTOR_DOC_LABEL = f"vec-{LANGUAGE}"
 # turn the orchestrator's exact set comparisons into prefix comparisons.
 VECTOR_QUERY_TEXT = "a short note about vector search conformance"
 VECTOR_TOP_K = 50
+
+# The Label every PatternDoc row this driver writes carries: the PARTITION BY column, so this
+# language's three rows form one partition. Must stay in step with MatchPatternScenario.LabelFor.
+PATTERN_DOC_LABEL = f"pat-{LANGUAGE}"
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -437,6 +446,17 @@ def catalogue_to_json(types: List[Any]) -> dict:
     }
 
 
+def match_rows_to_json(rows: List[Any]) -> dict:
+    """``{"rows": [{"matchNumber", "classifier", "data"}, ...]}`` in stream order, every
+    ``MatchPatternResult`` copied verbatim — ``data``'s keys are the server's, untouched."""
+    return {
+        "rows": [
+            {"matchNumber": row.match_number, "classifier": row.classifier, "data": _json_safe(row.data)}
+            for row in rows
+        ]
+    }
+
+
 def main(argv: List[str]) -> int:
     args = Args(argv)
 
@@ -690,6 +710,93 @@ def main(argv: List[str]) -> int:
             ))
         except Exception as exc:  # noqa: BLE001
             steps.append(StepResult("search_chunks_by_marker", False, error=describe(exc)))
+
+    elif phase == "register" and scenario == "match-pattern":
+        # S13 match-pattern: only the .NET driver ever runs this phase (register-once rule), so this
+        # branch exists for completeness and is never reached in a harness run — kept so a hand-run
+        # of this driver behaves the same as the others rather than falling into crud-roundtrip's.
+        error: Optional[str] = None
+        try:
+            registrar = SchemaRegistrar(capture, PatternDoc)
+            registrar.register_all()
+        except Exception as exc:  # noqa: BLE001 - reported as data, not raised
+            error = describe(exc)
+
+        descriptor_json = capture.select("PatternDoc")
+        steps.append(StepResult(
+            name="register_pattern_doc",
+            ok=error is None,
+            error=error,
+            type_descriptor=json.loads(descriptor_json) if descriptor_json else None,
+        ))
+
+    elif phase == "write" and scenario == "match-pattern":
+        # Three rows, seq 1..3, stamped with the run's marker and this language's label. Every key
+        # persist() returned is reported, also when a later row failed — it is the orchestrator's
+        # expected-set accounting for the similarity match.
+        written_keys: Dict[str, str] = {}
+        written: List[dict] = []
+        try:
+            for seq in (1, 2, 3):
+                entity = PatternDoc()
+                entity.tenant_id = tenant
+                entity.owner_id = owner_id
+                entity.marker = id_prefix
+                entity.label = PATTERN_DOC_LABEL
+                entity.seq = seq
+                entity.title = f"a note about row pattern matching, part {seq}"
+                written_key = coordinator(PatternDoc).persist(entity)
+                if written_key is not None:
+                    written_keys[f"pattern_doc_{seq}"] = str(written_key)
+                written.append(entity_to_dict(entity))
+            result = StepResult("write_pattern_docs", True, entity=written)
+        except Exception as exc:  # noqa: BLE001
+            result = StepResult("write_pattern_docs", False, error=describe(exc))
+        if written_keys:
+            result.keys = written_keys
+        steps.append(result)
+
+    elif phase == "read" and scenario == "match-pattern":
+        # Both requests are built with the client library's own MatchPatternBuilder and executed
+        # through EntityCoordinator.match_pattern, never through the generated stub. Every output
+        # row is reported in stream order; the orchestrator decides what they mean.
+        try:
+            request = (
+                match_pattern_builder("PatternDoc")
+                .where("Marker", SearchOperator.EQUALS, id_prefix)
+                .partition_by("Label")
+                .order_by("Seq")
+                .pattern("A B+")
+                .define("B", "Seq > PREV(Seq)")
+                .measure("n", "COUNT(*)")
+                .measure("first_seq", "FIRST(A.Seq)")
+                .measure("last_seq", "LAST(B.Seq)")
+                .rows_per_match(search_pb.ONE_ROW)
+                .limit(100)
+                .build()
+            )
+            rows = coordinator(PatternDoc).match_pattern(request)
+            steps.append(StepResult("match_pattern_scalar", True, entity=match_rows_to_json(rows)))
+        except Exception as exc:  # noqa: BLE001
+            steps.append(StepResult("match_pattern_scalar", False, error=describe(exc)))
+
+        try:
+            request = (
+                match_pattern_builder("PatternDoc")
+                .where("Marker", SearchOperator.EQUALS, id_prefix)
+                .partition_by("Label")
+                .order_by("Seq")
+                .pattern("A+")
+                .define("A", "SIMILARITY(Title, 'a note about row pattern matching') IS NOT NULL")
+                .measure("s", "SIMILARITY(Title, 'a note about row pattern matching')")
+                .rows_per_match(search_pb.ALL_ROWS_SHOW_EMPTY)
+                .limit(100)
+                .build()
+            )
+            rows = coordinator(PatternDoc).match_pattern(request)
+            steps.append(StepResult("match_pattern_similarity", True, entity=match_rows_to_json(rows)))
+        except Exception as exc:  # noqa: BLE001
+            steps.append(StepResult("match_pattern_similarity", False, error=describe(exc)))
 
     elif phase == "register" and scenario == "error-contract":
         # Only the .NET driver ever runs this phase for error-contract (register-once rule); this

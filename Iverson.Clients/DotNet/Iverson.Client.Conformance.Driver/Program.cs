@@ -63,6 +63,10 @@ const string ModelRejectedScenario = "model-rejected";
 // sent so the orchestrator can assert the inherited model landed on the embedding/chunk
 // properties. No write/read phase.
 const string ModelInheritedScenario = "model-inherited";
+// match-pattern (S13): register (this driver only, register-once), write, read. Seeds three
+// PatternDoc rows (Seq 1..3) carrying the run's marker, then issues a scalar row pattern match and
+// a SIMILARITY-backed one through the client library's own MatchPatternBuilder.
+const string MatchPatternScenario = "match-pattern";
 // The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
 // similarity comparison grades on — SearchSimilar streams the Qdrant payload, whose row key lives
 // under a reserved "key" entry the typed projection does not bind to Id. Must stay in step with
@@ -74,9 +78,14 @@ const string VectorDocLabel = $"vec-{Language}";
 // orchestrator's exact set comparisons into prefix comparisons.
 const string VectorQueryText = "a short note about vector search conformance";
 const uint VectorTopK = 50;
+// The Label every PatternDoc row this driver writes carries: the PARTITION BY column, so this
+// language's three rows form one partition. Must stay in step with
+// Iverson.ClientConformance/Scenarios/MatchPatternScenario.cs's LabelFor.
+const string PatternDocLabel = $"pat-{Language}";
 var supportedScenarios = new[]
     { CrudRoundtripScenario, InteropScenario, SchemaCatalogScenario, QueryScenario, VectorSearchScenario,
-      IdentityScenario, ErrorContractScenario, ModelRejectedScenario, ModelInheritedScenario };
+      IdentityScenario, ErrorContractScenario, ModelRejectedScenario, ModelInheritedScenario,
+      MatchPatternScenario };
 
 var args_ = Args.Parse(args);
 
@@ -167,6 +176,10 @@ else if (scenario == ModelRejectedScenario)
 else if (scenario == ModelInheritedScenario)
 {
     await RunModelInheritedAsync();
+}
+else if (scenario == MatchPatternScenario)
+{
+    await RunMatchPatternAsync();
 }
 else
 {
@@ -528,6 +541,121 @@ async Task RunVectorSearchAsync()
             await Console.Error.WriteLineAsync($"unknown phase '{phase}' for scenario '{scenario}'");
             Environment.Exit(2);
             break;
+    }
+}
+
+// ── S13 match-pattern ────────────────────────────────────────────────────────────────────────
+async Task RunMatchPatternAsync()
+{
+    switch (phase)
+    {
+        case "register":
+        {
+            // Only the .NET driver ever runs this phase for match-pattern (register-once rule; see
+            // Scenarios/MatchPatternScenario.cs). Registered WITHOUT an authorization block — the
+            // orchestrator re-registers it with one before any driver's write phase.
+            capture.OnlySendTypeName = nameof(PatternDoc);
+            var registerOutcome = await Run(async () =>
+            {
+                var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+                await registrar.RegisterAllAsync();
+            });
+            capture.OnlySendTypeName = null;
+
+            steps.Add(new StepResult(
+                "register_pattern_doc",
+                Ok: registerOutcome is null,
+                Error: registerOutcome,
+                TypeDescriptor: Json.Element(capture.Select(nameof(PatternDoc)))));
+            break;
+        }
+
+        case "write":
+        {
+            // Three rows, Seq 1..3, stamped with the run's marker and this language's label. Each
+            // server-returned key is reported (via `always`, so also when a later row failed) — it
+            // is the orchestrator's expected-set accounting for the similarity match, and a row
+            // seeded but never reported would silently shrink what every language is graded against.
+            var keys = new Dictionary<string, string>();
+            var written = new List<PatternDoc?>();
+            await Step("write_pattern_docs",
+                async result =>
+                {
+                    for (var seq = 1; seq <= 3; seq++)
+                    {
+                        var doc = await Coordinator<PatternDoc>().PostMappedAsync(new PatternDoc
+                        {
+                            TenantId = tenant,
+                            OwnerId = ownerId,
+                            Marker = idPrefix,
+                            Label = PatternDocLabel,
+                            Seq = seq,
+                            Title = $"a note about row pattern matching, part {seq}",
+                        });
+                        if (doc is not null) keys[$"pattern_doc_{seq}"] = doc.Id.ToString();
+                        written.Add(doc);
+                    }
+                    return result with { Entity = Json.Element(written) };
+                },
+                result => keys.Count > 0 ? result with { Keys = keys } : result);
+            break;
+        }
+
+        case "read":
+        {
+            // Both requests are built with the client library's own builder API
+            // (Query.MatchPattern) and executed through EntityCoordinator.MatchPatternAsync, never
+            // through the generated stub. Every output row is reported in stream order with its
+            // data keys verbatim; the orchestrator decides what they mean.
+            await Step("match_pattern_scalar", async result =>
+            {
+                var pattern = Query.MatchPattern<PatternDoc>()
+                    .Where("Marker", SearchOperator.Equals, idPrefix)
+                    .PartitionBy("Label")
+                    .OrderBy("Seq")
+                    .Pattern("A B+")
+                    .Define("B", "Seq > PREV(Seq)")
+                    .Measure("n", "COUNT(*)")
+                    .Measure("first_seq", "FIRST(A.Seq)")
+                    .Measure("last_seq", "LAST(B.Seq)")
+                    .RowsPerMatch(RowsPerMatch.OneRow)
+                    .Limit(100);
+
+                return result with { Entity = await MatchRowsAsync(pattern) };
+            });
+
+            await Step("match_pattern_similarity", async result =>
+            {
+                var pattern = Query.MatchPattern<PatternDoc>()
+                    .Where("Marker", SearchOperator.Equals, idPrefix)
+                    .PartitionBy("Label")
+                    .OrderBy("Seq")
+                    .Pattern("A+")
+                    .Define("A", "SIMILARITY(Title, 'a note about row pattern matching') IS NOT NULL")
+                    .Measure("s", "SIMILARITY(Title, 'a note about row pattern matching')")
+                    .RowsPerMatch(RowsPerMatch.AllRowsShowEmpty)
+                    .Limit(100);
+
+                return result with { Entity = await MatchRowsAsync(pattern) };
+            });
+            break;
+        }
+
+        default:
+            await Console.Error.WriteLineAsync($"unknown phase '{phase}' for scenario '{scenario}'");
+            Environment.Exit(2);
+            break;
+    }
+
+    // {"rows":[{"matchNumber":…,"classifier":…,"data":{…}}, …]} in stream order. The anonymous
+    // members are spelled camelCase because Json.Element keeps declared names; data's keys are
+    // the server's, untouched.
+    async Task<JsonElement?> MatchRowsAsync(MatchPatternBuilder pattern)
+    {
+        var rows = new List<object>();
+        await foreach (var row in Coordinator<PatternDoc>().MatchPatternAsync(pattern))
+            rows.Add(new { matchNumber = row.MatchNumber, classifier = row.Classifier, data = row.Data });
+        return Json.Element(new { rows });
     }
 }
 

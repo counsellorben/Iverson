@@ -140,6 +140,28 @@ class VectorDoc:
 
 
 @iverson_entity
+class PatternDoc:
+    """S13 ``match-pattern``'s subject type. Every one of the five drivers declares the same type
+    name and shape; only the .NET driver ever registers it (register-once rule, as for
+    ``VectorDoc``), and every driver writes three rows into it and then matches over them.
+
+    Deliberately relation-free and chunk-free: both requests read TYPE_ROWS. ``marker`` carries the
+    run's ``--id-prefix`` and is metadata exactly as on ``VectorDoc``; ``label`` is the row's
+    per-language identity and the PARTITION BY column, and its spelling must match
+    ``MatchPatternScenario.LabelFor``; ``seq`` is the ORDER BY column that
+    ``DEFINE B AS Seq > PREV(Seq)`` compares; ``title`` is the embedding source the similarity
+    request's ``SIMILARITY(Title, ...)`` scores."""
+
+    id: uuid.UUID = iverson_key()
+    tenant_id: str = None
+    owner_id: str = None
+    marker: str = iverson_metadata()
+    label: str = None
+    seq: int = None
+    title: str = iverson_embedding()
+
+
+@iverson_entity
 class IdentityDoc:
     """S8 ``identity``'s subject type. Every one of the five drivers declares the same type name and
     shape; only the .NET driver ever registers it (register-once rule), and every driver writes one

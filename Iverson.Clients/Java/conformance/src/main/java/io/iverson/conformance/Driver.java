@@ -16,11 +16,14 @@ import io.iverson.conformance.models.JavaTag;
 import io.iverson.conformance.models.ErrorDoc;
 import io.iverson.conformance.models.ErrorUnregisteredDoc;
 import io.iverson.conformance.models.IdentityDoc;
+import io.iverson.conformance.models.PatternDoc;
 import io.iverson.conformance.models.QueryDoc;
 import io.iverson.client.search.AggregateBuilder;
+import io.iverson.client.search.MatchPatternBuilder;
 import io.iverson.client.search.Query;
 import io.iverson.client.search.QueryBuilder;
 import iverson.ObjectSearch;
+import iverson.ObjectSearch.RowsPerMatch;
 import iverson.ObjectSearch.SearchOperator;
 import io.iverson.conformance.models.S11ModelJava;
 import io.iverson.conformance.models.S12InheritedJava;
@@ -98,10 +101,14 @@ public final class Driver {
     // orchestrator can assert the inherited model landed on the embedding/chunk properties. No
     // write/read phase.
     private static final String MODEL_INHERITED_SCENARIO = "model-inherited";
+    // match-pattern (S13) is register-phase-NEVER for this driver: only .NET registers PatternDoc
+    // (register-once rule). This driver seeds three rows and then issues a scalar row pattern match
+    // and a SIMILARITY-backed one through the client library's own MatchPatternBuilder.
+    private static final String MATCH_PATTERN_SCENARIO = "match-pattern";
     private static final java.util.Set<String> SUPPORTED_SCENARIOS =
         java.util.Set.of(CRUD_ROUNDTRIP_SCENARIO, INTEROP_SCENARIO, SCHEMA_CATALOG_SCENARIO,
             QUERY_SCENARIO, VECTOR_SEARCH_SCENARIO, IDENTITY_SCENARIO, ERROR_CONTRACT_SCENARIO,
-            MODEL_REJECTED_SCENARIO, MODEL_INHERITED_SCENARIO);
+            MODEL_REJECTED_SCENARIO, MODEL_INHERITED_SCENARIO, MATCH_PATTERN_SCENARIO);
 
     /**
      * The tenant value every driver stamps on the IdentityDoc row it creates: deliberately NOT the
@@ -124,6 +131,12 @@ public final class Driver {
      */
     private static final String VECTOR_QUERY_TEXT = "a short note about vector search conformance";
     private static final int VECTOR_TOP_K = 50;
+    /**
+     * The Label every PatternDoc row this driver writes carries: the PARTITION BY column, so this
+     * language's three rows form one partition. Must stay in step with
+     * {@code MatchPatternScenario.LabelFor}.
+     */
+    private static final String PATTERN_DOC_LABEL = "pat-" + LANGUAGE;
     private static final Gson GSON = new Gson();
 
     private Driver() {}
@@ -196,6 +209,16 @@ public final class Driver {
                 switch (phase) {
                     case "write" -> doVectorSearchWrite(client, tenant, ownerId, idPrefix, steps);
                     case "read" -> doVectorSearchRead(client, idPrefix, steps);
+                    default -> {
+                        System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
+                        System.exit(2);
+                        return;
+                    }
+                }
+            } else if (MATCH_PATTERN_SCENARIO.equals(scenario)) {
+                switch (phase) {
+                    case "write" -> doMatchPatternWrite(client, tenant, ownerId, idPrefix, steps);
+                    case "read" -> doMatchPatternRead(client, idPrefix, steps);
                     default -> {
                         System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
                         System.exit(2);
@@ -745,6 +768,87 @@ public final class Driver {
             reported.put("parentKeys", parentKeys);
             r.entity = GSON.toJsonTree(reported);
         }));
+    }
+
+    // ── S13 match-pattern ────────────────────────────────────────────────────────────────────
+
+    /**
+     * Seeds three {@code PatternDoc} rows, seq 1..3, stamped with the run's marker and this
+     * language's label. Every key {@code persist} returned is reported, also when a later row
+     * failed — it is the orchestrator's expected-set accounting for the similarity match.
+     */
+    private static void doMatchPatternWrite(
+            IversonClient client, String tenant, String ownerId, String idPrefix, List<StepResult> steps) {
+        Map<String, String> docKeys = new java.util.LinkedHashMap<>();
+        StepResult result = step("write_pattern_docs", r -> {
+            for (int seq = 1; seq <= 3; seq++) {
+                PatternDoc doc = new PatternDoc();
+                doc.setTenantId(tenant);
+                doc.setOwnerId(ownerId);
+                doc.setMarker(idPrefix);
+                doc.setLabel(PATTERN_DOC_LABEL);
+                doc.setSeq(seq);
+                doc.setTitle("a note about row pattern matching, part " + seq);
+                String key = new EntityCoordinator<>(client, PatternDoc.class).persist(doc);
+                if (key != null) docKeys.put("pattern_doc_" + seq, key);
+            }
+        });
+        if (!docKeys.isEmpty()) result.keys = docKeys;
+        steps.add(result);
+    }
+
+    /**
+     * Issues the scalar match and the similarity match, both built with the client library's own
+     * {@code Query.matchPattern} builder and executed through {@code EntityCoordinator.matchPattern},
+     * never through a raw generated stub. Every output row is reported in stream order; the
+     * orchestrator decides what they mean.
+     */
+    private static void doMatchPatternRead(IversonClient client, String idPrefix, List<StepResult> steps) {
+        steps.add(step("match_pattern_scalar", r -> {
+            MatchPatternBuilder pattern = Query.matchPattern("PatternDoc")
+                .where("Marker", SearchOperator.EQUALS, idPrefix)
+                .partitionBy("Label")
+                .orderBy("Seq")
+                .pattern("A B+")
+                .define("B", "Seq > PREV(Seq)")
+                .measure("n", "COUNT(*)")
+                .measure("first_seq", "FIRST(A.Seq)")
+                .measure("last_seq", "LAST(B.Seq)")
+                .rowsPerMatch(RowsPerMatch.ONE_ROW)
+                .limit(100);
+            r.entity = matchRowsReport(new EntityCoordinator<>(client, PatternDoc.class).matchPattern(pattern));
+        }));
+
+        steps.add(step("match_pattern_similarity", r -> {
+            MatchPatternBuilder pattern = Query.matchPattern("PatternDoc")
+                .where("Marker", SearchOperator.EQUALS, idPrefix)
+                .partitionBy("Label")
+                .orderBy("Seq")
+                .pattern("A+")
+                .define("A", "SIMILARITY(Title, 'a note about row pattern matching') IS NOT NULL")
+                .measure("s", "SIMILARITY(Title, 'a note about row pattern matching')")
+                .rowsPerMatch(RowsPerMatch.ALL_ROWS_SHOW_EMPTY)
+                .limit(100);
+            r.entity = matchRowsReport(new EntityCoordinator<>(client, PatternDoc.class).matchPattern(pattern));
+        }));
+    }
+
+    /**
+     * {@code {"rows":[{"matchNumber","classifier","data"}, ...]}} in stream order, every
+     * {@code MatchPatternResult} copied verbatim — {@code data}'s keys are the server's, untouched.
+     */
+    private static JsonElement matchRowsReport(List<EntityCoordinator.MatchPatternResult> rows) {
+        List<Map<String, Object>> reported = new ArrayList<>();
+        for (EntityCoordinator.MatchPatternResult row : rows) {
+            Map<String, Object> entry = new java.util.LinkedHashMap<>();
+            entry.put("matchNumber", row.matchNumber());
+            entry.put("classifier", row.classifier());
+            entry.put("data", row.data());
+            reported.add(entry);
+        }
+        Map<String, Object> document = new java.util.LinkedHashMap<>();
+        document.put("rows", reported);
+        return GSON.toJsonTree(document);
     }
 
     // ── write ────────────────────────────────────────────────────────────────────────────────
