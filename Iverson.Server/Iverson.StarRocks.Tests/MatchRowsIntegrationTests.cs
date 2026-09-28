@@ -273,9 +273,17 @@ public sealed class MatchRowsIntegrationTests
         }
         finally
         {
-            await _fx.UnpauseAsync();
+            try
+            {
+                await _fx.UnpauseAsync();
+            }
+            finally
+            {
+                // Awaited (bounded) on every path, the failed assertion's included, so the reader's release never
+                // finishes unobserved on the shared container while the next test runs.
+                await dispose.WaitAsync(TimeSpan.FromSeconds(90));
+            }
         }
-        await dispose.WaitAsync(TimeSpan.FromSeconds(90));
     }
 
     [Fact]
