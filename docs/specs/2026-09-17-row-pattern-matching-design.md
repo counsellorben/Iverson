@@ -531,9 +531,18 @@ satisfied. This is accepted, deterministic behaviour and is not flagged in the r
   unroll, so `MaxProgramInstructions` rejects with `InvalidArgument` some patterns well inside
   `MaxPatternLength`: at the default, `PERMUTE(A, B, C, D, E, F)` (5,759 instructions), `A{10000}`
   and `(A{0,100}){0,100}`.
-- Open, decided by the §9.3 pause test: if StarRocks stops responding after a request has written
-  `limit` rows, disposing the reader drains until StarRocks answers again, and no MySqlConnector
-  call bounds it, so the request does not complete until then.
+- Decided by the §9.3 pause test: if StarRocks stops responding while a reader still has unread
+  rows, disposing the reader drains until StarRocks answers again, and no MySqlConnector call
+  bounds it. The RPC therefore never awaits the row source's disposal: after `limit`, and on any
+  error raised above the store (the batcher's budgets, `define`/`measures` evaluation, scoring),
+  it returns its status and the drain finishes in the background, logged if it fails, with the
+  request's timeout token disposed only after the drain ends. A drained connection is held until
+  then. One narrow case still drains inline: a failure inside the store itself while the
+  connection is open with rows unread (the token cancelled while rows are already buffered on the
+  client, or a value-conversion error mid-row) runs the store's own release before the exception
+  leaves it, so against a StarRocks frozen at that moment the status waits for the drain. A row
+  read that times out is not this case: the timeout closes the socket, and the release then does
+  no network I/O.
 - The `CHUNKS` source scans the filtered chunk set twice (the phase-1 parent list, then the batched
   phase-2 reads) to keep memory bounded.
 - `NaN` from a zero-magnitude vector is kept (§2): `NOT`/`<>` predicates over it with a non-`NULL`
