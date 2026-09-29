@@ -97,7 +97,7 @@ A dialogue is predicted positive when it yields at least one match.
   2. **Probe S (sanity).** `where DialogueId = <the first test dialogue>`, pattern `A`, `A AS TurnIndex = 0`, ONE ROW PER MATCH must return exactly one row, for that dialogue.
   3. **Probe T (timing).** One ordered-semantic call over the whole **dev** split (7,374 rows, the same size as test), with a fixed placeholder θ of 0.5 for each intent, finishes under the server's 30 s timeout. The gate document records the placeholder. Similarity scoring, which dominates the cost, does not depend on θ (§Verified assumptions 18). If it does not, stop and return to the user; never raise a limit to make it fit.
 - **Phase 1:** calibrate θ on dev and freeze `theta.json`.
-- **Phase 2:** score the 12 pairs × 3 arms on test (36 calls), then compute the metrics, the bootstrap and the gate.
+- **Phase 2:** score the 12 pairs × 3 arms on test (36 calls), and run one single-intent call per intent on test (4 calls, in the calibration shape: pattern `A+`, `A AS TRUE`, ALL ROWS, `where Split = 'test'`, `limit` 10,000, measure `s = SIMILARITY(Utterance, 'dX')`). That makes 40 calls. Then compute the metrics, the single-intent F1 at the frozen θ, the bootstrap and the gate.
 
 ## Deliverables
 
@@ -106,7 +106,7 @@ A dialogue is predicted positive when it yields at least one match.
   - onset derivation, including same-turn onsets and an empty-state frame, which is not an onset;
   - gold labels for all 12 pairs;
   - the keyword flags;
-  - request building for all 3 arms, with the exact pattern, define and filter strings;
+  - request building for all 3 arms, with the exact pattern, define and filter strings, and for the single-intent calls;
   - the θ grid and its tie rule;
   - precision, recall, F1 and macro-F1;
   - the bootstrap with a fixed seed;
@@ -158,3 +158,4 @@ A dialogue is predicted positive when it yields at least one match.
 | 16 | ONE ROW PER MATCH output carries `DialogueId` (the partition column), so each match maps back to its dialogue. | CDR round 1 engine probe (A5). |
 | 17 | The dev θ argmax falls inside the p50–p99 grid for all four intents. | CDR round 1 R10, over the full dev split: p74–p91. |
 | 18 | Similarity scoring is independent of θ. Each batch is fully scored before the matcher runs, so a placeholder θ gives representative timing. | `ObjectSearchGrpcService.MatchPattern.cs:126` (`ScoreBatchAsync`) runs before `compiled.Run` at `:132`. |
+| 19 | A non-empty find frame marks where the customer starts asking about X, to within the gate's tolerance. No onset comes from carried-over slot values alone. 128 test onsets lag an explicit mention by one turn or more, but moving them back shifts the dev gate Δ by at most 0.0022 (+0.1345 against +0.1323). | CDR round 2, R1 and R1a (`r2_carry.py`, `r2_lag.py`, `r2_lag2.py` over the full splits). |
