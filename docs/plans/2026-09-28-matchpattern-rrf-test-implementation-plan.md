@@ -2176,6 +2176,7 @@ K=$(command grep '^QDRANT__SERVICE__API_KEY=' "$ENVF" | cut -d= -f2-)
 counts() { for c in benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk; do
   curl -sf -H "api-key: $K" "http://localhost:6333/collections/$c" | python3 -c 'import sys,json; r=json.load(sys.stdin)["result"]; print(r["points_count"], sorted(r["config"]["params"]["vectors"]))'; done; }
 source /home/ben/iverson-benchmark-data/bench-env.sh
+export IVERSON_CLIENT_SECRET="$(command grep '^IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET=' "$ENVF" | cut -d= -f2-)"
 export IVERSON_ACTING_USER_PASSWORD="$(command grep '^IVERSON_SMOKE_TEST_PASSWORD=' "$ENVF" | cut -d= -f2-)"
 export IVERSON_ACTING_USER_BYPASS_PASSWORD="$(command grep '^IVERSON_BYPASS_PASSWORD=' "$ENVF" | cut -d= -f2-)"
 EOF
