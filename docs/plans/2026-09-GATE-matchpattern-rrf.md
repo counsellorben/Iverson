@@ -18,7 +18,7 @@ Every number below comes from a file under
 | Reading | Verdict | Basis |
 |---|---|---|
 | 1. RRF inside one request | **Partial** | `Iverson.Server/Iverson.Patterns.Tests/RrfExpressivenessTests.cs` (commit `72685d0a`) pins four facts: (1) `The_order_by_rrf_term_is_one_over_sixty_plus_the_running_count`: `1.0 / (60 + RUNNING COUNT(*))` under ALL ROWS yields `1/61, 1/62, …` in `order_by` order; (2) `Final_count_minus_running_count_plus_one_is_the_reverse_rank`: `FINAL COUNT(*) - RUNNING COUNT(*) + 1` is the reverse rank; (3) `Similarity_over_its_final_max_normalises_the_best_row_to_one`: `SIMILARITY(...) / FINAL MAX(SIMILARITY(...))` normalises scores to 1, which is score fusion, not RRF; (4) `A_rank_by_similarity_needs_a_correlated_count_which_compile_rejects`: the correlated rank-by-similarity count throws `PatternValidationException` ("must match"). The `order_by` leg of RRF is expressible; a rank by `SIMILARITY` is not. |
-| 2. RRF over its output | **NO-GO.** Feasible **client-side only** | The benchmark below. No server-side fusion exists. All six arms are neither DEGENERATE nor INERT, and every one **lowers** nDCG@10 against the re-recorded baseline, significantly after Holm correction (Δ −0.0330 / −0.0148 / −0.0050 at p50 / p75 / p90; Holm-adjusted p 0.0012 / 0.0012 / 0.0480). No arm improves. **Non-default limits:** it ran with `Patterns__Limits__MaxExpressionLength=25000` (default 1,000) and `Patterns__Limits__MaxOutputRows=18623` (default 10,000). On default limits, **437 of 672** queries (65.0%) could not be issued at all (section 3). |
+| 2. RRF over its output | **NO-GO.** Feasible **client-side only** | The benchmark below. No server-side fusion exists. All six arms are neither DEGENERATE nor INERT, and every one **lowers** nDCG@10 against the re-recorded baseline, significantly after Holm correction (Δ −0.0330 / −0.0148 / −0.0050 at p50 / p75 / p90; Holm-adjusted p 0.0012 / 0.0012 / 0.0480). No arm improves. **Non-default limits:** it ran with `Patterns__Limits__MaxExpressionLength=25000` (default 1,000) and `Patterns__Limits__MaxOutputRows=18623` (default 10,000). On default limits, **437 of 672** queries (65.0%) could not be issued at all (section 3). The whole-corpus shape used here is also unavailable on default limits. Its `limit` 18,623 exceeds the default `MaxOutputRows` 10,000, which is rejected with `InvalidArgument` (`ObjectSearchGrpcService.MatchPattern.cs:294-295`). A whole-corpus calibration call also emits 18,622 rows. A default-configured caller therefore needs per-candidate calls, projected at 12.2 h for calibration and 12.4 h per θ pass. |
 | 3. Matching over an RRF order | **Not possible today** | `order_by` names stored properties only; an RRF order exists only on the unmerged `hybrid-rrf-search` branch. The two halves are pinned by existing tests (deviation 1): `MatchRowsQueryBuilderTests.Every_slot_rejects_an_unknown_hidden_tenant_or_bytes_column` (`Iverson.StarRocks.Tests/MatchRowsQueryBuilderTests.cs:86`), where the StarRocks builder rejects an `order_by` column the type does not have, and `MatchPatternGrpcServiceTests.Store_exceptions_map_as_the_spec_section_6_table_says` (`Iverson.Api.Tests/Grpc/MatchPatternGrpcServiceTests.cs:428`), where the service maps that exception to `InvalidArgument`. |
 
 ## 2. Phase 0 (from `phase0.md`)
@@ -63,7 +63,9 @@ Projected per-candidate full passes (672 × 50 calls): calibration **12.20514244
 the 30 s timeout. **Chosen shape: `whole-corpus`**, `limit` 18,623 on every call (per-candidate
 would have used 10,000).
 
-**Actual pass times, whole-corpus** (log timestamps): calibration about 1 h 25 m, ending 09:09:50;
+**Actual pass times, whole-corpus** (file modification times of `calibration.tsv` and
+`mp-<θ>-run_len.trec`; the 07:44 calibration start comes from the Task 5 session record):
+calibration about 1 h 25 m, ending 09:09:50;
 p50 ending 10:18:44; p75 ending 11:25:49; p90 ending 12:33:26. Each θ pass took about 67–69 minutes.
 
 ## 3. Query length (recomputed from the strings `pattern_leg.py` sends)
@@ -90,6 +92,10 @@ defines are 984–995 characters, and their calibration `s` measures are 981–9
 spec's figure predates the measured θ values, so its `define` could not have carried this 18-character
 spelling. The 432 figure for the other two expressions matches the spec's per-expression 432 / 432
 exactly. With the strings actually sent, the figure is **437**.
+
+The spec's two figures are not consistent with each other. 21,333 corresponds to a 5-character θ
+literal (432 queries over 1,000), while 433 needs a 6–9-character literal (maximum 21,334–21,337).
+The conclusion is unaffected.
 
 ## 4. θ values (`pattern/theta.json`)
 
@@ -168,9 +174,13 @@ INERT. α-nDCG@10 and AP are context only, and they agree in direction.
 byte-identical: md5 of `(qid, doc, rank)` p50 `8d56902b82f9…`, p75 `45caa3f83d15…`, p90
 `53caf55f1a23…`, and the same holds for the unfused `mp-<θ>-*.trec` legs. In `scores-<θ>.tsv` the
 best-length run and the best-sum run are the same run for all 30,212 / 20,283 / 10,381 matched
-candidates. The runs are short (longest 7 chunks, mean best `run_len` at most 2.132), and across
-candidates the (`run_len`, `run_sum`) and (`run_sum`, `run_len`) orders agree everywhere; the
-tag-stripped md5s above show this. The benchmark therefore measured three distinct rankings, not six. Holm over 6 tests is
+candidates. Across candidates the two orders agree because the per-length `run_sum` bands do not
+overlap. Every chunk in a run has θ < s ≤ 0.8813 (the largest `s` in `calibration.tsv`). So a
+length-k run sums to at most 0.8813·k, and a length-(k+1) run to more than θ·(k+1). That guarantees
+the length order only up to k ≤ θ/(0.8813 − θ): k ≤ 2 at p50, k ≤ 3 at p75, k ≤ 4 at p90. Beyond
+that, the separation is a property of this data. At p50, for example, the largest length-3 sum is
+2.4459 and the smallest length-4 sum is 2.6567. On another corpus or θ the two scores could diverge.
+The tag-stripped md5s are `awk '{print $1,$3,$4}' <file> | md5sum`. The benchmark therefore measured three distinct rankings, not six. Holm over 6 tests is
 more conservative than over 3, and it cannot change a result whose sign is negative. The guard's ρ
 values differ between a θ's two arms because `run_len` is an integer score with many ties, which
 changes Spearman's tied ranks even though the induced order is identical.
@@ -226,6 +236,8 @@ c22c2c325b74412c924f70f98524d0cb  fused/inert.json
 0829fd738da9d7c81514b33e96865670  fused/guard.json
 bf1602dea236f9d2b54bf541cb3fc078  runs/mp-baseline.meta.json
 fa811f4b15b6c94552f06f6ad92c6b92  report.txt
+6ce335da5c88c0701bb3127fb3d2206e  phase0.md
+6f12cf93f93cb40283ad4e31774be454  pattern/probe-b.json
 ```
 
 ## 10. Deviations from the spec
@@ -271,8 +283,13 @@ Changes made during execution (recorded in `phase0.md` and in the SDD ledger,
 
 - **Non-default limits.** `MaxExpressionLength` was 25,000 (default 1,000) and `MaxOutputRows`
   18,623 (default 10,000; exercised, because the whole-corpus shape was chosen). A caller on default
-  limits could not issue 437 of these 672 queries (section 3). The client-side fusion measured here is
-  therefore unavailable, as written, to a default-configured deployment for most FreshStack queries.
+  limits could not issue 437 of these 672 queries (section 3). The whole-corpus shape used here is
+  also unavailable on default limits. Its `limit` 18,623 exceeds the default `MaxOutputRows` 10,000,
+  which is rejected with `InvalidArgument` (`ObjectSearchGrpcService.MatchPattern.cs:294-295`). A
+  whole-corpus calibration call also emits 18,622 rows. A default-configured caller therefore needs
+  per-candidate calls, projected at 12.2 h for calibration and 12.4 h per θ pass. The client-side
+  fusion measured here is therefore unavailable, as written, to a default-configured deployment for
+  most FreshStack queries.
 - **Scope of the NO-GO.** It covers only these θ values (p50 `0.6597611904144287`, p75
   `0.7002342939376831`, p90 `0.7339564561843872`) and k = 60, unweighted RRF, on FreshStack-2048
   against the shipped `SearchChunks` ranking (`LambdaChunks` 0.70, multiplier 11). k, weights and θ
