@@ -436,6 +436,16 @@ def test_acting_user_metadata_key_is_x_acting_user_authorization():
     assert pl.ACTING_USER_METADATA_KEY == "x-acting-user-authorization"
 
 
+@pytest.mark.parametrize("plugin_type", [pl._ServiceBearerAuthPlugin, pl._ActingUserAuthPlugin])
+def test_a_mint_that_exits_reaches_the_callback_as_an_error(plugin_type):
+    def exits():
+        sys.exit("[pattern_leg] minting failed: HTTP 400")
+
+    metadata, error = capture_metadata(plugin_type(exits))
+    assert metadata is None
+    assert isinstance(error, SystemExit) and "HTTP 400" in str(error)
+
+
 # ── mint_service_token: the request, and every abort path ──────────────────────────────────────
 
 def test_mint_service_token_request_carries_host_header_scope_and_grant_type():

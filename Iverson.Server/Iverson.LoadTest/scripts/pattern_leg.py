@@ -87,7 +87,6 @@ import statistics
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from urllib.parse import urlsplit
@@ -308,7 +307,7 @@ class _ServiceBearerAuthPlugin(grpc.AuthMetadataPlugin):
     def __call__(self, context, callback):
         try:
             callback((("authorization", f"Bearer {self._get_token()}"),), None)
-        except Exception as exc:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001
             callback(None, exc)
 
 
@@ -324,7 +323,7 @@ class _ActingUserAuthPlugin(grpc.AuthMetadataPlugin):
     def __call__(self, context, callback):
         try:
             callback(((ACTING_USER_METADATA_KEY, f"Bearer {self._get_token()}"),), None)
-        except Exception as exc:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001
             callback(None, exc)
 
 
