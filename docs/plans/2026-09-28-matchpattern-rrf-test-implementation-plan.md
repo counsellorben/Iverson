@@ -121,6 +121,12 @@ Every code block in Tasks 1–3 was prototyped and run at `fa7194ac`, in the thr
 | 20 | Ordering | Tasks 1, 2 and 3 are independent: neither script imports the other, and both only import `report`. Task 4 needs Task 3. Task 5 needs Tasks 2, 3 and 4. | `command grep "^import\|^from"` over the four script files. |
 | 21 | Behaviour | `pattern_leg.fetch_build` reads the live `/build` composite and aborts on a mismatch. | A read-only prototype run against the running stack returned `ded69e9492bdc081` and aborted against `9714c660b365fad1`. |
 | 22 | Convention | The commit style is a lowercase imperative subject plus a `Co-Authored-By` trailer. | `git log --oneline -8`. |
+| 23 | Behaviour | TEI returns bit-identical query vectors for identical sequential calls, so probe A's exact-equality comparison of `s` between its two calls is sound. | Two identical `POST localhost:8091/embed` calls returned the same md5 (`1a4a0d07…`), re-run in UIP round 1. CIR round 1 S2 checked the shortest and the longest query. |
+| 24 | Behaviour | A step lasting from 31 minutes to 8 hours can run as written: a command past the executor's tool timeout is moved to the background and completes, and its `EXIT=` line is captured. | CIR round 1, S3 and row D5 (the reviewer's run of the executor's tool). Not re-run in UIP. |
+| 25 | Behaviour | Back-to-back token mints (probe-a, then probe-b) inside one TOTP window succeed. | `mint_acting_user_token.py:77` `MAX_TOTP_ATTEMPTS = 4`, and `:224` `submit_totp_code` waits out a reused window. `~/.cache/iverson/acting-user-totp-secret-compose-iverson-loadtest-bypass-user.txt` exists. |
+| 26 | Behaviour | A denied acting user gets an empty stream, not an error. The pattern leg catches that loudly. | `ObjectSearchGrpcService.MatchPattern.cs:58` `if (chunkDecision.Denied) return;`; `pattern_leg.py:590` (probe-a "no rows") and `:670` (calibrate "candidate(s) returned no …"). |
+| 27 | Behaviour | `parent_key` values equal the key map's GUID strings. | `ingest.py:684` `"parent_id": key`; `pattern_leg.rows_by_candidate` (`:248`) aborts on a parent that is not in the key map. |
+| 28 | Behaviour | Each plan step runs as a separate shell call, so variables, functions and exports do not persist between steps. Sourcing a state file restores them, and the `--pair` list can be rebuilt from `rrf_fuse.log` and checked against `inert.json`. | CIR round 1 §2.1: two consecutive calls lost a variable and a function. UIP round 1: a state file sourced in a fresh shell restored the cwd, `OUT`, `counts`, `K` and both exports, with no secret written to it. The agreement check gave `AGREE_EXIT` 0, 1 and 0 for matching lists, an empty list with arms not INERT, and every arm INERT. `inert.json` keys are `fused-<t>-<score>` (`rrf_fuse.py:82`). |
 
 ## Tasks
 
@@ -2153,19 +2159,33 @@ This task changes the shared local compose stack. It rebuilds `iverson-api`, rec
   - `$OUT/pattern/probe-b.json`, including the chosen shape;
   - `$OUT/phase0.md`.
 
-Run every step in one shell from the repository root. The shell's working directory must not change between steps, except where a step changes it and changes it back.
+Each step runs in a fresh shell, so nothing a step sets survives to the next one (plan assumption 28). This setup therefore writes every shared variable, function and credential export to one state file. **Every bash block in Tasks 4 and 5 starts by sourcing it.** The file holds commands, never secret values: `K` and the two passwords are re-read from `.env` each time it is sourced.
+
+Run the setup once, from the root of the worktree the tasks execute in:
 ```bash
-DATE=$(date +%F)
+STATE=/home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
+printf 'cd %q\nDATE=%q\n' "$(pwd)" "$(date +%F)" > "$STATE"
+cat >> "$STATE" <<'EOF'
 OUT=/home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-$DATE
 C=/home/ben/repositories/iverson-benchmark-corpora/freshstack-2048-2026-09-07
 SNAP=/home/ben/repositories/iverson-benchmark-corpora/freshstack-2048-qdrant-snapshots
 ENVF=/home/ben/repositories/Iverson/Iverson.Server/.env
 LEG=Iverson.Server/Iverson.LoadTest/scripts/pattern_leg.py
+PL=/home/ben/repositories/iverson-benchmark-corpora/python-libs
+K=$(command grep '^QDRANT__SERVICE__API_KEY=' "$ENVF" | cut -d= -f2-)
+counts() { for c in benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk; do
+  curl -sf -H "api-key: $K" "http://localhost:6333/collections/$c" | python3 -c 'import sys,json; r=json.load(sys.stdin)["result"]; print(r["points_count"], sorted(r["config"]["params"]["vectors"]))'; done; }
+source /home/ben/iverson-benchmark-data/bench-env.sh
+export IVERSON_ACTING_USER_PASSWORD="$(command grep '^IVERSON_SMOKE_TEST_PASSWORD=' "$ENVF" | cut -d= -f2-)"
+export IVERSON_ACTING_USER_BYPASS_PASSWORD="$(command grep '^IVERSON_BYPASS_PASSWORD=' "$ENVF" | cut -d= -f2-)"
+EOF
+. "$STATE"
 mkdir -p "$OUT/runs" "$OUT/pattern" "$OUT/fused"
 ```
 
 - [ ] **Step 1: Write the compose override and bring the stack up on a fresh image**
 ```bash
+. /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
 cat > "$OUT/compose.rrf-bench.yml" <<'EOF'
 services:
   iverson-api:
@@ -2186,15 +2206,13 @@ The worktree has no `.env`, which is why `--env-file` points at the main checkou
 
 - [ ] **Step 2: Restore the FreshStack-2048 snapshots into today's collection names**
 ```bash
-K=$(command grep '^QDRANT__SERVICE__API_KEY=' "$ENVF" | cut -d= -f2-)
+. /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
 for pair in \
   "benchmark_documents_tenant_bypass-6802952876034638:benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk" \
   "benchmark_documents_chunks_tenant_bypass-6802952876034638:benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk"; do
   f=$(ls "$SNAP"/"${pair%%:*}"*.snapshot); c=${pair##*:}
   curl -sf -X POST -H "api-key: $K" "http://localhost:6333/collections/$c/snapshots/upload?priority=snapshot" -F "snapshot=@$f" | head -c 200; echo
 done
-counts() { for c in benchmark_documents_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk benchmark_documents_chunks_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk; do
-  curl -sf -H "api-key: $K" "http://localhost:6333/collections/$c" | python3 -c 'import sys,json; r=json.load(sys.stdin)["result"]; print(r["points_count"], sorted(r["config"]["params"]["vectors"]))'; done; }
 counts
 ```
 Expected:
@@ -2205,9 +2223,7 @@ If either count differs, stop: the restore did not land under the name the serve
 
 - [ ] **Step 3: Re-record the baseline (this also registers the `BenchmarkDocument` schema)**
 ```bash
-source /home/ben/iverson-benchmark-data/bench-env.sh
-export IVERSON_ACTING_USER_PASSWORD="$(command grep '^IVERSON_SMOKE_TEST_PASSWORD=' "$ENVF" | cut -d= -f2-)"
-export IVERSON_ACTING_USER_BYPASS_PASSWORD="$(command grep '^IVERSON_BYPASS_PASSWORD=' "$ENVF" | cut -d= -f2-)"
+. /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
 dotnet run -c Release --project Iverson.Server/Iverson.LoadTest -- benchmark-query \
   --corpus-path "$C" --key-map-path "$C/keymap.json" \
   --output-dir "$OUT/runs" --config-label mp-baseline \
@@ -2226,6 +2242,7 @@ Do not use `tail`'s exit status as the result; `RC` is the result.
 
 - [ ] **Step 4: Probe A**
 ```bash
+. /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
 python3 "$LEG" probe-a --out "$OUT" --baseline "$OUT/runs/mp-baseline.chunks.trec" 2>&1 | tee "$OUT/pattern/probe-a.log"; echo "EXIT=${PIPESTATUS[0]}"
 ```
 Expected: `EXIT=0`, with chunk rows printed for the lowest query's rank-1 candidate. On any error, stop and report it. Probe A checks all of the following, and fails if any one fails:
@@ -2235,6 +2252,7 @@ Expected: `EXIT=0`, with chunk rows printed for the lowest query's rank-1 candid
 
 - [ ] **Step 5: Probe B and the shape decision**
 ```bash
+. /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
 python3 "$LEG" probe-b --out "$OUT" --baseline "$OUT/runs/mp-baseline.chunks.trec" 2>&1 | tee "$OUT/pattern/probe-b.log"; echo "EXIT=${PIPESTATUS[0]}"
 python3 -c "import json;d=json.load(open('$OUT/pattern/probe-b.json'));print(d['decision'])"
 ```
@@ -2242,7 +2260,7 @@ Expected: `EXIT=0` and a decision of `per-candidate` or `whole-corpus` (deviatio
 
 - [ ] **Step 6: Record Phase 0**
 
-Write `$OUT/phase0.md` with:
+Source the state file first. Write `$OUT/phase0.md` with:
 - the date;
 - the `/build` composite, and the baseline sidecar composite (these must be equal);
 - the three env values from Step 1;
@@ -2263,17 +2281,19 @@ No commit: everything here lives outside the repository.
 - Consumes Task 1's tests, Task 2's `rrf_fuse.py` and Task 3's `pattern_leg.py`.
 - Consumes Task 4's baseline, `probe-b.json` and `phase0.md`.
 
-Use the same shell setup as Task 4. Set `DATE` to the date Task 4 used, because `$OUT` must be Task 4's directory. Then add:
+Task 4's state file already carries `DATE`, so `$OUT` is Task 4's directory. Append Task 5's two variables to it once:
 ```bash
-source /home/ben/iverson-benchmark-data/bench-env.sh
-export IVERSON_ACTING_USER_BYPASS_PASSWORD="$(command grep '^IVERSON_BYPASS_PASSWORD=' "$ENVF" | cut -d= -f2-)"
-SHAPE=$(python3 -c "import json;print(json.load(open('$OUT/pattern/probe-b.json'))['decision'])")
+cat >> /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh <<'EOF'
 B="$OUT/runs/mp-baseline.chunks.trec"
-PL=/home/ben/repositories/iverson-benchmark-corpora/python-libs
+SHAPE=$(python3 -c "import json;print(json.load(open('$OUT/pattern/probe-b.json'))['decision'])")
+EOF
+. /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
+echo "OUT=$OUT SHAPE=$SHAPE"
 ```
 
 - [ ] **Step 1: Calibration pass**
 ```bash
+. /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
 python3 "$LEG" calibrate --out "$OUT" --baseline "$B" --shape "$SHAPE" > "$OUT/pattern/calibrate.log" 2>&1; echo "EXIT=$?"; tail -3 "$OUT/pattern/calibrate.log"
 cat "$OUT/pattern/theta.json"
 ```
@@ -2281,6 +2301,7 @@ Expected: `EXIT=0`, and `theta.json` holding `p50 < p75 < p90`, 100 sample query
 
 - [ ] **Step 2: The three θ passes**
 ```bash
+. /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
 for t in p50 p75 p90; do
   python3 "$LEG" run --out "$OUT" --baseline "$B" --shape "$SHAPE" --theta "$t" > "$OUT/pattern/run-$t.log" 2>&1; echo "$t EXIT=$?"; tail -2 "$OUT/pattern/run-$t.log"
 done
@@ -2290,16 +2311,27 @@ Expected: three `EXIT=0` lines. `OUT/pattern` should hold `scores-p50.tsv`, `sco
 
 - [ ] **Step 3: Fuse, INERT and guard**
 ```bash
+. /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
 PYTHONPATH=$PL python3 Iverson.Server/Iverson.LoadTest/scripts/rrf_fuse.py --out "$OUT" --baseline "$B" 2>&1 | tee "$OUT/fused/rrf_fuse.log"; echo "EXIT=${PIPESTATUS[0]}"
-PAIRS=$(sed -n 's/^  --pair /--pair /p' "$OUT/fused/rrf_fuse.log" | tr '\n' ' ')
-echo "$PAIRS"; cat "$OUT/fused/inert.json" "$OUT/fused/guard.json"
+cat "$OUT/fused/inert.json" "$OUT/fused/guard.json"
 ```
-Expected: `EXIT=0`, six fused runs with their sidecars, and `inert.json` and `guard.json` covering all six arms. `$PAIRS` lists the arms that are not INERT; it may be empty.
+Expected: `EXIT=0`, six fused runs with their sidecars, and `inert.json` and `guard.json` covering all six arms. Stop on any non-zero exit: Step 4 reads this step's saved log, and a log from a failed run would give Step 4 a wrong `--pair` list.
 
 - [ ] **Step 4: Score**
 
-If `$PAIRS` is empty, every arm is INERT and the gate is VOID. Skip the `--pair` run, and record `report.py`'s structural output only:
+`PAIRS` is rebuilt from Step 3's saved log. It must name exactly the arms `inert.json` marks as not INERT; if it doesn't (`AGREE_EXIT=1`), stop and report both. If every arm is INERT, both lists are empty. The gate is then VOID, and `report.py` runs with no `--pair`, giving its structural output only.
 ```bash
+. /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
+PAIRS=$(sed -n 's/^  --pair /--pair /p' "$OUT/fused/rrf_fuse.log" | tr '\n' ' ')
+python3 - "$OUT/fused/inert.json" $PAIRS <<'PY'
+import json, sys
+inert = json.load(open(sys.argv[1]))
+live = sorted(k for k, v in inert.items() if not v["inert"])
+paired = sorted(a.split("=", 1)[0].rsplit("/", 1)[-1].removesuffix(".chunks.trec") for a in sys.argv[2:] if a != "--pair")
+print(f"non-INERT arms {live}; --pair arms {paired}")
+sys.exit(0 if live == paired else 1)
+PY
+echo "AGREE_EXIT=$?"
 PYTHONPATH=$PL python3 Iverson.Server/Iverson.LoadTest/scripts/report.py --run "$OUT/runs" --qrels "$C/qrels.trec" --nugget-qrels "$C/qrels.nugget.trec" $PAIRS > "$OUT/report.txt" 2>&1; echo "EXIT=$?"
 command grep -n "BUILD\|\[pool\]\|nDCG@10\|R@50\|alpha_nDCG@10\|Holm" "$OUT/report.txt" | head -60
 md5sum "$OUT"/runs/*.trec "$OUT"/pattern/*.trec
@@ -2317,7 +2349,7 @@ Apply the spec's gate exactly. Take DEGENERATE from `guard.json` and INERT from 
 
 - [ ] **Step 6: Write the gate document**
 
-Create `docs/plans/2026-09-GATE-matchpattern-rrf.md` with these sections, filled from the files named:
+Source the state file first. Create `docs/plans/2026-09-GATE-matchpattern-rrf.md` with these sections, filled from the files named:
 1. **Verdicts.**
    - **Reading 1 (partial):** cite `RrfExpressivenessTests` and its four facts.
    - **Reading 2:** give the GO, NO-GO or VOID from Step 5, and say it is feasible client-side only.
@@ -2346,6 +2378,7 @@ Create `docs/plans/2026-09-GATE-matchpattern-rrf.md` with these sections, filled
 
 - [ ] **Step 7: Commit the gate document**
 ```bash
+. /home/ben/repositories/iverson-benchmark-corpora/matchpattern-rrf-shell.sh
 git add -f docs/plans/2026-09-GATE-matchpattern-rrf.md
 git commit -m "record the matchpattern rrf gate verdict" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" -- docs/plans/2026-09-GATE-matchpattern-rrf.md
 ```
