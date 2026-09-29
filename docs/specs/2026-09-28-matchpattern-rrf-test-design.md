@@ -39,8 +39,9 @@ Readings 1 and 3 get feasibility verdicts pinned by tests. Reading 2 gets a feas
 
 ### Phase 0: restore and the two go/no-go probes
 
-1. **Stack configuration.** Bring up the stack with two settings:
+1. **Stack configuration.** Bring up the stack with three settings:
    - `Patterns__Limits__MaxExpressionLength=25000` (user decision; the longest wrapped query is 21,333 characters);
+   - `Patterns__Limits__MaxOutputRows=18623`, so whole-corpus calls (calibration or θ) can pass `limit` 18,623 from Probe B onwards. It has no effect on per-candidate calls, because only the `limit` check reads it;
    - `VectorRanking__LambdaChunks=0.70`, the shipped value.
    
    Build `iverson-api` first, because a stale image is a known trap.
@@ -53,7 +54,7 @@ Readings 1 and 3 get feasibility verdicts pinned by tests. Reading 2 gets a feas
    
    Then pick one by this rule:
    - Use **per-candidate** if its projected full run (672 × 50 calls per θ) is ≤ 8 h per θ.
-   - Otherwise use **whole-corpus**. `MaxOutputRows` is then raised on the benchmark stack for every call whose output can exceed 10,000 rows. The calibration pass emits one row per chunk (18,622), so it runs with `MaxOutputRows` ≥ 18,623 and `limit` 18,623, which keeps a count at `limit` meaning truncation. A θ pass whose match count exceeds 10,000 is raised the same way. The gate document records the values.
+   - Otherwise use **whole-corpus**. Every whole-corpus call, calibration or θ, passes `limit` 18,623 against the `MaxOutputRows` set in step 1. No call can emit more than 18,622 rows: calibration emits one row per chunk, and a θ call one row per match, where matches do not overlap and each consumes at least one chunk. So a count at `limit` still means truncation. The gate document records the value.
    - If neither shape fits (per-candidate over 8 h, and whole-corpus calls, calibration or θ, hitting the 30 s timeout), stop and return to the user.
    
    The server has no query-embedding cache, so every call embeds the query once.
@@ -143,7 +144,7 @@ The pass reads similarity values only, never relevance labels.
 
 ## Known issues accepted
 
-- **Non-default limits.** The benchmark runs with a non-default `MaxExpressionLength` (25,000), and possibly `MaxOutputRows`. A caller on default limits could not issue 64% of these queries (433 of 672 have at least one expression over 1,000 characters once wrapped and quote-escaped). The gate document recomputes this figure from the exact strings `pattern_leg.py` sends and states it next to the verdict.
+- **Non-default limits.** The benchmark runs with a non-default `MaxExpressionLength` (25,000), and `MaxOutputRows` (18,623; set on the stack, exercised only under whole-corpus). A caller on default limits could not issue 64% of these queries (433 of 672 have at least one expression over 1,000 characters once wrapped and quote-escaped). The gate document recomputes this figure from the exact strings `pattern_leg.py` sends and states it next to the verdict.
 - **θ is fixed, not tuned.** The ladder is the similarity percentiles above. A NO-GO speaks for these θ values and k = 60 only.
 
 ## Verified assumptions
@@ -168,5 +169,5 @@ The pass reads similarity values only, never relevance labels.
 | 16 | Chunk counts per document: FreshStack-2048 has 57.2% of documents at 3 or more chunks; SciFact-2048 has 0.5%. | Estimated from `beir/corpus.jsonl` text lengths with the 2048/1792 window. The estimate is within 4% of the recorded 18,622 chunks. |
 | 17 | The snapshot's chunk collection matches what `QdrantChunkRowSource` reads: vector `body_vector` (768, Cosine), keyword indexes on `parent_id`, `field` and `ownerId`. | CDR round 1, row D10: the snapshot's `config.json` and `payload_index.json`; `ingest.py`'s chunk payload lines are unchanged since `2dd58236`. |
 | 18 | Swapped RRF ranks tie exactly, and ir_measures breaks score ties by doc id, not file order. Strictly decreasing scores make it follow file order. | `1/63+1/67 == 1/67+1/63` is `True`; an ir_measures probe scored two tied docs at nDCG@10 0.6309 in either file order (CDR round 1, re-run in update). |
-| 19 | `MaxOutputRows` accepts any positive value and is bound from `Patterns:Limits`. | `PatternQueryLimitOptions.cs` `Validate` (`Positive(nameof(MaxOutputRows), …)`); `Iverson.Api/Program.cs:315-325`. |
+| 19 | `MaxOutputRows` accepts any positive value and is bound from `Patterns:Limits`. Only the `limit` check reads it, so raising it has no effect on calls with `limit` ≤ 10,000. | `PatternQueryLimitOptions.cs` `Validate` (`Positive(nameof(MaxOutputRows), …)`); `Iverson.Api/Program.cs:315-325`; `command grep` over `Iverson.Api`, `Iverson.Patterns`, `Iverson.Vector` and `Iverson.StarRocks` finds only the binding, the default, `Validate` and `ObjectSearchGrpcService.MatchPattern.cs:294-295` (CDR round 2). |
 | 20 | `/build` is anonymous on listener port 8081 and returns `{composite, assemblies}`. | `Iverson.Api/Program.cs:541-545`; precedent `BenchmarkQueryScenario.cs:170-201` refuses to run without it. |
