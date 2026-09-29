@@ -7,8 +7,10 @@ No network: the coordinator, the token minter, the clock and the /build fetch ar
 builders run through the real SDK (Iverson.Clients/Python, put on sys.path by pattern_leg itself), so
 the field assertions below pin the exact protos the live run sends. grpcio and protobuf come from the
 user site-packages; nothing needs PYTHONPATH (setting it to python-libs is harmless)."""
+import json
 import os
 import sys
+import urllib.parse
 
 import grpc
 import pytest
@@ -34,28 +36,56 @@ class FakeRpcError(grpc.RpcError):
 
 
 class FakeCoordinator:
-    """Records every request and the token it was bound to; `respond(request)` returns rows or raises."""
+    """Records every request; `respond(request)` returns rows or raises. Unlike before the fix, the
+    coordinator no longer carries an acting-user token of its own -- both the service and the
+    acting-user identity now ride the gRPC channel's metadata-call-credentials plugins (see
+    TokenSession, _ServiceBearerAuthPlugin, _ActingUserAuthPlugin), which these offline tests cover
+    separately since there is no real channel here."""
 
-    def __init__(self, respond, token=None, log=None):
-        self.respond, self.token = respond, token
+    def __init__(self, respond, log=None):
+        self.respond = respond
         self.log = log if log is not None else []
 
-    def with_acting_user(self, token):
-        return FakeCoordinator(self.respond, token, self.log)
-
     def match_pattern(self, request):
-        self.log.append((self.token, request))
+        self.log.append(request)
         return self.respond(request)
 
 
-def session_for(respond, clock=lambda: 0.0):
-    tokens = iter(f"token-{i}" for i in range(1, 100))
+def coordinator_for(respond):
     coordinator = FakeCoordinator(respond)
-    return pl.TokenSession(coordinator, lambda: next(tokens), clock=clock), coordinator.log
+    return coordinator, coordinator.log
 
 
 def row(**data):
     return MatchPatternResult(data=data, match_number=1, classifier="A")
+
+
+class FakeTokenResponse:
+    """A fake `urlopen(...)` return value: a context manager whose `.status` and `.read()` mirror
+    `http.client.HTTPResponse` closely enough for `mint_service_token` (json.load only needs
+    `.read()`)."""
+
+    def __init__(self, status, payload):
+        self.status = status
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def read(self, *args, **kwargs):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def capture_metadata(plugin):
+    """Invoke a grpc.AuthMetadataPlugin's __call__ the way grpcio does, and return the (metadata,
+    error) it hands its callback."""
+    captured = []
+    plugin(None, lambda metadata, error: captured.append((metadata, error)))
+    assert len(captured) == 1
+    return captured[0]
 
 
 # ── escaping and expressions ────────────────────────────────────────────────────────────
@@ -190,15 +220,15 @@ def test_pattern_order_uses_the_other_score_of_the_best_run_not_the_best_other_s
 
 def test_execute_aborts_when_the_count_reaches_limit():
     request = pl.calibration_request(QUERY, GUID, 3)
-    session, _ = session_for(lambda r: [row(parent_key=GUID, ci=float(i), s=0.5) for i in range(3)])
+    coordinator, _ = coordinator_for(lambda r: [row(parent_key=GUID, ci=float(i), s=0.5) for i in range(3)])
     with pytest.raises(SystemExit, match="truncated"):
-        pl.execute(session, request, "t")
+        pl.execute(coordinator, request, "t")
 
 
 def test_execute_accepts_a_count_one_below_limit():
     request = pl.calibration_request(QUERY, GUID, 3)
-    session, _ = session_for(lambda r: [row(parent_key=GUID, ci=float(i), s=0.5) for i in range(2)])
-    assert len(pl.execute(session, request, "t")) == 2
+    coordinator, _ = coordinator_for(lambda r: [row(parent_key=GUID, ci=float(i), s=0.5) for i in range(2)])
+    assert len(pl.execute(coordinator, request, "t")) == 2
 
 
 @pytest.mark.parametrize("code", [grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.INVALID_ARGUMENT,
@@ -206,9 +236,9 @@ def test_execute_accepts_a_count_one_below_limit():
 def test_a_grpc_error_aborts(code):
     def raise_(request):
         raise FakeRpcError(code, "boom")
-    session, _ = session_for(raise_)
+    coordinator, _ = coordinator_for(raise_)
     with pytest.raises(SystemExit, match=str(code)):
-        pl.execute(session, pl.theta_request(QUERY, 0.5, GUID, 10), "t")
+        pl.execute(coordinator, pl.theta_request(QUERY, 0.5, GUID, 10), "t")
 
 
 def test_a_null_similarity_aborts_calibration():
@@ -258,12 +288,12 @@ def respond_calibration(request):
 
 @pytest.mark.parametrize("shape, calls", [("per-candidate", 3), ("whole-corpus", 2)])
 def test_a_calibration_pass_gives_the_same_chunks_in_both_shapes(shape, calls):
-    session, log = session_for(respond_calibration)
-    result = pl.run_pass(session, shape, lambda q, guid: pl.calibration_request("q", guid, pl.shape_limit(shape)),
+    coordinator, log = coordinator_for(respond_calibration)
+    result = pl.run_pass(coordinator, shape, lambda q, guid: pl.calibration_request("q", guid, pl.shape_limit(shape)),
                          pl.calibration_chunks, BASELINE, ["q1", "q2"], MAPS)
     assert result == {"q1": {"d1": [(0, 0.1), (1, 0.7), (2, 0.4)], "d2": [(0, 0.5)]}, "q2": {"d3": [(0, 0.2)]}}
     assert len(log) == calls
-    assert all(r.pattern == "A" and r.rows_per_match == pb.ONE_ROW for _, r in log)
+    assert all(r.pattern == "A" and r.rows_per_match == pb.ONE_ROW for r in log)
 
 
 def test_rows_by_candidate_refuses_a_foreign_parent_in_the_per_candidate_shape():
@@ -298,39 +328,187 @@ def respond_theta(request):
 
 @pytest.mark.parametrize("shape, calls", [("per-candidate", 3), ("whole-corpus", 2)])
 def test_run_pass_gives_the_same_runs_in_both_shapes(shape, calls):
-    session, log = session_for(respond_theta)
-    runs = pl.run_pass(session, shape, lambda q, guid: pl.theta_request("q", 0.5, guid, pl.shape_limit(shape)),
+    coordinator, log = coordinator_for(respond_theta)
+    runs = pl.run_pass(coordinator, shape, lambda q, guid: pl.theta_request("q", 0.5, guid, pl.shape_limit(shape)),
                        pl.theta_runs, BASELINE, ["q1", "q2"], MAPS)
     assert runs == {"q1": {"d1": [(2, 1.3), (1, 0.9)]}, "q2": {"d3": [(1, 0.7)]}}
     assert len(log) == calls
 
 
-def test_a_pass_that_outlives_the_refresh_age_mints_again():
+# ── TokenSession: both refreshes, independently timed and independently injectable ─────────────
+
+def session_with(mint_acting_user=None, mint_service=None, clock=lambda: 0.0):
+    """A TokenSession over fake minters, one of which counts calls if not overridden."""
+    if mint_acting_user is None:
+        actors = iter(f"actor-{i}" for i in range(1, 100))
+        mint_acting_user = lambda: next(actors)  # noqa: E731
+    if mint_service is None:
+        services = iter((f"service-{i}", 3600.0) for i in range(1, 100))
+        mint_service = lambda: next(services)  # noqa: E731
+    return pl.TokenSession(mint_acting_user, mint_service, clock=clock)
+
+
+def test_the_acting_user_token_is_not_reminted_before_the_refresh_age():
     now = [0.0]
+    session = session_with(clock=lambda: now[0])
+    first = session.acting_user_token()
+    assert first == "actor-1"
+    now[0] = pl.TOKEN_REFRESH_SECONDS - 1
+    assert session.acting_user_token() == "actor-1"
+    now[0] = pl.TOKEN_REFRESH_SECONDS
+    assert session.acting_user_token() == "actor-2"
+    assert session.acting_user_mints == 2
+
+
+def test_a_pass_that_outlives_the_refresh_age_re_mints_the_acting_user_token():
+    now = [0.0]
+    actors = iter(f"actor-{i}" for i in range(1, 10))
 
     def respond(request):
         now[0] += 40 * 60          # every call takes 40 minutes
         return []
-    session, log = session_for(respond, clock=lambda: now[0])
-    pl.run_pass(session, "per-candidate", lambda q, guid: pl.theta_request("q", 0.5, guid, 10),
-                pl.theta_runs, BASELINE, ["q1", "q2"], MAPS)
-    # calls start at 0, 40 and 80 minutes (token-1), then... the third starts at 80 < 90: still token-1.
-    assert [t for t, _ in log] == ["token-1", "token-1", "token-1"]
-    pl.run_pass(session, "per-candidate", lambda q, guid: pl.theta_request("q", 0.5, guid, 10),
-                pl.theta_runs, BASELINE, ["q1"], MAPS)
+    session = session_with(mint_acting_user=lambda: next(actors), clock=lambda: now[0])
+    coordinator, _ = coordinator_for(respond)
+    tokens_used = []
+
+    def build_request(q, guid):
+        tokens_used.append(session.acting_user_token())
+        return pl.theta_request("q", 0.5, guid, 10)
+
+    pl.run_pass(coordinator, "per-candidate", build_request, pl.theta_runs, BASELINE, ["q1", "q2"], MAPS)
+    # calls start at 0, 40 and 80 minutes (actor-1), then... the third starts at 80 < 90: still actor-1.
+    assert tokens_used == ["actor-1", "actor-1", "actor-1"]
+    pl.run_pass(coordinator, "per-candidate", build_request, pl.theta_runs, BASELINE, ["q1"], MAPS)
     # the fourth call starts at 120 minutes >= 90: re-minted.
-    assert [t for t, _ in log][3:] == ["token-2", "token-2"]
-    assert session.mints == 2
+    assert tokens_used[3:] == ["actor-2", "actor-2"]
+    assert session.acting_user_mints == 2
 
 
-def test_the_token_is_not_reminted_before_the_refresh_age():
+def test_the_service_token_is_not_reminted_before_expires_in_minus_the_margin():
     now = [0.0]
-    session, _ = session_for(lambda r: [], clock=lambda: now[0])
-    first = session.coordinator()
-    now[0] = pl.TOKEN_REFRESH_SECONDS - 1
-    assert session.coordinator() is first
+    session = session_with(clock=lambda: now[0])
+    first = session.service_token()
+    assert first == "service-1"
+    now[0] = 3600.0 - pl.SERVICE_TOKEN_REFRESH_MARGIN_SECONDS - 1
+    assert session.service_token() == "service-1"
+    now[0] = 3600.0 - pl.SERVICE_TOKEN_REFRESH_MARGIN_SECONDS
+    assert session.service_token() == "service-2"
+    assert session.service_mints == 2
+
+
+def test_the_two_refreshes_are_independently_timed():
+    """A long pass re-mints the service token on its own 3600s-based schedule, not the acting-user
+    token's fixed 90-minute one -- confirming 'both refreshes' really are two independent clocks
+    sharing only the injected clock function."""
+    now = [0.0]
+    session = session_with(clock=lambda: now[0])
+    session.acting_user_token()
+    session.service_token()
+    now[0] = 3600.0 - pl.SERVICE_TOKEN_REFRESH_MARGIN_SECONDS      # service due, acting-user not
+    assert session.service_token() == "service-2"
+    assert session.acting_user_token() == "actor-1"
+    assert (session.service_mints, session.acting_user_mints) == (2, 1)
+
+
+# ── the channel's metadata plugins: both headers, current tokens, re-read every call ───────────
+
+def test_service_bearer_plugin_carries_the_sessions_current_token():
+    now = [0.0]
+    session = session_with(clock=lambda: now[0])
+    plugin = pl._ServiceBearerAuthPlugin(session.service_token)
+    assert capture_metadata(plugin) == ((("authorization", "Bearer service-1"),), None)
+    now[0] = 3600.0 - pl.SERVICE_TOKEN_REFRESH_MARGIN_SECONDS
+    assert capture_metadata(plugin) == ((("authorization", "Bearer service-2"),), None)
+
+
+def test_acting_user_plugin_carries_the_sessions_current_token():
+    now = [0.0]
+    session = session_with(clock=lambda: now[0])
+    plugin = pl._ActingUserAuthPlugin(session.acting_user_token)
+    assert capture_metadata(plugin) == (((pl.ACTING_USER_METADATA_KEY, "Bearer actor-1"),), None)
     now[0] = pl.TOKEN_REFRESH_SECONDS
-    assert session.coordinator().token == "token-2"
+    assert capture_metadata(plugin) == (((pl.ACTING_USER_METADATA_KEY, "Bearer actor-2"),), None)
+
+
+def test_acting_user_metadata_key_is_x_acting_user_authorization():
+    """Pins the literal header name the API expects, independent of the ACTING_USER_METADATA_KEY
+    import succeeding for the wrong reason."""
+    assert pl.ACTING_USER_METADATA_KEY == "x-acting-user-authorization"
+
+
+# ── mint_service_token: the request, and every abort path ──────────────────────────────────────
+
+def test_mint_service_token_request_carries_host_header_scope_and_grant_type():
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["headers"] = dict(request.header_items())
+        captured["body"] = urllib.parse.parse_qs(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return FakeTokenResponse(200, {"access_token": "svc-tok", "expires_in": 3600})
+
+    token, expires_in = pl.mint_service_token(
+        "cid", "csecret", "https://token.example/token", "tenant_id_admin schema_admin admin",
+        "authentik-server:9000", urlopen=fake_urlopen)
+    assert (token, expires_in) == ("svc-tok", 3600.0)
+    assert captured["headers"]["Host"] == "authentik-server:9000"
+    assert captured["body"] == {
+        "grant_type": ["client_credentials"], "client_id": ["cid"], "client_secret": ["csecret"],
+        "scope": ["tenant_id_admin schema_admin admin"],
+    }
+
+
+def test_mint_service_token_omits_scope_when_falsy():
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["body"] = urllib.parse.parse_qs(request.data.decode("utf-8"))
+        return FakeTokenResponse(200, {"access_token": "t", "expires_in": 3600})
+
+    pl.mint_service_token("cid", "csecret", "https://token.example/token", None, "host", urlopen=fake_urlopen)
+    assert "scope" not in captured["body"]
+
+
+def test_mint_service_token_aborts_on_a_non_200_response():
+    def fake_urlopen(request, timeout=None):
+        return FakeTokenResponse(500, {"error": "boom"})
+
+    with pytest.raises(SystemExit, match="HTTP 500"):
+        pl.mint_service_token("cid", "csecret", "https://token.example/token", None, "host", urlopen=fake_urlopen)
+
+
+def test_mint_service_token_aborts_on_a_missing_access_token():
+    def fake_urlopen(request, timeout=None):
+        return FakeTokenResponse(200, {"expires_in": 3600})
+
+    with pytest.raises(SystemExit, match="access_token"):
+        pl.mint_service_token("cid", "csecret", "https://token.example/token", None, "host", urlopen=fake_urlopen)
+
+
+def test_mint_service_token_aborts_on_a_non_positive_expires_in():
+    def fake_urlopen(request, timeout=None):
+        return FakeTokenResponse(200, {"access_token": "t", "expires_in": 0})
+
+    with pytest.raises(SystemExit, match="expires_in"):
+        pl.mint_service_token("cid", "csecret", "https://token.example/token", None, "host", urlopen=fake_urlopen)
+
+
+def test_mint_service_token_aborts_on_a_transport_error():
+    def fake_urlopen(request, timeout=None):
+        raise OSError("connection refused")
+
+    with pytest.raises(SystemExit, match="connection refused"):
+        pl.mint_service_token("cid", "csecret", "https://token.example/token", None, "host", urlopen=fake_urlopen)
+
+
+def test_mint_service_token_never_leaks_the_secret_or_the_token_in_an_abort_message():
+    def fake_urlopen(request, timeout=None):
+        return FakeTokenResponse(500, {"error": "boom"})
+
+    with pytest.raises(SystemExit) as exc_info:
+        pl.mint_service_token("cid", "top-secret-value", "https://token.example/token", None, "host",
+                              urlopen=fake_urlopen)
+    assert "top-secret-value" not in str(exc_info.value)
 
 
 # ── /build ──────────────────────────────────────────────────────────────────────────────

@@ -48,12 +48,25 @@ written. A failed query is never read as "no runs".
 Identity. The service credentials come from the same env vars as Iverson.Agents and the LoadTest
 (IVERSON_GRPC_URL, IVERSON_CLIENT_ID, IVERSON_CLIENT_SECRET, IVERSON_TOKEN_ENDPOINT,
 IVERSON_CLIENT_SCOPE -- /home/ben/iverson-benchmark-data/bench-env.sh exports all five). The
-acting-user token is minted here, not read once: Authentik issues it with access_token_validity
-hours=2 (compose-only/service-clients.yaml, iverson-loadtest-human provider) and a per-candidate pass
-may run for up to 8 hours. So this script runs deploy/scripts/mint_acting_user_token.py --target
-compose --username iverson-loadtest-bypass-user --password $IVERSON_ACTING_USER_BYPASS_PASSWORD as
-a subprocess, and re-mints once the token is TOKEN_REFRESH_SECONDS (90 minutes) old, rebinding the
-coordinator with EntityCoordinator.with_acting_user.
+service token is minted by this script itself with a `client_credentials` POST (urllib, not
+IversonClientCredentials -- see mint_service_token), sent with header Host: IVERSON_ACTING_USER_HOST_HEADER
+(default authentik-server:9000): Authentik stamps the JWT's `iss` from the request's Host header
+(same mechanism deploy/scripts/mint_acting_user_token.py's docstring and
+Iverson.LoadTest/Program.cs's MintClientCredentialsTokenAsync document), and the SDK's own
+IversonClientCredentials path cannot set that header, so a token it mints carries
+iss=http://localhost:9000/ and the API's issuer validation rejects it with 401 before authorization
+is evaluated. The service token is re-minted at expires_in - SERVICE_TOKEN_REFRESH_MARGIN_SECONDS
+(300s) after the mint that produced it -- 3600s tokens, so ~55 minutes. The acting-user token is
+minted here, not read once:
+Authentik issues it with access_token_validity hours=2 (compose-only/service-clients.yaml,
+iverson-loadtest-human provider) and a per-candidate pass may run for up to 8 hours. So this script
+runs deploy/scripts/mint_acting_user_token.py --target compose --username
+iverson-loadtest-bypass-user --password $IVERSON_ACTING_USER_BYPASS_PASSWORD as a subprocess, and
+re-mints once the token is TOKEN_REFRESH_SECONDS (90 minutes) old. Both tokens live in one
+TokenSession and ride the gRPC channel as metadata-call-credentials plugins that read the session's
+current token on every call (Iverson.Clients/Python/conformance/driver.py's build_driver_channel
+pattern), so a refresh takes effect on the next call without rebuilding the channel or the
+coordinator.
 
 SDK import: the SDK is not pip-installed on this box; like Iverson.Clients/Python/conformance/
 driver.py:25, the SDK root is put on sys.path. grpcio and protobuf come from the user site-packages.
@@ -74,6 +87,8 @@ import statistics
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from urllib.parse import urlsplit
 
@@ -86,7 +101,8 @@ sys.path.insert(0, SCRIPTS_DIR)
 sys.path.insert(0, SDK_ROOT)
 import grpc  # noqa: E402
 import report  # noqa: E402  (sidecar_path_for / load_build_composite -- stdlib-only at import)
-from iverson_client import iverson_entity, iverson_key, match_pattern  # noqa: E402
+from iverson_client import EntityCoordinator, iverson_entity, iverson_key, match_pattern  # noqa: E402
+from iverson_client.auth import ACTING_USER_METADATA_KEY  # noqa: E402
 from iverson_client.generated import object_search_pb2 as pb  # noqa: E402
 
 TYPE_NAME = "BenchmarkDocument"      # Iverson.LoadTest/Entities/BenchmarkDocument.cs
@@ -107,8 +123,11 @@ PROJECTION_CANDIDATES = 50
 PER_CANDIDATE_BUDGET_HOURS = 8.0
 WHOLE_CORPUS_TIMEOUT_SECONDS = 30.0
 TOKEN_REFRESH_SECONDS = 90 * 60
+SERVICE_TOKEN_REFRESH_MARGIN_SECONDS = 300      # re-mint expires_in - this many seconds after mint
 BYPASS_USERNAME = "iverson-loadtest-bypass-user"
 BYPASS_PASSWORD_ENV = "IVERSON_ACTING_USER_BYPASS_PASSWORD"
+ACTING_USER_HOST_HEADER_ENV = "IVERSON_ACTING_USER_HOST_HEADER"
+DEFAULT_ACTING_USER_HOST_HEADER = "authentik-server:9000"
 CORPORA = "/home/ben/repositories/iverson-benchmark-corpora"
 DEFAULT_KEYMAP = f"{CORPORA}/freshstack-2048-2026-09-07/keymap.json"
 DEFAULT_QUERIES = f"{CORPORA}/freshstack-2048-2026-09-07/beir/queries.jsonl"
@@ -188,32 +207,149 @@ def theta_request(query, theta, guid, limit):
 
 # ── Calls ───────────────────────────────────────────────────────────────────────────────
 
-class TokenSession:
-    """Hands out a coordinator bound to a fresh-enough acting-user token, minting a new one once the
-    current one is `refresh_seconds` old. `mint` and `clock` are injected so tests need no Authentik."""
+def mint_service_token(client_id, client_secret, token_endpoint, scope, host_header,
+                        urlopen=urllib.request.urlopen):
+    """Mint the client-credentials service token ourselves (a `client_credentials` POST, urllib),
+    rather than through IversonClientCredentials/IversonClient, because the SDK's token path cannot
+    set a Host header and Authentik stamps the JWT's `iss` from the request's Host (module docstring
+    "Identity"). Sends `grant_type=client_credentials`, `client_id`, `client_secret`, and `scope`
+    when truthy, with header `Host: host_header`. Aborts loudly (sys.exit), WITHOUT printing the
+    secret or the token, on anything but a 200 response carrying an access_token and a positive
+    expires_in. Returns (token, expires_in). `urlopen` is injected so tests need no network."""
+    params = {"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret}
+    if scope:
+        params["scope"] = scope
+    request = urllib.request.Request(
+        token_endpoint,
+        data=urllib.parse.urlencode(params).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Host": host_header},
+        method="POST")
+    try:
+        response = urlopen(request, timeout=30)
+    except Exception as e:  # noqa: BLE001 -- every failure mode means "cannot mint the service token"
+        sys.exit(f"[pattern_leg] minting the service token failed: {type(e).__name__}: {e}")
+    with response:
+        status = getattr(response, "status", getattr(response, "code", 200))
+        if status != 200:
+            sys.exit(f"[pattern_leg] minting the service token failed: HTTP {status} from {token_endpoint}")
+        payload = json.load(response)
+    token = payload.get("access_token")
+    if not token:
+        sys.exit(f"[pattern_leg] minting the service token failed: the response carried no access_token")
+    expires_in = payload.get("expires_in")
+    if not isinstance(expires_in, (int, float)) or expires_in <= 0:
+        sys.exit(f"[pattern_leg] minting the service token failed: invalid expires_in {expires_in!r}")
+    return token, float(expires_in)
 
-    def __init__(self, base_coordinator, mint, clock=time.monotonic, refresh_seconds=TOKEN_REFRESH_SECONDS):
-        self._base = base_coordinator
-        self._mint = mint
+
+class TokenSession:
+    """Owns the two identities the pattern leg's gRPC channel carries as bearer tokens:
+
+        service token       `authorization`                  minted by `mint_service` (returns
+                                                                (token, expires_in)); re-minted
+                                                                expires_in - `service_refresh_margin`
+                                                                seconds after the mint that produced
+                                                                it (3600s tokens, so ~55 minutes).
+        acting-user token    `x-acting-user-authorization`     minted by `mint_acting_user` (returns
+                                                                a token); re-minted every
+                                                                `refresh_seconds` (default 90
+                                                                minutes) -- Authentik does not report
+                                                                this token's own expiry over this
+                                                                path, so a fixed refresh age stands.
+
+    Both mints and the clock are injected so tests need neither Authentik nor a subprocess. A
+    metadata-call-credentials plugin on the gRPC channel calls `service_token()`/
+    `acting_user_token()` on every RPC (see build_channel), so a refresh here takes effect on the
+    next call without rebuilding the channel or the coordinator."""
+
+    def __init__(self, mint_acting_user, mint_service, clock=time.monotonic,
+                 refresh_seconds=TOKEN_REFRESH_SECONDS,
+                 service_refresh_margin_seconds=SERVICE_TOKEN_REFRESH_MARGIN_SECONDS):
+        self._mint_acting_user = mint_acting_user
+        self._mint_service = mint_service
         self._clock = clock
         self._refresh = refresh_seconds
-        self._bound = None
-        self._minted_at = None
-        self.mints = 0
+        self._service_margin = service_refresh_margin_seconds
 
-    def coordinator(self):
+        self._acting_token = None
+        self._acting_minted_at = None
+        self.acting_user_mints = 0
+
+        self._service_token = None
+        self._service_refresh_at = None
+        self.service_mints = 0
+
+    def acting_user_token(self):
         now = self._clock()
-        if self._bound is None or now - self._minted_at >= self._refresh:
-            self._bound = self._base.with_acting_user(self._mint())
-            self._minted_at = now
-            self.mints += 1
-        return self._bound
+        if self._acting_token is None or now - self._acting_minted_at >= self._refresh:
+            self._acting_token = self._mint_acting_user()
+            self._acting_minted_at = now
+            self.acting_user_mints += 1
+        return self._acting_token
+
+    def service_token(self):
+        now = self._clock()
+        if self._service_token is None or now >= self._service_refresh_at:
+            self._service_token, expires_in = self._mint_service()
+            self._service_refresh_at = now + expires_in - self._service_margin
+            self.service_mints += 1
+        return self._service_token
 
 
-def execute(session, request, what):
+class _ServiceBearerAuthPlugin(grpc.AuthMetadataPlugin):
+    """Attaches the session's current service token to every call as `authorization`, re-read at
+    call time so a refresh takes effect on this same long-lived channel without rebuilding it.
+    Mirrors Iverson.Clients/Python/conformance/driver.py's _DriverStaticBearerAuthPlugin, but reads
+    a live TokenSession instead of a token fixed at construction."""
+
+    def __init__(self, get_token):
+        self._get_token = get_token
+
+    def __call__(self, context, callback):
+        try:
+            callback((("authorization", f"Bearer {self._get_token()}"),), None)
+        except Exception as exc:  # noqa: BLE001
+            callback(None, exc)
+
+
+class _ActingUserAuthPlugin(grpc.AuthMetadataPlugin):
+    """Attaches the session's current acting-user token to every call as ACTING_USER_METADATA_KEY
+    (`x-acting-user-authorization`), re-read at call time. Mirrors driver.py's
+    _DriverActingUserAuthPlugin, but reads a live TokenSession instead of a token fixed at
+    construction."""
+
+    def __init__(self, get_token):
+        self._get_token = get_token
+
+    def __call__(self, context, callback):
+        try:
+            callback(((ACTING_USER_METADATA_KEY, f"Bearer {self._get_token()}"),), None)
+        except Exception as exc:  # noqa: BLE001
+            callback(None, exc)
+
+
+def build_channel(host, port, use_tls, session):
+    """The pattern leg's single gRPC channel, carrying both identities from `session`'s current
+    tokens (module docstring "Identity"; pattern per
+    Iverson.Clients/Python/conformance/driver.py's build_driver_channel). Some ChannelCredentials is
+    always required as the base once CallCredentials are present -- grpcio rejects CallCredentials
+    on a bare insecure_channel -- so local_channel_credentials() (a "trusted network" designation,
+    NOT real TLS/encryption) stands in for the compose stack's plaintext h2c, the same explicit
+    choice IversonClient makes (core.py:911-918)."""
+    address = f"{host}:{port}"
+    base_creds = grpc.ssl_channel_credentials() if use_tls else grpc.local_channel_credentials()
+    channel_creds = grpc.composite_channel_credentials(
+        base_creds,
+        grpc.metadata_call_credentials(_ServiceBearerAuthPlugin(session.service_token)),
+        grpc.metadata_call_credentials(_ActingUserAuthPlugin(session.acting_user_token)),
+    )
+    return grpc.secure_channel(address, channel_creds)
+
+
+def execute(coordinator, request, what):
     """Run one MatchPattern call to completion. A gRPC error or a count at `limit` aborts."""
     try:
-        rows = session.coordinator().match_pattern(request)
+        rows = coordinator.match_pattern(request)
     except grpc.RpcError as e:
         code = e.code() if hasattr(e, "code") else None
         details = e.details() if hasattr(e, "details") else str(e)
@@ -289,7 +425,7 @@ def query_calls(shape, candidates, doc_to_guid):
     return [doc_to_guid[doc] for doc in candidates]
 
 
-def run_pass(session, shape, build_request, per_candidate, baseline, baseline_order, maps, progress="pass"):
+def run_pass(coordinator, shape, build_request, per_candidate, baseline, baseline_order, maps, progress="pass"):
     """Every query's calls in `shape`; returns {query_id: {doc_id: parsed}} where parsed is
     `per_candidate(rows, what)` over that candidate's rows (candidates with no rows are absent)."""
     doc_to_guid, guid_to_doc = maps
@@ -299,7 +435,7 @@ def run_pass(session, shape, build_request, per_candidate, baseline, baseline_or
         grouped = {}
         for guid in query_calls(shape, baseline[query_id], doc_to_guid):
             what = f"{progress} query {query_id}" + (f" parent {guid}" if guid else "")
-            rows = execute(session, build_request(query_id, guid), what)
+            rows = execute(coordinator, build_request(query_id, guid), what)
             for doc_id, doc_rows in rows_by_candidate(rows, guid_to_doc, candidates, guid, what).items():
                 grouped.setdefault(doc_id, []).extend(doc_rows)
         result[query_id] = {doc: per_candidate(doc_rows, f"{progress} query {query_id} doc {doc}")
@@ -509,22 +645,19 @@ def require_env(name):
     return value
 
 
-def connect():
-    """(client, base coordinator) from the IVERSON_* env vars, as Iverson.Agents/Python/iverson_agent/
-    __main__.py:21-36 reads them. The compose stack's gRPC is plaintext h2c and its token endpoint
-    http://, so allow_insecure_credentials=True is the same explicit opt-in that CLI makes."""
-    from iverson_client import IversonClient, IversonClientCredentials
-
+def connect(session):
+    """(channel, coordinator) for BenchmarkDocument from the IVERSON_GRPC_URL env var, carrying both
+    identities via `session`'s tokens (module docstring "Identity"). Unlike the removed
+    IversonClient/IversonClientCredentials path, this never mints a token itself with an
+    unconfigurable Host header -- session.service_token()/acting_user_token() do that (see
+    mint_service_token, TokenSession)."""
     url = urlsplit(os.environ.get("IVERSON_GRPC_URL", "http://localhost:8080"))
     if url.scheme not in ("http", "https"):
         sys.exit(f"IVERSON_GRPC_URL must start with http:// or https://, got {url.geturl()!r}")
-    credentials = IversonClientCredentials(
-        client_id=require_env("IVERSON_CLIENT_ID"), client_secret=require_env("IVERSON_CLIENT_SECRET"),
-        token_endpoint=require_env("IVERSON_TOKEN_ENDPOINT"), scope=os.environ.get("IVERSON_CLIENT_SCOPE"))
-    client = IversonClient(url.hostname or "localhost", url.port or (443 if url.scheme == "https" else 8080),
-                           use_tls=url.scheme == "https", credentials=credentials,
-                           allow_insecure_credentials=True)
-    return client, client.coordinator(BenchmarkDocument)
+    host = url.hostname or "localhost"
+    port = url.port or (443 if url.scheme == "https" else 8080)
+    channel = build_channel(host, port, url.scheme == "https", session)
+    return channel, EntityCoordinator(BenchmarkDocument, channel)
 
 
 def mint_acting_user_token(username):
@@ -541,6 +674,15 @@ def mint_acting_user_token(username):
     return token
 
 
+def mint_service_token_from_env():
+    """mint_service_token() wired to the same env vars connect() used to read via
+    IversonClientCredentials, plus the Host header override (module docstring "Identity")."""
+    return mint_service_token(
+        require_env("IVERSON_CLIENT_ID"), require_env("IVERSON_CLIENT_SECRET"),
+        require_env("IVERSON_TOKEN_ENDPOINT"), os.environ.get("IVERSON_CLIENT_SCOPE"),
+        os.environ.get(ACTING_USER_HOST_HEADER_ENV, DEFAULT_ACTING_USER_HOST_HEADER))
+
+
 class Context:
     """Everything a subcommand needs, loaded once from the CLI arguments."""
 
@@ -554,8 +696,8 @@ class Context:
         self.expected = report.load_build_composite(args.baseline)
         if not self.expected:
             sys.exit(f"{report.sidecar_path_for(args.baseline)}: missing, or has no composite")
-        self.client, base = connect()
-        self.session = TokenSession(base, lambda: mint_acting_user_token(args.username))
+        self.session = TokenSession(lambda: mint_acting_user_token(args.username), mint_service_token_from_env)
+        self.channel, self.coordinator = connect(self.session)
 
     def path(self, name):
         return os.path.join(self.pattern_dir, name)
@@ -563,13 +705,13 @@ class Context:
 
 def calibration_pass(ctx, shape, order):
     limit = shape_limit(shape)
-    return run_pass(ctx.session, shape, lambda q, guid: calibration_request(ctx.texts[q], guid, limit),
+    return run_pass(ctx.coordinator, shape, lambda q, guid: calibration_request(ctx.texts[q], guid, limit),
                     calibration_chunks, ctx.baseline, order, ctx.maps, progress="calibration")
 
 
 def theta_pass(ctx, shape, theta, order, label):
     limit = shape_limit(shape)
-    return run_pass(ctx.session, shape, lambda q, guid: theta_request(ctx.texts[q], theta, guid, limit),
+    return run_pass(ctx.coordinator, shape, lambda q, guid: theta_request(ctx.texts[q], theta, guid, limit),
                     theta_runs, ctx.baseline, order, ctx.maps, progress=label)
 
 
@@ -577,9 +719,9 @@ def cmd_probe_a(ctx):
     query_id = ctx.args.query_id or ordered_query_ids(ctx.order)[0]
     doc_id = ctx.args.doc_id or ctx.baseline[query_id][0]
     guid = ctx.maps[0][doc_id]
-    rows = execute(ctx.session, probe_a_request(ctx.texts[query_id], guid, PER_CANDIDATE_LIMIT),
+    rows = execute(ctx.coordinator, probe_a_request(ctx.texts[query_id], guid, PER_CANDIDATE_LIMIT),
                    f"probe A query {query_id} doc {doc_id}")
-    calibration_rows = execute(ctx.session, calibration_request(ctx.texts[query_id], guid, PER_CANDIDATE_LIMIT),
+    calibration_rows = execute(ctx.coordinator, calibration_request(ctx.texts[query_id], guid, PER_CANDIDATE_LIMIT),
                                f"probe A calibration query {query_id} doc {doc_id}")
     for name, got in (("ALL ROWS running-sum call", rows), ("text-free calibration call", calibration_rows)):
         print(f"[probe-a] query {query_id}, candidate {doc_id} ({guid}), {name}: {len(got)} row(s)")
@@ -622,7 +764,7 @@ def cmd_probe_b(ctx):
                     start = time.perf_counter()
                     timed_out = False
                     try:
-                        rows = ctx.session.coordinator().match_pattern(request)
+                        rows = ctx.coordinator.match_pattern(request)
                     except grpc.RpcError as e:
                         if shape == "whole-corpus" and e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
                             timed_out = True
@@ -729,7 +871,7 @@ def main(argv=None):
     try:
         {"probe-a": cmd_probe_a, "probe-b": cmd_probe_b, "calibrate": cmd_calibrate, "run": cmd_run}[args.cmd](ctx)
     finally:
-        ctx.client.close()
+        ctx.channel.close()
 
 
 if __name__ == "__main__":
