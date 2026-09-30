@@ -86,7 +86,7 @@ Newly introduced by this plan and verified at plan-write time (2026-09-30):
 | P9 | Command | `pip install -e './hf-server'` installs the `simple-jev` console script | `hf-server/pyproject.toml`: `[project.scripts] simple-jev = "hf_server:main"`, `requires-python >=3.12`, `torch>=2.6`, `transformers>=5.16.1,<6` |
 | P10 | Ordering | Task 2 needs Task 1's `jev_rerank.py`; Task 3 needs Task 1; Task 4 needs Tasks 1–3 (winner, dry-run pass); Task 5 needs Task 4 | no task imports a file a later task creates |
 | P11 | Code | `HTTPError` carries `.code`, `.headers`, `.read()` and is caught before `OSError` | precedent `teacher_rerank.call_teacher`; `test_call_jev_*` pass against a real local server |
-| P12 | Code | Demo and `hf_server` responses carry `answers[d]["noul"]` / `["score"]` and `usage.input_tokens` | demo probes 2026-09-29/30 read exactly these keys |
+| P12 | Code | `hf_server` responses carry `answers[d]["noul"]` / `["score"]` and `usage.input_tokens`; the demo's did until 2026-09-30 | hf_server: `restore_binary_noul` (`hf_prompt_policies.py:182-186`), `common/response_scoring.py:318` (`score`), `:160` (`usage`). Demo: the 2026-09-29/30 probes read these keys, but since ≈18:50 UTC 2026-09-30 every demo request returns 301 → `featherless.ai/simple-jev/…` (HTML); re-checked 20:23 UTC. Task 3's `check-demo.sh` gates the screen on it (CIR-1 §3.1 (a)) |
 | P13 | Command | `nDCG@10, R@50, AP, R@10, P@10` built from `from ir_measures import …` work on Python 3.14 | ran; reproduces spec §3's identity and reversed rows exactly |
 | P14 | Consumer (Cat 6) | The ranked-changes §0 table ends at the relation-popularity row, and the paragraph under it counts "The seven rows added since" and names each row's window | `docs/2026-09-06-ranked-changes-after-retrieval-experiments.md:50` (last row), `:52-59` (paragraph). Task 5 appends after `:50` and rewrites the paragraph |
 | P15 | File path | `docs/plans/2026-09-GATE-simple-jev-judge.md` does not exist; `docs/plans/` is ignored, the ranked-changes doc is tracked | `ls` → none; `git check-ignore` → `.gitignore:49`; `git ls-files` lists the ranked-changes doc |
@@ -101,6 +101,7 @@ Newly introduced by this plan and verified at plan-write time (2026-09-30):
 | P24 | Gate pool | The spec's pool is 512/448, not the shipped window | `scifact-bge-base-2026-09-04/keymap.json.stats.json`: `chunk_max_chars 512, chunk_step 448`; Ben ruled to keep it (Global Constraints) |
 | U1 | Pod (UNVERIFIED) | The rented image has Python ≥ 3.12 and CUDA torch ≥ 2.6 | cannot be checked before renting; Task 4 Step 3 checks it first and re-rents on failure (cheap at that point). Stage 2's `vllm/vllm-openai:v0.30.0` image is **not** used: its entrypoint serves a model and holds the GPU |
 | U2 | Pod | `runpodctl send`/`receive` with md5 checks moves files; `setsid nohup` keeps long runs alive | the stage-2 runbook (`.worktrees/student-distill/docs/plans/2026-09-28-student-distillation-runbook.md:118-124,137`) and the stage-1 SIGTERM finding |
+| U3 | Pod | The weights land on the `/workspace` volume, which is sized separately from the container disk | RunPod storage docs (docs.runpod.io/pods/storage/types, fetched 2026-09-30): volume "Mount path: `/workspace` (default)"; the container disk is "temporary storage for the operating system and session data"; no default sizes stated. Task 4 Step 3's `df -h /workspace` checks it (CIR-1 §2.2) |
 
 ## Tasks
 
@@ -1068,16 +1069,41 @@ git -C $R commit -m "add the SimpleJEV stub server for the two-sided dry run"
 - Consumes: `jev_rerank.py` (Task 1).
 - Produces: the winner (demo model id and question type) and its ledger, used by Tasks 4 and 5.
 
-- [ ] **Step 1: Write the arm runner** (prelude from Task 1 first)
+- [ ] **Step 1: Write the demo check and the arm runner** (prelude from Task 1 first)
 
 ```bash
-mkdir -p $A/screen && cat > $A/screen/run-arm.sh <<'ARM'
+mkdir -p $A/screen && cat > $A/screen/check-demo.sh <<'CHECK'
 #!/usr/bin/env bash
-# One screen arm (spec §5): $1 label, $2 demo model id, $3 question type. An arm that ends over the
-# fallback cap (jev_rerank.py exits 1 and writes no run file) is invalid for selection.
+# Blocking demo check (CIR-1 §3.1, option a): one real §4 request -- NFCorpus PLAIN-478, the largest body --
+# for model $2 and question type $3 must return 200 with no redirect. Since 2026-09-30 the demo has answered
+# every request with 301 -> featherless.ai/simple-jev/... (HTML), which jev_rerank.py would follow as a GET
+# and retry into a fallback-cap failure. Exit 0: the demo serves. Exit 1: it does not (status printed).
+export S=/home/ben/repositories/Iverson/.worktrees/simple-jev-judge/Iverson.Server/Iverson.LoadTest/scripts
+OUT=/home/ben/repositories/iverson-benchmark-corpora/simple-jev-2026-09/screen
+python3 - "$2" "$3" > $OUT/$1.check.json <<'PY'
+import json, os, sys
+sys.path.insert(0, os.environ["S"])
+import jev_rerank as jev
+nf = "/home/ben/repositories/iverson-benchmark-corpora/nfcorpus-bge-base-2026-09-04"
+pool = jev.tr.load_run(nf + "/runs/bge-base.chunks.trec")
+corpus = jev.tr.load_corpus(nf + "/beir/corpus.jsonl")
+query = jev.tr.load_queries(nf + "/beir/queries.jsonl")["PLAIN-478"]
+print(json.dumps(jev.build_request(sys.argv[1], sys.argv[2], query, [corpus[d][1] for d in pool["PLAIN-478"]])))
+PY
+STATUS=$(curl -s -m 300 -A curl/8.5.0 -H 'Content-Type: application/json' --data-binary @$OUT/$1.check.json \
+  -o /dev/null -w '%{http_code} %{redirect_url}' https://simple-jev-demo-api.featherless.ai/v1/classifier)
+echo "$1 demo check: '$STATUS'"
+[ "$STATUS" = "200 " ]
+CHECK
+cat > $A/screen/run-arm.sh <<'ARM'
+#!/usr/bin/env bash
+# One screen arm (spec §5): $1 label, $2 demo model id, $3 question type. The arm runs only if the blocking
+# demo check passes first; an arm that ends over the fallback cap (jev_rerank.py exits 1 and writes no run
+# file) is invalid for selection.
 S=/home/ben/repositories/Iverson/.worktrees/simple-jev-judge/Iverson.Server/Iverson.LoadTest/scripts
 NF=/home/ben/repositories/iverson-benchmark-corpora/nfcorpus-bge-base-2026-09-04
 OUT=/home/ben/repositories/iverson-benchmark-corpora/simple-jev-2026-09/screen
+bash $OUT/check-demo.sh "$1" "$2" "$3" || { echo "$1 $2 $3 demo-unavailable" >> $OUT/arms.status; exit 1; }
 python3 $S/jev_rerank.py --pool $NF/runs/bge-base.chunks.trec --corpus $NF/beir/corpus.jsonl \
   --queries $NF/beir/queries.jsonl --base-url https://simple-jev-demo-api.featherless.ai \
   --model "$2" --question-type "$3" --responses $OUT/$1.responses.jsonl \
@@ -1086,7 +1112,13 @@ echo "$1 $2 $3 exit $?" >> $OUT/arms.status
 ARM
 ```
 
-- [ ] **Step 2: Run arms 1–5 in order, detached**
+- [ ] **Step 2: Run arms 1–5 in order, detached** — only once the demo is serving (CIR-1 §3.1, option a; Ben, 2026-09-30)
+
+```bash
+bash $A/screen/check-demo.sh arm1-qwen4b featherless-ai/Qwen3.5-4B-classifier noul
+```
+
+Required: `arm1-qwen4b demo check: '200 '` and exit 0. Otherwise the demo is still down (on 2026-09-30 this printed `'301 https://featherless.ai/simple-jev/classifier'`): do not launch. Task 3, and so Tasks 4–5, wait; re-run the check later.
 
 ```bash
 setsid nohup bash -c "
@@ -1098,7 +1130,7 @@ bash $A/screen/run-arm.sh arm5-qwen27b featherless-ai/Qwen3.8-27B-classifier nou
 " > /dev/null 2>&1 &
 ```
 
-Monitor with `cat $A/screen/arms.status; wc -l $A/screen/*.responses.jsonl`. A 403 in any arm's log means the user agent or endpoint is wrong: stop and fix, don't continue. An interrupted arm resumes by rerunning its line (same ledger).
+Monitor with `cat $A/screen/arms.status; wc -l $A/screen/*.responses.jsonl`. A 403 in any arm's log means the user agent or endpoint is wrong: stop and fix, don't continue. An interrupted arm resumes by rerunning its line (same ledger). `demo-unavailable` in `arms.status` means the demo stopped serving before that arm: once `check-demo.sh` passes again, rerun that arm's line (its ledger resumes). If no arm ends valid, Task 3 is not done: wait for the demo and rerun.
 
 - [ ] **Step 3: Score arms 1–5 and pick the `noul` leader**
 
@@ -1143,16 +1175,17 @@ The pod steps share one ephemeral machine, so they are one task. Launch every lo
 
 - [ ] **Step 1: STOP and ask Ben for the go-ahead.** State the winner, the card from Task 3's table, and the expected spend (≈ 1–2 GPU-hours plus the model download). Do not rent anything without an explicit yes.
 
-- [ ] **Step 2: Rent the pod** on RunPod: the card from the table, a **PyTorch** template (not `vllm/vllm-openai`, whose entrypoint serves a model and holds the GPU), container disk ≥ 150 GB. Record the start time.
+- [ ] **Step 2: Rent the pod** on RunPod: the card from the table, a **PyTorch** template (not `vllm/vllm-openai`, whose entrypoint serves a model and holds the GPU), container disk ≥ 150 GB **and volume disk ≥ 150 GB** (`HF_HOME` is on the `/workspace` volume). Record the start time.
 
 - [ ] **Step 3: Check the image before installing anything** (U1)
 
 ```bash
 python3 --version
 python3 -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+df -h /workspace
 ```
 
-Required: Python ≥ 3.12, torch ≥ 2.6, `True`. Otherwise terminate and re-rent with a newer template.
+Required: Python ≥ 3.12, torch ≥ 2.6, `True`, and at least 100 GB available on `/workspace`. Otherwise terminate and re-rent with a newer template or a larger volume.
 
 - [ ] **Step 4: Install SimpleJEV at the pinned commit and resolve the model revision**
 
@@ -1437,7 +1470,7 @@ The eight rows added since were measured at the shipped window instead, except t
 SimpleJEV judge gate, which reused the 512/448 bge-base SciFact pool:
 ```
 
-Check the order with `grep -n "^| " docs/2026-09-06-ranked-changes-after-retrieval-experiments.md | tail -3`: the new row must be the last table row.
+Check the order with `grep -n -B1 -A1 "SimpleJEV relevance judge" docs/2026-09-06-ranked-changes-after-retrieval-experiments.md`: it must print the relation-popularity row as `50-| Relation-popularity signal …`, the new row as `51:| SimpleJEV relevance judge …`, and a blank `52-` line.
 
 - [ ] **Step 9: Commit**
 
