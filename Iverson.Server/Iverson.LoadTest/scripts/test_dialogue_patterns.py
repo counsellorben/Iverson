@@ -936,7 +936,6 @@ def test_score_runs_the_40_calls_and_writes_the_verdict(tmp_path):
     pairs = {(p["x"], p["y"]): p for p in results["pairs"]}
     ht = pairs[(HOTEL, TRAIN)]
     assert (ht["gold_positive"], ht["reversed_negative"]) == (1, 1)                 # T1; T2
-    # dev-calibrated thetas are 0.2, so every test turn qualifies for every description:
     # The dev-calibrated thetas are 0.2 (see test_calibrate_freezes...), and s > 0.2 is strict, so only
     # the 0.9 turns qualify: ordered finds T1; order-free T1 and T2; T3's same-turn pair matches neither.
     assert ht["arms"]["ordered_semantic"]["predicted"] == ht["arms"]["ordered_semantic"]["tp"] == 1
@@ -1007,6 +1006,13 @@ def test_score_results_on_hand_built_matches():
     assert ht["ordered_semantic"]["f1"] == 1.0 and ht["order_free_semantic"]["precision"] == 0.5
     assert results["macro_f1"]["ordered_semantic"] == pytest.approx(1 / 12)
     assert results["macro_f1"]["order_free_semantic"] == pytest.approx((2 / 3) / 12)
+    # The gate's orientation: ordered strictly beats order-free here (macro-F1 delta positive), and the
+    # bootstrap CI must agree with that sign. Reversing the script's `draws["ordered_semantic"] -
+    # draws[other]` (an orientation mutant) flips this CI to [-0.041666666666666664, 0.0] -- both bounds
+    # non-positive -- so this assertion fails on that mutant while the delta assertion above would not.
+    b = results["bootstrap"]["ordered_minus_order_free"]
+    assert b["delta"] > 0
+    assert b["ci95"][0] >= 0 and b["ci95"][1] > 0
     assert results["single_intent"][RESTAURANT]["f1"] == 1.0 and results["single_intent"][HOTEL]["f1"] == 0.0
     # Verify reversed_negative is gold_positive of the reverse pair: test with custom splits where counts differ.
     # Dialogues: X (hotel then restaurant) and Y (restaurant only).
