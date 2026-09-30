@@ -31,6 +31,7 @@
 - **The shell's `grep` skips gitignored paths, including `docs/`.** Use `command grep`.
 - **Commits** use a lowercase imperative subject, a blank line, then `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`. Commit explicit paths only. `docs/` needs `git add -f`.
 - **Tasks 2 and 3 write to the shared local stack:** one new type and 14,746 rows in `tenant_bypass`. The controller asks the user before dispatching Task 2.
+- **Execution base (user decision, CIR round 1 §3.1):** local `main` is pushed to `origin` before execution. The execution worktree, created with the native worktree tool from `origin/main`, then contains `pattern_leg.py` and its two fixes (`a819b2a4`, `58d70f43`).
 - **Every live step runs in a fresh shell.** It starts by sourcing the state file Task 2 writes, which re-reads every secret from `.env` each time and never stores one.
 
 ## Plan decisions beyond the spec (all mechanical; made while prototyping)
@@ -79,6 +80,7 @@ These assumptions were verified by `thorough-brainstorming` and by two rounds of
 | 13 | numpy 2.5.2 and scipy 1.18.1 are available under the `python-libs` `PYTHONPATH`. A seeded numpy bootstrap already exists as a precedent. | `iverson-benchmark-corpora/python-libs`; `aspect_vectors.py:360-379`. |
 | 14 | The work adds new files only; no existing file is modified. | The design's deliverables list only new files. |
 | 15 | No dev or test user utterance is blank, so the write path embeds every turn and readiness cannot stall on a skipped one. | 0 of 14,746 user utterances are blank. `IntelligenceStoreConsumer.cs:138` skips blank text. |
+| 16 | Environment | Before the push, `origin/main` does not contain `pattern_leg.py`. A worktree branched from it fails Task 1's tests with `ModuleNotFoundError: No module named 'pattern_leg'`. | CIR round 1 §3.1: `git rev-list --count origin/main..main` = 39, and the failure was reproduced on an `origin/main` worktree. |
 | 16 | ONE ROW PER MATCH output carries `DialogueId` (the partition column), so each match maps back to its dialogue. | CDR round 1 engine probe (A5). |
 | 17 | The dev θ argmax falls inside the p50–p99 grid for all four intents. | CDR round 1 R10, over the full dev split: p74–p91. |
 | 18 | Similarity scoring is independent of θ. Each batch is fully scored before the matcher runs, so a placeholder θ gives representative timing. | `ObjectSearchGrpcService.MatchPattern.cs:126` (`ScoreBatchAsync`) runs before `compiled.Run` at `:132`. |
