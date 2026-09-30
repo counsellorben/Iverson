@@ -1008,6 +1008,19 @@ def test_score_results_on_hand_built_matches():
     assert results["macro_f1"]["ordered_semantic"] == pytest.approx(1 / 12)
     assert results["macro_f1"]["order_free_semantic"] == pytest.approx((2 / 3) / 12)
     assert results["single_intent"][RESTAURANT]["f1"] == 1.0 and results["single_intent"][HOTEL]["f1"] == 0.0
+    # Verify reversed_negative is gold_positive of the reverse pair: test with custom splits where counts differ.
+    # Dialogues: X (hotel then restaurant) and Y (restaurant only).
+    # gold_positive(HOTEL, RESTAURANT) = 1 (X); gold_positive(RESTAURANT, HOTEL) = 0.
+    custom_splits = {
+        "test": [dialogue("X", [turn("hotel", F("hotel", HOTEL, "a")), turn("restaurant", F("restaurant", RESTAURANT, "b"))]),
+                 dialogue("Y", [turn("restaurant", F("restaurant", RESTAURANT, "c"))])],
+    }
+    matches2 = {arm: {pair: set() for pair in dp.PAIRS} for arm in dp.ARMS}
+    matches2["ordered_semantic"][(HOTEL, RESTAURANT)] = {"X"}
+    single2 = {i: {("X", 0): 0.1, ("X", 1): 0.1, ("Y", 0): 0.1} for i in dp.INTENTS}
+    results2 = dp.score_results(custom_splits, matches2, single2, {i: 0.5 for i in dp.INTENTS})
+    hr = {(p["x"], p["y"]): p for p in results2["pairs"]}[(HOTEL, RESTAURANT)]
+    assert hr["gold_positive"] == 1 and hr["reversed_negative"] == 0  # Catches the mutant
 
 
 def test_a_readiness_call_at_limit_aborts_rather_than_waiting(tmp_path):
