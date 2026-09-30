@@ -152,7 +152,22 @@ Section 1 verdict, which is gated only on ordered − order-free.
 
 ## 7. Phase 0
 
-From `iverson-benchmark-corpora/matchpattern-dialogues-2026-09-29/phase0.md`:
+This section is compiled from the run's own logs (`ingest.log`, `ready.log`, `ready2.log`,
+`ready3.log`, `ready4.log`, `probe-s.log`, `probe-t.log`, `probe-s-3.log`, `probe-t-3.log`, and
+their mtimes) and the controller's SDD ledger, not from
+`iverson-benchmark-corpora/matchpattern-dialogues-2026-09-29/phase0.md`. `phase0.md`'s own account
+has four errors:
+
+- (a) its `ready2.log` line calls the run "aborted during token minting"; it wasn't — the token
+  minted successfully (`ready2.log`'s one line), and the controller stopped it afterward.
+- (b) its `ready.log` line says the rerun "again hit `DEADLINE_EXCEEDED`" on the **test** split; it
+  actually failed on **dev** attempt 1 (`ready.log`: `readiness dev attempt 1: ... DEADLINE_EXCEEDED`).
+- (c) it dates `ready3.log` "2026-09-30 ~23:14–00:15 UTC"; the run was 2026-09-29 23:14 EDT to
+  2026-09-30 00:15 EDT (`ready3.log`'s own mtime, minus its stated 3,611 s wall time).
+- (d) its DLQ paragraph muddles the third DLQ row: turn 2's StarRocks row already existed, so
+  replaying its DLQ event was a no-op upsert; only turns 3–4 were actually missing.
+
+The rest of this section:
 
 - **Composite:** `ded69e9492bdc081`, unchanged across every recorded pass — ingest write,
   readiness, Probe S, Probe T, and (per `theta.json`/`results.json`'s own `build` records) also
@@ -176,27 +191,49 @@ From `iverson-benchmark-corpora/matchpattern-dialogues-2026-09-29/phase0.md`:
   replay endpoint (user-approved). StarRocks then held all 14,746 rows with no duplicates, and
   readiness passed on the first attempt for both splits (`ready4.log`): dev 7,374 rows / 1
   attempt / 13 s; test 7,372 rows / 1 attempt / 5 s.
+- **Container recreation:** after the host reboot, the `postgres`, `prometheus`,
+  `authentik-server` and `authentik-worker` containers were recreated from the main checkout
+  (user-approved), because their bind mounts had pointed into a removed worktree. They reused the
+  same named volumes, and Postgres skipped initialization. `iverson-api` was not recreated; every
+  other container was restarted unchanged.
 - **Earlier readiness attempts:** `ingest.log` records ingest's own readiness check passing on
   dev, then failing on test attempt 20 with MatchPattern `DEADLINE_EXCEEDED` (ingest exited 1),
-  after all 14,746 writes had already finished. `ready.log`, the first `ready` rerun, failed on
-  its dev attempt 1, again with `DEADLINE_EXCEEDED`. Both `DEADLINE_EXCEEDED` failures came during
-  the host-load peak (controller's `uptime` reading, 5-minute load average 24.85 on a 4-CPU host,
-  ~23:11 local on 2026-09-29, while TEI embedded the backlog). `ready2.log`, a second `ready`
-  rerun, was stopped deliberately by the controller right after it minted its token, before it
-  made any MatchPattern call; it produced no result — it did not hit the 30 s limit, and it did
-  not fail at minting. (`phase0.md`'s line describing `ready2.log` as "aborted during token
-  minting" is inaccurate; this is the correct account.) No call in calibrate or score is affected
-  by any of this; both ran after the load peak and after `ready4.log`'s clean pass.
+  after all 14,746 writes had already finished. That call ended at about 23:06:17 EDT (`ingest.log`'s
+  own mtime), so its 30 s call ran from about 23:05:47 to 23:06:17 EDT and straddled the Postgres
+  crash at 23:06:00 EDT (UTC−4; 03:06:00 UTC — see Incident, above), whose recovery completed at
+  about 23:06:23 EDT. `ready.log`, the first `ready` rerun, failed on its dev attempt 1, again with
+  `DEADLINE_EXCEEDED`, timing out at about 23:07:47 EDT (`ready.log`'s own mtime) — just after that
+  recovery, during the load peak (controller's `uptime` reading, 5-minute load average 24.85 on a
+  4-CPU host, ~23:11 EDT on 2026-09-29, while TEI embedded the backlog). Both `DEADLINE_EXCEEDED`
+  failures have two stated causes: host load, plus — for the first one — a call whose 30 s window
+  overlapped the Postgres crash. `ready2.log`, a second `ready` rerun, was stopped deliberately by
+  the controller right after it minted its token, before any MatchPattern call returned; it
+  produced no result — it did not hit the 30 s limit, and it did not fail at minting. No call in
+  calibrate or score is affected by any of this; both ran after the load peak and after
+  `ready4.log`'s clean pass.
+- **Early probe attempts, out of order:** before readiness had passed, an implementer ran
+  `probe-s` and `probe-t` (`probe-s.log`, `probe-t.log`); neither wrote anything. `probe-s` failed
+  at token minting on an Authentik 502 (its core socket was missing while Authentik restarted);
+  `probe-t` was refused by the script's own readiness guard. The controller stopped that
+  implementer. The Task 2 retry numbering explains why the directory has `probe-s-3.log` with no
+  `-2`.
 - **Probe S:** 1 row, for `MUL0484.json`, in 1.53 s. Passed.
 - **Probe T** (find_hotel → find_restaurant, dev, θ 0.5 placeholder, pattern `A Z* B`): 250 dev
   dialogues matched, 3.23 s — well under the server's 30 s call limit. Passed.
 
 ## 8. Integrity
 
-- **Every call exited cleanly.** `calibrate` (4 calls, `EXIT=0`) and `score` (40 calls, `EXIT=0`)
-  both completed to `EXIT=0`; the script aborts before writing its output file on any gRPC error,
-  a matched `DialogueId` outside the split's written set, a NULL similarity, or a `/build`
-  composite mismatch (script docstring, "Failure is loud"). Neither run aborted.
+- **`calibrate` completed to a captured `EXIT=0`; `score`'s exit code was not captured, but its
+  completion is shown by what it wrote.** `calibrate.log` ends `EXIT=0` (4 calls). `score` was
+  launched under `nohup`, and `score.log` has no `EXIT=` line at all — the implementer never
+  captured it. `score`'s completion is established instead by `results.json`, which
+  `dialogue_patterns.py`'s `cmd_score` writes (`pl.write_json(results_path, results)`, line 860)
+  only after `checked()` has run all 40 calls and both the before and after `/build` composite
+  checks have passed, and by `score.log`'s last line, `GATE: GO`, which `cmd_score` prints
+  (`say(f"GATE: {results['gate']}")`, line 865) only after that write. The script aborts before
+  writing its output file on any gRPC error, a matched `DialogueId` outside the split's written
+  set, a NULL similarity, or a `/build` composite mismatch (script docstring, "Failure is loud").
+  Neither run aborted.
 - **No count equal to `limit`:** `limit` is 10,000 for every call; scanning `results.json`'s 40
   `calls` entries and `theta.json`'s 4 `calls` entries, none has `rows == 10000`.
 - **Matched ids are a subset of the written ids:** enforced in-process by `matched_dialogues()`,
@@ -223,11 +260,12 @@ e37f05c2800286768d273aaf4a8e85a4  OUT/data/test/dialogues_001.json
 
 `OUT` = `/home/ben/repositories/iverson-benchmark-corpora/matchpattern-dialogues-2026-09-29`.
 
-Script and test file (unchanged by this task, quoted for completeness):
+Script (unchanged by this task) and test file (changed by this task's final review fix wave; see
+§10), quoted for completeness:
 
 ```
 97634749b56fbd1abf70ce9cbcf6fd89  Iverson.Server/Iverson.LoadTest/scripts/dialogue_patterns.py
-644fe8fbfcf2024f976325a23efc96c6  Iverson.Server/Iverson.LoadTest/scripts/test_dialogue_patterns.py
+5f279fb17872f9c5f9e39b9abf6a8fd6  Iverson.Server/Iverson.LoadTest/scripts/test_dialogue_patterns.py
 ```
 
 ## 10. Deviations
@@ -261,10 +299,17 @@ From the plan's "Plan decisions beyond the spec" section (all mechanical; made w
 8. **The stack's live limit values** (Phase 0) are read from `docker exec iverson-api env`,
    because no API exposes them.
 
-**SDD deviation (this task):** the test file `test_dialogue_patterns.py` differs from the plan's
-pinned prototype md5 (now `644fe8fbfcf2024f976325a23efc96c6`) because a review found the
-`reversed_negative` test could not fail; one test was strengthened. The script's md5
-(`97634749b56fbd1abf70ce9cbcf6fd89`) is unchanged.
+**SDD deviation (this task):** the test file `test_dialogue_patterns.py` changed twice from the
+plan's pinned prototype md5, both times as review fixes. First, a Task 1 review found the
+`reversed_negative` test could not fail; one test was strengthened, bringing the md5 to
+`644fe8fbfcf2024f976325a23efc96c6`. Second, this branch's final whole-branch review found no test
+tied the gate verdict to the orientation of the ordered-minus-order-free bootstrap difference (a
+mutant that reverses that subtraction flips the live verdict but leaves all 109 tests green);
+`test_score_results_on_hand_built_matches` was strengthened to assert the bootstrap delta and CI
+share the sign the hand-built data implies, and a stale, self-contradicting comment in
+`test_score_runs_the_40_calls_and_writes_the_verdict` was removed, bringing the md5 to
+`5f279fb17872f9c5f9e39b9abf6a8fd6`. The script's md5 (`97634749b56fbd1abf70ce9cbcf6fd89`) is
+unchanged throughout.
 
 **Phase 0 environment note:** Phase 0 ran with the RRF bench overrides still live —
 `Patterns__Limits__MaxOutputRows=18623` and `Patterns__Limits__MaxExpressionLength=25000` — which
@@ -278,3 +323,7 @@ this design needs neither of.
 - **The descriptions are fixed and untuned,** so a NO-GO speaks only for them and this θ grid.
   (This run is a GO, but the same caveat bounds how far the result generalizes: it speaks for
   these four fixed descriptions and this θ grid, not for MatchPattern ordering in general.)
+- **Under host load, single-split readiness calls hit the server's 30 s MatchPattern limit
+  twice** (§7), one of them overlapping the Postgres crash. Probe T's 3.23 s and the scoring calls
+  were measured on a quiet host, so the timing margin shown here does not carry over to a loaded
+  host.
