@@ -29,7 +29,7 @@
     "@opentelemetry/sdk-trace-web": "^2.9.0",
     "@opentelemetry/instrumentation-fetch": "^0.222.0",
     "@opentelemetry/instrumentation-document-load": "^0.67.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.220.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
     "@opentelemetry/instrumentation": "^0.222.0"
   },
   "devDependencies": {
