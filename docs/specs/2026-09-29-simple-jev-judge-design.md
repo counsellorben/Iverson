@@ -1,7 +1,7 @@
 # SimpleJEV relevance judge — offline gate (design)
 
 Written 2026-09-29. Produced with thorough-brainstorming. The approaches were probed against the public
-demo, and the 23 assumptions in §10 were verified before this spec was written.
+demo, and the 25 assumptions in §10 were verified (A24–A25 added by CDR-1's span check).
 
 ## 1. The question
 
@@ -169,13 +169,27 @@ defect where prompts carried a bare `[docid]` while every test stayed green.
 
 ### 6.2 Pod
 
-- **GPU, sized to the winner in bf16:** an 80 GB card for Qwen3.5-4B (≈9 GB), gemma-4-12B-it (≈24 GB),
-  gemma-4-26B-A4B-it (≈52 GB) or Qwen3.8-27B (≈56 GB); an **H200** for Qwen3.6-35B-A3B (≈72 GB). Nothing is
-  rented until the screen has named a winner.
+- **GPU, sized to the winner for weights plus the copied prefix cache (CDR-1 §3.1, option b).** Every branch
+  carries the whole pool (A15). `hf_server` deep-copies the prefix cache and broadcasts it to each suffix
+  batch of up to `--max-batch-size` rows (`hf_server.py:536-542`), and no flag bounds that memory
+  (`:1136-1137`). Estimated full-attention KV in bf16 at query 129's ≈52k tokens, per batch row (sliding-window
+  and linear-attention state excluded):
+
+  | Model | Weights | KV per token | Per row | Weights + 32 rows | Card |
+  |---|---|---|---|---|---|
+  | Qwen3.5-4B | ≈9 GB | 32 KiB | ≈1.7 GB | ≈63 GB | 80 GB |
+  | gemma-4-12B-it | ≈24 GB | 16 KiB | ≈0.85 GB | ≈51 GB | 80 GB |
+  | gemma-4-26B-A4B-it | ≈52 GB | 20 KiB | ≈1.06 GB | ≈86 GB | H200 (141 GB) |
+  | Qwen3.8-27B | ≈56 GB | 64 KiB | ≈3.4 GB | ≈165 GB | H200 |
+  | Qwen3.6-35B-A3B | ≈72 GB | 20 KiB | ≈1.06 GB | ≈106 GB | H200 |
+
+  At the default 32 rows, the 27B's estimate exceeds even an H200, so expect its pre-flight to settle at
+  `--max-batch-size` 16 or lower. These are estimates; the §6.3 pre-flight decides. Nothing is rented until
+  the screen has named a winner.
 - **Server:** simple-jev commit `7bb4f0c745b2a160776b1d41ed4cdc02967f6cf3`, `pip install -e './hf-server'`,
   launched with `setsid nohup`:
   `simple-jev --model <HF repo> --revision <full sha> --served-model-name <HF repo> --enforce-model-id
-  --classifier-prompt-policy <policy> --max-request-branches 64 --max-model-len 16384 --dtype bfloat16`.
+  --classifier-prompt-policy <policy> --max-request-branches 64 --max-model-len 65536 --dtype bfloat16`.
 - **Policy pin:** `<policy>` is the value the **code's** `KNOWN_PROFILES` gives for the winner
   (`hf_prompt_policies.py:41-52`), **not** the README's table, which is stale at this commit. Those values
   are: Qwen 4B, Qwen 27B and Gemma 26B-A4B → `shared_examples_binary`; Qwen 35B-A3B and Gemma 12B →
@@ -189,6 +203,15 @@ defect where prompts carried a bare `[docid]` while every test stayed green.
 
 ### 6.3 Passes
 
+0. **Pre-flight (blocking; CDR-1 §2.1 and §3.1):** with `ENABLE_OPEN_JEV_ADVANCED_METRICS=1`, send the §4
+   request for SciFact query 129, the largest branch in either corpus (150,319 rendered chars, ≈52k tokens;
+   the largest NFCorpus branch is ≈130K chars). It must return HTTP 200 before any other pass runs.
+   - On a 500 or CUDA out-of-memory error: restart the server with `--max-batch-size` halved (32 → 16 → 8 …)
+     and resend until it returns 200.
+   - On a 422: the tokenizer is denser than the demo-measured 2.90–3.05 chars/token and the branch exceeds
+     `--max-model-len`. Stop; do not run the passes.
+   - Record the final `--max-batch-size` and the pre-flight's `usage.input_tokens` in the sidecar's
+     `reranker` block.
 1. **Transfer check (reported, not blocking):** the first 20 NFCorpus queries in pool order, on the pod,
    compared with the winner's demo ledger. Report the per-query Spearman ρ and the mean absolute judge-value
    difference. It shows whether the selection transferred; the gate measures only what was self-hosted.
@@ -197,7 +220,7 @@ defect where prompts carried a bare `[docid]` while every test stayed green.
 2. **Main pass:** 300 SciFact queries → `jev-<model>.chunks.trec` plus `jev-<model>.meta.json`. The sidecar
    carries **bge-base's own composite `7d3a15092f963723`**, so `report.py` does not print BUILD MISMATCH, and a
    `reranker` block: simple-jev commit, HF repo and full revision, policy, question type, wording SHA-256,
-   endpoint, and fallback count with query ids.
+   endpoint, `--max-batch-size` and `--max-model-len` as run, and fallback count with query ids.
 3. **Repeat pass (noise floor):** a 50-query subsample,
    `teacher_rerank.select_subsample(ids, 50, 20260929)`, written to a **separate ledger** and run file. It is
    scored against qrels **restricted to those 50 ids**, because `report.py` averages partial runs over every
@@ -272,7 +295,7 @@ from `main` (`main` equals `origin/main` at writing).
 | A12 | `noul` is continuous `P(yes)` under `shared_*` | `hf_prompt_policies.py:107-120,182-186`; wired `hf_server.py:946` |
 | A13 | The 5 screen models exist on HF and have a profile — **moved** | all 5 repos resolve, ungated. The **code** profiles (`hf_prompt_policies.py:41-52`) differ from the README table, so §6.2 pins from the code |
 | A14 | No RWKV backend | `hf_server.py:1300` `choices=["transformers", "laya"]` |
-| A15 | The longest doc fits 16,384 | `shared_*` repeat only `state` (`hf_prompt_policies.py:164-172`); longest doc 10,128 chars accepted by the demo at 10,026 tokens under its (unknown) policy |
+| A15 | Every branch fits `--max-model-len 65536` — **moved** (CDR-1 §2.1) | The v1 builder lists every question's instructions in the shared prefix (`common/prompt_builder.py:173-181`, placed in each branch's system message at `hf_server.py:272`) and repeats the selected one twice (`prompt_builder.py:257-263`), so each branch carries all 50 documents. SciFact branches render at 69,731–150,319 chars (CDR-1, via `PromptCompiler.compile(render_only=True)`; re-estimated 2026-09-30 from raw instruction lengths at 68,736–146,393, max query 129). The largest NFCorpus branch is ≈130K chars (PLAIN-478). At the demo-measured 2.90–3.05 chars/token the longest is ≈52k tokens. All five models declare `max_position_embeddings` 262144 |
 | A16 | Error shapes | `hf_server` 422 `:1002`, 429 + `Retry-After: 1` `:1090`; demo 400 (probed) |
 | A17 | Synthetic scores pass the structural check | scores 50..1 are never 0 (`report.py:260-278`) |
 | A18 | Every pool doc resolves | 0 missing in both pools |
@@ -280,7 +303,9 @@ from `main` (`main` equals `origin/main` at writing).
 | A20 | Ranked-changes coverage rule | `ranked-changes…md` §0 |
 | A21 | No name collision; `teacher_rerank.py` unmodified | no `*jev*` in `scripts/` |
 | A22 | Worktree base | `git rev-list` main vs origin/main = 0 / 0 |
-| A23 | GPU sizing | HF safetensors param counts: 4.66B, 11.96B, 25.81B, 27.78B, 35.95B |
+| A23 | GPU sizing (weights plus prefix-cache copies) | HF safetensors param counts: 4.66B, 11.96B, 25.81B, 27.78B, 35.95B. HF `config.json` full-attention layers × KV heads × head dim: 4B 8×4×256, 12B 8×1×512 (global), 26B-A4B 5×2×512 (global), 27B 16×4×256, 35B-A3B 10×2×256. The prefix cache is deep-copied per suffix batch (`hf_server.py:536-542`), with no memory bound (`:1136-1137`). The query-129 pre-flight decides |
+| A24 | The demo accepts the largest 50-question NFCorpus body | PLAIN-478 (the largest NFCorpus branch) returned 200 with 50 answers on Qwen3.8-27B (78,248 input tokens) and Gemma-4-26B-A4B (136,410), re-probed 2026-09-30. CDR-1 reported all five models |
+| A25 | `hf_server` serves all five screen models on the prefix-cache path | That path raises unless the cache supports `reorder_cache` (`hf_server.py:510-513`); `hf-server/README.md:120-129` reports hf_server development scores (/477) for all five under their `shared_*` policies |
 
 **Demo probes (2026-09-29, SciFact query 1, public data):** 50 questions per request accepted by the 27B and
 Gemma 26B models; distinct `noul` values 10/10 (4B, k=10), 50/50 (Gemma), 32/50 (27B); relevant doc
