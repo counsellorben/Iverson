@@ -16,6 +16,12 @@ semantic macro-F1) is entirely above 0 — the run is a GO:
 Both bounds are strictly positive; MatchPattern's ordering demonstrably adds value over an
 order-free semantic baseline on this use case.
 
+The pre-registered ordered keyword control scored macro-F1 0.7432 against the ordered semantic
+arm's 0.5102 (ordered semantic − ordered keyword −0.2330, 95% CI [−0.2606, −0.2051], entirely
+below 0; see §6). This GO answers only the pre-registered question, whether ordering helps the
+semantic arm. It does not show that SIMILARITY-based defines are the best approach for this task:
+with these fixed, untuned descriptions, keyword flags did better.
+
 ## 2. Data
 
 - **Source:** MultiWOZ 2.2, `https://raw.githubusercontent.com/budzianowski/multiwoz/master/data/MultiWOZ_2.2`.
@@ -170,10 +176,17 @@ From `iverson-benchmark-corpora/matchpattern-dialogues-2026-09-29/phase0.md`:
   replay endpoint (user-approved). StarRocks then held all 14,746 rows with no duplicates, and
   readiness passed on the first attempt for both splits (`ready4.log`): dev 7,374 rows / 1
   attempt / 13 s; test 7,372 rows / 1 attempt / 5 s.
-- **Earlier readiness attempts** (`ready.log`, `ready2.log`) also hit the 30 s MatchPattern limit
-  (`DEADLINE_EXCEEDED`) during a host-load peak (load average ~25 on 4 CPUs while TEI embedded the
-  backlog). No call in calibrate or score is affected by that; both ran after the load peak and
-  after `ready4.log`'s clean pass.
+- **Earlier readiness attempts:** `ingest.log` records ingest's own readiness check passing on
+  dev, then failing on test attempt 20 with MatchPattern `DEADLINE_EXCEEDED` (ingest exited 1),
+  after all 14,746 writes had already finished. `ready.log`, the first `ready` rerun, failed on
+  its dev attempt 1, again with `DEADLINE_EXCEEDED`. Both `DEADLINE_EXCEEDED` failures came during
+  the host-load peak (controller's `uptime` reading, 5-minute load average 24.85 on a 4-CPU host,
+  ~23:11 local on 2026-09-29, while TEI embedded the backlog). `ready2.log`, a second `ready`
+  rerun, was stopped deliberately by the controller right after it minted its token, before it
+  made any MatchPattern call; it produced no result — it did not hit the 30 s limit, and it did
+  not fail at minting. (`phase0.md`'s line describing `ready2.log` as "aborted during token
+  minting" is inaccurate; this is the correct account.) No call in calibrate or score is affected
+  by any of this; both ran after the load peak and after `ready4.log`'s clean pass.
 - **Probe S:** 1 row, for `MUL0484.json`, in 1.53 s. Passed.
 - **Probe T** (find_hotel → find_restaurant, dev, θ 0.5 placeholder, pattern `A Z* B`): 250 dev
   dialogues matched, 3.23 s — well under the server's 30 s call limit. Passed.
