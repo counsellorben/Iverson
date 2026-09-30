@@ -1,7 +1,7 @@
 # SimpleJEV relevance judge — offline gate (design)
 
 Written 2026-09-29. Produced with thorough-brainstorming. The approaches were probed against the public
-demo, and the 25 assumptions in §10 were verified (A24–A25 added by CDR-1's span check).
+demo, and the 26 assumptions in §10 were verified (A24–A25 added by CDR-1's span check, A26 by CDR-2's).
 
 ## 1. The question
 
@@ -188,7 +188,7 @@ defect where prompts carried a bare `[docid]` while every test stayed green.
   the screen has named a winner.
 - **Server:** simple-jev commit `7bb4f0c745b2a160776b1d41ed4cdc02967f6cf3`, `pip install -e './hf-server'`,
   launched with `setsid nohup`:
-  `simple-jev --model <HF repo> --revision <full sha> --served-model-name <HF repo> --enforce-model-id
+  `ENABLE_OPEN_JEV_ADVANCED_METRICS=1 simple-jev --model <HF repo> --revision <full sha> --served-model-name <HF repo> --enforce-model-id
   --classifier-prompt-policy <policy> --max-request-branches 64 --max-model-len 65536 --dtype bfloat16`.
 - **Policy pin:** `<policy>` is the value the **code's** `KNOWN_PROFILES` gives for the winner
   (`hf_prompt_policies.py:41-52`), **not** the README's table, which is stale at this commit. Those values
@@ -211,7 +211,8 @@ defect where prompts carried a bare `[docid]` while every test stayed green.
    - On a 422: the tokenizer is denser than the demo-measured 2.90–3.05 chars/token and the branch exceeds
      `--max-model-len`. Stop; do not run the passes.
    - Record the final `--max-batch-size` and the pre-flight's `usage.input_tokens` in the sidecar's
-     `reranker` block.
+     `reranker` block, by passing them to `jev_rerank.py` as `--max-batch-size` and
+     `--preflight-input-tokens` (§9) on every pod pass.
 1. **Transfer check (reported, not blocking):** the first 20 NFCorpus queries in pool order, on the pod,
    compared with the winner's demo ledger. Report the per-query Spearman ρ and the mean absolute judge-value
    difference. It shows whether the selection transferred; the gate measures only what was self-hosted.
@@ -270,7 +271,7 @@ from `main` (`main` equals `origin/main` at writing).
 
 | Unit | New / reused | Responsibility |
 |---|---|---|
-| `jev_rerank.py` | new | CLI: `--pool --corpus --queries --base-url --model --question-type {noul,score} --responses --out --composite [--subsample N --subsample-seed S]`. Builds §4 requests, applies §5 transport rules, orders per §4, and writes the run file (**its own writer**, run tag `simple-jev`) and the sidecar. |
+| `jev_rerank.py` | new | CLI: `--pool --corpus --queries --base-url --model --question-type {noul,score} --responses --out --composite [--subsample N --subsample-seed S]`, plus record-only provenance flags `--server-commit --revision --policy --max-batch-size --max-model-len --preflight-input-tokens`. Each provenance flag is written verbatim into the sidecar's `reranker` block, is never sent to the server, and records `null` when omitted (the `teacher_rerank.py` `--vllm-version` / `--quantisation` / `--instance-type` precedent). Builds §4 requests, applies §5 transport rules, orders per §4, and writes the run file (**its own writer**, run tag `simple-jev`) and the sidecar. |
 | `teacher_rerank.py` helpers | reused by import, unmodified | `load_run`, `load_corpus` (returns `(title, text)`; the judge uses `[1]`), `load_queries`, `select_subsample`, `read_responses_ledger`, `accepted_entry`, `append_response`, `make_record`. **Not** `write_run`, which hard-codes `RUN_TAG = "teacher-ceiling"` (`:55`, `:490-505`). |
 | `stub_jev_server.py` | new | §6.1 stub: `identity` and `reversed` modes, document-text assertion. Separate from `stub_vllm_server.py` because the protocol differs. |
 | `test_jev_rerank.py` | new | Request shape (wording, one question per doc, doc text present); acceptance rules; tie-break is stable over baseline order; synthetic scores are `51 − position`; retry classes (429 honours `Retry-After`, 400/422 fall back at once, 403 aborts); fallback cap; resume from accepted entries only; per-pass ledger isolation. Each test must be falsified by a named mutation. |
@@ -306,6 +307,7 @@ from `main` (`main` equals `origin/main` at writing).
 | A23 | GPU sizing (weights plus prefix-cache copies) | HF safetensors param counts: 4.66B, 11.96B, 25.81B, 27.78B, 35.95B. HF `config.json` full-attention layers × KV heads × head dim: 4B 8×4×256, 12B 8×1×512 (global), 26B-A4B 5×2×512 (global), 27B 16×4×256, 35B-A3B 10×2×256. The prefix cache is deep-copied per suffix batch (`hf_server.py:536-542`), with no memory bound (`:1136-1137`). The query-129 pre-flight decides |
 | A24 | The demo accepts the largest 50-question NFCorpus body | PLAIN-478 (the largest NFCorpus branch) returned 200 with 50 answers on Qwen3.8-27B (78,248 input tokens) and Gemma-4-26B-A4B (136,410), re-probed 2026-09-30. CDR-1 reported all five models |
 | A25 | `hf_server` serves all five screen models on the prefix-cache path | That path raises unless the cache supports `reorder_cache` (`hf_server.py:510-513`); `hf-server/README.md:120-129` reports hf_server development scores (/477) for all five under their `shared_*` policies |
+| A26 | Every sidecar `reranker` field has a source (CDR-2 §2.1) | hf_server exposes no commit or `--max-batch-size` / `--max-model-len` in any response; the revision and policy appear only in advanced metadata (`hf_server.py:864-869`, `:949-954`, `:1264-1275`), so they come from record-only flags (precedent `teacher_rerank.py:533-535,576-579`). Advanced metrics do not change scores (`common/response_scoring.py:100`), and binary `noul` answers stay `{type, noul}` (`hf_prompt_policies.py:182-186`, applied before the metadata merge at `hf_server.py:946-954`) |
 
 **Demo probes (2026-09-29, SciFact query 1, public data):** 50 questions per request accepted by the 27B and
 Gemma 26B models; distinct `noul` values 10/10 (4B, k=10), 50/50 (Gemma), 32/50 (27B); relevant doc
