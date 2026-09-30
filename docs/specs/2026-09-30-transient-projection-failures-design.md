@@ -51,9 +51,15 @@ A new static class `TransientFailures` in `Iverson.Api`, the composition root th
 | Qdrant | `Grpc.Core.RpcException` with `StatusCode` Unavailable, DeadlineExceeded, ResourceExhausted or Aborted | Qdrant.Client 1.18.1 |
 | TEI / Ollama HTTP | `HttpRequestException` whose `StatusCode` is null (connection failure), 5xx or 429 | `EmbeddingService` and `EnrichmentService` call `EnsureSuccessStatusCode()` |
 | Any HTTP timeout | `TimeoutException` anywhere in the chain | an `HttpClient` timeout surfaces as `TaskCanceledException` wrapping `TimeoutException` |
+| StarRocks, frozen server | `MySqlException` with `ErrorCode == CommandTimeoutExpired` (-1) | shape 2; there is no `TimeoutException` in this chain |
+| StarRocks, backend down while the FE is up | `MySqlException` whose message contains "Backend node not found" | shape 1; also covered by the liveness rewrap in §5 |
+| StarRocks, FE died mid-query | `MySqlException` with an inner `MySqlEndOfStreamException` | shape 4 |
+| StarRocks, statement outlived its command timeout | `MySqlException` with `ErrorCode == ParseError` (1064) and a message containing `Unexpected input '@'` | shape 3: StarRocks rejects MySqlConnector's cancellation cleanup |
 
 Everything else is non-transient, including:
 - `PostgresException` 42P01, 42601, 23505 and 22P02;
+- any other `MySqlException` 1064: the role errors "cannot find role" and "is not granted to", and ordinary syntax errors;
+- `MySqlException` 5502 (unknown table);
 - `RpcException` InvalidArgument and NotFound;
 - `HttpRequestException` 4xx other than 429;
 - `PoisonMessageException`, `InvalidOperationException` and `JsonException`.
@@ -93,19 +99,37 @@ Each broad catch gains the filter `when (!TransientFailures.IsTransient(ex))`. T
 
 No code change. The drain loop's lack of a deadline is now intended: waiting is the new behavior.
 
+### 5. StarRocks backend-liveness rewrap
+
+MySqlConnector marks only five error codes as transient, and the StarRocks circuit breaker counts failures with that same predicate (`StarRocksResiliencePipelineFactory.cs:19`). So a StarRocks outage that is not a refused connection neither classifies as transient nor opens the circuit. The classifier's text and code rules (§1) cover the known shapes. This rewrap covers shapes 1 and 2 without depending on message text.
+
+In `EngagementRepository.RunAsync` (`EngagementRepository.cs:41-56`), when the pipeline throws a `MySqlException` for which both `IsTransient` and `IsExpectedMissingResourceError` are false:
+1. run the existing `CheckBackendAliveAsync` (`:667-673`), bounded to 5 s;
+2. if it returns false, throws or times out, throw `new EngagementNotReadyException("StarRocks backend unavailable", ex)`, which the classifier already treats as transient;
+3. otherwise rethrow the original exception.
+
+`IsExpectedMissingResourceError` is excluded because its catches (`:503`, `:544`, `:604`, `:636`) wrap `RunTenantScopedAsync`, which wraps `RunAsync`. Without the exclusion, every read of an unwritten type or unprovisioned tenant would pay a liveness round-trip.
+
+**Behavior change:** during a backend outage, gRPC read paths now return `Unavailable` through their existing `EngagementNotReadyException` mappings (`ObjectSearchGrpcService.cs:114,788,836,914`, `ObjectSearchGrpcService.MatchPattern.cs:171`), instead of surfacing the raw StarRocks error.
+
 ## Testing
 
 All unit tests use each project's existing fakes. No containers are needed.
 
 - **`TransientFailuresTests` (new, `Iverson.Api.Tests`)** covers both directions.
   - **Transient:** `PostgresException` 57P03, 08006, 53300 and 40001; `NpgsqlException` wrapping a `SocketException`; `MySqlException` `UnableToConnectToHost`; `EngagementNotReadyException`; `RpcException` Unavailable and DeadlineExceeded; `HttpRequestException` with a null status, 503 or 429; `TaskCanceledException` wrapping `TimeoutException`; a transient exception as an `InnerException` of an `InvalidOperationException`; a transient exception inside an `AggregateException`.
-  - **Not transient:** `PostgresException` 42P01, 42601, 23505 and 22P02; `RpcException` InvalidArgument and NotFound; `HttpRequestException` 400 and 413; `PoisonMessageException`; `InvalidOperationException`; `JsonException`; `TaskCanceledException` without an inner `TimeoutException`.
+  - **Transient, StarRocks shapes (§1):** `MySqlException` `CommandTimeoutExpired`; `MySqlException` whose message contains "Backend node not found"; `MySqlException` wrapping `MySqlEndOfStreamException`; `MySqlException` `ParseError` whose message contains `Unexpected input '@'`.
+  - **Not transient:** `MySqlException` `ParseError` with "cannot find role", with "is not granted to", and with an ordinary syntax message; `MySqlException` 5502; `PostgresException` 42P01, 42601, 23505 and 22P02; `RpcException` InvalidArgument and NotFound; `HttpRequestException` 400 and 413; `PoisonMessageException`; `InvalidOperationException`; `JsonException`; `TaskCanceledException` without an inner `TimeoutException`.
 - **`MessageDispatcherTests` (extended).** With the predicate:
   - a transient failure that exhausts its attempts rethrows the original exception, makes no DLQ produce call, and increments `consumer.transient_halts`;
   - a transient failure that succeeds on attempt 2 does not throw;
   - a non-transient failure still dead-letters.
 
   Without the predicate, the existing tests stay green unchanged.
+- **`EngagementRepository` liveness rewrap (§5).** Against a fake liveness check:
+  - a non-transient `MySqlException` with the check reporting dead, throwing, or exceeding the bound → `EngagementNotReadyException` wrapping the original;
+  - the same exception with the check reporting alive → the original rethrown;
+  - an `IsExpectedMissingResourceError` exception → rethrown, with no check made.
 - **`KafkaConsumerTests` (one new test).** Using the injected fake consumer factory, a handler whose dispatch throws means `Commit` is never called and `ConsumeAsync` rethrows. No existing test covers this halt path.
 - **Consumer tests.** Tests that inject an outage-shaped exception and assert `NotThrow` flip to asserting propagation:
   - `EnrichmentConsumerTests.HandleUpdated_WhenLlmFails_LeavesObjectIntactAndDoesNotThrow`, which injects `HttpRequestException("ollama down")`;
@@ -121,6 +145,9 @@ All unit tests use each project's existing fakes. No containers are needed.
   - `IntelligenceStoreConsumer.PrefixWithContextAsync` (`:594-600`): the vector is written without the context prefix.
   - `PopularitySignalUpdater`'s histogram catch (`:121`): the count is written with an empty series.
 - **Log and rejoin churn during an outage.** One Critical "Halting" log line and one consumer-group rejoin per ~13 s cycle, per affected consumer.
+- **Two StarRocks rules match message text:** "Backend node not found" and `Unexpected input '@'`. If StarRocks or MySqlConnector change that wording, the shape silently reverts to non-transient. The §5 liveness rewrap still covers shapes 1 and 2, but shape 3 would be lost.
+- **Extra round-trip:** one FE liveness check per StarRocks failure that is neither transient nor an expected missing resource.
+- **gRPC behavior change:** reads return `Unavailable` during a StarRocks backend outage (§5).
 - **Misclassification has a cost in both directions.** A transient failure classified as permanent is still dead-lettered. A permanent failure classified as transient stalls its consumer until someone intervenes. The classifier test matrix is the guard.
 - **Existing, unchanged behavior:** an HTTP timeout reaching the dispatcher directly (Engagement, Intelligence) is a `TaskCanceledException`, which is an `OperationCanceledException`. The dispatcher and `KafkaConsumer` already treat it as cancellation: the loop exits, `ConsumeAsync` returns, and `ConsumerResilience` restarts immediately with no 10 s delay. It is redelivered either way.
 
@@ -150,3 +177,9 @@ All unit tests use each project's existing fakes. No containers are needed.
 | 13 | Of the other dependents, the DLQ monitor, backlog gauge and admin-console metrics only count what reaches the DLQ; none assumes transient failures land there. `BenchmarkIngestScenario.cs:64-67` documents the old contract (updated in §4). | Read each site. |
 | 14 | The Popularity updater's `Failed` outcome is read only by `PopularitySignalReconciliationWorker` (`:72-96`), which catches exceptions from `UpdateAsync` with `outcome` seeded to `Failed`. The sweep tests inject non-transient exceptions. | Read the worker and `PopularitySignalReconciliationWorkerTests.cs`. |
 | 15 | Enrichment writes nothing before its dependency calls. DocumentRerender's only pre-failure write is an idempotent enqueue. | Read `EnrichmentConsumer.cs` (first write after generation, `:154`) and `DocumentRerenderConsumer.cs:167-189`. |
+| 16 | MySqlConnector 2.4.0 returns `IsTransient == true` for exactly five codes: 1040, 1042, 1205, 1213 and 1614. The circuit breaker uses the same predicate (`StarRocksResiliencePipelineFactory.cs:19`). The cold-start gate latches after its first success (`StarRocksReadinessGate.cs:15,50`). | CDR round 1: `IsTransient` run over every `MySqlErrorCode` member; the factory and gate were read. |
+| 17 | StarRocks outage shapes as observed. Frozen server: `CommandTimeoutExpired(-1)` with an inner `SocketException`. Statement outliving its command timeout: `ParseError(1064)`, "Getting syntax error at line 1, column 21. Detail message: Unexpected input '@', the most similar input is {'OUTFILE'}." FE dropped mid-query: `None(0)` with an inner `MySqlEndOfStreamException`. All are `IsTransient=False`. `MySqlEndOfStreamException` is public. | CDR round 1 probes (`probe3`, `probe5`). The `SELECT SLEEP(5)` probe with `CommandTimeout=1` was re-run on 2026-09-30 and gave the quoted 1064. A reflection check found `MySqlEndOfStreamException` public and `CommandTimeoutExpired` = -1. |
+| 18 | Backend-not-alive windows happen mid-life on this stack: on 2026-09-30 at 06:40, 09:14–09:23 and 11:15, per `fe.log`. The `IsExpectedMissingResourceError` catches (`EngagementRepository.cs:503,544,604,636`) wrap `RunTenantScopedAsync`, which wraps `RunAsync` (`:164-181`). **UNVERIFIED:** the client-side message for "Backend node not found"; the §5 rewrap covers that shape regardless. | FE log read in-container (CDR round 1). `EngagementRepository.cs` read. |
+| 19 | Postgres outage shapes beyond a refused connection or 57P03 classify as transient: 57P01 and 57P02 (crash-terminated sessions), IO and EndOfStream inner exceptions (mid-stream drop), and a frozen server (`NpgsqlException > TimeoutException`). | CDR round 1 probe run over those shapes (`probe4`). |
+| 20 | The dispatcher classifies only the exception from the last attempt, so a non-transient first-attempt shape does not decide the outcome there. | Read `MessageDispatcher.cs:65-78`: the attempt check is the only place a classifier call can sit. |
+| 21 | At the four in-handler filter sites, the first exception decides. For Postgres (row 19), Qdrant (a mid-call drop gives `RpcException Unavailable`) and HTTP (a server closing mid-request gives `HttpRequestException ResponseEnded` with a null status), that first exception already classifies as transient. StarRocks' first shapes are covered by rows 16–17, §1 and §5. | CDR round 1 probe (`probe7`). |
