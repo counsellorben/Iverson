@@ -558,6 +558,31 @@ public class EnrichmentConsumerTests
             default, default!, default!, default!, default, default, default, default!, default);
     }
 
+    // The same timeout from structured extraction (GenerateJsonAsync) must also reach the skip clause: the
+    // extraction helper catches only InvalidOperationException, so it must not turn this into a column-level
+    // skip that writes the other targets and records a state row without counting the timeout.
+    [Fact]
+    public async Task HandleUpdated_WhenExtractionTimesOut_SkipsWithoutWritingAndCountsTheSkip()
+    {
+        await _registry.RegisterAsync(EnrichedArticle());
+        _enrichment.GenerateJsonAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Throws(new TaskCanceledException("timeout", new TimeoutException()));
+
+        var sut = BuildSut();
+        var skipped = await TimeoutsSkippedDuring(async () =>
+        {
+            var act = async () => await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+            await act.Should().NotThrowAsync();
+        });
+
+        skipped.Should().Be(1);
+        await _entities.DidNotReceiveWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!, default);
+        await _state.DidNotReceiveWithAnyArgs().UpsertAsync(
+            default!, default!, default!, default!, default!, default);
+        await _outboxPublisher.DidNotReceiveWithAnyArgs().PublishAsync(
+            default, default!, default!, default!, default, default, default, default!, default);
+    }
+
     // A caller-token cancellation is a TaskCanceledException with NO TimeoutException inside: it is not an
     // Ollama timeout, so it must not be counted or logged as one (it falls to the existing best-effort catch).
     [Fact]
