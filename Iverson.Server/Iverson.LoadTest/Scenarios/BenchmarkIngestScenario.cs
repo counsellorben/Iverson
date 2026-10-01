@@ -61,10 +61,15 @@ public sealed class BenchmarkIngestScenario(
             throw new InvalidOperationException("No corpus found at the given --corpus-path.");
         }
 
-        // Baseline the DLQ before a single document is posted. MessageDispatcher retries 3x and then
-        // routes to the DLQ and *returns normally*, so KafkaConsumer commits the offset and a
-        // dead-lettered event drives consumer lag to zero exactly like a successful one. Lag alone
-        // therefore cannot tell "corpus is searchable" from "some of it was dropped".
+        // Baseline the DLQ before a single document is posted. A transient dependency failure
+        // (Postgres, StarRocks, Qdrant or the embedding server unavailable) no longer dead-letters:
+        // MessageDispatcher rethrows it, so the consumer halts uncommitted and is redelivered the
+        // event once the dependency is back. The drain loop below therefore waits out an outage, and
+        // its lack of a deadline is intended. A NON-transient failure is still retried 3x, then
+        // routed to the DLQ, and the dispatcher *returns normally*, so KafkaConsumer commits the
+        // offset and that dead-lettered event drives consumer lag to zero exactly like a successful
+        // one. Lag alone therefore cannot tell "corpus is searchable" from "some of it was dropped";
+        // only those non-transient failures grow the DLQ high watermark checked here.
         var dlqBaseline = QueryDlqHighWatermark();
         Console.WriteLine($"[benchmark-ingest] DLQ high watermark before ingest: {dlqBaseline:N0}");
 

@@ -4,6 +4,7 @@ using FluentAssertions;
 using Iverson.Events;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 using Xunit;
 
 namespace Iverson.Events.Tests;
@@ -75,5 +76,48 @@ public sealed class KafkaConsumerTests
             CancellationToken.None);
 
         fakeConsumer.Received(1).Subscribe("topic");
+    }
+
+    [Fact]
+    public async Task ConsumeAsync_DispatchThrows_DoesNotCommit_AndRethrows()
+    {
+        // The halt path: a message whose dispatch throws must never have its offset committed,
+        // and ConsumeAsync must rethrow so ConsumerResilience restarts the loop and the broker
+        // redelivers from the last committed offset. Dispatch is made to throw by a poison message
+        // whose DLQ write fails — that path increments none of the dispatcher's counters, so this
+        // test cannot perturb MessageDispatcherTests' MeterListener assertions running in parallel.
+        var result = new ConsumeResult<string, string>
+        {
+            Message              = new Message<string, string> { Key = "key-1", Value = "{}", Headers = new Headers() },
+            TopicPartitionOffset = new TopicPartitionOffset("topic", new Partition(0), new Offset(7)),
+        };
+        var fakeConsumer = Substitute.For<IConsumer<string, string>>();
+        fakeConsumer.Consume(Arg.Any<CancellationToken>()).Returns(result);
+
+        var fakeAdmin = Substitute.For<IAdminClient>();
+        fakeAdmin.CreateTopicsAsync(Arg.Any<IEnumerable<TopicSpecification>>()).Returns(Task.CompletedTask);
+
+        var producer = Substitute.For<IProducer<string, string>>();
+        producer
+            .ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, string>>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new KafkaException(ErrorCode.Local_Transport));
+        var dispatcher = new MessageDispatcher(producer, NullLogger<MessageDispatcher>.Instance);
+
+        var consumer = new KafkaConsumer(
+            new KafkaOptions { BootstrapServers = "localhost:9092" },
+            NullLogger<KafkaConsumer>.Instance,
+            dispatcher,
+            _ => fakeConsumer,
+            _ => fakeAdmin);
+
+        var act = () => consumer.ConsumeAsync(
+            "topic",
+            "group",
+            (_, _, _) => throw new PoisonMessageException("bad json"),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<KafkaException>();
+        fakeConsumer.DidNotReceive().Commit(Arg.Any<ConsumeResult<string, string>>());
+        fakeConsumer.Received(1).Consume(Arg.Any<CancellationToken>());
     }
 }

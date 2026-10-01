@@ -337,7 +337,7 @@ builder.Services.AddVectorRanking(cfg);
 builder.Services.AddDecayOptions(cfg);
 builder.Services.AddPopularitySignalOptions(cfg);
 
-builder.Services.AddKafka(cfg);
+builder.Services.AddKafka(cfg, isTransient: TransientFailures.IsTransient);
 
 builder.Services.AddSingleton<SchemaRegistry>();
 builder.Services.AddSingleton<DocumentRenderer>();

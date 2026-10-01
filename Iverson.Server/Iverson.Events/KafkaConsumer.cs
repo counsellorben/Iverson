@@ -72,12 +72,13 @@ public class KafkaConsumer(
                 }
                 catch (Exception ex)
                 {
-                    // The DLQ write itself failed — do not commit. Halt this consumer
-                    // so we never advance past an uncommitted message (block rather than lose).
+                    // The DLQ write failed or a dependency is transiently unavailable — do not
+                    // commit. Halt this consumer so we never advance past an uncommitted message
+                    // (block rather than lose); the restarted consumer is redelivered this message.
                     activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                     activity?.RecordException(ex);
                     logger.LogCritical(ex,
-                        "[Consumer] Halting topic={Topic} group={Group} — offset not committed", topic, groupId);
+                        "[Consumer] Halting topic={Topic} group={Group} — the DLQ write failed or a dependency is transiently unavailable; offset not committed", topic, groupId);
                     throw;
                 }
             }

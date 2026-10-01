@@ -19,11 +19,24 @@ public sealed class MessageDispatcherOptions
     public int MaxAttempts { get; init; } = 3;
     public Func<int, TimeSpan> Backoff { get; init; } =
         attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt - 1));
+
+    /// <summary>
+    /// Classifies the exception that exhausted <see cref="MaxAttempts"/>. True means a dependency
+    /// is transiently unavailable: the dispatcher rethrows instead of dead-lettering, so the
+    /// consumer halts uncommitted and the message is redelivered once the dependency is back.
+    /// The default classifies nothing as transient (every exhausted failure is dead-lettered);
+    /// the composition root supplies the real classifier, so this library needs no client-library
+    /// references.
+    /// </summary>
+    public Func<Exception, bool> IsTransient { get; init; } = _ => false;
 }
 
 /// <summary>
 /// Runs a projection handler under the delivery contract:
 ///   - ordinary exception  → retry (bounded, with backoff), then dead-letter;
+///   - transient exception (per <see cref="MessageDispatcherOptions.IsTransient"/>) that is still
+///     failing after the bounded attempts → throw, no dead-letter (caller must NOT commit — the
+///     consumer halts and the message is redelivered once the dependency is back);
 ///   - PoisonMessageException → dead-letter immediately (no retry);
 ///   - success or successful dead-letter → return normally (caller commits the offset);
 ///   - DLQ write itself fails → throw (caller must NOT commit — halt rather than lose).
@@ -67,6 +80,18 @@ public sealed class MessageDispatcher(
                 attempt++;
                 if (attempt >= _options.MaxAttempts)
                 {
+                    if (_options.IsTransient(ex))
+                    {
+                        logger.LogCritical(
+                            ex,
+                            "[Dispatch] Transient failure persisted after {Max} attempts topic={Topic} key={Key} — not dead-lettering; halting for redelivery",
+                            _options.MaxAttempts,
+                            ctx.SourceTopic,
+                            ctx.Key);
+                        Telemetry.ConsumerTransientHalts.Add(1);
+                        throw;
+                    }
+
                     logger.LogCritical(
                         ex,
                         "[Dispatch] Exhausted {Max} attempts topic={Topic} key={Key} — routing to DLQ",
