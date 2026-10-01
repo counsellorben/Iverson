@@ -9,12 +9,19 @@ namespace Iverson.Api.Reconciliation;
 /// <see cref="ReconciliationQueueWorker"/>, <see cref="DlqBacklogGaugeWorker"/>, and
 /// <see cref="DocumentRerenderQueueWorker"/> respectively — ObservableGauge reads whatever value
 /// is currently here whenever the OTel SDK collects, so no locking is needed beyond `volatile`.
+/// <see cref="EnrichmentTimeoutsSkipped"/> counts the other silent shortfall: enrichments skipped
+/// because Ollama timed out, which only a later change or a reconcile of the type recovers.
 /// </summary>
 internal static class ReconciliationTelemetry
 {
     internal const string MeterName = "Iverson.Api.Reconciliation";
 
     private static readonly Meter Meter = new(MeterName, "1.0.0");
+
+    // Declared after Meter: static field initializers run in source order.
+    internal static readonly Counter<long> EnrichmentTimeoutsSkipped = Meter.CreateCounter<long>(
+        "enrichment.timeouts_skipped",
+        description: "Enrichment generations skipped after an Ollama HTTP timeout; recover with the next change or POST /admin/reconcile/{type}");
 
     internal static volatile int ReconciliationQueueDepth;
     internal static volatile int DlqUnreplayedCount;

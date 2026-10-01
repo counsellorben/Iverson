@@ -47,23 +47,24 @@ Rejected alternatives:
 In `Iverson.Server/Iverson.Api/Consumers/EnrichmentConsumer.cs`, `HandleAsync`, add one catch clause **before** the existing `catch (Exception ex) when (!TransientFailures.IsTransient(ex))` that ends the generate / write-back / republish try block:
 
 ```csharp
-catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException)
+catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException
+                                       || (ex.InnerException is HttpRequestException && !ct.IsCancellationRequested))
 {
     ReconciliationTelemetry.EnrichmentTimeoutsSkipped.Add(1);
-    logger.LogWarning(ex,
-        "[Enrichment] Ollama timed out for {Type}:{Key} — skipped with no state row; the next change to the object, or a reconcile of the type (POST /admin/reconcile/<type>), re-enriches it.",
+    logger.LogWarning(
+        "[Enrichment] Ollama timed out for {Type}:{Key} — skipped without writing a state row; the next change to the object, or a reconcile of the type (POST /admin/reconcile/<type>), re-enriches it.",
         schema.TypeName.SanitizeForLog(), ev.Key);
 }
 ```
 
-**The rule is deliberately narrow.** It matches `TaskCanceledException` whose *direct* inner exception is `TimeoutException`. That is the exact shape of an `HttpClient` timeout. A caller-token cancellation (shutdown) has no `TimeoutException` inside, and an Npgsql command timeout is an `NpgsqlException`, not a `TaskCanceledException`. Within this try block, the only HTTP calls are to Ollama (`EnrichmentService.GenerateAsync` and `GenerateJsonAsync`).
+**The rule is deliberately narrow.** It matches `TaskCanceledException` whose *direct* inner exception is `TimeoutException`. That is the exact shape of an `HttpClient` timeout. A timeout that races a connection failure arrives instead as `TaskCanceledException > HttpRequestException`, which a shutdown cancellation racing a connection failure can produce too, so that shape is matched only while the caller's token is live. A plain caller-token cancellation (shutdown) has no `TimeoutException` inside, and an Npgsql command timeout is an `NpgsqlException`, not a `TaskCanceledException`. Within this try block, the only HTTP calls are to Ollama (`EnrichmentService.GenerateAsync` and `GenerateJsonAsync`).
 
 | Failure inside the try block | Handling |
 |---|---|
-| Ollama HTTP timeout | skipped: logged at Warning, counted, no state row, offset commits |
+| Ollama HTTP timeout | skipped: logged at Warning (no stack trace — `EnrichmentService` already logged it at Error), counted, no state row written, offset commits |
 | Ollama unreachable, 5xx or 429 | halt and redeliver (unchanged from the merged change) |
 | Postgres outage, including an Npgsql command timeout | halt and redeliver (unchanged) |
-| Shutdown cancellation (caller token) | unchanged: not matched by the new clause |
+| Shutdown cancellation (caller token) | unchanged: not matched by the new clause, including when it races a connection failure |
 | Other non-transient failures (bad LLM output, size limit) | unchanged: best-effort, logged, skipped |
 
 **Recovery for a skipped object.** It has no state row, so its source hash never matches. The next `Created` or `Updated` event re-enriches it. So does `POST /admin/reconcile/{typeName}`, which replays an `Updated` event for every row of the type.
@@ -103,6 +104,10 @@ All tests go in `Iverson.Server/Iverson.Api.Tests/Consumers/EnrichmentConsumerTe
    - The handler throws.
    - This pins that the rule is HTTP-only.
 4. **Unchanged:** `HandleUpdated_WhenLlmUnreachable_PropagatesForRedeliveryAndWritesNothing`, which pins that a refused Ollama connection still halts.
+5. **An extraction timeout is skipped.** `HandleUpdated_WhenExtractionTimesOut_SkipsWithoutWritingAndCountsTheSkip`: `GenerateJsonAsync` throws the timeout shape; nothing is written and the skip is counted once.
+6. **A timeout that races a connection failure is skipped.** `HandleUpdated_WhenTimeoutRacesAConnectionFailure_SkipsWithoutWritingAndCountsTheSkip`: `GenerateAsync` throws `TaskCanceledException > HttpRequestException` with a live caller token; the handler does not throw, the skip is counted once, nothing is written.
+7. **A shutdown that races a connection failure propagates uncounted.** `HandleUpdated_WhenShutdownRacesAConnectionFailure_PropagatesUncounted`: the same exception shape, thrown after the stub cancels the caller's token; the handler throws and the counter stays 0.
+8. **One Warning per skip, with the key and no exception.** `HandleUpdated_WhenLlmTimesOut_LogsOneWarningWithTheKeyAndNoException`: a logger spy receives exactly one Warning containing the key, with a null exception.
 
 ## Known limitations (accepted)
 
@@ -130,3 +135,5 @@ All tests go in `Iverson.Server/Iverson.Api.Tests/Consumers/EnrichmentConsumerTe
 | 8 | No existing Enrichment test injects a timeout. | `command grep -n 'TimeoutException\|TaskCanceledException'` over `EnrichmentConsumerTests.cs` finds nothing. |
 | 9 | A skipped object re-enriches on the next `Created` or `Updated` event, or on a reconcile replay: there is no state row, so the hash gate passes. | `EnrichmentConsumer.cs:66-78` (both event types reach `HandleAsync`), `:121-128` (hash gate); `ReconciliationService.ReconcileTypeAsync` emits `Updated` for every row. |
 | 10 | No enrichment counter exists today. | grep of `Iverson.Api` and `Iverson.Embeddings` for `CreateCounter` finds none there. |
+| 11 | When the handler fails with an `HttpRequestException` after the request's cancellation fired, `HttpClient` surfaces `TaskCanceledException > HttpRequestException` with no `TimeoutException`, for a timeout (caller token live) and for a caller cancel alike. | Probe on .NET 10.0.112: an `HttpMessageHandler` that waits on its token and then throws `HttpRequestException` gives "`TaskCanceledException > HttpRequestException`" with `Timeout` = 200 ms and a live caller token, and the same chain with a caller token cancelled at 200 ms. |
+| 12 | `EnrichmentService` logs every generation failure with its exception at Error before rethrowing, so the consumer's Warning need not carry the exception. | `EnrichmentService.cs`, the `catch (Exception ex)` → `logger.LogError(ex, "GenerateAsync failed for model {Model}", ModelId); throw;` (`GenerateJsonAsync` goes through the same method). |
