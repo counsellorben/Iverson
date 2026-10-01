@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Source spec:** `docs/specs/2026-09-29-simple-jev-judge-design.md` (commit SHA: `18ba5177`)
+**Source spec:** `docs/specs/2026-09-29-simple-jev-judge-design.md` (commit SHA: `3070a737`)
 
 **Goal:** Measure whether an open-weights model, served by SimpleJEV as a pointwise `noul` relevance judge, reorders the bge-base SciFact top-50 pool enough to pass the pre-registered gate (permutation p < 0.05 and nDCG@10 delta ≥ +0.047).
 
-**Architecture:** One stdlib client, `jev_rerank.py`, sends one `/v1/classifier` request per query (the query as shared `state`, one question per pool document), re-sorts the pool by the judge's value, and writes a TREC run plus a provenance sidecar. It runs twice over: a free model screen against Featherless's public demo on NFCorpus, then gate passes against a self-hosted `hf_server` on a rented pod. A local stub proves the pipeline end to end before any money is spent; `report.py` (unchanged) scores everything.
+**Architecture:** One stdlib client, `jev_rerank.py`, sends one `/v1/classifier` request per query (the query as shared `state`, one question per pool document), re-sorts the pool by the judge's value, and writes a TREC run plus a provenance sidecar. It runs the gate passes against a self-hosted `hf_server` on a rented pod, with `Qwen/Qwen3.8-27B` as the judge (named by Ben on 2026-10-01; the free demo screen was dropped because the demo has redirected every request since 2026-09-30). A local stub proves the pipeline end to end before any money is spent; `report.py` (unchanged) scores everything.
 
 **Tech stack:** Python 3.14 stdlib scripts under `Iverson.Server/Iverson.LoadTest/scripts/` (pytest 9.1.1 on the system interpreter); `report.py` with `ir_measures` 0.4.3 / `scipy` from `~/repositories/iverson-benchmark-corpora/python-libs`; SimpleJEV `hf_server` at commit `7bb4f0c745b2a160776b1d41ed4cdc02967f6cf3` (Python ≥ 3.12, torch ≥ 2.6, transformers ≥ 5.16.1) on RunPod.
 
@@ -84,7 +84,7 @@ Newly introduced by this plan and verified at plan-write time (2026-09-30):
 | P7 | Command | `report.py --pair` scores runs from `--run`; `--baseline B --run R` works with B absent from `--run`; the two flags are mutually exclusive | `report.py:641-660` (baseline read separately, excluded if listed), `:883` |
 | P8 | Data | The NFCorpus bge-base pool has a sidecar composite | `nfcorpus-bge-base-2026-09-04/runs/bge-base.meta.json` → `7d3a15092f963723` (the same build as SciFact's) |
 | P9 | Command | `pip install -e './hf-server'` installs the `simple-jev` console script | `hf-server/pyproject.toml`: `[project.scripts] simple-jev = "hf_server:main"`, `requires-python >=3.12`, `torch>=2.6`, `transformers>=5.16.1,<6` |
-| P10 | Ordering | Task 2 needs Task 1's `jev_rerank.py`; Task 3 needs Task 1; Task 4 needs Tasks 1–3 (winner, dry-run pass); Task 5 needs Task 4 | no task imports a file a later task creates |
+| P10 | Ordering | Task 2 needs Task 1's `jev_rerank.py`; Task 4 needs Tasks 1–2 (the dry-run pass) and the named model (Task 3); Task 5 needs Task 4 | no task imports a file a later task creates |
 | P11 | Code | `HTTPError` carries `.code`, `.headers`, `.read()` and is caught before `OSError` | precedent `teacher_rerank.call_teacher`; `test_call_jev_*` pass against a real local server |
 | P12 | Code | `hf_server` responses carry `answers[d]["noul"]` / `["score"]` and `usage.input_tokens`; the demo's did until 2026-09-30 | hf_server: `restore_binary_noul` (`hf_prompt_policies.py:182-186`), `common/response_scoring.py:318` (`score`), `:160` (`usage`). Demo: the 2026-09-29/30 probes read these keys, but since ≈18:50 UTC 2026-09-30 every demo request returns 301 → `featherless.ai/simple-jev/…` (HTML); re-checked 20:23 UTC. Task 3's `check-demo.sh` gates the screen on it (CIR-1 §3.1 (a)) |
 | P13 | Command | `nDCG@10, R@50, AP, R@10, P@10` built from `from ir_measures import …` work on Python 3.14 | ran; reproduces spec §3's identity and reversed rows exactly |
@@ -101,6 +101,7 @@ Newly introduced by this plan and verified at plan-write time (2026-09-30):
 | P24 | Gate pool | The spec's pool is 512/448, not the shipped window | `scifact-bge-base-2026-09-04/keymap.json.stats.json`: `chunk_max_chars 512, chunk_step 448`; Ben ruled to keep it (Global Constraints) |
 | P25 | Code validity | `jev_rerank.py` and `teacher_rerank.py` (shipped to the pod) parse under Python 3.12, U1's floor | `ast.parse(…, feature_version=(3,12))` and `(3,11)` pass for both, re-run 2026-10-01. Imports: stdlib plus `teacher_rerank` only (CIR-2 §1 span item 2) |
 | P26 | Code validity | `run-arm.sh` tells a demo outage from a judge-invalid arm, and Task 4's repeated Steps 7–8 keep `MBS` and `QT` | CIR-2 §2.1: the revised script, against a local stand-in, recorded nine end states (persistent / transient / vanished server → `demo-lost`; down / 403 / check-422 → `demo-unavailable`; judge-invalid → `exit 1` twice; valid and post-outage rerun → `exit 0`; interrupted → no line). Re-run 2026-10-01: transient outage → `demo-lost (exit 1, 40 redirected attempts)`, invalid → `exit 1`, rerun → `exit 0`. CIR-2 §2.2: `MBS=${MBS:-32}` keeps 16 after halving and gives 32 when unset; `MBS=` / `QT=` are assigned nowhere else in Task 4 |
+| P27 | Model | The gate model is `Qwen/Qwen3.8-27B`, policy `shared_examples_binary`, question `noul`, card H200 (Ben, 2026-10-01; spec §5, A27) | `hf-server/README.md:120-129`: 445/477, the highest of the five candidates; `hf_prompt_policies.py:44-45` profile 'Qwen dense 27B' → `shared_examples_binary`; spec §6.2 card table → H200 |
 | U1 | Pod (UNVERIFIED) | The rented image has Python ≥ 3.12 and CUDA torch ≥ 2.6 | cannot be checked before renting; Task 4 Step 3 checks it first and re-rents on failure (cheap at that point). Stage 2's `vllm/vllm-openai:v0.30.0` image is **not** used: its entrypoint serves a model and holds the GPU |
 | U2 | Pod | `runpodctl send`/`receive` with md5 checks moves files; `setsid nohup` keeps long runs alive | the stage-2 runbook (`.worktrees/student-distill/docs/plans/2026-09-28-student-distillation-runbook.md:118-124,137`) and the stage-1 SIGTERM finding |
 | U3 | Pod | The weights land on the `/workspace` volume, which is sized separately from the container disk | RunPod storage docs (docs.runpod.io/pods/storage/types, fetched 2026-09-30): volume "Mount path: `/workspace` (default)"; the container disk is "temporary storage for the operating system and session data"; no default sizes stated. Task 4 Step 3's `df -h /workspace` checks it (CIR-1 §2.2) |
@@ -1063,127 +1064,29 @@ git -C $R add Iverson.Server/Iverson.LoadTest/scripts/stub_jev_server.py
 git -C $R commit -m "add the SimpleJEV stub server for the two-sided dry run"
 ```
 
-### Task 3: Model screen on the public demo (NFCorpus, $0, ≈ 4–8 h)
+### Task 3: Gate model — named, screen dropped
 
-**Files:** none in the repo. Artifacts in `$A/screen/`.
+**Files:** none.
 
-**Interfaces:**
-- Consumes: `jev_rerank.py` (Task 1).
-- Produces: the winner (demo model id and question type) and its ledger, used by Tasks 4 and 5.
+**Ruling (Ben, 2026-10-01):** the demo screen is dropped because the demo has answered every request with `301` → `featherless.ai/simple-jev/…` since ≈18:50 UTC 2026-09-30 (spec §5, amended `3070a737`). The gate model is named instead:
 
-- [ ] **Step 1: Write the demo check and the arm runner** (prelude from Task 1 first)
-
-```bash
-mkdir -p $A/screen && cat > $A/screen/check-demo.sh <<'CHECK'
-#!/usr/bin/env bash
-# Blocking demo check (CIR-1 §3.1, option a): one real §4 request -- NFCorpus PLAIN-478, the largest body --
-# for model $2 and question type $3 must return 200 with no redirect. Since 2026-09-30 the demo has answered
-# every request with 301 -> featherless.ai/simple-jev/... (HTML), which jev_rerank.py would follow as a GET
-# and retry into a fallback-cap failure. Exit 0: the demo serves. Exit 1: it does not (status printed).
-export S=/home/ben/repositories/Iverson/.worktrees/simple-jev-judge/Iverson.Server/Iverson.LoadTest/scripts
-OUT=/home/ben/repositories/iverson-benchmark-corpora/simple-jev-2026-09/screen
-python3 - "$2" "$3" > $OUT/$1.check.json <<'PY'
-import json, os, sys
-sys.path.insert(0, os.environ["S"])
-import jev_rerank as jev
-nf = "/home/ben/repositories/iverson-benchmark-corpora/nfcorpus-bge-base-2026-09-04"
-pool = jev.tr.load_run(nf + "/runs/bge-base.chunks.trec")
-corpus = jev.tr.load_corpus(nf + "/beir/corpus.jsonl")
-query = jev.tr.load_queries(nf + "/beir/queries.jsonl")["PLAIN-478"]
-print(json.dumps(jev.build_request(sys.argv[1], sys.argv[2], query, [corpus[d][1] for d in pool["PLAIN-478"]])))
-PY
-STATUS=$(curl -s -m 300 -A curl/8.5.0 -H 'Content-Type: application/json' --data-binary @$OUT/$1.check.json \
-  -o /dev/null -w '%{http_code} %{redirect_url}' https://simple-jev-demo-api.featherless.ai/v1/classifier)
-echo "$1 demo check: '$STATUS'"
-[ "$STATUS" = "200 " ]
-CHECK
-cat > $A/screen/run-arm.sh <<'ARM'
-#!/usr/bin/env bash
-# One screen arm (spec §5): $1 label, $2 demo model id, $3 question type. The arm runs only if the blocking
-# demo check passes first; an arm that ends over the fallback cap (jev_rerank.py exits 1 and writes no run
-# file) is invalid for selection, unless the demo failed it: a failed arm whose ledger gained redirected
-# attempts, or whose post-check fails, is recorded demo-lost and rerun (CIR-2 §2.1).
-S=/home/ben/repositories/Iverson/.worktrees/simple-jev-judge/Iverson.Server/Iverson.LoadTest/scripts
-NF=/home/ben/repositories/iverson-benchmark-corpora/nfcorpus-bge-base-2026-09-04
-OUT=/home/ben/repositories/iverson-benchmark-corpora/simple-jev-2026-09/screen
-CHK=$(bash $OUT/check-demo.sh "$1" "$2" "$3") || { echo "$1 $2 $3 demo-unavailable ($CHK)" >> $OUT/arms.status; exit 1; }
-N0=$(grep -c 'non-JSON 200 body' $OUT/$1.responses.jsonl 2>/dev/null); N0=${N0:-0}
-python3 $S/jev_rerank.py --pool $NF/runs/bge-base.chunks.trec --corpus $NF/beir/corpus.jsonl \
-  --queries $NF/beir/queries.jsonl --base-url https://simple-jev-demo-api.featherless.ai \
-  --model "$2" --question-type "$3" --responses $OUT/$1.responses.jsonl \
-  --out $OUT/$1.chunks.trec --composite 7d3a15092f963723 > $OUT/$1.log 2>&1
-RC=$?
-N1=$(grep -c 'non-JSON 200 body' $OUT/$1.responses.jsonl 2>/dev/null); N1=${N1:-0}
-if [ $RC -ne 0 ] && { [ $N1 -gt $N0 ] || ! bash $OUT/check-demo.sh "$1-post" "$2" "$3" > /dev/null; }; then
-  echo "$1 $2 $3 demo-lost (exit $RC, $((N1 - N0)) redirected attempts)" >> $OUT/arms.status
-else
-  echo "$1 $2 $3 exit $RC" >> $OUT/arms.status
-fi
-ARM
-```
-
-- [ ] **Step 2: Run arms 1–5 in order, detached** — only once the demo is serving (CIR-1 §3.1, option a; Ben, 2026-09-30)
-
-```bash
-bash $A/screen/check-demo.sh arm1-qwen4b featherless-ai/Qwen3.5-4B-classifier noul
-```
-
-Required: `arm1-qwen4b demo check: '200 '` and exit 0. Otherwise the demo is still down (on 2026-09-30 this printed `'301 https://featherless.ai/simple-jev/classifier'`): do not launch. Task 3, and so Tasks 4–5, wait; re-run the check later.
-
-```bash
-setsid nohup bash -c "
-bash $A/screen/run-arm.sh arm1-qwen4b featherless-ai/Qwen3.5-4B-classifier noul
-bash $A/screen/run-arm.sh arm2-gemma12b featherless-ai/gemma-4-12B-it-classifier noul
-bash $A/screen/run-arm.sh arm3-gemma26b featherless-ai/gemma-4-26B-A4B-classifier noul
-bash $A/screen/run-arm.sh arm4-qwen35b featherless-ai/Qwen3.6-35B-A3B-classifier noul
-bash $A/screen/run-arm.sh arm5-qwen27b featherless-ai/Qwen3.8-27B-classifier noul
-" > /dev/null 2>&1 &
-```
-
-Monitor with `cat $A/screen/arms.status; wc -l $A/screen/*.responses.jsonl`. A 403 in any arm's log means the user agent or endpoint is wrong: stop and fix, don't continue. An interrupted arm resumes by rerunning its line (same ledger). `demo-unavailable` (the demo was not serving when the arm started) or `demo-lost` (it stopped serving during the arm) in `arms.status`: rerun that arm's line once `check-demo.sh` passes (its ledger resumes). Before Step 3, each of arms 1–5 must have a **last** `arms.status` line ending `exit 0` or `exit 1`. An arm whose last line is `demo-unavailable …` or `demo-lost …`, or that has no line (interrupted), is rerun first. Step 4 applies the same rule to arm 6.
-
-- [ ] **Step 3: Score arms 1–5 and pick the `noul` leader**
-
-```bash
-PYTHONPATH=$B/python-libs python3 $S/report.py --run $A/screen --qrels $NF/qrels.trec > $A/screen/report-arms1-5.txt 2>&1
-grep -E "^\[scores\]|nDCG@10 " $A/screen/report-arms1-5.txt; cat $A/screen/arms.status
-```
-
-The leader is the valid arm (`exit 0` in `arms.status`) with the highest `nDCG@10`; exact ties go to the earlier arm.
-
-- [ ] **Step 4: Run arm 6 (the leader's model with the `score` rubric) and score all six**
-
-```bash
-bash $A/screen/run-arm.sh arm6-score <leader's demo model id> score
-PYTHONPATH=$B/python-libs python3 $S/report.py --run $A/screen --qrels $NF/qrels.trec > $A/screen/report-arms1-6.txt 2>&1
-grep -E "^\[scores\]|nDCG@10 " $A/screen/report-arms1-6.txt; cat $A/screen/arms.status
-```
-
-The **winner** is the valid arm with the highest NFCorpus nDCG@10 across all six, with ties going to the earlier arm (spec §5). If arm 6 wins, the gate uses `--question-type score` on that model; otherwise `noul`.
-
-- [ ] **Step 5: Record the screen** in `$A/screen/screen.md`: one row per arm (label, model, question type, NFCorpus nDCG@10, fallback count from the arm's `.meta.json` or its log, valid yes/no), the winner, and `md5sum $A/screen/*.chunks.trec`. Map the winner for Task 4:
-
-| Demo model id | HF repo | Policy (code's `KNOWN_PROFILES`) | Card (spec §6.2) |
+| HF repo | Policy (code's `KNOWN_PROFILES`) | Question type | Card (spec §6.2) |
 |---|---|---|---|
-| `featherless-ai/Qwen3.5-4B-classifier` | `Qwen/Qwen3.5-4B` | `shared_examples_binary` | 80 GB |
-| `featherless-ai/gemma-4-12B-it-classifier` | `google/gemma-4-12B-it` | `shared_repeat_state` | 80 GB |
-| `featherless-ai/gemma-4-26B-A4B-classifier` | `google/gemma-4-26B-A4B-it` | `shared_examples_binary` | H200 |
-| `featherless-ai/Qwen3.6-35B-A3B-classifier` | `Qwen/Qwen3.6-35B-A3B` | `shared_repeat_state` | H200 |
-| `featherless-ai/Qwen3.8-27B-classifier` | `Qwen/Qwen3.8-27B` | `shared_examples_binary` | H200 (expect `--max-batch-size` ≤ 16) |
+| `Qwen/Qwen3.8-27B` | `shared_examples_binary` | `noul` | H200 (expect `--max-batch-size` ≤ 16) |
 
-No commit (nothing in the repo changes).
+Nothing to execute. (The former Step 1 had already written `$A/screen/check-demo.sh` and `run-arm.sh` on 2026-10-01; they are unused.)
 
 ### Task 4: Gate passes on a rented pod (PAID)
 
 **Files:** none in the repo. Artifacts land in `$A/pod/`.
 
 **Interfaces:**
-- Consumes: Task 1's two scripts, Task 2's passing dry run, Task 3's winner.
-- Produces: `jev-main.chunks.trec`, `jev-repeat.chunks.trec`, `transfer.responses.jsonl` (plus sidecars, ledgers and server logs) for Task 5.
+- Consumes: Task 1's two scripts, Task 2's passing dry run, Task 3's named model.
+- Produces: `jev-main.chunks.trec`, `jev-repeat.chunks.trec` (plus sidecars, ledgers and server logs) for Task 5.
 
 The pod steps share one ephemeral machine, so they are one task. Launch every long-running process with `setsid nohup` (the stage-1 SIGTERM finding). Steps 4–13 on the pod share one shell's variables (`REPO`, `SHA`, `POLICY`, `MBS`, `I`, `O`, `QT`, `PFT`, `PROV`); if that shell is lost, re-set them from the values recorded so far before continuing.
 
-- [ ] **Step 1: STOP and ask Ben for the go-ahead.** State the winner, the card from Task 3's table, and the expected spend (≈ 1–2 GPU-hours plus the model download). Do not rent anything without an explicit yes.
+- [ ] **Step 1: STOP and ask Ben for the go-ahead.** State the model (`Qwen/Qwen3.8-27B`), the card (H200), and the expected spend (≈ 1–2 GPU-hours plus the model download). Do not rent anything without an explicit yes.
 
 - [ ] **Step 2: Rent the pod** on RunPod: the card from the table, a **PyTorch** template (not `vllm/vllm-openai`, whose entrypoint serves a model and holds the GPU), container disk ≥ 150 GB **and volume disk ≥ 150 GB** (`HF_HOME` is on the `/workspace` volume). Record the start time.
 
@@ -1203,8 +1106,8 @@ Required: Python ≥ 3.12, torch ≥ 2.6, `True`, and at least 100 GB available 
 export HF_HOME=/workspace/hf
 cd /workspace && git clone https://github.com/featherless-ai/simple-jev.git && cd simple-jev \
   && git checkout 7bb4f0c745b2a160776b1d41ed4cdc02967f6cf3 && python3 -m pip install -e './hf-server'
-REPO=<HF repo from Task 3's table>; POLICY=<policy from Task 3's table>
-QT=noul   # score if arm 6 won (Task 3 Step 4)
+REPO=Qwen/Qwen3.8-27B; POLICY=shared_examples_binary
+QT=noul
 SHA=$(python3 -c "from huggingface_hub import HfApi; print(HfApi().model_info('$REPO').sha)"); echo $SHA
 ```
 
@@ -1265,17 +1168,7 @@ PFT=$(python3 -c "import json,sys; print(next(r['prompt_tokens'] for r in map(js
 PROV="--server-commit 7bb4f0c745b2a160776b1d41ed4cdc02967f6cf3 --revision $SHA --policy $POLICY --max-batch-size $MBS --max-model-len 65536 --preflight-input-tokens $PFT"
 ```
 
-- [ ] **Step 9: Pass 1, the transfer check** (the first 20 NFCorpus queries in pool order)
-
-```bash
-head -n 1000 $I/nf/runs/bge-base.chunks.trec > $I/nf-first20.chunks.trec
-setsid nohup python3 $I/scripts/jev_rerank.py --pool $I/nf-first20.chunks.trec --corpus $I/nf/corpus.jsonl \
-  --queries $I/nf/queries.jsonl --base-url http://127.0.0.1:8000 --model $REPO --question-type $QT \
-  --responses $O/transfer.responses.jsonl --out $O/transfer.chunks.trec --composite 7d3a15092f963723 $PROV \
-  > $O/transfer.log 2>&1 &
-```
-
-Wait for `[jev_rerank] wrote` in `$O/transfer.log`.
+- [ ] **Step 9: Pass 1, the transfer check — dropped** with the screen (spec §6.3, amended `3070a737`). Go to Step 10.
 
 - [ ] **Step 10: Pass 2, the main pass** (all 300 SciFact queries)
 
@@ -1334,7 +1227,7 @@ No commit (nothing in the repo changes).
 - Modify: `docs/2026-09-06-ranked-changes-after-retrieval-experiments.md` (append after `:50`; rewrite `:52-59`)
 
 **Interfaces:**
-- Consumes: Task 4's `$A/pod/` artifacts and Task 3's winner ledger.
+- Consumes: Task 4's `$A/pod/` artifacts.
 
 Every shell starts with the Task 1 prelude plus:
 
@@ -1412,59 +1305,29 @@ PYTHONPATH=$B/python-libs python3 $S/report.py --run $A/pod/jev-repeat.chunks.tr
 
 Expected: `50 query ids, 55 qrels rows` (verified), then the repeat-vs-main `delta` and `queries changed` in `report-repeat.txt`.
 
-- [ ] **Step 5: The transfer check** (reported, not gated). `DEMO_LEDGER` is the winning arm's ledger from Task 3.
-
-```bash
-S=$S DEMO_LEDGER=$A/screen/<winning arm>.responses.jsonl POD_LEDGER=$A/pod/transfer.responses.jsonl \
-PYTHONPATH=$B/python-libs python3 - <<'PY' | tee $A/gate/transfer.txt
-import json, os, sys
-sys.path.insert(0, os.environ["S"])
-import teacher_rerank as tr
-from scipy.stats import spearmanr
-
-def values(path):
-    out = {}
-    for qid, records in tr.read_responses_ledger(path).items():
-        record = tr.accepted_entry(records)
-        if record is not None:
-            out[qid] = json.loads(record["content"])["values"]
-    return out
-
-demo, pod = values(os.environ["DEMO_LEDGER"]), values(os.environ["POD_LEDGER"])
-common = [qid for qid in pod if qid in demo]
-rhos, diffs = [], []
-for qid in common:
-    rho = spearmanr(demo[qid], pod[qid]).statistic
-    diff = sum(abs(a - b) for a, b in zip(demo[qid], pod[qid])) / len(pod[qid])
-    rhos.append(rho)
-    diffs.append(diff)
-    print(f"{qid:>12}  rho {rho:+.3f}  mean|diff| {diff:.4f}")
-print(f"{len(common)} queries in both ledgers  mean rho {sum(rhos) / len(rhos):+.3f}  "
-      f"mean|diff| {sum(diffs) / len(diffs):.4f}")
-PY
-```
+- [ ] **Step 5: The transfer check — dropped** with the screen (spec §6.3, amended `3070a737`).
 
 - [ ] **Step 6: Pin md5s**
 
 ```bash
-md5sum $A/pod/*.chunks.trec $A/pod/*.meta.json $A/gate/*.chunks.trec $A/gate/*.txt $A/screen/*.chunks.trec $A/dryrun/*.chunks.trec | tee $A/gate/md5s.txt
+md5sum $A/pod/*.chunks.trec $A/pod/*.meta.json $A/gate/*.chunks.trec $A/gate/*.txt $A/dryrun/*.chunks.trec | tee $A/gate/md5s.txt
 ```
 
 - [ ] **Step 7: Write** `docs/plans/2026-09-GATE-simple-jev-judge.md` from the files above, in this order, with every number copied from its output file:
-1. Title and verdict line: **PASS** or **FAIL**, the nDCG@10 delta, the permutation p, and the gate (p < 0.05 and delta ≥ +0.047). Link the spec (`18ba5177`) and this plan.
+1. Title and verdict line: **PASS** or **FAIL**, the nDCG@10 delta, the permutation p, and the gate (p < 0.05 and delta ≥ +0.047). Link the spec (`3070a737`) and this plan.
 2. Inputs: spec §3's table with md5s, plus the pool note: the shipped embedder at the **512/448** window, kept by Ben's 2026-09-30 ruling (`sci-2048` at the shipped window scores 0.7476 / 0.9393 unreranked).
-3. Stage A screen: `$A/screen/screen.md`'s table and the winner.
+3. Model choice: spec §5. `Qwen/Qwen3.8-27B` was named by Ben (2026-10-01) on its `hf_server` development score (445/477), because the demo screen could not run.
 4. Stage B pod: `$A/pod/pod.md`'s facts (card, cost, `$REPO`, `$SHA`, `$POLICY`, final `--max-batch-size`, pre-flight input tokens, wall times) and Step 12's cross-check.
 5. Gate: the `[pool]` line, both runs' `[scores]` blocks and the nDCG@10 `[compare]` block from `report-gate.txt`, verbatim, and the fallback count.
 6. Worst-case bound: `report-bound.txt`'s nDCG@10 `[compare]` block, and whether the gate still holds.
-7. Reported, not gated: `secondary.txt`, the repeat delta and queries-changed from `report-repeat.txt`, and `transfer.txt`'s summary line.
-8. Caveats: spec §11's three known issues; the judge is nondeterministic (the repeat delta sizes the noise floor).
+7. Reported, not gated: `secondary.txt`, and the repeat delta and queries-changed from `report-repeat.txt`.
+8. Caveats: spec §11's known issues; the judge is nondeterministic (the repeat delta sizes the noise floor).
 9. Artifacts: `$A/gate/md5s.txt` verbatim, plus the command lines used (Steps 1–5 of this task, and Task 4 Steps 7–11 with the real values).
 
-- [ ] **Step 8: Update the ranked-changes index.** Append one row after line 50 (the relation-popularity row), in the table's four-column form, filling the three bracketed values from Step 1 and Task 3:
+- [ ] **Step 8: Update the ranked-changes index.** Append one row after line 50 (the relation-popularity row), in the table's four-column form, filling the three bracketed values from Step 1:
 
 ```markdown
-| SimpleJEV relevance judge (pointwise noul, [winner], bge-base SciFact pool at 512/448) | **[PASS or FAIL]** — nDCG@10 [delta], permutation p [p]; gate p < 0.05 and delta ≥ +0.047 | harness only (`jev_rerank.py`, `stub_jev_server.py`); no server change | `2026-09-GATE-simple-jev-judge.md` |
+| SimpleJEV relevance judge (pointwise noul, Qwen3.8-27B, bge-base SciFact pool at 512/448) | **[PASS or FAIL]** — nDCG@10 [delta], permutation p [p]; gate p < 0.05 and delta ≥ +0.047 | harness only (`jev_rerank.py`, `stub_jev_server.py`); no server change | `2026-09-GATE-simple-jev-judge.md` |
 ```
 
 Then, in the paragraph under the table, replace this text (it spans a line break at "the"):
@@ -1498,10 +1361,8 @@ git -C $R commit -m "record the SimpleJEV relevance-judge gate verdict"
 
 ## Known issues inherited from spec
 
-- **The screen model may not be the best SciFact model.** NFCorpus is a different task: topical queries,
-  graded, about 38 relevant docs per query. Ben accepted this (2026-09-29) as the price of a leak-free
-  selection.
-- **The demo's serving stack differs from `hf_server`.** The screen ranks models through a third party's
-  unpinned configuration. The §6.3 transfer check reports how far that carried; it does not gate.
+- **The gate model is named, not selected on this task.** Qwen3.8-27B is chosen by `hf_server`'s own
+  development scores, a general decision benchmark rather than retrieval relevance, so one of the other four
+  candidates may judge this pool better. Ben accepted this (2026-10-01) when the demo became unavailable.
 - **SimpleJEV's README policy table is stale** at `7bb4f0c7`. It is handled by pinning from code (§6.2), and
   the discrepancy was not reported upstream.
