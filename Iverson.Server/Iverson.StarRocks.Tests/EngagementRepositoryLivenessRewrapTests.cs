@@ -82,21 +82,55 @@ public class EngagementRepositoryLivenessRewrapTests
         result!.InnerException.Should().BeSameAs(original);
     }
 
+    /// <summary>
+    /// A clock that only moves when told to. It captures the timer <c>WaitAsync</c> creates for the bound, so a
+    /// test can elapse the bound at a moment of its choosing instead of racing a real timer.
+    /// </summary>
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private TimerCallback? _callback;
+        private object? _state;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            _callback = callback;
+            _state = state;
+            return new InertTimer();
+        }
+
+        public void ElapseBound() =>
+            (_callback ?? throw new InvalidOperationException("No timer was created for the bound."))(_state);
+
+        private sealed class InertTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
     [Fact]
     public async Task NonTransient_CheckExceedsBound_CancelsTheTokenItWasGiven()
     {
+        // Deterministic: the bound elapses only when the test says so, and no other timer exists. A token that is
+        // cancelled only by its own real timer, or never, stays uncancelled here and fails the assertion.
+        var time = new ManualTimeProvider();
+        var neverCompletes = new TaskCompletionSource<bool>();
         CancellationToken captured = default;
-        // Ignores its token and captures it; only the bound can end the wait.
-        var check = new FakeCheck(async ct =>
+        var check = new FakeCheck(ct =>
         {
-            captured = ct;
-            await Task.Delay(TimeSpan.FromSeconds(30));
-            return true;
+            captured = ct;   // ignores its token, like a probe stuck in the driver
+            return neverCompletes.Task;
         });
 
-        await EngagementRepository.RewrapIfBackendUnavailableAsync(
-            NonTransient(), check.Invoke, TimeSpan.FromMilliseconds(50));
+        var pending = EngagementRepository.RewrapIfBackendUnavailableAsync(NonTransient(), check.Invoke, Bound, time);
+        pending.IsCompleted.Should().BeFalse("the check has not finished and the bound has not elapsed");
+        captured.IsCancellationRequested.Should().BeFalse();
 
+        time.ElapseBound();
+        var result = await pending;
+
+        result.Should().NotBeNull("a check that outlives the bound means the backend cannot be shown alive");
         captured.CanBeCanceled.Should().BeTrue();
         captured.IsCancellationRequested.Should().BeTrue("the orphaned probe must be told to stop");
     }

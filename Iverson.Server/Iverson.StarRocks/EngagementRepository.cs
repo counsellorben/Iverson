@@ -79,7 +79,8 @@ public sealed class EngagementRepository(
     /// unprovisioned tenant never pays a liveness round-trip.
     /// </summary>
     internal static async Task<EngagementNotReadyException?> RewrapIfBackendUnavailableAsync(
-        Exception ex, Func<CancellationToken, Task<bool>> checkBackendAlive, TimeSpan bound)
+        Exception ex, Func<CancellationToken, Task<bool>> checkBackendAlive, TimeSpan bound,
+        TimeProvider? timeProvider = null)
     {
         if (ex is not MySqlException mex || mex.IsTransient || IsExpectedMissingResourceError(mex))
             return null;
@@ -91,7 +92,10 @@ public sealed class EngagementRepository(
             // WaitAsync is the only timer: it bounds a check that ignores its token. The token is cancelled on
             // failure (below) so a cooperative check, or an orphaned one, stops instead of running to the driver's
             // timeout. A second timer of the same length on the CTS would race WaitAsync's and could lose.
-            alive = await checkBackendAlive(cts.Token).WaitAsync(bound).ConfigureAwait(false);
+            // timeProvider exists so a test can elapse the bound deterministically; production uses the system clock.
+            alive = await checkBackendAlive(cts.Token)
+                .WaitAsync(bound, timeProvider ?? TimeProvider.System)
+                .ConfigureAwait(false);
         }
         catch (Exception)
         {
