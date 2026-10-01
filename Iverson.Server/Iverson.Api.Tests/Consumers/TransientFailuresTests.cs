@@ -61,11 +61,14 @@ public sealed class TransientFailuresTests
         ["Rpc ResourceExhausted"]                  = () => Rpc(StatusCode.ResourceExhausted),
         ["Rpc Aborted"]                            = () => Rpc(StatusCode.Aborted),
         ["Http null status (connection failure)"]  = () => Http(null),
+        ["Http 500"]                               = () => Http(HttpStatusCode.InternalServerError),
         ["Http 503"]                               = () => Http(HttpStatusCode.ServiceUnavailable),
         ["Http 429"]                               = () => Http(HttpStatusCode.TooManyRequests),
         ["TaskCanceled wrapping TimeoutException"] = () => new TaskCanceledException("timed out", new TimeoutException()),
         ["InvalidOperation wrapping transient"]    = () => new InvalidOperationException("outer", Rpc(StatusCode.Unavailable)),
         ["Aggregate, transient second member"]     = () => new AggregateException(new InvalidOperationException("permanent"), Pg("57P03")),
+        ["Transient two wrappers deep"]            = () => new InvalidOperationException("outer", new InvalidOperationException("middle", Pg("57P03"))),
+        ["Aggregate as an inner exception"]        = () => new InvalidOperationException("outer", new AggregateException(new InvalidOperationException("permanent"), Pg("57P03"))),
 
         // StarRocks shapes MySqlConnector's own IsTransient does not cover (spec §1).
         ["MySql CommandTimeoutExpired"]            = () => MySql(MySqlErrorCode.CommandTimeoutExpired, "The Command Timeout expired before the operation completed.", new SocketException((int)SocketError.TimedOut)),
