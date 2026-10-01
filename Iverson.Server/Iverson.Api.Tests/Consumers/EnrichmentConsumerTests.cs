@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using System.Net;
 using System.Text.Json;
 using FluentAssertions;
@@ -12,6 +13,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
 using Xunit;
@@ -512,6 +514,79 @@ public class EnrichmentConsumerTests
             default!, default!, default!, default!, default!, default);
         await _outboxPublisher.DidNotReceiveWithAnyArgs().PublishAsync(
             default, default!, default!, default!, default, default, default, default!, default);
+    }
+
+    /// <summary>Runs <paramref name="act"/> and returns how many enrichment.timeouts_skipped it recorded.</summary>
+    private static async Task<long> TimeoutsSkippedDuring(Func<Task> act)
+    {
+        long skipped = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (inst, l) =>
+        {
+            if (inst.Meter.Name == "Iverson.Api.Reconciliation" && inst.Name == "enrichment.timeouts_skipped")
+                l.EnableMeasurementEvents(inst);
+        };
+        listener.SetMeasurementEventCallback<long>((_, val, _, _) => Interlocked.Add(ref skipped, val));
+        listener.Start();
+
+        await act();
+        return Interlocked.Read(ref skipped);
+    }
+
+    // An Ollama HTTP timeout (HttpClient's shape: TaskCanceledException wrapping TimeoutException) is skipped,
+    // not redelivered: a document that always times out must not block the partition. Nothing is written, so
+    // the next change or a reconcile re-enriches it, and the skip is counted.
+    [Fact]
+    public async Task HandleUpdated_WhenLlmTimesOut_SkipsWithoutWritingAndCountsTheSkip()
+    {
+        await _registry.RegisterAsync(EnrichedArticle());
+        _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Throws(new TaskCanceledException("ollama timed out", new TimeoutException()));
+
+        var sut = BuildSut();
+        var skipped = await TimeoutsSkippedDuring(async () =>
+        {
+            var act = async () => await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+            await act.Should().NotThrowAsync();
+        });
+
+        skipped.Should().Be(1);
+        await _entities.DidNotReceiveWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!, default);
+        await _state.DidNotReceiveWithAnyArgs().UpsertAsync(
+            default!, default!, default!, default!, default!, default);
+        await _outboxPublisher.DidNotReceiveWithAnyArgs().PublishAsync(
+            default, default!, default!, default!, default, default, default, default!, default);
+    }
+
+    // A caller-token cancellation is a TaskCanceledException with NO TimeoutException inside: it is not an
+    // Ollama timeout, so it must not be counted or logged as one (it falls to the existing best-effort catch).
+    [Fact]
+    public async Task HandleUpdated_WhenCallerCancels_IsNotCountedAsATimeout()
+    {
+        await _registry.RegisterAsync(EnrichedArticle());
+        _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Throws(new TaskCanceledException("caller cancelled"));
+
+        var sut = BuildSut();
+        var skipped = await TimeoutsSkippedDuring(() =>
+            sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None));
+
+        skipped.Should().Be(0);
+    }
+
+    // The timeout rule is HTTP-only: a Postgres command timeout during the write-back (NpgsqlException wrapping
+    // TimeoutException) is an outage, so it still propagates for redelivery instead of being skipped.
+    [Fact]
+    public async Task HandleUpdated_WhenWritebackTimesOutInPostgres_Propagates()
+    {
+        await _registry.RegisterAsync(EnrichedArticle());
+        _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+                 .Throws(new NpgsqlException("command timeout", new TimeoutException()));
+
+        var sut = BuildSut();
+        var act = async () => await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+
+        await act.Should().ThrowAsync<NpgsqlException>();
     }
 
     [Fact]
