@@ -99,6 +99,8 @@ Newly introduced by this plan and verified at plan-write time (2026-09-30):
 | P22 | Code validity | The plan's stub and the two-sided dry run produce the spec §6.1 outcomes | scratch run, all 300 SciFact queries: identity 0.7452 / 0.9337, `--pair` exit 1 ("sequence differs on 0"); reversed 0.0011 / 0.9337, `--pair` exit 0 (300/300 reordered); wrong document text → 422 |
 | P23 | Code validity | Task 5's snippets (restricted qrels, `--baseline` repeat comparison, worst-case bound, transfer Spearman, secondary metrics) run as written | each run on the dry-run artifacts; the bound rewrite put query 1 in reversed baseline order; identity-vs-reversed ledgers gave ρ −1.000; the secondary-metrics numbers equal spec §3 |
 | P24 | Gate pool | The spec's pool is 512/448, not the shipped window | `scifact-bge-base-2026-09-04/keymap.json.stats.json`: `chunk_max_chars 512, chunk_step 448`; Ben ruled to keep it (Global Constraints) |
+| P25 | Code validity | `jev_rerank.py` and `teacher_rerank.py` (shipped to the pod) parse under Python 3.12, U1's floor | `ast.parse(…, feature_version=(3,12))` and `(3,11)` pass for both, re-run 2026-10-01. Imports: stdlib plus `teacher_rerank` only (CIR-2 §1 span item 2) |
+| P26 | Code validity | `run-arm.sh` tells a demo outage from a judge-invalid arm, and Task 4's repeated Steps 7–8 keep `MBS` and `QT` | CIR-2 §2.1: the revised script, against a local stand-in, recorded nine end states (persistent / transient / vanished server → `demo-lost`; down / 403 / check-422 → `demo-unavailable`; judge-invalid → `exit 1` twice; valid and post-outage rerun → `exit 0`; interrupted → no line). Re-run 2026-10-01: transient outage → `demo-lost (exit 1, 40 redirected attempts)`, invalid → `exit 1`, rerun → `exit 0`. CIR-2 §2.2: `MBS=${MBS:-32}` keeps 16 after halving and gives 32 when unset; `MBS=` / `QT=` are assigned nowhere else in Task 4 |
 | U1 | Pod (UNVERIFIED) | The rented image has Python ≥ 3.12 and CUDA torch ≥ 2.6 | cannot be checked before renting; Task 4 Step 3 checks it first and re-rents on failure (cheap at that point). Stage 2's `vllm/vllm-openai:v0.30.0` image is **not** used: its entrypoint serves a model and holds the GPU |
 | U2 | Pod | `runpodctl send`/`receive` with md5 checks moves files; `setsid nohup` keeps long runs alive | the stage-2 runbook (`.worktrees/student-distill/docs/plans/2026-09-28-student-distillation-runbook.md:118-124,137`) and the stage-1 SIGTERM finding |
 | U3 | Pod | The weights land on the `/workspace` volume, which is sized separately from the container disk | RunPod storage docs (docs.runpod.io/pods/storage/types, fetched 2026-09-30): volume "Mount path: `/workspace` (default)"; the container disk is "temporary storage for the operating system and session data"; no default sizes stated. Task 4 Step 3's `df -h /workspace` checks it (CIR-1 §2.2) |
@@ -1099,16 +1101,24 @@ cat > $A/screen/run-arm.sh <<'ARM'
 #!/usr/bin/env bash
 # One screen arm (spec §5): $1 label, $2 demo model id, $3 question type. The arm runs only if the blocking
 # demo check passes first; an arm that ends over the fallback cap (jev_rerank.py exits 1 and writes no run
-# file) is invalid for selection.
+# file) is invalid for selection, unless the demo failed it: a failed arm whose ledger gained redirected
+# attempts, or whose post-check fails, is recorded demo-lost and rerun (CIR-2 §2.1).
 S=/home/ben/repositories/Iverson/.worktrees/simple-jev-judge/Iverson.Server/Iverson.LoadTest/scripts
 NF=/home/ben/repositories/iverson-benchmark-corpora/nfcorpus-bge-base-2026-09-04
 OUT=/home/ben/repositories/iverson-benchmark-corpora/simple-jev-2026-09/screen
-bash $OUT/check-demo.sh "$1" "$2" "$3" || { echo "$1 $2 $3 demo-unavailable" >> $OUT/arms.status; exit 1; }
+CHK=$(bash $OUT/check-demo.sh "$1" "$2" "$3") || { echo "$1 $2 $3 demo-unavailable ($CHK)" >> $OUT/arms.status; exit 1; }
+N0=$(grep -c 'non-JSON 200 body' $OUT/$1.responses.jsonl 2>/dev/null); N0=${N0:-0}
 python3 $S/jev_rerank.py --pool $NF/runs/bge-base.chunks.trec --corpus $NF/beir/corpus.jsonl \
   --queries $NF/beir/queries.jsonl --base-url https://simple-jev-demo-api.featherless.ai \
   --model "$2" --question-type "$3" --responses $OUT/$1.responses.jsonl \
   --out $OUT/$1.chunks.trec --composite 7d3a15092f963723 > $OUT/$1.log 2>&1
-echo "$1 $2 $3 exit $?" >> $OUT/arms.status
+RC=$?
+N1=$(grep -c 'non-JSON 200 body' $OUT/$1.responses.jsonl 2>/dev/null); N1=${N1:-0}
+if [ $RC -ne 0 ] && { [ $N1 -gt $N0 ] || ! bash $OUT/check-demo.sh "$1-post" "$2" "$3" > /dev/null; }; then
+  echo "$1 $2 $3 demo-lost (exit $RC, $((N1 - N0)) redirected attempts)" >> $OUT/arms.status
+else
+  echo "$1 $2 $3 exit $RC" >> $OUT/arms.status
+fi
 ARM
 ```
 
@@ -1130,7 +1140,7 @@ bash $A/screen/run-arm.sh arm5-qwen27b featherless-ai/Qwen3.8-27B-classifier nou
 " > /dev/null 2>&1 &
 ```
 
-Monitor with `cat $A/screen/arms.status; wc -l $A/screen/*.responses.jsonl`. A 403 in any arm's log means the user agent or endpoint is wrong: stop and fix, don't continue. An interrupted arm resumes by rerunning its line (same ledger). `demo-unavailable` in `arms.status` means the demo stopped serving before that arm: once `check-demo.sh` passes again, rerun that arm's line (its ledger resumes). If no arm ends valid, Task 3 is not done: wait for the demo and rerun.
+Monitor with `cat $A/screen/arms.status; wc -l $A/screen/*.responses.jsonl`. A 403 in any arm's log means the user agent or endpoint is wrong: stop and fix, don't continue. An interrupted arm resumes by rerunning its line (same ledger). `demo-unavailable` (the demo was not serving when the arm started) or `demo-lost` (it stopped serving during the arm) in `arms.status`: rerun that arm's line once `check-demo.sh` passes (its ledger resumes). Before Step 3, each of arms 1–5 must have a **last** `arms.status` line ending `exit 0` or `exit 1`. An arm whose last line is `demo-unavailable …` or `demo-lost …`, or that has no line (interrupted), is rerun first. Step 4 applies the same rule to arm 6.
 
 - [ ] **Step 3: Score arms 1–5 and pick the `noul` leader**
 
@@ -1194,6 +1204,7 @@ export HF_HOME=/workspace/hf
 cd /workspace && git clone https://github.com/featherless-ai/simple-jev.git && cd simple-jev \
   && git checkout 7bb4f0c745b2a160776b1d41ed4cdc02967f6cf3 && python3 -m pip install -e './hf-server'
 REPO=<HF repo from Task 3's table>; POLICY=<policy from Task 3's table>
+QT=noul   # score if arm 6 won (Task 3 Step 4)
 SHA=$(python3 -c "from huggingface_hub import HfApi; print(HfApi().model_info('$REPO').sha)"); echo $SHA
 ```
 
@@ -1225,7 +1236,7 @@ On the pod: `mkdir -p /workspace/in /workspace/out && cd /workspace/in && runpod
 - [ ] **Step 7: Launch the server** with `MBS=32` first
 
 ```bash
-MBS=32
+MBS=${MBS:-32}
 cd /workspace && setsid nohup env ENABLE_OPEN_JEV_ADVANCED_METRICS=1 HF_HOME=/workspace/hf simple-jev \
   --model $REPO --revision $SHA --served-model-name $REPO --enforce-model-id \
   --classifier-prompt-policy $POLICY --max-request-branches 64 --max-model-len 65536 --dtype bfloat16 \
@@ -1233,10 +1244,10 @@ cd /workspace && setsid nohup env ENABLE_OPEN_JEV_ADVANCED_METRICS=1 HF_HOME=/wo
 until curl -sf 127.0.0.1:8000/health; do sleep 15; done
 ```
 
-- [ ] **Step 8: Pass 0, the blocking pre-flight** (query 129, the largest branch in either corpus). `QT` is `noul`, or `score` if arm 6 won.
+- [ ] **Step 8: Pass 0, the blocking pre-flight** (query 129, the largest branch in either corpus). `QT` was set in Step 4.
 
 ```bash
-I=/workspace/in; O=/workspace/out; QT=noul
+I=/workspace/in; O=/workspace/out
 awk '$1=="129"' $I/sf/runs/bge-base.chunks.trec > $I/q129.chunks.trec
 python3 $I/scripts/jev_rerank.py --pool $I/q129.chunks.trec --corpus $I/sf/corpus.jsonl --queries $I/sf/queries.jsonl \
   --base-url http://127.0.0.1:8000 --model $REPO --question-type $QT \
