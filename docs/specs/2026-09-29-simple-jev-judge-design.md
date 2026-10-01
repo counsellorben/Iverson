@@ -1,7 +1,7 @@
 # SimpleJEV relevance judge — offline gate (design)
 
 Written 2026-09-29. Produced with thorough-brainstorming. The approaches were probed against the public
-demo, and the 26 assumptions in §10 were verified (A24–A25 added by CDR-1's span check, A26 by CDR-2's).
+demo, and the 27 assumptions in §10 were verified (A24–A25 added by CDR-1's span check, A26 by CDR-2's, A27 by Ben's 2026-10-01 model ruling).
 
 ## 1. The question
 
@@ -26,10 +26,10 @@ licenses a spec for that stage; §8 lists what a PASS or FAIL does and does not 
 | Decision | Ruling |
 |---|---|
 | Scope | Offline gated measurement first; server integration only after a PASS, in its own spec |
-| Hosting | Free model **screen** on Featherless's public demo API using **public** corpora only; the **gate** runs on a rented GPU pod self-hosting `hf_server`, which is how production would run it (self-hostable open weights, per the 2026-09-20 ruling) |
+| Hosting | The **gate** runs on a rented GPU pod self-hosting `hf_server`, which is how production would run it (self-hostable open weights, per the 2026-09-20 ruling). The free model screen on Featherless's public demo was **dropped** (Ben, 2026-10-01): the demo has redirected every request since ≈18:50 UTC 2026-09-30 |
 | Pool / baseline | The shipped **bge-base** SciFact pool; gated against it |
-| Screen queries | **NFCorpus** bge-base pools, so model selection never sees the SciFact test queries (no winner's curse) |
-| Readout | Pointwise `noul`; a `score` rubric arm competes in the screen only |
+| Gate model | **`Qwen/Qwen3.8-27B`**, named by Ben (2026-10-01) in place of the §5 screen: the highest `hf_server` development score of the five self-hostable candidates (445/477, `hf-server/README.md:120-129`) |
+| Readout | Pointwise `noul` |
 | Secondary metrics | R@10 and P@10 from one recorded `ir_measures` command; `report.py` unchanged |
 
 ## 3. Inputs (all on disk, outside the repo)
@@ -41,9 +41,6 @@ Root: `~/repositories/iverson-benchmark-corpora/`.
 | Gate pool (300 q × 50) | `scifact-bge-base-2026-09-04/runs/bge-base.chunks.trec` | `e51bf248d79044fd2177ca39dfc0e912` |
 | Gate qrels | `scifact-bge-base-2026-09-04/qrels.trec` | `f7572e6aef242267104d7ad5cda8f729` |
 | Gate corpus / queries | `scifact-bge-base-2026-09-04/beir/{corpus,queries}.jsonl` | — |
-| Screen pool (323 q × 50) | `nfcorpus-bge-base-2026-09-04/runs/bge-base.chunks.trec` | `b167cf42c00d74f7848315fab19ec49f` |
-| Screen qrels (graded 1–2) | `nfcorpus-bge-base-2026-09-04/qrels.trec` | `afd2c240a01471e9d19c3a488ee92c08` |
-| Screen corpus / queries | `nfcorpus-bge-base-2026-09-04/beir/{corpus,queries}.jsonl` | — |
 
 In both corpora the `text` field already begins with the title (5,183/5,183 and 3,633/3,633 docs), so the
 judged document is `text` alone. Every pool doc id resolves in its corpus.
@@ -60,11 +57,11 @@ Headroom is **+0.1893** nDCG@10, spread over 107 of the 300 queries. R@50 cannot
 bring in documents that first-stage retrieval missed, and SimpleJEV cannot generate or embed. This design
 improves precision and recall **within the top 50**, not first-stage recall.
 
-## 4. The judge request (frozen before the screen starts)
+## 4. The judge request (frozen)
 
 The wording is generic because NFCorpus queries are topics ("deafness", "DHA") and SciFact queries are
-claims, and production use would be generic too. The wording is part of what the screen selects, so it is
-fixed here, and the sidecar records its SHA-256.
+claims, and production use would be generic too. It is fixed here, and the sidecar records its
+SHA-256.
 
 One request per query, 50 questions, `model` = the served id:
 
@@ -87,7 +84,7 @@ One request per query, 50 questions, `model` = the served id:
 ```
 
 Question ids are `d<i>`, where `i` is the doc's zero-based position in the baseline pool. The `score`
-variant (screen only) replaces each question with:
+variant (implemented in `jev_rerank.py`; unused since the screen was dropped) replaces each question with:
 
 ```json
 {
@@ -110,28 +107,17 @@ over the baseline sequence). The run file then gets synthetic, strictly decreasi
 `ir_measures`' doc-id tie-break can never apply. Ties do occur: Qwen3.8-27B gave 32 distinct values out of 50
 on query 1, with the ties in the saturated tail near 0.018.
 
-## 5. Stage A — model screen (demo API, NFCorpus, $0)
+## 5. Model choice and transport rules
 
-**Endpoint:** `https://simple-jev-demo-api.featherless.ai/v1/classifier`.
+**Model screen: dropped (Ben, 2026-10-01).** The screen was to rank five demo models on NFCorpus and pick the
+gate model by a pre-registered rule. Since ≈18:50 UTC on 2026-09-30 the demo has answered every request with
+`301` → `featherless.ai/simple-jev/…` (an HTML page), so it cannot run. The gate model is named instead:
+**`Qwen/Qwen3.8-27B`**, with the `noul` question and the `shared_examples_binary` policy. It has the highest
+`hf_server` development score of the five self-hostable candidates: 445/477, against Gemma-4-26B-A4B 437,
+Qwen3.6-35B-A3B 432, Gemma-4-12B 427 and Qwen3.5-4B 374 (`hf-server/README.md:120-129`). It is chosen without
+any SciFact data, so the gate stays free of selection bias.
 
-**Arms, run in this order:**
-
-1. `noul` × `featherless-ai/Qwen3.5-4B-classifier`
-2. `noul` × `featherless-ai/gemma-4-12B-it-classifier`
-3. `noul` × `featherless-ai/gemma-4-26B-A4B-classifier`
-4. `noul` × `featherless-ai/Qwen3.6-35B-A3B-classifier`
-5. `noul` × `featherless-ai/Qwen3.8-27B-classifier`
-6. `score` × whichever of arms 1–5 has the highest NFCorpus nDCG@10
-
-The three demo RWKV models are excluded because `hf_server` has no RWKV backend (`--backend` choices are
-`transformers` and `laya`, `hf_server.py:1300`), so a RWKV winner could not be gated.
-
-**Selection rule (pre-registered):** the winner is the valid arm with the highest NFCorpus nDCG@10 as
-scored by `report.py`. Exact ties go to the earlier arm. There is no significance test, since this is a
-selection and not a claim. If arm 6 wins, the gate uses the `score` question on that model. The screen table
-is context in the gate doc and makes no claim.
-
-**Transport and failure handling** (the gate pass in §6 uses the same rules):
+**Transport and failure handling** (the gate passes in §6 use these rules):
 
 - Requests go one at a time, at least 0.5 s apart (the demo is rate-limited to 2 RPS), with client timeout 300 s.
 - Send `User-Agent: curl/8.5.0`. Python's default urllib agent gets a Cloudflare **403 error 1010** (probed).
@@ -141,14 +127,11 @@ is context in the gate doc and makes no claim.
 - **Not retryable:** 400 and 422 (over-limit or invalid). The query falls back immediately, and the body is
   logged in the ledger.
 - A query that exhausts its attempts **falls back to baseline order** and is counted.
-- **Fallback cap: 5%.** More than 16 of 323 makes a screen arm invalid for selection. More than 15 of 300
-  refuses the gate run: no verdict is written, and the run is investigated and repeated.
-- Ledger: one JSONL file per arm and per pass. It holds accepted and rejected entries, and resume keys on
+- **Fallback cap: 5%** (`floor(0.05·n)`). More than 15 of 300 refuses the gate run: no verdict is written, and
+  the run is investigated and repeated.
+- Ledger: one JSONL file per pass. It holds accepted and rejected entries, and resume keys on
   accepted entries only (the `teacher_rerank` convention). **Each pass has its own ledger** (CDR-3: a shared
   ledger replays pass 1).
-
-**Throughput (probed on SciFact query 1, 50 questions):** 6.8 s (Gemma-4-26B-A4B) and 13.6 s (Qwen3.8-27B)
-per request, so roughly 40–80 min per arm and 4–8 h for the screen.
 
 ## 6. Stage B — gate run (self-hosted `hf_server`, rented pod)
 
@@ -169,7 +152,7 @@ defect where prompts carried a bare `[docid]` while every test stayed green.
 
 ### 6.2 Pod
 
-- **GPU, sized to the winner for weights plus the copied prefix cache (CDR-1 §3.1, option b).** Every branch
+- **GPU, sized to the model for weights plus the copied prefix cache (CDR-1 §3.1, option b).** Every branch
   carries the whole pool (A15). `hf_server` deep-copies the prefix cache and broadcasts it to each suffix
   batch of up to `--max-batch-size` rows (`hf_server.py:536-542`), and no flag bounds that memory
   (`:1136-1137`). Estimated full-attention KV in bf16 at query 129's ≈52k tokens, per batch row (sliding-window
@@ -184,13 +167,13 @@ defect where prompts carried a bare `[docid]` while every test stayed green.
   | Qwen3.6-35B-A3B | ≈72 GB | 20 KiB | ≈1.06 GB | ≈106 GB | H200 |
 
   At the default 32 rows, the 27B's estimate exceeds even an H200, so expect its pre-flight to settle at
-  `--max-batch-size` 16 or lower. These are estimates; the §6.3 pre-flight decides. Nothing is rented until
-  the screen has named a winner.
+  `--max-batch-size` 16 or lower. These are estimates; the §6.3 pre-flight decides. For Qwen3.8-27B the
+  card is an H200.
 - **Server:** simple-jev commit `7bb4f0c745b2a160776b1d41ed4cdc02967f6cf3`, `pip install -e './hf-server'`,
   launched with `setsid nohup`:
   `ENABLE_OPEN_JEV_ADVANCED_METRICS=1 simple-jev --model <HF repo> --revision <full sha> --served-model-name <HF repo> --enforce-model-id
   --classifier-prompt-policy <policy> --max-request-branches 64 --max-model-len 65536 --dtype bfloat16`.
-- **Policy pin:** `<policy>` is the value the **code's** `KNOWN_PROFILES` gives for the winner
+- **Policy pin:** `<policy>` is the value the **code's** `KNOWN_PROFILES` gives for the model
   (`hf_prompt_policies.py:41-52`), **not** the README's table, which is stale at this commit. Those values
   are: Qwen 4B, Qwen 27B and Gemma 26B-A4B → `shared_examples_binary`; Qwen 35B-A3B and Gemma 12B →
   `shared_repeat_state`. Set it explicitly, and confirm both the startup log's `AUTO PROMPT FORMAT` line (run
@@ -213,11 +196,7 @@ defect where prompts carried a bare `[docid]` while every test stayed green.
    - Record the final `--max-batch-size` and the pre-flight's `usage.input_tokens` in the sidecar's
      `reranker` block, by passing them to `jev_rerank.py` as `--max-batch-size` and
      `--preflight-input-tokens` (§9) on every pod pass.
-1. **Transfer check (reported, not blocking):** the first 20 NFCorpus queries in pool order, on the pod,
-   compared with the winner's demo ledger. Report the per-query Spearman ρ and the mean absolute judge-value
-   difference. It shows whether the selection transferred; the gate measures only what was self-hosted.
-   (The demo is not `hf_server`: its over-limit error is vLLM's `BadRequestError` format, and its prompt
-   policy is unknown.)
+1. **Transfer check: dropped** with the screen (Ben, 2026-10-01). It compared the screen's demo ledger with the pod.
 2. **Main pass:** 300 SciFact queries → `jev-<model>.chunks.trec` plus `jev-<model>.meta.json`. The sidecar
    carries **bge-base's own composite `7d3a15092f963723`**, so `report.py` does not print BUILD MISMATCH, and a
    `reranker` block: simple-jev commit, HF repo and full revision, policy, question type, wording SHA-256,
@@ -244,8 +223,8 @@ report.py --run jev-<model>.chunks.trec --run bge-base.chunks.trec \
 - **Worst-case bound:** re-score with every fallback query's judge ordering replaced by reversed order, and
   state whether the gate still holds (stage 1's convention).
 - **Reported, not gated:** R@10, P@10 and AP for both runs, from one `ir_measures.calc_aggregate([nDCG@10,
-  R@50, AP, R@10, P@10], …)` command recorded verbatim in the gate doc; the repeat-pass delta; the transfer
-  check; the screen table.
+  R@50, AP, R@10, P@10], …)` command recorded verbatim in the gate doc; the repeat-pass delta; the §5 model-choice
+  note.
 - **Gate doc:** `docs/plans/2026-09-GATE-simple-jev-judge.md`, containing the output md5s of every run file
   and report, and the command lines. Add its row to §0 of
   `docs/2026-09-06-ranked-changes-after-retrieval-experiments.md` (one row per `docs/plans/*GATE*.md`).
@@ -308,6 +287,7 @@ from `main` (`main` equals `origin/main` at writing).
 | A24 | The demo accepts the largest 50-question NFCorpus body | PLAIN-478 (the largest NFCorpus branch) returned 200 with 50 answers on Qwen3.8-27B (78,248 input tokens) and Gemma-4-26B-A4B (136,410), re-probed 2026-09-30. CDR-1 reported all five models |
 | A25 | `hf_server` serves all five screen models on the prefix-cache path | That path raises unless the cache supports `reorder_cache` (`hf_server.py:510-513`); `hf-server/README.md:120-129` reports hf_server development scores (/477) for all five under their `shared_*` policies |
 | A26 | Every sidecar `reranker` field has a source (CDR-2 §2.1) | hf_server exposes no commit or `--max-batch-size` / `--max-model-len` in any response; the revision and policy appear only in advanced metadata (`hf_server.py:864-869`, `:949-954`, `:1264-1275`), so they come from record-only flags (precedent `teacher_rerank.py:533-535,576-579`). Advanced metrics do not change scores (`common/response_scoring.py:100`), and binary `noul` answers stay `{type, noul}` (`hf_prompt_policies.py:182-186`, applied before the metadata merge at `hf_server.py:946-954`) |
+| A27 | The gate model is `Qwen/Qwen3.8-27B` with policy `shared_examples_binary` (Ben, 2026-10-01) | `hf-server/README.md:120-129`: 445/477, the highest of the five candidates; profile 'Qwen dense 27B' → `shared_examples_binary` (`hf_prompt_policies.py:44-45`); revision `1d4bf0f2ff60…` observed 2026-09-29; card H200 per §6.2 |
 
 **Demo probes (2026-09-29, SciFact query 1, public data):** 50 questions per request accepted by the 27B and
 Gemma 26B models; distinct `noul` values 10/10 (4B, k=10), 50/50 (Gemma), 32/50 (27B); relevant doc
@@ -316,10 +296,8 @@ determinism max |Δ| 0.014; listwise `choice` at k=50 → 400.
 
 ## 11. Known issues, accepted
 
-- **The screen model may not be the best SciFact model.** NFCorpus is a different task: topical queries,
-  graded, about 38 relevant docs per query. Ben accepted this (2026-09-29) as the price of a leak-free
-  selection.
-- **The demo's serving stack differs from `hf_server`.** The screen ranks models through a third party's
-  unpinned configuration. The §6.3 transfer check reports how far that carried; it does not gate.
+- **The gate model is named, not selected on this task.** Qwen3.8-27B is chosen by `hf_server`'s own
+  development scores, a general decision benchmark rather than retrieval relevance, so one of the other four
+  candidates may judge this pool better. Ben accepted this (2026-10-01) when the demo became unavailable.
 - **SimpleJEV's README policy table is stale** at `7bb4f0c7`. It is handled by pinning from code (§6.2), and
   the discrepancy was not reported upstream.
