@@ -51,8 +51,8 @@ catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException)
 {
     ReconciliationTelemetry.EnrichmentTimeoutsSkipped.Add(1);
     logger.LogWarning(ex,
-        "[Enrichment] Ollama timed out for {Type}:{Key} — skipped with no state row; the next change to the object or POST /admin/reconcile/{Type} re-enriches it.",
-        schema.TypeName.SanitizeForLog(), ev.Key, schema.TypeName.SanitizeForLog());
+        "[Enrichment] Ollama timed out for {Type}:{Key} — skipped with no state row; the next change to the object, or a reconcile of the type (POST /admin/reconcile/<type>), re-enriches it.",
+        schema.TypeName.SanitizeForLog(), ev.Key);
 }
 ```
 
