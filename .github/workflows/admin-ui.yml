@@ -28,7 +28,7 @@ jobs:
       run:
         working-directory: Iverson.AdminUI
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -133,7 +133,7 @@ jobs:
       API_ORIGIN: http://admin-api.ci.invalid
       IDP_ORIGIN: http://authentik.ci.invalid
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the admin console image
         # The repo root is the build context on purpose: the build stage also copies
