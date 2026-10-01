@@ -83,7 +83,7 @@ internal sealed class PopularitySignalUpdater(
                 spec,
                 authz: authzConstraints);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !TransientFailures.IsTransient(ex))
         {
             logger.LogError(ex,
                 "[PopularitySignal] AggregateAsync failed for parent={Parent} type={Type} relation={Relation}; skipping.",
@@ -256,7 +256,7 @@ internal sealed class PopularitySignalConsumer(
                         await updater.UpdateAsync(parentSchema, signal, childSchema, relation, oldParentKey, tenantId);
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!TransientFailures.IsTransient(ex))
             {
                 logger.LogError(ex,
                     "[PopularitySignal] Failed to update parent for signal={Signal} type={Type} key={Key} — skipping.",

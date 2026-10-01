@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
+using Npgsql;
 using Iverson.Api.Consumers;
 using Iverson.Api.Schema;
 using Iverson.Events;
@@ -583,5 +584,27 @@ public class DocumentRerenderConsumerTests
 
         await _queue.Received(1).EnqueueEntityAsync(TenantA, "Badge", BadgeId);
         await _queue.DidNotReceive().EnqueueEntityAsync(TenantA, "Widget", WidgetId);
+    }
+
+    // The per-dependent catch isolates a bad dependent, but a Postgres outage is not one: a transient
+    // failure escapes to the dispatcher, which halts the consumer for redelivery instead of skipping.
+    [Fact]
+    public async Task Dispatch_DependentReadHitsTransientPostgresFailure_PropagatesForRedelivery()
+    {
+        await _registry.RegisterAsync(WidgetSchema());
+        await _registry.RegisterAsync(BadgeSchema());
+        await _registry.RegisterAsync(AuthorSchema());
+
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId, Arg.Any<EntityAccess>())
+            .Returns($$"""{"Id":"{{AuthorId}}","Name":"Ada","TenantId":"{{TenantA}}"}""");
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), AuthorId, EntityAccess.ForTenant(TenantA))
+            .Returns<IEnumerable<string>>(_ => throw new PostgresException(
+                "the database system is in recovery mode", "FATAL", "FATAL", "57P03"));
+
+        var ev = MakeEvent(EntityEventType.Updated, "Author", AuthorId,
+            $$"""{"Id":"{{AuthorId}}","Name":"Ada","TenantId":"{{TenantA}}"}""");
+
+        var act = () => BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        await act.Should().ThrowAsync<PostgresException>().Where(e => e.SqlState == "57P03");
     }
 }

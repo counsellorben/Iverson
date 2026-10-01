@@ -53,6 +53,58 @@ public sealed class EngagementRepository(
             throw new EngagementNotReadyException(
                 "StarRocks is currently unavailable (circuit breaker open).", ex);
         }
+        catch (MySqlException ex)
+        {
+            if (await RewrapIfBackendUnavailableAsync(
+                    ex, probeCt => CheckBackendAliveAsync(connectionString, probeCt), LivenessCheckBound)
+                .ConfigureAwait(false) is { } unavailable)
+                throw unavailable;
+            throw;
+        }
+    }
+
+    /// <summary>How long the post-failure backend liveness check may take before it counts as dead.</summary>
+    internal static readonly TimeSpan LivenessCheckBound = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Decides whether a StarRocks failure is really a backend outage (spec §5). MySqlConnector marks only five
+    /// error codes transient, and the circuit breaker counts failures with that same predicate, so an outage that
+    /// is not a refused connection (a frozen server, a BE down behind a live FE) neither classifies as transient
+    /// nor opens the circuit. For a <see cref="MySqlException"/> that is neither <see cref="MySqlException.IsTransient"/>
+    /// nor <see cref="IsExpectedMissingResourceError"/>, this runs <paramref name="checkBackendAlive"/> bounded to
+    /// <paramref name="bound"/>; a false result, a throw, or a timeout returns an
+    /// <see cref="EngagementNotReadyException"/> wrapping <paramref name="ex"/>, which the projection consumers'
+    /// classifier treats as transient and the gRPC read paths map to <c>Unavailable</c>. Null means rethrow the
+    /// original. Expected missing-resource errors are exempt so that a read of an unwritten type or an
+    /// unprovisioned tenant never pays a liveness round-trip.
+    /// </summary>
+    internal static async Task<EngagementNotReadyException?> RewrapIfBackendUnavailableAsync(
+        Exception ex, Func<CancellationToken, Task<bool>> checkBackendAlive, TimeSpan bound,
+        TimeProvider? timeProvider = null)
+    {
+        if (ex is not MySqlException mex || mex.IsTransient || IsExpectedMissingResourceError(mex))
+            return null;
+
+        bool alive;
+        using var cts = new CancellationTokenSource();
+        try
+        {
+            // WaitAsync is the only timer: it bounds a check that ignores its token. The token is cancelled on
+            // failure (below) so a cooperative check, or an orphaned one, stops instead of running to the driver's
+            // timeout. A second timer of the same length on the CTS would race WaitAsync's and could lose.
+            // timeProvider exists so a test can elapse the bound deterministically; production uses the system clock.
+            alive = await checkBackendAlive(cts.Token)
+                .WaitAsync(bound, timeProvider ?? TimeProvider.System)
+                .ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The check threw or timed out: the backend cannot be shown alive.
+            cts.Cancel();
+            alive = false;
+        }
+
+        return alive ? null : new EngagementNotReadyException("StarRocks backend unavailable", ex);
     }
 
     public async Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null)

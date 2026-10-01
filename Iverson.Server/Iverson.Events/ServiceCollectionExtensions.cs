@@ -11,7 +11,8 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddKafka(
         this IServiceCollection services,
         IConfiguration config,
-        int numPartitions = 12)
+        int numPartitions = 12,
+        Func<Exception, bool>? isTransient = null)
     {
         services.Configure<KafkaOptions>(config.GetSection(KafkaOptions.Section));
 
@@ -41,16 +42,20 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IEventBrokerHealthCheck, KafkaBrokerHealthCheck>();
 
+        services.AddSingleton(new MessageDispatcherOptions { IsTransient = isTransient ?? (_ => false) });
+
+        services.AddSingleton(sp => new MessageDispatcher(
+            sp.GetRequiredService<IProducer<string, string>>(),
+            sp.GetRequiredService<ILogger<MessageDispatcher>>(),
+            sp.GetRequiredService<MessageDispatcherOptions>()));
+
         services.AddSingleton<IEventConsumer>(sp =>
         {
             var options = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
-            var dispatcher = new MessageDispatcher(
-                sp.GetRequiredService<IProducer<string, string>>(),
-                sp.GetRequiredService<ILogger<MessageDispatcher>>());
             return new KafkaConsumer(
                 options,
                 sp.GetRequiredService<ILogger<KafkaConsumer>>(),
-                dispatcher,
+                sp.GetRequiredService<MessageDispatcher>(),
                 cfg => new ConsumerBuilder<string, string>(cfg).Build(),
                 cfg => new AdminClientBuilder(cfg).Build(),
                 numPartitions);
