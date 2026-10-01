@@ -230,16 +230,19 @@ public sealed class EnrichmentConsumer(
                 "[Enrichment] Enriched {Count} column(s) for {Type}:{Key}",
                 columns.Count, schema.TypeName.SanitizeForLog(), ev.Key);
         }
-        catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException)
+        catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException
+                                               || (ex.InnerException is HttpRequestException && !ct.IsCancellationRequested))
         {
             // An Ollama HTTP timeout: HttpClient's timeout is a TaskCanceledException whose DIRECT inner
-            // exception is TimeoutException (a caller-token cancellation has none, and an Npgsql command
-            // timeout is an NpgsqlException), and the only HTTP calls in this block go to Ollama. Skipped
-            // rather than redelivered so a document that always times out cannot block the partition; no
-            // state row, so the next change to the object or a reconcile of the type re-enriches it.
+            // exception is TimeoutException. When the timeout races a connection failure, HttpClient instead
+            // wraps the HttpRequestException (no TimeoutException) - the same shape a shutdown cancel racing
+            // a connection failure produces - so that shape counts only while the caller's token is live.
+            // An Npgsql command timeout is an NpgsqlException, and the only HTTP calls in this block go to
+            // Ollama. Skipped rather than redelivered so a document that always times out cannot block the
+            // partition; no state row, so the next change or a reconcile of the type re-enriches it.
             ReconciliationTelemetry.EnrichmentTimeoutsSkipped.Add(1);
-            logger.LogWarning(ex,
-                "[Enrichment] Ollama timed out for {Type}:{Key} — skipped with no state row; the next change to the object, or a reconcile of the type (POST /admin/reconcile/<type>), re-enriches it.",
+            logger.LogWarning(
+                "[Enrichment] Ollama timed out for {Type}:{Key} — skipped without writing a state row; the next change to the object, or a reconcile of the type (POST /admin/reconcile/<type>), re-enriches it.",
                 schema.TypeName.SanitizeForLog(), ev.Key);
         }
         catch (Exception ex) when (!TransientFailures.IsTransient(ex))
