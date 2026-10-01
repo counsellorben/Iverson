@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using FluentAssertions;
 using Iverson.Api.Consumers;
@@ -472,12 +473,35 @@ public class EnrichmentConsumerTests
 
     // ── Failure handling ──────────────────────────────────────────────────────
 
+    // An unreachable LLM (HttpRequestException with no status: a connection failure) is a transient
+    // dependency outage. It must escape to the dispatcher, which halts the consumer for redelivery,
+    // rather than be swallowed and the object skipped — and nothing may be written before it does.
     [Fact]
-    public async Task HandleUpdated_WhenLlmFails_LeavesObjectIntactAndDoesNotThrow()
+    public async Task HandleUpdated_WhenLlmUnreachable_PropagatesForRedeliveryAndWritesNothing()
     {
         await _registry.RegisterAsync(EnrichedArticle());
         _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                    .Throws(new HttpRequestException("ollama down"));
+
+        var sut = BuildSut();
+        var act = async () => await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+
+        await act.Should().ThrowAsync<HttpRequestException>().WithMessage("ollama down");
+        await _entities.DidNotReceiveWithAnyArgs().UpdateColumnsAsync(default!, default!, default!, default!, default);
+        await _state.DidNotReceiveWithAnyArgs().UpsertAsync(
+            default!, default!, default!, default!, default!, default);
+        await _outboxPublisher.DidNotReceiveWithAnyArgs().PublishAsync(
+            default, default!, default!, default!, default, default, default, default!, default);
+    }
+
+    // The non-transient sibling: the LLM answering 400 is a bad request, not an outage, so the
+    // best-effort catch still logs it, leaves the object intact and returns normally.
+    [Fact]
+    public async Task HandleUpdated_WhenLlmRejectsRequest_LeavesObjectIntactAndDoesNotThrow()
+    {
+        await _registry.RegisterAsync(EnrichedArticle());
+        _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Throws(new HttpRequestException("bad request", inner: null, statusCode: HttpStatusCode.BadRequest));
 
         var sut = BuildSut();
         var act = async () => await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);

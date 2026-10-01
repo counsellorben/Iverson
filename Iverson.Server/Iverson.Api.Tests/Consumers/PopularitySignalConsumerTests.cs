@@ -411,11 +411,10 @@ public class PopularitySignalConsumerTests
         await act.Should().NotThrowAsync();
     }
 
-    // A non-NotFound RpcException is NOT one of the two documented degrade cases and must
-    // propagate to DispatchAsync's own per-signal catch, which logs and moves on rather than
-    // crashing the whole dispatch — but it must not be silently swallowed by UpdateAsync itself.
+    // Qdrant Unavailable is a transient dependency outage: it must escape DispatchAsync's per-signal
+    // catch to the dispatcher, which halts the consumer for redelivery instead of skipping the signal.
     [Fact]
-    public async Task Dispatch_SetPayloadAsyncThrowsOtherRpcException_IsCaughtBySignalLevelHandler()
+    public async Task Dispatch_SetPayloadAsyncThrowsUnavailable_PropagatesForRedelivery()
     {
         await _registry.RegisterAsync(ArticleSchema());
         await _registry.RegisterAsync(CommentSchema());
@@ -423,6 +422,29 @@ public class PopularitySignalConsumerTests
         _vector.SetPayloadAsync(
                 Arg.Any<string>(), Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, object>>())
             .Returns(Task.FromException(new RpcException(new Status(StatusCode.Unavailable, "down"))));
+
+        var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
+
+        var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
+        var sut = BuildSut(OptionsWith("Article", "Comments"));
+
+        var act = () => sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        await act.Should().ThrowAsync<RpcException>().Where(e => e.StatusCode == StatusCode.Unavailable);
+    }
+
+    // A non-transient, non-NotFound RpcException is NOT one of the two documented degrade cases and
+    // must propagate to DispatchAsync's own per-signal catch, which logs and moves on rather than
+    // crashing the whole dispatch — but it must not be silently swallowed by UpdateAsync itself.
+    [Fact]
+    public async Task Dispatch_SetPayloadAsyncThrowsNonTransientRpcException_IsCaughtBySignalLevelHandler()
+    {
+        await _registry.RegisterAsync(ArticleSchema());
+        await _registry.RegisterAsync(CommentSchema());
+        StubCount(1);
+        _vector.SetPayloadAsync(
+                Arg.Any<string>(), Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, object>>())
+            .Returns(Task.FromException(new RpcException(new Status(StatusCode.InvalidArgument, "bad payload"))));
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
@@ -581,6 +603,26 @@ public class PopularitySignalConsumerTests
             ArticleSchema().Relations[0], ArticleId, TenantA);
 
         outcome.Should().Be(PopularityUpdateOutcome.Failed);
+    }
+
+    // A transient StarRocks failure (circuit open / backend down) is not converted to Failed: it
+    // propagates, so DispatchAsync's caller halts for redelivery. The reconciliation sweep still
+    // counts it as Failed through its own catch, whose outcome is seeded to Failed.
+    [Fact]
+    public async Task UpdateAsync_AggregateThrowsTransient_Propagates()
+    {
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(Task.FromException<EngagementAggResult?>(new EngagementNotReadyException("StarRocks backend unavailable")));
+
+        var act = () => BuildUpdater().UpdateAsync(
+            ArticleSchema(), new PopularitySignalEntry("Article", "Comments"), CommentSchema(),
+            ArticleSchema().Relations[0], ArticleId, TenantA);
+
+        await act.Should().ThrowAsync<EngagementNotReadyException>();
     }
 
     // A null aggregate result is the DESIGNED outcome of the unprovisioned-tenant race — Skipped,

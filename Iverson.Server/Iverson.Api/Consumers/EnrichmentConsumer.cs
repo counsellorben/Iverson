@@ -229,9 +229,11 @@ public sealed class EnrichmentConsumer(
                 "[Enrichment] Enriched {Count} column(s) for {Type}:{Key}",
                 columns.Count, schema.TypeName.SanitizeForLog(), ev.Key);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!TransientFailures.IsTransient(ex))
         {
-            // Leaves no state row, so the next event for this object retries.
+            // Leaves no state row, so the next event for this object retries. A transient dependency
+            // failure (Ollama/Postgres unavailable) is not caught: it reaches the dispatcher, which halts
+            // the consumer for redelivery instead of skipping the object.
             logger.LogError(ex,
                 "[Enrichment] Failed for {Type}:{Key} — object left intact and unenriched.",
                 schema.TypeName.SanitizeForLog(), ev.Key);

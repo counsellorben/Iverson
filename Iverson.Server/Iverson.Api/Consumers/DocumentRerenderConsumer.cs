@@ -117,7 +117,7 @@ public sealed class DocumentRerenderConsumer(
                             $"Unhandled {nameof(RelationKind)} value — add a case above.");
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!TransientFailures.IsTransient(ex))
             {
                 logger.LogError(ex,
                     "[DocumentRerender] Failed to enqueue re-render for dependent type={DeclaringType} " +
