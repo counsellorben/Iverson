@@ -85,15 +85,19 @@ public sealed class EngagementRepository(
             return null;
 
         bool alive;
+        using var cts = new CancellationTokenSource();
         try
         {
-            using var cts = new CancellationTokenSource(bound);
-            // WaitAsync bounds a check that ignores its token; the token lets a cooperative one stop early.
+            // WaitAsync is the only timer: it bounds a check that ignores its token. The token is cancelled on
+            // failure (below) so a cooperative check, or an orphaned one, stops instead of running to the driver's
+            // timeout. A second timer of the same length on the CTS would race WaitAsync's and could lose.
             alive = await checkBackendAlive(cts.Token).WaitAsync(bound).ConfigureAwait(false);
         }
         catch (Exception)
         {
-            alive = false;   // the check threw or timed out: the backend cannot be shown alive
+            // The check threw or timed out: the backend cannot be shown alive.
+            cts.Cancel();
+            alive = false;
         }
 
         return alive ? null : new EngagementNotReadyException("StarRocks backend unavailable", ex);

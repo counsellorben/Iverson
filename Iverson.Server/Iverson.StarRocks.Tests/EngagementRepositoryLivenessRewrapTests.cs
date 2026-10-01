@@ -83,6 +83,25 @@ public class EngagementRepositoryLivenessRewrapTests
     }
 
     [Fact]
+    public async Task NonTransient_CheckExceedsBound_CancelsTheTokenItWasGiven()
+    {
+        CancellationToken captured = default;
+        // Ignores its token and captures it; only the bound can end the wait.
+        var check = new FakeCheck(async ct =>
+        {
+            captured = ct;
+            await Task.Delay(TimeSpan.FromSeconds(30));
+            return true;
+        });
+
+        await EngagementRepository.RewrapIfBackendUnavailableAsync(
+            NonTransient(), check.Invoke, TimeSpan.FromMilliseconds(50));
+
+        captured.CanBeCanceled.Should().BeTrue();
+        captured.IsCancellationRequested.Should().BeTrue("the orphaned probe must be told to stop");
+    }
+
+    [Fact]
     public async Task NonTransient_CheckObservesTokenAtBound_RewrapsAsNotReady()
     {
         var original = NonTransient();
