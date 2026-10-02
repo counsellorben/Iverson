@@ -48,7 +48,7 @@ A reference to **real .NET-runtime types** keeps "CLR" (see Exceptions).
 
 Components:
 - **Server (`Iverson.Server`):**
-  - `Iverson.Api`: `SchemaBuilder` (`ClrTypeToSql`, `ClrTypeToStarRocksType`, `ClrTypeToEngagementType`, `SqlTypeToClr`, `TrySqlTypeToClr`, `SqlTypeToClrMap`, `ClrTypeMapping`, `ScalarTypeMap`/`ArrayTypeOverrides` keys, and the `:309` comment), `SchemaCatalogReader`, `SchemaRegistrationOrchestrator` (including the `:730-734` check and message), and the `DocumentRenderer.cs:175` comment.
+  - `Iverson.Api`: `SchemaBuilder` (`ClrTypeToSql`, `ClrTypeToStarRocksType`, `ClrTypeToEngagementType`, `SqlTypeToClr`, `TrySqlTypeToClr`, `SqlTypeToClrMap` and its builder's tuple element `Clr` (`:447-449`), `ClrTypeMapping`, `ScalarTypeMap`/`ArrayTypeOverrides` keys, and the `:309` comment), `SchemaCatalogReader`, `SchemaRegistrationOrchestrator` (including the `:730-734` check and message), and the `DocumentRenderer.cs:175` comment.
   - `Iverson.ClientConformance`: `Verifier` (checks, assertion labels such as "does not declare CLR_STRING", and the `:248`/`:278` comments) and `Requirements` (the `:30`/`:48` comments).
   - `Iverson.LoadTest/scripts/test_dialogue_patterns.py`, and every `*.Tests` project, including test names such as `SqlTypeToClr_RecoversEveryClrType_ScalarAndArray`.
 - **.NET SDK:** `Iverson.Client.Core/SchemaRegistrar.cs` (`DetectType`'s enum values and the `clrType` locals), the conformance driver's `Models/PatternDoc.cs`, and `SchemaRegistrarTests.cs`, including `registerAll_byteArrayField_stillRegistersAsClrBytesScalar`.
@@ -87,18 +87,15 @@ Committed generated files are regenerated, never hand-edited.
 
 ### Done means
 
-1. **Completeness.** A repo-wide search for `ClrType|CLR_|clr_type|clrType|Clr(String|Guid|Int32|Int64|Double|Float|Bool|Datetime|Bytes)|[A-Za-z]Clr\b|ToClr|_CLR|_clr|\bCLR\b|\bclr\b` returns hits only in:
-   - the six Exceptions above,
-   - `docs/` and `Iverson.Server/docs/`,
-   - other worktrees,
-   - `node_modules`, `.venv`, `bin`, `obj` and `target`.
+1. **Completeness.** From the repo root, `git grep -nE 'ClrType|CLR_|clr_type|clrType|Clr(String|Guid|Int32|Int64|Double|Float|Bool|Datetime|Bytes)|[A-Za-z]Clr\b|\bClr\b|ToClr|_CLR|_clr|\bCLR\b|\bclr\b'` returns hits only in the six Exceptions above and in `docs/` and `Iverson.Server/docs/`. `git grep` searches tracked files only, so untracked build output (`Iverson.Clients/TypeScript/dist/`, `dist-conformance/`), `.superpowers/`, `node_modules`, `.venv`, `bin`, `obj`, `target` and other worktrees are out of its scope.
 2. **Every suite passes:**
    - C#: `dotnet test Iverson.slnx` from the repo root, which covers the server and the .NET SDK, including `Iverson.ClientConformance.Tests`, `Iverson.Client.Core.Tests` and `Iverson.Client.Search.Tests`
    - Java: `mvn test` from `Iverson.Clients/Java`, the reactor of client, sample and conformance
    - Go: `go test ./...` from `Iverson.Clients/Go`, with `~/sdk/go1.22`
    - the Python SDK: `python3 -m pytest` from `Iverson.Clients/Python`
-   - the agent: `.venv/bin/pytest` from `Iverson.Agents/Python`, after the prerequisite above
-   - TypeScript: `npm test` and `tsc -p tsconfig.conformance.json --noEmit`
+   - the agent: `.venv/bin/python -m pytest` from `Iverson.Agents/Python`, after the prerequisite above. The `.venv/bin/pytest` launcher's shebang also names the deleted worktree, so use the module form.
+   - TypeScript: `npm test` from `Iverson.Clients/TypeScript`, plus `npx tsc -p tsconfig.conformance.json --noEmit`
+   - the LoadTest dialogue suite: `PYTHONPATH=/home/ben/repositories/iverson-benchmark-corpora/python-libs python3 -m pytest Iverson.Server/Iverson.LoadTest/scripts/test_dialogue_patterns.py -q` from the repo root
 
    Integration suites that need containers run where the environment allows them, as today.
 3. A live conformance run against a running stack is not required, because the binary wire format is unchanged.
@@ -106,13 +103,13 @@ Committed generated files are regenerated, never hand-edited.
 ## Breaking change
 
 This is breaking for SDK consumers in every language: rename `ClrType` → `ObjectType` and drop the `CLR_`/`Clr` value prefix. For example:
-- C#: `[IversonArray(ClrType.ClrString)]` → `[IversonArray(ObjectType.String)]`
+- C#: `field.ClrType == ClrType.ClrString` → `field.ObjectType == ObjectType.String` (on `SchemaField` / `PropertyDescriptor` from `Iverson.Client.Contracts`)
 - TypeScript: `ClrType.CLR_INT32` → `ObjectType.INT32`
 - Python: `mapping_pb.CLR_FLOAT` → `mapping_pb.FLOAT`
 - Go: `pb.ClrType_CLR_FLOAT` → `pb.ObjectType_FLOAT`
 - Java: `ClrType.CLR_FLOAT` → `ObjectType.FLOAT`
 
-The field accessors change too: `clrType` → `objectType`, `ClrType` → `ObjectType`, `getClrType()` → `getObjectType()`.
+The field accessors change too: C# and Go `ClrType` → `ObjectType`, Go `GetClrType()` → `GetObjectType()`, TypeScript `clrType` → `objectType`, Java `getClrType()`/`setClrType()` → `getObjectType()`/`setObjectType()`, Python `clr_type` → `object_type`.
 
 Proto-JSON consumers see `objectType` and the bare value names. Binary gRPC peers on either version interoperate. Record this in the commit message; there is no CHANGELOG.
 
@@ -130,9 +127,12 @@ Proto-JSON consumers see `objectType` and the bare value names. Binary gRPC peer
 | 8 | Each regeneration path runs locally | protoc 29.3 at `~/sdk/protoc`, `protoc-gen-go` in `~/go/bin`, `grpc_tools` importable, ts-proto in `node_modules`, `mvn` 3.9.9, `dotnet`, Go 1.22 |
 | 9 | Regeneration adds no unrelated churn | Regenerating the **unchanged** proto: Go and Python are byte-identical to the committed files. TS differs only in the header line (`v2.12.3` installed vs `v2.12.4` committed and pinned) → the `npm ci` step |
 | 10 | Drivers' JSON keys follow the generated code | Python `MessageToJson`, C# `JsonFormatter`, TS `TypeDescriptor.toJSON`, Go `protojson.Marshal`, Java `JsonFormat.printer`; no hand-written `"clrType"` key in any driver |
-| 11 | Test commands exist | root `Iverson.slnx` holds the .NET SDK projects (`Iverson.Client.Core.Tests`, `Iverson.Client.Search.Tests`) and the server ones (incl. `Iverson.ClientConformance.Tests`); `mvn`; Go 1.22; system `python3` with pytest 9.1.1, grpc and protobuf; agent `.venv/bin/pytest` |
+| 11 | Test commands exist | root `Iverson.slnx` holds the .NET SDK projects (`Iverson.Client.Core.Tests`, `Iverson.Client.Search.Tests`) and the server ones (incl. `Iverson.ClientConformance.Tests`); `mvn`; Go 1.22; system `python3` with pytest 9.1.1, grpc and protobuf; agent `.venv/bin/python -m pytest` |
 | 12 | The agent's `iverson_client` import resolves | **False**: its `.pth` points at the deleted `.worktrees/reasoning-agent` → the environment prerequisite |
 | 13 | The Java conformance driver builds against the client | The parent `pom.xml` reactor modules are `client`, `sample` and `conformance`; conformance depends on `io.iverson:iverson-client:${project.version}` |
 | 14 | The genuine .NET-runtime exceptions are enumerable | `grep '\bCLR\b|\bclr\b'` across code: 6 runtime references (Exceptions); the rest refer to the enum |
 | 15 | Every mapping site is covered | .NET `DetectType`, Java `detectClrType`, Go `goTypeToClr`/`goScalarToClr`, Python `_PY_TO_CLR`/`_python_type_to_clr`, TS `jsTypeToClr`/`runtimeValueToClr`; server `ScalarTypeMap`/`ArrayTypeOverrides`/`SqlTypeToClr*` |
+| — | The completeness gate matches exactly the renamed population | `git grep` with `\bClr\b` adds only `SchemaBuilder.cs:447-449` over the original pattern outside docs; `git grep` returns 0 files under `.superpowers/` or `TypeScript/dist*`, where a working-tree grep finds 18 |
+| — | Each `Done means` suite command runs as written | `.venv/bin/pytest` has the shebang `#!…/.worktrees/reasoning-agent/…/python` and fails with a bad interpreter; `.venv/bin/python` runs 3.14.4 with pytest 9.1.1; bare `tsc` is not on PATH (`npx` resolves it); `test_dialogue_patterns.py:4-5` documents the LoadTest command, and no CI or C# code runs that suite |
+| — | The breaking-change examples name real per-language APIs | `git grep -l IversonArray -- '*.cs'` = 0 (TS-only: `annotations.ts`, `core.ts`); current forms: `object_mapping.pb.go:263` `GetClrType`, `SchemaRegistrar.java:189` `.setClrType`, `schema.py:88` `f.clr_type`; renamed forms compile/generate (C# `field.ObjectType == ObjectType.Guid` builds; Go `GetObjectType()`, Python `object_type=`) |
 | — | A stale JSON name degrades silently (the reason for approach A) | Ran `json_format.Parse(…, ignore_unknown_fields=True)` on the current proto: unknown key → `CLR_STRING`; unknown enum name `"GUID"` → accepted, stays `CLR_STRING`. The harness parses with `WithIgnoreUnknownFields(true)` (`Verifier.cs:73-74`) |
