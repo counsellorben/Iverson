@@ -331,12 +331,12 @@ def test_registration_sends_the_declared_type_with_the_conformance_rules():
     props = {p.name: p for p in root.properties}
     assert list(props) == ["Id", "TenantId", "OwnerId", "DialogueId", "TurnIndex", "Split", "Utterance",
                            "MentionsHotel", "MentionsRestaurant", "MentionsTrain", "MentionsAttraction"]
-    assert props["Id"].is_key and props["Id"].clr_type == mapping_pb.CLR_GUID
-    assert props["Utterance"].is_embedding and props["Utterance"].clr_type == mapping_pb.CLR_STRING
+    assert props["Id"].is_key and props["Id"].object_type == mapping_pb.GUID
+    assert props["Utterance"].is_embedding and props["Utterance"].object_type == mapping_pb.STRING
     for name in ("TurnIndex", "MentionsHotel", "MentionsRestaurant", "MentionsTrain", "MentionsAttraction"):
-        assert props[name].clr_type == mapping_pb.CLR_INT32, name
+        assert props[name].object_type == mapping_pb.INT32, name
     for name in ("TenantId", "OwnerId", "DialogueId", "Split"):
-        assert props[name].clr_type == mapping_pb.CLR_STRING, name
+        assert props[name].object_type == mapping_pb.STRING, name
     assert root.authorization == mapping_pb.AuthorizationRules(
         owner_field="OwnerId", row_permissions=[mapping_pb.RowPermission(
             role="iverson-loadtest-bypass", can_read_all=True, can_write_all=True, can_delete_all=True)])

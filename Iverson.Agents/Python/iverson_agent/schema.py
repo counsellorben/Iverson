@@ -63,12 +63,12 @@ def render_schema(schema_type: mpb.SchemaType) -> str:
     lines = [f"Type: {schema_type.name}", f"Description: {schema_type.description}",
              "Filterable fields (equality only):"]
     for f in metadata_fields(schema_type):
-        lines.append(f"  - {f.name} ({mpb.ClrType.Name(f.clr_type)}): {f.description}")
+        lines.append(f"  - {f.name} ({mpb.ObjectType.Name(f.object_type)}): {f.description}")
     return "\n".join(lines)
 
 
-_NUMERIC = {mpb.CLR_INT32, mpb.CLR_INT64, mpb.CLR_DOUBLE, mpb.CLR_FLOAT}
-_TEXTUAL = {mpb.CLR_STRING, mpb.CLR_GUID, mpb.CLR_DATETIME}
+_NUMERIC = {mpb.INT32, mpb.INT64, mpb.DOUBLE, mpb.FLOAT}
+_TEXTUAL = {mpb.STRING, mpb.GUID, mpb.DATETIME}
 
 
 def validate_filters(filters: Iterable[tuple[str, object]], schema_type: mpb.SchemaType,
@@ -85,14 +85,14 @@ def validate_filters(filters: Iterable[tuple[str, object]], schema_type: mpb.Sch
             log.info("[plan] trace=%s dropped filter %r: not a metadata field", trace_id, f.name)
             continue
         try:
-            if f.clr_type in _NUMERIC:
+            if f.object_type in _NUMERIC:
                 coerced: str | float | bool = float(value)
-            elif f.clr_type == mpb.CLR_BOOL:
+            elif f.object_type == mpb.BOOL:
                 coerced = value if isinstance(value, bool) else str(value).lower() == "true"
-            elif f.clr_type in _TEXTUAL:
+            elif f.object_type in _TEXTUAL:
                 coerced = str(value)
             else:
-                raise ValueError(f"unsupported CLR type {mpb.ClrType.Name(f.clr_type)}")
+                raise ValueError(f"unsupported object type {mpb.ObjectType.Name(f.object_type)}")
         except (TypeError, ValueError) as exc:
             log.info("[plan] trace=%s dropped filter %r=%r: %s", trace_id, f.name, value, exc)
             continue

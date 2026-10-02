@@ -409,7 +409,7 @@ def test_get_schema_builds_request_and_converts_response():
 
     field = mapping_pb.SchemaField(
         name="title",
-        clr_type=mapping_pb.CLR_STRING,
+        object_type=mapping_pb.STRING,
         is_search_key=True,
         search_key_order=2,
     )
@@ -433,7 +433,7 @@ def test_get_schema_builds_request_and_converts_response():
     assert len(returned_type.fields) == 1
     returned_field = returned_type.fields[0]
     assert returned_field.name == "title"
-    assert returned_field.clr_type == mapping_pb.CLR_STRING
+    assert returned_field.object_type == mapping_pb.STRING
     assert returned_field.is_search_key is True
     assert returned_field.search_key_order == 2
 

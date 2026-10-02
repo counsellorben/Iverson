@@ -11,12 +11,12 @@ from iverson_agent.schema import (
 
 def policy_doc_type() -> mpb.SchemaType:
     t = mpb.SchemaType(name="PolicyDoc", description="A policy document.")
-    t.fields.add(name="Id", clr_type=mpb.CLR_GUID, is_key=True)
-    t.fields.add(name="Title", clr_type=mpb.CLR_STRING, description="Document title")
-    t.fields.add(name="Source", clr_type=mpb.CLR_STRING, is_metadata=True, description="hr|legal|it")
-    t.fields.add(name="PublishedAt", clr_type=mpb.CLR_DATETIME, is_metadata=True, description="Published")
-    t.fields.add(name="WordCount", clr_type=mpb.CLR_INT32, is_metadata=True)
-    t.fields.add(name="Body", clr_type=mpb.CLR_STRING, is_chunk=True)
+    t.fields.add(name="Id", object_type=mpb.GUID, is_key=True)
+    t.fields.add(name="Title", object_type=mpb.STRING, description="Document title")
+    t.fields.add(name="Source", object_type=mpb.STRING, is_metadata=True, description="hr|legal|it")
+    t.fields.add(name="PublishedAt", object_type=mpb.DATETIME, is_metadata=True, description="Published")
+    t.fields.add(name="WordCount", object_type=mpb.INT32, is_metadata=True)
+    t.fields.add(name="Body", object_type=mpb.STRING, is_chunk=True)
     return t
 
 
