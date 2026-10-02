@@ -66,7 +66,7 @@ public class KafkaConsumer(
                     consumer.Commit(result);
                     activity?.SetStatus(ActivityStatusCode.Ok);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     throw;
                 }
@@ -82,7 +82,7 @@ public class KafkaConsumer(
                     throw;
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 break;
             }
