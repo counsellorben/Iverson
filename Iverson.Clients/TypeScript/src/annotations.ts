@@ -329,6 +329,29 @@ export function getGuidFields(target: Function): Set<string> {
     return Reflect.getMetadata(IVERSON_GUID_KEY, target) ?? new Set();
 }
 
+// ── @IversonType(clrType) ─────────────────────────────────────────────────────
+
+const IVERSON_TYPE_KEY = Symbol('iverson:type');
+
+/**
+ * Declares a scalar property's column type explicitly. Needed when the type cannot be
+ * inferred: TypeScript erases it (no design:type for undecorated members, `Object` for
+ * unions such as `number | null`), and a missing or null initializer carries none.
+ * Scalar-only — an array column uses @IversonArray(elementType).
+ */
+export function IversonType(clrType: ClrType): PropertyDecorator {
+    return (target, propertyKey) => {
+        const existing: Map<string, ClrType> =
+            new Map(Reflect.getMetadata(IVERSON_TYPE_KEY, target.constructor) ?? []);
+        existing.set(String(propertyKey), clrType);
+        Reflect.defineMetadata(IVERSON_TYPE_KEY, existing, target.constructor);
+    };
+}
+
+export function getTypeFields(target: Function): Map<string, ClrType> {
+    return Reflect.getMetadata(IVERSON_TYPE_KEY, target) ?? new Map();
+}
+
 // ── @IversonDescription(text) ────────────────────────────────────────────────
 
 /**

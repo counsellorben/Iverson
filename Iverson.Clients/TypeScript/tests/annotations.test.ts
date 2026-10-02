@@ -35,6 +35,8 @@ import {
     getMetadataFields,
     getArrayFields,
     getGuidFields,
+    IversonType,
+    getTypeFields,
     getTypeDescription,
     getPropertyDescriptions,
     getRelations,
@@ -471,6 +473,12 @@ const accumulateSites: AccumulateSite[] = [
         decorate: (klass, key) => { IversonArray(ClrType.CLR_STRING)(klass.prototype, key); },
         has: (target, key) => getArrayFields(target).has(key),
         size: (target) => getArrayFields(target).size,
+    },
+    {
+        label: 'IversonType / getTypeFields (Map)',
+        decorate: (klass, key) => { IversonType(ClrType.CLR_INT32)(klass.prototype, key); },
+        has: (target, key) => getTypeFields(target).has(key),
+        size: (target) => getTypeFields(target).size,
     },
     {
         label: 'IversonGuid / getGuidFields (Set)',
