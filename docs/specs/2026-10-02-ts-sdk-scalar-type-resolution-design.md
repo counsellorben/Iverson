@@ -113,9 +113,9 @@ Conformance is unchanged. A TS-registered non-string field would change the regi
 ## Breaking change
 
 When a type is re-registered through the TS SDK, its affected column now resolves differently in these cases:
-- an undecorated non-string scalar property (was `CLR_STRING`)
-- any `number` property (was `CLR_FLOAT`)
-- a decorated `number | null` or `Date | null` (was `CLR_STRING`; it now throws until declared with `@IversonType`)
+- a property with no recognized `design:type` whose initializer is a number, boolean or `Date` (was `CLR_STRING`; now `CLR_DOUBLE`, `CLR_BOOL` or `CLR_DATETIME`). A property has no recognized `design:type` when it is undecorated; when its declared type is a union such as `number | null` or `string | number`, whose `design:type` is `Object`, decorated or not; and always on the builds that emit no decorator metadata (the same builds as the last bullet; for example Oxc with `emitDecoratorMetadata` off). Examples: undecorated `wordCount: number = 0`; `@D() x: number | null = 5`; `x: string | number = 0`; and, on a no-metadata build, the sample `Article.publishedAt` (`@IversonSearchKey(1)`).
+- a decorated `number` property on a build that emits decorator metadata (was `CLR_FLOAT`)
+- a decorated `number | null` or `Date | null` with a `null` initializer or none (was `CLR_STRING`; it now throws until declared with `@IversonType`). With a non-null initializer it falls under the first bullet.
 - any property whose type cannot be determined now throws error 1 at registration, before that type's RegisterSchema RPC is sent. This includes `string` properties that registered correctly as `CLR_STRING` until now: undecorated strings with no initializer (`x?: string`, `x!: string`, plain `x: string`), `x: string | null = null` (decorated or not), and, on builds that emit no decorator metadata (e.g. esbuild), every property that has no non-null initializer and none of `@IversonArray`, `@IversonGuid` or `@IversonType`. Remedy: add an initializer or `@IversonType(ClrType.CLR_STRING)`.
 
 If such a table already exists, re-registration fails **before any DDL** with `FailedPrecondition`: `Column "…" has type 'text' but the registered schema expects 'double precision'. Migrate the column by hand, then retry registration.` The path is `PostgresSchemaManager.cs:84-113` → `SchemaRegistrationOrchestrator.cs:344-348`.
@@ -124,7 +124,7 @@ StarRocks does `CREATE TABLE IF NOT EXISTS` only (`EngagementRepository.cs:471`)
 
 ## Known issues / accepted as out of scope
 
-- **`CLR_BYTES` does not round-trip from TS.** A wire probe showed `Struct` encodes a `Uint8Array` as `{"0":1,"1":2,"2":3}`. A decorated `Uint8Array` keeps registering `CLR_BYTES`, unchanged. Runtime inference deliberately excludes it, so an undecorated one now throws instead of silently becoming `CLR_STRING`. — accepted by Ben, 2026-10-02
+- **`CLR_BYTES` does not round-trip from TS.** A wire probe showed `Struct` encodes a `Uint8Array` as `{"0":1,"1":2,"2":3}`. On builds that emit decorator metadata, a decorated `Uint8Array` or `Buffer` keeps registering `CLR_BYTES`, unchanged. On builds that don't, it registered `CLR_STRING` and now throws error 1, like an undecorated one. Runtime inference deliberately excludes it, so an undecorated one now throws instead of silently becoming `CLR_STRING`. — accepted by Ben, 2026-10-02
 - **Python `float` → `CLR_FLOAT` (REAL)** has the same precision loss. Left out of this fix by the Q2 decision. — Ben, 2026-10-02
 - **esbuild emitting no `design:type`** is carried from the 2026-09-16 investigation and was not re-probed (esbuild is not installed). The design doesn't depend on it: steps 2 and 4 work with or without metadata.
 
@@ -148,4 +148,5 @@ StarRocks does `CREATE TABLE IF NOT EXISTS` only (`EngagementRepository.cs:471`)
 | — | `design:type` per shape, tsc vs Oxc | 12-property probe under tsc 7.0.2 and vitest 5/Oxc: identical (table in Problem) |
 | — | Drift fails loudly before DDL | `PostgresSchemaManager.cs:84-113`, `SchemaRegistrationOrchestrator.cs:344-348` |
 | — | Which currently-working properties newly throw | Prototype of steps 1–5 run through `describeEntity` (Oxc + by-hand no-metadata): undecorated `x?`/`x!`/plain `x: string`, `x: string \| null = null` decorated or not, and a no-metadata `o?: string` all throw error 1; `@IversonType(ClrType.CLR_STRING)` on `x?: string` and `x: string \| null = null` → `CLR_STRING`; no-metadata `@IversonGuid`/`@IversonArray`/`@IversonType` uninitialized properties resolve |
+| — | Type changes for properties with no recognized `design:type` | Base vs prototype through `describeEntity`, Oxc with `emitDecoratorMetadata` on and off: `@D() x: number \| null = 5` / `Date \| null = new Date()` / `x: string \| number = 0` STRING→DOUBLE/DATETIME/DOUBLE on both; `@D() x?: number \| null` STRING→error 1; metadata-on decorated `number` FLOAT→DOUBLE and `Uint8Array`/`Buffer` BYTES unchanged; metadata-off decorated `Date`/`number`/`boolean` STRING→DATETIME/DOUBLE/BOOL and `Uint8Array`/`Buffer` STRING→error 1 |
 | — | Error 2 needs co-presence detection | Prototype run through `describeEntity`: `@IversonArray` + `@IversonType` on `x: string[] \| null = null` (Oxc) and on no-metadata `x?: string[]` register silently (`isArray=true`) under `looksArray`-only detection and throw with co-presence added; `x: string[] = []` throws either way; scalar `@IversonType(CLR_INT32) n = 0` → `CLR_INT32`, unaffected |
