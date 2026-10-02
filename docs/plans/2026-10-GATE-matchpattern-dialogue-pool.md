@@ -13,6 +13,8 @@ Spec: `docs/specs/2026-10-02-matchpattern-dialogue-pool-design.md`. Follows `doc
 
 The rule: GO when the CI lower bound exceeds -0.02.
 
+Non-inferiority at the -0.02 margin was not demonstrated. The 95% CI [-0.05321830104429899, 0.007415758258723964] includes 0 and positive values, so this is not evidence that the pool arm is worse than the keyword arm; the point estimate (-0.022774082687660124) sits just below the margin. The gap to the keyword arm narrowed from the 2026-09-29 run's ordered semantic minus ordered keyword delta of -0.23300103628626434 (95% CI [-0.2605680578667892, -0.2050956622277252]) to this run's -0.022774082687660124. The result speaks only for this pool, this greedy selection rule and this theta grid (spec Known limitations, first item).
+
 ## 2. Pre-registration
 
 **Pool** (`selection.json` `pool`; eight phrasings per intent, index in order):
@@ -373,10 +375,19 @@ Test split: 1000 dialogues; ties: 7.
 
 ## 4. Reported, not gated
 
-Pool-semantic minus the original semantic arm's published 0.5102: 0.21024930165987443 (point difference, no CI; the original arm's per-dialogue predictions were never recorded).
+Pool-semantic minus the original semantic arm's published 0.5102: 0.21024930165987443 (point difference, no CI; the original arm's per-dialogue predictions were never recorded). The stored value is computed against the rounded 0.5102, as the spec defines it; against the exact published value (0.5102223480612702) the difference is 0.2102270.
 
-## 5. Run record
+## 5. Known limits
 
+- The pool was written after seeing dev results, with dev's attraction failures in view, and several phrasings name domain words ("museum", "guesthouse", "train"). Only dev was tuned on; the result speaks for this pool, not for `SIMILARITY` defines in general.
+- The test keyword arm is stronger than on dev, so the dev margins do not predict the test outcome. The dev-to-test drop this warned of occurred: on dev the pool arm's in-sample margin over keyword was +0.007 (0.7295 against 0.7227; these dev macro-F1s are the spec's figures, no result file here holds them), while on test the delta is -0.022774082687660124.
+- The original semantic arm is compared only by point difference, because its per-dialogue predictions were never recorded.
+- The pool's attraction focus came from the predecessor's published test per-pair results; any bias from that would favour GO, so it cannot explain a NO-GO.
+
+## 6. Run record
+
+- Run directory (holds `selection.json` and `results.json`): `/home/ben/repositories/iverson-benchmark-corpora/matchpattern-dialogue-pool-2026-10-02/`
+- The live ordered-keyword arm's test macro-F1 (0.7432233843475345) equals the 2026-09-29 published ordered-keyword macro-F1 exactly.
 - `--from-run` (2026-09-29 run directory): `/home/ben/repositories/iverson-benchmark-corpora/matchpattern-dialogues-2026-09-29`
 - Composite: `ded69e9492bdc081`, the un-rebuilt image of the 2026-09-29 run.
 - `/build` before/after, select pass: ded69e9492bdc081 / ded69e9492bdc081
@@ -384,7 +395,7 @@ Pool-semantic minus the original semantic arm's published 0.5102: 0.210249301659
 - Live limits (Task 2): `MaxOutputRows=18623`, `MaxExpressionLength=25000`.
 - `selection.json`: 32 logged calls, 145.80601424399356 s total.
 - `results.json`: 34 logged calls (12 pool_semantic, 12 ordered_keyword, 10 single-intent), 80.11456708998594 s total.
-- Incidents: none.
+- Incidents: none during the run. Post-run `docker stop`: iverson-kafka needed SIGKILL after the 10 s grace period (routine; after results.json was written).
 - md5 `Iverson.Server/Iverson.LoadTest/scripts/dialogue_pool.py`: `29cf489b55451d2e8bbf67ce303108c2`
 - md5 `selection.json`: `2d4287c2cf4a1951f52869df0ad5d129`
 - md5 `results.json`: `dfd4313f4846da1eef4b3fd0886c8cd3`
