@@ -194,7 +194,7 @@ public sealed class SchemaCatalogReader(
         {
             Name           = col.Name,
             Description    = schema.FieldDescriptions.TryGetValue(col.Name, out var desc) ? desc : string.Empty,
-            ObjectType        = objectType,
+            ObjectType     = objectType,
             IsArray        = isArray,
             IsKey          = col.Name == schema.KeyColumn.Name,
             IsNullable     = col.IsNullable,

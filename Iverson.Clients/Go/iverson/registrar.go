@@ -277,7 +277,7 @@ func isGuidEligibleType(t reflect.Type) bool {
 	return t.Kind() == reflect.String
 }
 
-// goTypeToObjectType maps a reflect.Type to a ObjectType proto enum value and whether it is an array.
+// goTypeToObjectType maps a reflect.Type to an ObjectType proto enum value and whether it is an array.
 // An array whose element is itself an array, or is not a supported scalar, is REJECTED rather
 // than silently collapsed: the server would register a 1-D TEXT[] column against a payload that
 // is a nested/complex JSON array, and json_populate_record fails on the first insert.
@@ -308,7 +308,7 @@ func goTypeToObjectType(t reflect.Type) (pb.ObjectType, bool, error) {
 	return objectType, false, nil
 }
 
-// goScalarToObjectType maps a non-array reflect.Type to a ObjectType and reports whether the type is a
+// goScalarToObjectType maps a non-array reflect.Type to an ObjectType and reports whether the type is a
 // SUPPORTED scalar. Unsupported scalars keep their historical STRING fallback; only the
 // array path acts on the supported flag.
 func goScalarToObjectType(t reflect.Type) (pb.ObjectType, bool) {

@@ -79,7 +79,7 @@ import { createActingUserMetadata } from './auth.js';
 
 // ── Type helpers ──────────────────────────────────────────────────────────────
 
-/** Convert a JS type name string to a ObjectType enum value. */
+/** Convert a JS type name string to an ObjectType enum value. */
 function jsTypeToObjectType(typeName: string): ObjectType | undefined {
     switch (typeName) {
         case 'String':   return ObjectType.STRING;

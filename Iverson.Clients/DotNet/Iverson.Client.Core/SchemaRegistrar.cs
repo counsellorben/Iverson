@@ -144,7 +144,7 @@ public sealed class SchemaRegistrar(
         var descriptor = new PropertyDescriptor
         {
             Name       = prop.Name,
-            ObjectType    = objectType,
+            ObjectType = objectType,
             IsKey      = true,
             IsNullable = false,
             IsArray    = isArray
@@ -161,7 +161,7 @@ public sealed class SchemaRegistrar(
         var descriptor = new PropertyDescriptor
         {
             Name       = prop.Name,
-            ObjectType    = objectType,
+            ObjectType = objectType,
             IsKey      = false,
             IsNullable = isNullable,
             IsArray    = isArray
