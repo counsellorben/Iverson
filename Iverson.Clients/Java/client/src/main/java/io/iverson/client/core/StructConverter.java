@@ -110,8 +110,8 @@ public final class StructConverter {
         if (val instanceof Number n)  return Value.newBuilder().setNumberValue(n.doubleValue()).build();
         if (val instanceof OffsetDateTime dt)
             return Value.newBuilder().setStringValue(dt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)).build();
-        // byte[] is a primitive scalar, not an array column — SchemaRegistrar.detectClrType
-        // checks it before its own array unwrap and maps it to CLR_BYTES. It has to travel as a
+        // byte[] is a primitive scalar, not an array column — SchemaRegistrar.detectObjectType
+        // checks it before its own array unwrap and maps it to BYTES. It has to travel as a
         // base64 string to match the .NET client, whose System.Text.Json round-trip encodes
         // byte[] that way; sending it as a list of 0-255 numbers would not round-trip.
         if (val instanceof byte[] bytes) {
@@ -125,7 +125,7 @@ public final class StructConverter {
             return Value.newBuilder().setListValue(listBuilder.build()).build();
         }
         // A Java array is NOT a Collection, so it reaches here rather than the branch above.
-        // SchemaRegistrar.detectClrType accepts array-typed properties (Class.isArray), which
+        // SchemaRegistrar.detectObjectType accepts array-typed properties (Class.isArray), which
         // means the server registers a real array column for them — so letting them fall to the
         // toString() default below would register `int[]`/`UUID[]` as an array and then send
         // "[I@1b6d3586" for it. Reflection covers primitive arrays too, which a cast to Object[]

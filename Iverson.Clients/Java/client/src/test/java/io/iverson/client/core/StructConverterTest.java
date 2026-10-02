@@ -58,11 +58,11 @@ class StructConverterTest {
     static class StructTestArrays {
         @IversonKey
         private UUID id;
-        // SchemaRegistrar.detectClrType accepts array-typed properties, so the server registers
+        // SchemaRegistrar.detectObjectType accepts array-typed properties, so the server registers
         // real array columns for these — the converter has to agree on both sides.
         private UUID[] tagIds;
         private int[] scores;
-        // byte[] is the exception: detectClrType maps it to CLR_BYTES (a scalar), so it must
+        // byte[] is the exception: detectObjectType maps it to BYTES (a scalar), so it must
         // travel as a base64 string, not as a list.
         private byte[] thumbnail;
     }
@@ -108,7 +108,7 @@ class StructConverterTest {
 
         Value thumb = struct.getFieldsOrThrow("Thumbnail");
         assertEquals(Value.KindCase.STRING_VALUE, thumb.getKindCase(),
-            "byte[] is CLR_BYTES, a scalar — it must match the .NET client's base64 encoding");
+            "byte[] is BYTES, a scalar — it must match the .NET client's base64 encoding");
         assertArrayEquals(
             new byte[] { 1, 2, 3, (byte) 200 },
             java.util.Base64.getDecoder().decode(thumb.getStringValue()));
