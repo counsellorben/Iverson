@@ -38,7 +38,7 @@ Rejected: **A — timeouts enter the normal retry loop** (3 attempts, then the c
 - A cancellation the classifier calls non-transient (a plain `TaskCanceledException` with no `TimeoutException`) would be dead-lettered after three attempts. That loses the object's vectors, contradicting the transient-failures goal of no loss.
 - A capped variant (two attempts, at most 201 s) avoids the eviction but needs a separate attempt limit for timeouts, and it still dead-letters plain cancellations.
 
-The cost of B: a single slow request costs a halt, where A would have retried after 1 s. The halt costs the 10 s restart delay plus the group rebalance, which waits out the old member's `session.timeout.ms` (45 s by default) because the halt path disposes the Kafka consumer without `Close()`; see Known limitations.
+The cost of B: a single slow request costs a halt, which is the 10 s restart delay and a group rejoin, where A would have retried after 1 s. The halt path closes the Kafka consumer before rethrowing, so the restarted consumer rejoins at once instead of waiting out `session.timeout.ms`; see §1.
 
 ## Design
 
@@ -72,6 +72,10 @@ In `Iverson.Server/Iverson.Events/KafkaConsumer.cs`, `ConsumeAsync`, both cancel
 - the outer `catch (OperationCanceledException) { break; }` (`:85`).
 
 A timeout then reaches the existing inner `catch (Exception)`. That catch logs the halt, does not commit, and rethrows. The exception propagates out of `ConsumeAsync`, because neither outer catch matches it. `ConsumerResilience` already logs any non-shutdown exception as Critical, waits 10 s and restarts, and Kafka redelivers the message.
+
+That halt catch now also closes the consumer before rethrowing, guarded so a failing `Close()` logs a Warning and never replaces the original exception. A consumer that is only disposed holds its partitions until the old member's `session.timeout.ms` (45 s by default) expires. This applies to every halt (timeouts, classified transient outages and DLQ-write failures). `Close()` commits nothing, because auto-commit is off.
+
+`consumer.transient_halts` carries two tags: `consumer.group` (the consumer group) and `reason`, which is `timeout` for a cancellation while the token is live and `transient` for a classified outage that exhausted its attempts.
 
 | Failure in a handler | Today | After |
 |---|---|---|
@@ -114,13 +118,14 @@ All four live in `MessageDispatcherTests`, not `KafkaConsumerTests`. Tests that 
 
 ## Known limitations (accepted)
 
-- **A one-off slow request costs a restart of about 45 s.** One embedding call that exceeds 100 s halts the consumer, where an in-place retry might have succeeded after 1 s. The restart waits 10 s, but the consume loop's halt path disposes the Kafka consumer without `Close()`, so the group does not rebalance until the old member's `session.timeout.ms` expires (45 s by default; Confluent.Kafka 2.15.1 `Consumer.Dispose` docs; not measured on a live broker). Its partitions resume only then, and on a deployment with more than one worker replica every member of `iverson.consumer.intelligence` pauses until then. Every existing halt path shares this; calling `Close()` on the halt path is a separate change.
+- **A one-off slow request costs a restart.** One embedding call that exceeds the embedding timeout halts the consumer, waits 10 s and rejoins the group, where an in-place retry might have succeeded after 1 s.
 - **Three Critical lines per halt.** The dispatcher, `KafkaConsumer` and `ConsumerResilience` each log the halt, as they already do for every other transient halt.
 - **A shutdown racing a timeout looks like a shutdown.** If the token is cancelled after the timeout fires but before the dispatcher's filter runs, the exit is quiet. Nothing is committed, so the message is redelivered on the next start.
+- **A document whose embedding always times out halts on every redelivery.** Raising `Embeddings:Timeout` (`Embeddings__Timeout`; default 100 s, the `HttpClient` default) is the operator's lever. Until it is raised, that partition makes no progress, and the object's chunk points (already deleted before re-embedding) stay missing.
 
 ## Out of scope
 
-- Changing any `HttpClient` timeout, including the embedding client's 100 s default.
+- Changing the embedding client's 100 s default. It is now configurable as `Embeddings:Timeout`, mirroring `Enrichment:Timeout`.
 - `ConsumeRawAsync` and the DLQ monitor.
 - Retrying timeouts in place.
 
@@ -143,3 +148,5 @@ All four live in `MessageDispatcherTests`, not `KafkaConsumerTests`. Tests that 
 | 13 | Only the two `KafkaConsumerTests` that rely on the fake `Consume` break. No other test pins the old behaviour. | Events suite on the prototype: 35 passed, 2 failed, both those tests. The only other `KafkaConsumer` construction in tests is `EngagementStoreConsumerKafkaOrderingTests` (`Category=Integration`), which stops by cancelling. |
 | 14 | `MessageDispatcherTests` observes the dispatcher's counters with a `MeterListener` on meter `Iverson.Events`, and tests touching them share that class to avoid parallel runs. | `MessageDispatcherTests.cs:185-241` (listener; `transient_halts` asserted `1`); `:289-291` (comment on keeping counter-touching tests in the class); `KafkaConsumerTests.cs:84-88` (deliberately avoids the counters for the same reason). |
 | 15 | The spec text to update exists where §2 says. | Transient spec `:75` ("`OperationCanceledException` still rethrows immediately") and `:152` (the HTTP-timeouts limitation); enrichment spec `:116` ("Engagement and Intelligence timeouts are unchanged"). |
+| 16 | A consumer that only disposes holds its partitions until `session.timeout.ms` expires; `Close()` releases them at once. | Probe, Confluent.Kafka 2.15.1 against a throwaway `cp-kafka:7.6.0` broker: after consumer A consumed without committing, a new consumer in the same group got its first message 190 ms after A's `Close()`, and 44,995 ms after A's `Dispose()` alone. |
+| 17 | `Close()` is bounded when the broker is down. | Same probe: `Close()` returned after 5,006 ms with the broker `docker pause`d, and after 2 ms with the broker never reachable; neither threw. |
