@@ -87,7 +87,9 @@ public sealed class MessageDispatcher(
                 logger.LogCritical(ex,
                     "[Dispatch] Handler cancelled while the consumer is running (a dependency timeout) topic={Topic} key={Key} — not dead-lettering; halting for redelivery",
                     ctx.SourceTopic, ctx.Key);
-                Telemetry.ConsumerTransientHalts.Add(1);
+                Telemetry.ConsumerTransientHalts.Add(1,
+                    new KeyValuePair<string, object?>("consumer.group", ctx.ConsumerGroup),
+                    new KeyValuePair<string, object?>("reason", "timeout"));
                 throw;
             }
             catch (Exception ex)
@@ -103,7 +105,9 @@ public sealed class MessageDispatcher(
                             _options.MaxAttempts,
                             ctx.SourceTopic,
                             ctx.Key);
-                        Telemetry.ConsumerTransientHalts.Add(1);
+                        Telemetry.ConsumerTransientHalts.Add(1,
+                            new KeyValuePair<string, object?>("consumer.group", ctx.ConsumerGroup),
+                            new KeyValuePair<string, object?>("reason", "transient"));
                         throw;
                     }
 

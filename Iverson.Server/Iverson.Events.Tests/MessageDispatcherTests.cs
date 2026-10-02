@@ -45,6 +45,42 @@ public sealed class MessageDispatcherTests
                 IsTransient = isTransient,
             });
 
+    /// <summary>
+    /// Records every long measurement the Iverson.Events meter emits: a per-instrument sum, and each
+    /// measurement's value and tags. Call <see cref="Stop"/> before asserting so late measurements
+    /// cannot race the assertions.
+    /// </summary>
+    private sealed class MeasurementRecorder : IDisposable
+    {
+        private readonly MeterListener _listener = new();
+        private readonly Dictionary<string, long> _sums = new();
+
+        public List<(string Name, long Value, Dictionary<string, object?> Tags)> Measurements { get; } = [];
+
+        public MeasurementRecorder()
+        {
+            _listener.InstrumentPublished = (inst, l) =>
+            {
+                if (inst.Meter.Name == "Iverson.Events") l.EnableMeasurementEvents(inst);
+            };
+            _listener.SetMeasurementEventCallback<long>((inst, val, tags, _) =>
+            {
+                _sums.TryGetValue(inst.Name, out var cur);
+                _sums[inst.Name] = cur + val;
+                var tagMap = new Dictionary<string, object?>();
+                foreach (var tag in tags) tagMap[tag.Key] = tag.Value;
+                Measurements.Add((inst.Name, val, tagMap));
+            });
+            _listener.Start();
+        }
+
+        public long Sum(string instrument) => _sums.GetValueOrDefault(instrument);
+
+        public void Stop() => _listener.Dispose();
+
+        public void Dispose() => _listener.Dispose();
+    }
+
     /// <summary>The predicate the transient-path tests inject: only a TimeoutException is transient.</summary>
     private static bool OnlyTimeoutsAreTransient(Exception ex) => ex is TimeoutException;
 
@@ -182,18 +218,7 @@ public sealed class MessageDispatcherTests
     [Fact]
     public async Task Metrics_CountRetriesAndDlqRouted()
     {
-        var measurements = new Dictionary<string, long>();
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (inst, l) =>
-        {
-            if (inst.Meter.Name == "Iverson.Events") l.EnableMeasurementEvents(inst);
-        };
-        listener.SetMeasurementEventCallback<long>((inst, val, _, _) =>
-        {
-            measurements.TryGetValue(inst.Name, out var cur);
-            measurements[inst.Name] = cur + val;
-        });
-        listener.Start();
+        using var recorder = new MeasurementRecorder();
 
         Task Handler(string k, string v, CancellationToken c) => throw new Exception("always");
         await BuildSut(maxAttempts: 3)
@@ -202,26 +227,15 @@ public sealed class MessageDispatcherTests
                 Handler,
                 CancellationToken.None);
 
-        listener.Dispose();
-        measurements.GetValueOrDefault("consumer.retries").Should().Be(2);
-        measurements.GetValueOrDefault("consumer.dlq_routed").Should().Be(1);
+        recorder.Stop();
+        recorder.Sum("consumer.retries").Should().Be(2);
+        recorder.Sum("consumer.dlq_routed").Should().Be(1);
     }
 
     [Fact]
     public async Task TransientFailure_ExhaustsAttempts_WithPredicate_RethrowsOriginal_NoDlq_CountsHalt()
     {
-        var measurements = new Dictionary<string, long>();
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (inst, l) =>
-        {
-            if (inst.Meter.Name == "Iverson.Events") l.EnableMeasurementEvents(inst);
-        };
-        listener.SetMeasurementEventCallback<long>((inst, val, _, _) =>
-        {
-            measurements.TryGetValue(inst.Name, out var cur);
-            measurements[inst.Name] = cur + val;
-        });
-        listener.Start();
+        using var recorder = new MeasurementRecorder();
 
         var outage = new TimeoutException("dependency down");
         var calls = 0;
@@ -231,7 +245,7 @@ public sealed class MessageDispatcherTests
             .DispatchAsync(Ctx(), Handler, CancellationToken.None);
 
         (await act.Should().ThrowAsync<TimeoutException>()).Which.Should().BeSameAs(outage);
-        listener.Dispose();
+        recorder.Stop();
 
         calls.Should().Be(3);
         await _producer.DidNotReceive()
@@ -239,8 +253,11 @@ public sealed class MessageDispatcherTests
                 Arg.Any<string>(),
                 Arg.Any<Message<string, string>>(),
                 Arg.Any<CancellationToken>());
-        measurements.GetValueOrDefault("consumer.transient_halts").Should().Be(1);
-        measurements.GetValueOrDefault("consumer.dlq_routed").Should().Be(0);
+        recorder.Sum("consumer.transient_halts").Should().Be(1);
+        recorder.Sum("consumer.dlq_routed").Should().Be(0);
+        recorder.Measurements.Single(x => x.Name == "consumer.transient_halts").Tags.Should()
+            .Contain("consumer.group", "iverson.consumer.test")
+            .And.Contain("reason", "transient");
     }
 
     [Fact]
@@ -293,18 +310,7 @@ public sealed class MessageDispatcherTests
     [Fact]
     public async Task Timeout_WhileConsumerRuns_HaltsAtOnce_NoRetry_NoDlq_CountsHalt()
     {
-        var measurements = new Dictionary<string, long>();
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (inst, l) =>
-        {
-            if (inst.Meter.Name == "Iverson.Events") l.EnableMeasurementEvents(inst);
-        };
-        listener.SetMeasurementEventCallback<long>((inst, val, _, _) =>
-        {
-            measurements.TryGetValue(inst.Name, out var cur);
-            measurements[inst.Name] = cur + val;
-        });
-        listener.Start();
+        using var recorder = new MeasurementRecorder();
 
         var calls = 0;
         Task Handler(string k, string v, CancellationToken c)
@@ -316,13 +322,16 @@ public sealed class MessageDispatcherTests
         var act = async () => await BuildSut(maxAttempts: 3).DispatchAsync(Ctx(), Handler, CancellationToken.None);
 
         await act.Should().ThrowAsync<TaskCanceledException>();
-        listener.Dispose();
+        recorder.Stop();
 
         calls.Should().Be(1);
         await _producer.DidNotReceive()
             .ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, string>>(), Arg.Any<CancellationToken>());
-        measurements.GetValueOrDefault("consumer.transient_halts").Should().Be(1);
-        measurements.GetValueOrDefault("consumer.retries").Should().Be(0);
+        recorder.Sum("consumer.transient_halts").Should().Be(1);
+        recorder.Sum("consumer.retries").Should().Be(0);
+        recorder.Measurements.Single(x => x.Name == "consumer.transient_halts").Tags.Should()
+            .Contain("consumer.group", "iverson.consumer.test")
+            .And.Contain("reason", "timeout");
     }
 
     [Fact]
@@ -341,18 +350,7 @@ public sealed class MessageDispatcherTests
     [Fact]
     public async Task Shutdown_RethrowsWithoutCountingAHalt()
     {
-        var measurements = new Dictionary<string, long>();
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (inst, l) =>
-        {
-            if (inst.Meter.Name == "Iverson.Events") l.EnableMeasurementEvents(inst);
-        };
-        listener.SetMeasurementEventCallback<long>((inst, val, _, _) =>
-        {
-            measurements.TryGetValue(inst.Name, out var cur);
-            measurements[inst.Name] = cur + val;
-        });
-        listener.Start();
+        using var recorder = new MeasurementRecorder();
 
         using var cts = new CancellationTokenSource();
         var calls = 0;
@@ -366,10 +364,10 @@ public sealed class MessageDispatcherTests
         var act = async () => await BuildSut(maxAttempts: 3).DispatchAsync(Ctx(), Handler, cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
-        listener.Dispose();
+        recorder.Stop();
 
         calls.Should().Be(1);
-        measurements.GetValueOrDefault("consumer.transient_halts").Should().Be(0);
+        recorder.Sum("consumer.transient_halts").Should().Be(0);
     }
 
     [Fact]
@@ -382,10 +380,7 @@ public sealed class MessageDispatcherTests
             Message              = new Message<string, string> { Key = "key-1", Value = "{}", Headers = new Headers() },
             TopicPartitionOffset = new TopicPartitionOffset("topic", new Partition(0), new Offset(7)),
         };
-        var fakeConsumer = Substitute.For<IConsumer<string, string>>();
-        fakeConsumer.Consume(Arg.Any<CancellationToken>()).Returns(result);
-        var fakeAdmin = Substitute.For<IAdminClient>();
-        fakeAdmin.CreateTopicsAsync(Arg.Any<IEnumerable<TopicSpecification>>()).Returns(Task.CompletedTask);
+        var (fakeConsumer, fakeAdmin) = KafkaConsumerTests.BuildMessageSource(result);
 
         var consumerLogger = Substitute.For<ILogger<KafkaConsumer>>();
         var consumer = new KafkaConsumer(
@@ -403,6 +398,7 @@ public sealed class MessageDispatcherTests
 
         await act.Should().ThrowAsync<TaskCanceledException>();
         fakeConsumer.DidNotReceive().Commit(Arg.Any<ConsumeResult<string, string>>());
+        fakeConsumer.Received(1).Close();
         // The consume loop's own halt log, not just the dispatcher's: the timeout reached its catch-all.
         consumerLogger.ReceivedCalls()
             .Count(c => c.GetMethodInfo().Name == nameof(ILogger.Log) && (LogLevel)c.GetArguments()[0]! == LogLevel.Critical)

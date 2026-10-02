@@ -40,6 +40,28 @@ public sealed class KafkaConsumerTests
         return (consumer, fakeConsumer, fakeAdmin, cts.Token);
     }
 
+    /// <summary>
+    /// A fake consumer whose Consume always returns <paramref name="result"/>, and a fake admin client that
+    /// creates topics. Shared by the tests that drive a message through the consume loop.
+    /// </summary>
+    internal static (IConsumer<string, string> FakeConsumer, IAdminClient FakeAdmin) BuildMessageSource(
+        ConsumeResult<string, string> result)
+    {
+        var fakeConsumer = Substitute.For<IConsumer<string, string>>();
+        fakeConsumer.Consume(Arg.Any<CancellationToken>()).Returns(result);
+
+        var fakeAdmin = Substitute.For<IAdminClient>();
+        fakeAdmin.CreateTopicsAsync(Arg.Any<IEnumerable<TopicSpecification>>()).Returns(Task.CompletedTask);
+
+        return (fakeConsumer, fakeAdmin);
+    }
+
+    private static ConsumeResult<string, string> OneMessage() => new()
+    {
+        Message              = new Message<string, string> { Key = "key-1", Value = "{}", Headers = new Headers() },
+        TopicPartitionOffset = new TopicPartitionOffset("topic", new Partition(0), new Offset(7)),
+    };
+
     [Fact]
     public async Task ConsumeAsync_UsesInjectedConsumerFactory_NotAConcreteConfluentClient()
     {
@@ -91,16 +113,7 @@ public sealed class KafkaConsumerTests
         // redelivers from the last committed offset. Dispatch is made to throw by a poison message
         // whose DLQ write fails — that path increments none of the dispatcher's counters, so this
         // test cannot perturb MessageDispatcherTests' MeterListener assertions running in parallel.
-        var result = new ConsumeResult<string, string>
-        {
-            Message              = new Message<string, string> { Key = "key-1", Value = "{}", Headers = new Headers() },
-            TopicPartitionOffset = new TopicPartitionOffset("topic", new Partition(0), new Offset(7)),
-        };
-        var fakeConsumer = Substitute.For<IConsumer<string, string>>();
-        fakeConsumer.Consume(Arg.Any<CancellationToken>()).Returns(result);
-
-        var fakeAdmin = Substitute.For<IAdminClient>();
-        fakeAdmin.CreateTopicsAsync(Arg.Any<IEnumerable<TopicSpecification>>()).Returns(Task.CompletedTask);
+        var (fakeConsumer, fakeAdmin) = BuildMessageSource(OneMessage());
 
         var producer = Substitute.For<IProducer<string, string>>();
         producer
@@ -124,6 +137,41 @@ public sealed class KafkaConsumerTests
         await act.Should().ThrowAsync<KafkaException>();
         fakeConsumer.DidNotReceive().Commit(Arg.Any<ConsumeResult<string, string>>());
         fakeConsumer.Received(1).Consume(Arg.Any<CancellationToken>());
+        // The halt leaves the group so the restarted consumer rejoins at once.
+        fakeConsumer.Received(1).Close();
+    }
+
+    [Fact]
+    public async Task ConsumeAsync_HaltWhenCloseThrows_StillRethrowsTheOriginalException()
+    {
+        // Close() is best-effort on the halt path: if it fails it is logged, and the exception that caused the
+        // halt (here the failed DLQ write) is the one ConsumeAsync throws — never Close()'s.
+        var (fakeConsumer, fakeAdmin) = BuildMessageSource(OneMessage());
+        fakeConsumer.When(x => x.Close()).Do(_ => throw new KafkaException(ErrorCode.Local_Transport));
+
+        var producer = Substitute.For<IProducer<string, string>>();
+        producer
+            .ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, string>>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new KafkaException(ErrorCode.Local_MsgTimedOut));
+        var dispatcher = new MessageDispatcher(producer, NullLogger<MessageDispatcher>.Instance);
+
+        var consumer = new KafkaConsumer(
+            new KafkaOptions { BootstrapServers = "localhost:9092" },
+            NullLogger<KafkaConsumer>.Instance,
+            dispatcher,
+            _ => fakeConsumer,
+            _ => fakeAdmin);
+
+        var act = () => consumer.ConsumeAsync(
+            "topic",
+            "group",
+            (_, _, _) => throw new PoisonMessageException("bad json"),
+            CancellationToken.None);
+
+        // Same type as Close()'s exception, so the error code is what tells the DLQ failure from the Close failure.
+        (await act.Should().ThrowAsync<KafkaException>()).Which.Error.Code.Should().Be(ErrorCode.Local_MsgTimedOut);
+        fakeConsumer.Received(1).Close();
+        fakeConsumer.DidNotReceive().Commit(Arg.Any<ConsumeResult<string, string>>());
     }
 
     [Fact]
@@ -132,15 +180,7 @@ public sealed class KafkaConsumerTests
         // Only a cancelled consumer token is shutdown: the loop exits quietly and the uncommitted message is
         // redelivered on the next start. (A cancellation while the token is live halts instead — see
         // MessageDispatcherTests, which owns the tests that touch the dispatcher's counters.)
-        var result = new ConsumeResult<string, string>
-        {
-            Message              = new Message<string, string> { Key = "key-1", Value = "{}", Headers = new Headers() },
-            TopicPartitionOffset = new TopicPartitionOffset("topic", new Partition(0), new Offset(7)),
-        };
-        var fakeConsumer = Substitute.For<IConsumer<string, string>>();
-        fakeConsumer.Consume(Arg.Any<CancellationToken>()).Returns(result);
-        var fakeAdmin = Substitute.For<IAdminClient>();
-        fakeAdmin.CreateTopicsAsync(Arg.Any<IEnumerable<TopicSpecification>>()).Returns(Task.CompletedTask);
+        var (fakeConsumer, fakeAdmin) = BuildMessageSource(OneMessage());
 
         var consumer = new KafkaConsumer(
             new KafkaOptions { BootstrapServers = "localhost:9092" },
