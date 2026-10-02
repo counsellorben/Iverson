@@ -38,7 +38,7 @@ Rejected: **A — timeouts enter the normal retry loop** (3 attempts, then the c
 - A cancellation the classifier calls non-transient (a plain `TaskCanceledException` with no `TimeoutException`) would be dead-lettered after three attempts. That loses the object's vectors, contradicting the transient-failures goal of no loss.
 - A capped variant (two attempts, at most 201 s) avoids the eviction but needs a separate attempt limit for timeouts, and it still dead-letters plain cancellations.
 
-The cost of B: a single slow request costs a 10 s pause and a group rejoin, where A would have retried after 1 s.
+The cost of B: a single slow request costs a halt, where A would have retried after 1 s. The halt costs the 10 s restart delay plus the group rebalance, which waits out the old member's `session.timeout.ms` (45 s by default) because the halt path disposes the Kafka consumer without `Close()`; see Known limitations.
 
 ## Design
 
@@ -114,7 +114,7 @@ All four live in `MessageDispatcherTests`, not `KafkaConsumerTests`. Tests that 
 
 ## Known limitations (accepted)
 
-- **A one-off slow request costs a restart.** One embedding call that exceeds 100 s halts the consumer, waits 10 s and rejoins the group, where an in-place retry might have succeeded after 1 s.
+- **A one-off slow request costs a restart of about 45 s.** One embedding call that exceeds 100 s halts the consumer, where an in-place retry might have succeeded after 1 s. The restart waits 10 s, but the consume loop's halt path disposes the Kafka consumer without `Close()`, so the group does not rebalance until the old member's `session.timeout.ms` expires (45 s by default; Confluent.Kafka 2.15.1 `Consumer.Dispose` docs; not measured on a live broker). Its partitions resume only then, and on a deployment with more than one worker replica every member of `iverson.consumer.intelligence` pauses until then. Every existing halt path shares this; calling `Close()` on the halt path is a separate change.
 - **Three Critical lines per halt.** The dispatcher, `KafkaConsumer` and `ConsumerResilience` each log the halt, as they already do for every other transient halt.
 - **A shutdown racing a timeout looks like a shutdown.** If the token is cancelled after the timeout fires but before the dispatcher's filter runs, the exit is quiet. Nothing is committed, so the message is redelivered on the next start.
 

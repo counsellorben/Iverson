@@ -32,7 +32,7 @@ The consumer loop already implements "halt rather than lose":
 
 This was probed against the live broker (see Verified assumptions). Until now, the only thing that reaches this path is a failed DLQ write.
 
-This design routes transient dependency failures into the same path. After the dispatcher's existing bounded attempts, a transient failure is **rethrown instead of dead-lettered**. The loop halts and restarts about every 13 s until the dependency is back.
+This design routes transient dependency failures into the same path. After the dispatcher's existing bounded attempts, a transient failure is **rethrown instead of dead-lettered**. The loop halts and restarts until the dependency is back. Each cycle takes about 13 s plus the wait for the old group member's `session.timeout.ms` (45 s by default), because the halt path disposes the Kafka consumer without `Close()` (see `docs/specs/2026-10-01-consumer-timeout-halt-design.md`, Known limitations).
 
 Rejected alternatives:
 - **Retry in place forever inside the dispatcher.** A handler blocked past `max.poll.interval.ms` (librdkafka default 300 s; nothing in the repo sets it) is evicted from its group, and its later commit fails into B's path anyway, through an error.
@@ -74,7 +74,7 @@ Everything else is non-transient, including:
 
   Otherwise it dead-letters as today. Poison messages still dead-letter immediately. `OperationCanceledException` still rethrows immediately on shutdown; a cancellation while the consumer's token is live (a dependency timeout) halts at once instead (`docs/specs/2026-10-01-consumer-timeout-halt-design.md`). A failed DLQ write still throws.
 - **`AddKafka`** (`Iverson.Events/ServiceCollectionExtensions.cs:11`) gains an optional `Func<Exception, bool>? isTransient = null` parameter. The single production construction site (`:47`) passes it into `new MessageDispatcherOptions { IsTransient = isTransient ?? (_ => false) }`. `Program.cs:340` changes to `builder.Services.AddKafka(cfg, isTransient: TransientFailures.IsTransient);`.
-- **`KafkaConsumer.ConsumeAsync`** has no behavior change. Only the comment and log wording at the halt site change: from "the DLQ write itself failed" to "the DLQ write failed or a dependency is transiently unavailable".
+- **`KafkaConsumer.ConsumeAsync`** has no behavior change. Only the comment and log wording at the halt site change: from "the DLQ write itself failed" to "the DLQ write failed or a dependency is transiently unavailable". A later change filters its cancellation catches on the consumer token so that a timeout halts (`docs/specs/2026-10-01-consumer-timeout-halt-design.md`).
 - **`ConsumerResilience`** is unchanged. Each of the five consumers runs its own group and loop, so an outage halts only the consumers that need the missing dependency.
 
 ### 3. The three consumers that swallow failures
@@ -144,7 +144,7 @@ All unit tests use each project's existing fakes. No containers are needed.
   - `IntelligenceStoreConsumer.FetchSummaryAsync` (`:559-567`): the vector is written without the context summary.
   - `IntelligenceStoreConsumer.PrefixWithContextAsync` (`:594-600`): the vector is written without the context prefix.
   - `PopularitySignalUpdater`'s histogram catch (`:121`): the count is written with an empty series.
-- **Log and rejoin churn during an outage.** Each ~13 s cycle, per affected consumer, logs three Critical lines, each carrying the full exception (the dispatcher's "Transient failure persisted", `KafkaConsumer`'s "Halting", and `ConsumerResilience`'s "Consumer loop faulted"), plus two retry Warnings, and causes one consumer-group rejoin.
+- **Log and rejoin churn during an outage.** Each halt cycle (about 13 s, plus the wait for the old member's 45 s `session.timeout.ms`), per affected consumer, logs three Critical lines, each carrying the full exception (the dispatcher's "Transient failure persisted", `KafkaConsumer`'s "Halting", and `ConsumerResilience`'s "Consumer loop faulted"), plus two retry Warnings, and causes one consumer-group rejoin.
 - **Two StarRocks rules match message text:** "Backend node not found" and `Unexpected input '@'`. If StarRocks or MySqlConnector change that wording, the shape silently reverts to non-transient. The §5 liveness rewrap still covers shapes 1 and 2, but shape 3 would be lost.
 - **Extra round-trip:** one FE liveness check per StarRocks failure that is neither transient nor an expected missing resource.
 - **gRPC behavior change:** reads return `Unavailable` during a StarRocks backend outage (§5).
