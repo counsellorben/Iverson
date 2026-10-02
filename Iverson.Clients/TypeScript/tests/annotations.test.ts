@@ -35,6 +35,8 @@ import {
     getMetadataFields,
     getArrayFields,
     getGuidFields,
+    IversonType,
+    getTypeFields,
     getTypeDescription,
     getPropertyDescriptions,
     getRelations,
@@ -42,6 +44,8 @@ import {
     getEmbeddingModel,
 } from '../src/annotations.js';
 import { ClrType } from '../generated/object_mapping.js';
+import * as annotations from '../src/annotations.js';
+import * as pkg from '../src/index.js';
 
 // ── Test entities ─────────────────────────────────────────────────────────────
 
@@ -473,6 +477,14 @@ const accumulateSites: AccumulateSite[] = [
         size: (target) => getArrayFields(target).size,
     },
     {
+        label: 'IversonType / getTypeFields (Map)',
+        decorate: (klass, key) => { IversonType(ClrType.CLR_INT32)(klass.prototype, key); },
+        // Compares the stored type, not just presence, so a decorator that recorded the wrong
+        // ClrType fails here too.
+        has: (target, key) => getTypeFields(target).get(key) === ClrType.CLR_INT32,
+        size: (target) => getTypeFields(target).size,
+    },
+    {
         label: 'IversonGuid / getGuidFields (Set)',
         decorate: (klass, key) => { IversonGuid()(klass.prototype, key); },
         has: (target, key) => getGuidFields(target).has(key),
@@ -525,5 +537,20 @@ describe.each(accumulateSites)('Sibling subclasses do not leak accumulated decor
     it('a subclass with no own decorator still inherits only the parent entry', () => {
         expect(site.size(LeakSiblingNoOwnDecorator)).toBe(1);
         expect(site.has(LeakSiblingNoOwnDecorator, 'parentField')).toBe(true);
+    });
+});
+
+describe('package entry exports', () => {
+    // Derived from annotations.ts rather than listed by hand, so a decorator added there but
+    // left out of index.ts fails here. getRelationsWithFactory is the one deliberate omission:
+    // the read path in core.ts uses it internally and it is not public API.
+    const internalOnly = new Set(['getRelationsWithFactory']);
+
+    it('re-exports every public annotation function', () => {
+        const missing = Object.entries(annotations)
+            .filter(([name, value]) => typeof value === 'function' && !internalOnly.has(name))
+            .map(([name]) => name)
+            .filter(name => typeof (pkg as Record<string, unknown>)[name] !== 'function');
+        expect(missing).toEqual([]);
     });
 });

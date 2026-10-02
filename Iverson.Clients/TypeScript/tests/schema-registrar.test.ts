@@ -19,6 +19,7 @@ import {
     IversonExtracted,
     IversonArray,
     IversonGuid,
+    IversonType,
     ManyToOne,
     ManyToMany,
     OneToMany,
@@ -758,6 +759,235 @@ describe('_buildRequest — array fields', () => {
         const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
 
         expect(props['Title'].isArray).toBe(false);
+    });
+});
+
+describe('_buildRequest — scalar type resolution', () => {
+    function propsOf(cls: Function) {
+        const registrar = new SchemaRegistrar(makeStub(), [cls]);
+        const req = registrar._buildRequest(cls);
+        return Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+    }
+
+    it('infers undecorated number, boolean and Date from their initializers', () => {
+        @IversonEntity()
+        class ScalarInitialized {
+            @IversonKey()
+            id: string = '';
+
+            n: number = 0;
+            b: boolean = true;
+            d: Date = new Date();
+        }
+
+        const props = propsOf(ScalarInitialized);
+        expect(props['N'].clrType).toBe(ClrType.CLR_DOUBLE);
+        expect(props['B'].clrType).toBe(ClrType.CLR_BOOL);
+        expect(props['D'].clrType).toBe(ClrType.CLR_DATETIME);
+    });
+
+    it('maps a decorated number to CLR_DOUBLE', () => {
+        @IversonEntity()
+        class DecoratedNumber {
+            @IversonKey()
+            id: string = '';
+
+            @IversonDescription('x')
+            n: number = 0;
+        }
+
+        expect(propsOf(DecoratedNumber)['N'].clrType).toBe(ClrType.CLR_DOUBLE);
+    });
+
+    it('resolves a string | number union from its string initializer', () => {
+        @IversonEntity()
+        class StringOrNumber {
+            @IversonKey()
+            id: string = '';
+
+            x: string | number = '';
+        }
+
+        expect(propsOf(StringOrNumber)['X'].clrType).toBe(ClrType.CLR_STRING);
+    });
+
+    it('resolves a decorated nullable union from its non-null initializer', () => {
+        @IversonEntity()
+        class InitializedUnion {
+            @IversonKey()
+            id: string = '';
+
+            @IversonDescription('x')
+            x: number | null = 5;
+        }
+
+        expect(propsOf(InitializedUnion)['X'].clrType).toBe(ClrType.CLR_DOUBLE);
+    });
+
+    it('prefers design:type over the initializer when both are known', () => {
+        @IversonEntity()
+        class StringTypedNumberInit {
+            @IversonKey()
+            id: string = '';
+
+            @IversonDescription('x')
+            x: string = 0 as unknown as string;
+        }
+
+        expect(propsOf(StringTypedNumberInit)['X'].clrType).toBe(ClrType.CLR_STRING);
+    });
+
+    it('lets @IversonType override the inferred type', () => {
+        @IversonEntity()
+        class DeclaredInt {
+            @IversonKey()
+            id: string = '';
+
+            @IversonType(ClrType.CLR_INT32)
+            n: number = 0;
+        }
+
+        expect(propsOf(DeclaredInt)['N'].clrType).toBe(ClrType.CLR_INT32);
+    });
+
+    it('lets @IversonType declare a nullable Date', () => {
+        @IversonEntity()
+        class DeclaredNullableDate {
+            @IversonKey()
+            id: string = '';
+
+            @IversonType(ClrType.CLR_DATETIME)
+            d: Date | null = null;
+        }
+
+        expect(propsOf(DeclaredNullableDate)['D'].clrType).toBe(ClrType.CLR_DATETIME);
+    });
+
+    it('registers an undecorated number initializer as CLR_DOUBLE, not CLR_STRING', () => {
+        expect(propsOf(RegArticle)['WordCount'].clrType).toBe(ClrType.CLR_DOUBLE);
+    });
+
+    it('resolves @IversonType and initializers when the build emits no decorator metadata', () => {
+        // No syntactic decorators, so no build emits design:type for this class; the decorators
+        // are applied by hand, as an esbuild-style consumer build would leave them.
+        class NoMetadata {
+            id: string = '';
+            n: number = 0;
+            d: Date = new Date();
+            b: boolean = true;
+            e?: Date;
+        }
+        IversonEntity()(NoMetadata);
+        IversonKey()(NoMetadata.prototype, 'id');
+        IversonType(ClrType.CLR_DATETIME)(NoMetadata.prototype, 'e');
+
+        const props = propsOf(NoMetadata);
+        expect(props['N'].clrType).toBe(ClrType.CLR_DOUBLE);
+        expect(props['D'].clrType).toBe(ClrType.CLR_DATETIME);
+        expect(props['B'].clrType).toBe(ClrType.CLR_BOOL);
+        expect(props['E'].clrType).toBe(ClrType.CLR_DATETIME);
+    });
+
+    it('throws when an optional number has no initializer', () => {
+        @IversonEntity()
+        class OptionalNumber {
+            @IversonKey()
+            id: string = '';
+
+            x?: number;
+        }
+
+        expect(() => propsOf(OptionalNumber)).toThrow(/OptionalNumber\.x has no type .*cannot be inferred/);
+        expect(() => propsOf(OptionalNumber)).toThrow(/initializer.*@IversonType\(ClrType\.CLR_.*@IversonArray\(ClrType\.CLR_/);
+    });
+
+    it('throws when an undecorated nullable Date is initialized to null', () => {
+        @IversonEntity()
+        class NullDate {
+            @IversonKey()
+            id: string = '';
+
+            x: Date | null = null;
+        }
+
+        expect(() => propsOf(NullDate)).toThrow(/NullDate\.x has no type .*cannot be inferred/);
+    });
+
+    it('throws when an optional string has no initializer', () => {
+        @IversonEntity()
+        class OptionalString {
+            @IversonKey()
+            id: string = '';
+
+            x?: string;
+        }
+
+        expect(() => propsOf(OptionalString)).toThrow(/OptionalString\.x has no type .*cannot be inferred/);
+    });
+
+    it('names @IversonArray when an undecorated nullable array is initialized to null', () => {
+        @IversonEntity()
+        class NullArray {
+            @IversonKey()
+            id: string = '';
+
+            tags: string[] | null = null;
+        }
+
+        expect(() => propsOf(NullArray)).toThrow(/NullArray\.tags has no type .*@IversonArray\(ClrType\.CLR_/);
+    });
+
+    it('does not infer an undecorated Uint8Array initializer', () => {
+        @IversonEntity()
+        class UndecoratedBytes {
+            @IversonKey()
+            id: string = '';
+
+            data: Uint8Array = new Uint8Array();
+        }
+
+        expect(() => propsOf(UndecoratedBytes)).toThrow(/UndecoratedBytes\.data has no type .*cannot be inferred/);
+    });
+
+    it('throws when @IversonType sits on a nullable @IversonArray property', () => {
+        @IversonEntity()
+        class TypedNullableArray {
+            @IversonKey()
+            id: string = '';
+
+            @IversonArray(ClrType.CLR_STRING)
+            @IversonType(ClrType.CLR_STRING)
+            x: string[] | null = null;
+        }
+
+        expect(() => propsOf(TypedNullableArray)).toThrow(/@IversonType\(\) is scalar-only/);
+    });
+
+    it('throws when @IversonType sits on an array property without @IversonArray', () => {
+        @IversonEntity()
+        class TypedArray {
+            @IversonKey()
+            id: string = '';
+
+            @IversonType(ClrType.CLR_STRING)
+            x: string[] = [];
+        }
+
+        expect(() => propsOf(TypedArray)).toThrow(/@IversonType\(\) is scalar-only/);
+    });
+
+    it('throws when @IversonType and @IversonGuid both declare the type', () => {
+        @IversonEntity()
+        class TypedGuid {
+            @IversonKey()
+            id: string = '';
+
+            @IversonGuid()
+            @IversonType(ClrType.CLR_GUID)
+            x: string = '';
+        }
+
+        expect(() => propsOf(TypedGuid)).toThrow(/both @IversonGuid\(\) and @IversonType\(\)/);
     });
 });
 

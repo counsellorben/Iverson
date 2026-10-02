@@ -211,8 +211,9 @@ export class VectorDoc {
  * per-language identity and the PARTITION BY column, and its spelling must match
  * `MatchPatternScenario.LabelFor`; `seq` is the ORDER BY column that `DEFINE B AS Seq > PREV(Seq)`
  * compares; `title` is the embedding source the similarity request's `SIMILARITY(Title, ...)`
- * scores. `seq` is a plain `number`: TypeScript cannot declare an integer, which is harmless here
- * because only the .NET descriptor is ever registered — this driver sends a JSON number either way.
+ * scores. `seq` is a plain `number`: the TypeScript driver never registers `PatternDoc`, so its declared
+ * type is irrelevant here — only the .NET descriptor is ever registered, and this driver sends a JSON
+ * number either way.
  */
 @IversonEntity()
 export class PatternDoc {

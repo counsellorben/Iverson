@@ -12,6 +12,12 @@ export {
     IversonPopularitySignal,
     IversonDescription,
     IversonArray,
+    IversonType,
+    IversonGuid,
+    IversonSummary,
+    IversonKeywords,
+    IversonExtracted,
+    IversonEmbeddingModel,
     ManyToOne,
     ManyToMany,
     OneToMany,
@@ -27,6 +33,12 @@ export {
     getPropertyDescriptions,
     getRelations,
     getArrayFields,
+    getTypeFields,
+    getGuidFields,
+    getSummaryFields,
+    getKeywordsFields,
+    getExtractedFields,
+    getEmbeddingModel,
     isIversonEntity,
 } from './annotations.js';
 
@@ -37,7 +49,7 @@ export { ClrType, SchemaEnrichmentKind, RelationKind } from '../generated/object
 
 export type { SchemaType, SchemaField, SchemaRelation } from '../generated/object_mapping.js';
 
-export type { RelationMeta, SearchKeyMeta, RelationKindString, ChunkMeta } from './annotations.js';
+export type { RelationMeta, SearchKeyMeta, RelationKindString, ChunkMeta, ExtractedMeta } from './annotations.js';
 
 export { IversonClient, EntityCoordinator, SchemaRegistrar } from './core.js';
 

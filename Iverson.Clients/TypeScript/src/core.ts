@@ -55,6 +55,7 @@ import {
 import {
     getArrayFields,
     getGuidFields,
+    getTypeFields,
     getChunkFields,
     getEmbeddingFields,
     getEmbeddingModel,
@@ -79,16 +80,25 @@ import { createActingUserMetadata } from './auth.js';
 // ── Type helpers ──────────────────────────────────────────────────────────────
 
 /** Convert a JS type name string to a ClrType enum value. */
-function jsTypeToClr(typeName: string): ClrType {
+function jsTypeToClr(typeName: string): ClrType | undefined {
     switch (typeName) {
         case 'String':   return ClrType.CLR_STRING;
-        case 'Number':   return ClrType.CLR_FLOAT;
+        case 'Number':   return ClrType.CLR_DOUBLE;
         case 'Boolean':  return ClrType.CLR_BOOL;
         case 'Date':     return ClrType.CLR_DATETIME;
         case 'Buffer':
         case 'Uint8Array': return ClrType.CLR_BYTES;
-        default:         return ClrType.CLR_STRING;
+        default:         return undefined;
     }
+}
+
+/** Step-4 inference from an initializer's runtime value; undefined when it identifies no type. */
+function runtimeValueToClr(value: unknown): ClrType | undefined {
+    if (typeof value === 'string')  return ClrType.CLR_STRING;
+    if (typeof value === 'number')  return ClrType.CLR_DOUBLE;
+    if (typeof value === 'boolean') return ClrType.CLR_BOOL;
+    if (value instanceof Date)      return ClrType.CLR_DATETIME;
+    return undefined;
 }
 
 /** Convert camelCase or PascalCase to PascalCase. */
@@ -263,6 +273,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const extractedByField = new Map(getExtractedFields(cls).map(e => [e.field, e]));
     const arrayFields = getArrayFields(cls);
     const guidFields = getGuidFields(cls);
+    const typeFields = getTypeFields(cls);
     // Class-level, never per-property: read once and stamped onto each affected property's
     // modelId/chunkModelId below, guarded on that property's own isEmbedding/chunkMeta values.
     // Undeclared classes keep getEmbeddingModel's '' default, which is what the two literals
@@ -323,6 +334,20 @@ export function describeEntity(cls: Function): TypeDescriptor {
         const designType = Reflect.getMetadata('design:type', proto, fieldName) as Function | undefined;
         const arrayElement = arrayFields.get(fieldName);
         const looksArray = designType === Array || Array.isArray(instance[fieldName]);
+        const declaredType = typeFields.get(fieldName);
+        if (declaredType !== undefined && (looksArray || arrayElement !== undefined)) {
+            throw new Error(
+                `${typeName}.${fieldName} is an array property but is decorated with @IversonType(); ` +
+                '@IversonType() is scalar-only. Remove it and declare the element type with ' +
+                '@IversonArray(ClrType.CLR_…).',
+            );
+        }
+        if (declaredType !== undefined && guidFields.has(fieldName)) {
+            throw new Error(
+                `${typeName}.${fieldName} is decorated with both @IversonGuid() and @IversonType(); ` +
+                'each declares the column type. Keep one.',
+            );
+        }
         if (looksArray && arrayElement === undefined) {
             throw new Error(
                 `${typeName}.${fieldName} is an array property but has no @IversonArray(elementType) ` +
@@ -362,9 +387,19 @@ export function describeEntity(cls: Function): TypeDescriptor {
 
         const isArray = arrayElement !== undefined;
         const clrType = arrayElement
-            ?? (guidFields.has(fieldName)
-                ? ClrType.CLR_GUID
-                : (designType ? jsTypeToClr(designType.name) : ClrType.CLR_STRING));
+            ?? (guidFields.has(fieldName) ? ClrType.CLR_GUID : undefined)
+            ?? declaredType
+            ?? (designType !== undefined ? jsTypeToClr(designType.name) : undefined)
+            ?? runtimeValueToClr(instance[fieldName]);
+        if (clrType === undefined) {
+            throw new Error(
+                `${typeName}.${fieldName} has no type the SDK can read, so its column type cannot be inferred: ` +
+                'TypeScript erases it (decorator metadata is absent, or a union such as `T | null` reports Object), ' +
+                'and the initializer is missing, null, or not a string, number, boolean or Date. ' +
+                'Give it an initializer, or add @IversonType(ClrType.CLR_…) naming the type ' +
+                '(for an array property, @IversonArray(ClrType.CLR_…) naming the element type).',
+            );
+        }
 
         const isKey = fieldName === keyField;
         const isSearchKey = searchKeysByField.has(fieldName);
