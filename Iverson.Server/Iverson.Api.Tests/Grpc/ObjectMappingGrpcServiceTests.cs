@@ -149,9 +149,9 @@ public class ObjectMappingGrpcServiceTests
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)
     {
         var td = new TypeDescriptor { TypeName = name };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
         foreach (var s in extraScalars)
-            td.Properties.Add(new PropertyDescriptor { Name = s, ClrType = ClrType.ClrString });
+            td.Properties.Add(new PropertyDescriptor { Name = s, ObjectType = ObjectType.String });
         return td;
     }
 
@@ -273,7 +273,7 @@ public class ObjectMappingGrpcServiceTests
     [Fact]
     public async Task GetSchema_ProjectsEveryFieldLevelFlag_ThroughTheRpc()
     {
-        // End-to-end cover for the members no other GetSchema test asserts: clr_type, is_array,
+        // End-to-end cover for the members no other GetSchema test asserts: object_type, is_array,
         // is_key, is_nullable, is_embedding, is_chunk and SchemaType.description. The flag
         // composition test alongside covers is_metadata / is_search_key / enrichment.
         var schema = SchemaFixtures.ArticleSchema() with
@@ -296,14 +296,14 @@ public class ObjectMappingGrpcServiceTests
         article.Description.Should().Be("A published article.");
 
         var key = article.Fields.Single(f => f.Name == "Id");
-        key.ClrType.Should().Be(ClrType.ClrGuid);
+        key.ObjectType.Should().Be(ObjectType.Guid);
         key.IsKey.Should().BeTrue();
         key.IsArray.Should().BeFalse();
         key.IsNullable.Should().BeFalse();
 
         // Scalar, non-key, carries a description, is the declared vector (embedding) field.
         var title = article.Fields.Single(f => f.Name == "Title");
-        title.ClrType.Should().Be(ClrType.ClrString);
+        title.ObjectType.Should().Be(ObjectType.String);
         title.Description.Should().Be("The headline.");
         title.IsKey.Should().BeFalse();
         title.IsArray.Should().BeFalse();
@@ -315,9 +315,9 @@ public class ObjectMappingGrpcServiceTests
         body.IsChunk.Should().BeTrue();
         body.IsEmbedding.Should().BeFalse();
 
-        // An array column: is_array is true and clr_type reports the *element* type.
+        // An array column: is_array is true and object_type reports the *element* type.
         var tags = article.Fields.Single(f => f.Name == "Tags");
-        tags.ClrType.Should().Be(ClrType.ClrString);
+        tags.ObjectType.Should().Be(ObjectType.String);
         tags.IsArray.Should().BeTrue();
         tags.IsNullable.Should().BeTrue();
     }

@@ -59,7 +59,7 @@ internal static class SchemaBuilder
 
         foreach (var prop in typeDesc.Properties.Where(p => !p.IsKey))
         {
-            var sqlType = ClrTypeToSql(prop.ClrType, prop.IsArray);
+            var sqlType = ObjectTypeToSql(prop.ObjectType, prop.IsArray);
             scalars.Add(
                 new ColumnDescriptor(prop.Name, sqlType, prop.IsNullable));
 
@@ -107,7 +107,7 @@ internal static class SchemaBuilder
             if (prop.IsPopularitySignal)
             {
                 popularitySignalColumns.Add(prop.Name);
-                if (prop.IsArray || prop.ClrType != ClrType.ClrDatetime)
+                if (prop.IsArray || prop.ObjectType != ObjectType.Datetime)
                     badPopularitySignal.Add(prop.Name);
             }
 
@@ -233,7 +233,7 @@ internal static class SchemaBuilder
             TypeName          = typeDesc.TypeName,
             TableName         = tableName,
             CollectionName    = (vectors.Count > 0 || chunks.Count > 0) ? tableName : null,
-            KeyColumn         = new ColumnDescriptor(keyProp.Name, ClrTypeToSql(keyProp.ClrType, false), false),
+            KeyColumn         = new ColumnDescriptor(keyProp.Name, ObjectTypeToSql(keyProp.ObjectType, false), false),
             ScalarColumns     = scalars,
             FkColumns         = fks,
             VectorFields      = vectors,
@@ -293,7 +293,7 @@ internal static class SchemaBuilder
     /// </summary>
     internal static EngagementTableSchema ToEngagementTableSchema(SchemaDescriptor d) => new(
         d.TableName,
-        new EngagementColumnSchema(d.KeyColumn.Name, ClrTypeToEngagementType(d.KeyColumn.SqlType), false),
+        new EngagementColumnSchema(d.KeyColumn.Name, ObjectTypeToEngagementType(d.KeyColumn.SqlType), false),
         d.ScalarColumns
             .Select(c => new EngagementColumnSchema(
                 c.Name, EngagementTypeFor(c, d.LargeFieldColumns), c.IsNullable))
@@ -306,11 +306,11 @@ internal static class SchemaBuilder
     /// The StarRocks type for one column: the wide text type when the column is a large field that
     /// would otherwise be projected as <c>STRING</c>, and the ordinary mapping otherwise. Guarded on
     /// the mapped type being <c>STRING</c> so a large field that is somehow not textual keeps
-    /// whatever type its CLR type maps to, rather than being silently retyped.
+    /// whatever type its object type maps to, rather than being silently retyped.
     /// </summary>
     internal static string EngagementTypeFor(ColumnDescriptor column, IReadOnlySet<string> largeFieldColumns)
     {
-        var mapped = ClrTypeToEngagementType(column.SqlType);
+        var mapped = ObjectTypeToEngagementType(column.SqlType);
 
         return mapped == "STRING" && largeFieldColumns.Contains(column.Name)
             ? StarRocksLimits.WideTextColumnType
@@ -378,58 +378,58 @@ internal static class SchemaBuilder
             .Concat(d.FkColumns.Select(fk => new PayloadIndex(fk.ColumnName.ToCamelCase(), PayloadIndexKind.Keyword)))
             .ToList());
 
-    private readonly record struct ClrTypeMapping(string SqlType, string StarRocksType, PayloadIndexKind PayloadKind);
+    private readonly record struct ObjectTypeMapping(string SqlType, string StarRocksType, PayloadIndexKind PayloadKind);
 
-    // Single source of truth for scalar ClrType → (SQL type, StarRocks type, Qdrant payload
-    // index kind). Adding a new ClrType means adding one entry here — ClrTypeToSql,
-    // ClrTypeToStarRocksType, and SqlTypeToPayloadKind all derive from this one table instead
+    // Single source of truth for scalar ObjectType → (SQL type, StarRocks type, Qdrant payload
+    // index kind). Adding a new ObjectType means adding one entry here — ObjectTypeToSql,
+    // ObjectTypeToStarRocksType, and SqlTypeToPayloadKind all derive from this one table instead
     // of three independently-maintained switches.
-    private static readonly IReadOnlyDictionary<ClrType, ClrTypeMapping> ScalarTypeMap =
-        new Dictionary<ClrType, ClrTypeMapping>
+    private static readonly IReadOnlyDictionary<ObjectType, ObjectTypeMapping> ScalarTypeMap =
+        new Dictionary<ObjectType, ObjectTypeMapping>
         {
-            [ClrType.ClrGuid]     = new("UUID", "VARCHAR(36)", PayloadIndexKind.Keyword),
-            [ClrType.ClrString]   = new("TEXT", "STRING", PayloadIndexKind.Keyword),
-            [ClrType.ClrInt32]    = new("INTEGER", "INT", PayloadIndexKind.Integer),
-            [ClrType.ClrInt64]    = new("BIGINT", "BIGINT", PayloadIndexKind.Integer),
-            [ClrType.ClrFloat]    = new("REAL", "FLOAT", PayloadIndexKind.Float),
-            [ClrType.ClrDouble]   = new("DOUBLE PRECISION", "DOUBLE", PayloadIndexKind.Float),
-            [ClrType.ClrBool]     = new("BOOLEAN", "BOOLEAN", PayloadIndexKind.Boolean),
-            [ClrType.ClrDatetime] = new("TIMESTAMPTZ", "DATETIME", PayloadIndexKind.Datetime),
-            [ClrType.ClrBytes]    = new("BYTEA", "VARBINARY", PayloadIndexKind.Keyword)
+            [ObjectType.Guid]     = new("UUID", "VARCHAR(36)", PayloadIndexKind.Keyword),
+            [ObjectType.String]   = new("TEXT", "STRING", PayloadIndexKind.Keyword),
+            [ObjectType.Int32]    = new("INTEGER", "INT", PayloadIndexKind.Integer),
+            [ObjectType.Int64]    = new("BIGINT", "BIGINT", PayloadIndexKind.Integer),
+            [ObjectType.Float]    = new("REAL", "FLOAT", PayloadIndexKind.Float),
+            [ObjectType.Double]   = new("DOUBLE PRECISION", "DOUBLE", PayloadIndexKind.Float),
+            [ObjectType.Bool]     = new("BOOLEAN", "BOOLEAN", PayloadIndexKind.Boolean),
+            [ObjectType.Datetime] = new("TIMESTAMPTZ", "DATETIME", PayloadIndexKind.Datetime),
+            [ObjectType.Bytes]    = new("BYTEA", "VARBINARY", PayloadIndexKind.Keyword)
         };
 
-    // Total over ClrType. StarRocks is STRING for every array. Payload kinds are element-typed
-    // except ClrFloat, which keeps Keyword — see the comment on that row below.
-    private static readonly IReadOnlyDictionary<ClrType, ClrTypeMapping> ArrayTypeOverrides =
-        new Dictionary<ClrType, ClrTypeMapping>
+    // Total over ObjectType. StarRocks is STRING for every array. Payload kinds are element-typed
+    // except Float, which keeps Keyword — see the comment on that row below.
+    private static readonly IReadOnlyDictionary<ObjectType, ObjectTypeMapping> ArrayTypeOverrides =
+        new Dictionary<ObjectType, ObjectTypeMapping>
         {
-            [ClrType.ClrGuid]     = new("UUID[]", "STRING", PayloadIndexKind.Keyword),
-            [ClrType.ClrString]   = new("TEXT[]", "STRING", PayloadIndexKind.Keyword),
-            [ClrType.ClrInt32]    = new("INTEGER[]", "STRING", PayloadIndexKind.Integer),
-            [ClrType.ClrInt64]    = new("BIGINT[]", "STRING", PayloadIndexKind.Integer),
+            [ObjectType.Guid]     = new("UUID[]", "STRING", PayloadIndexKind.Keyword),
+            [ObjectType.String]   = new("TEXT[]", "STRING", PayloadIndexKind.Keyword),
+            [ObjectType.Int32]    = new("INTEGER[]", "STRING", PayloadIndexKind.Integer),
+            [ObjectType.Int64]    = new("BIGINT[]", "STRING", PayloadIndexKind.Integer),
             // Keyword, not Float: preserved from the pre-existing entry because changing it
             // would retype a live Qdrant index. See the spec's §1 and "Out of scope".
-            [ClrType.ClrFloat]    = new("REAL[]", "STRING", PayloadIndexKind.Keyword),
-            [ClrType.ClrDouble]   = new("DOUBLE PRECISION[]", "STRING", PayloadIndexKind.Float),
-            [ClrType.ClrBool]     = new("BOOLEAN[]", "STRING", PayloadIndexKind.Boolean),
-            [ClrType.ClrDatetime] = new("TIMESTAMPTZ[]", "STRING", PayloadIndexKind.Datetime),
+            [ObjectType.Float]    = new("REAL[]", "STRING", PayloadIndexKind.Keyword),
+            [ObjectType.Double]   = new("DOUBLE PRECISION[]", "STRING", PayloadIndexKind.Float),
+            [ObjectType.Bool]     = new("BOOLEAN[]", "STRING", PayloadIndexKind.Boolean),
+            [ObjectType.Datetime] = new("TIMESTAMPTZ[]", "STRING", PayloadIndexKind.Datetime),
             // Reachable only via byte[][] — byte[] is carved out as a scalar at
             // Iverson.Clients/DotNet/Iverson.Client.Core/SchemaRegistrar.cs:239. Present so the
             // table is total over the enum.
-            [ClrType.ClrBytes]    = new("BYTEA[]", "STRING", PayloadIndexKind.Keyword)
+            [ObjectType.Bytes]    = new("BYTEA[]", "STRING", PayloadIndexKind.Keyword)
         };
 
     // Derived from ScalarTypeMap + ArrayTypeOverrides at static-init time, keyed by the SQL
-    // type string, so ClrTypeToStarRocksType/SqlTypeToPayloadKind — which only ever receive a
-    // persisted SQL-type string, never the original ClrType (ColumnDescriptor.SqlType is what's
-    // serialized into the _iverson_schema table) — stay consistent with ClrTypeToSql by
+    // type string, so ObjectTypeToStarRocksType/SqlTypeToPayloadKind — which only ever receive a
+    // persisted SQL-type string, never the original ObjectType (ColumnDescriptor.SqlType is what's
+    // serialized into the _iverson_schema table) — stay consistent with ObjectTypeToSql by
     // construction instead of by separately-maintained switch.
-    private static readonly IReadOnlyDictionary<string, ClrTypeMapping> SqlTypeMap =
+    private static readonly IReadOnlyDictionary<string, ObjectTypeMapping> SqlTypeMap =
         ScalarTypeMap.Values
             .Concat(ArrayTypeOverrides.Values)
             .ToDictionary(m => m.SqlType, m => m, StringComparer.OrdinalIgnoreCase);
 
-    internal static string ClrTypeToSql(ClrType t, bool isArray)
+    internal static string ObjectTypeToSql(ObjectType t, bool isArray)
     {
         if (isArray && ArrayTypeOverrides.TryGetValue(t, out var arrayMapping))
             return arrayMapping.SqlType;
@@ -437,35 +437,35 @@ internal static class SchemaBuilder
         return ScalarTypeMap.TryGetValue(t, out var mapping)
             ? mapping.SqlType
             : throw new ArgumentOutOfRangeException(nameof(t), t,
-                $"Unhandled {nameof(ClrType)} value — add an entry to {nameof(SchemaBuilder)}.{nameof(ScalarTypeMap)}.");
+                $"Unhandled {nameof(ObjectType)} value — add an entry to {nameof(SchemaBuilder)}.{nameof(ScalarTypeMap)}.");
     }
 
-    // Inverse of ClrTypeToSql, for the GetSchema read path: a persisted ColumnDescriptor carries
-    // only the SQL type string, but the catalog reports clr_type + is_array. Built from the same
-    // two maps ClrTypeToSql reads, so the two cannot disagree.
-    private static readonly IReadOnlyDictionary<string, (ClrType Type, bool IsArray)> SqlTypeToClrMap =
-        ScalarTypeMap.Select(kv => (Sql: kv.Value.SqlType, Clr: kv.Key, IsArray: false))
-            .Concat(ArrayTypeOverrides.Select(kv => (Sql: kv.Value.SqlType, Clr: kv.Key, IsArray: true)))
-            .ToDictionary(x => x.Sql, x => (x.Clr, x.IsArray), StringComparer.OrdinalIgnoreCase);
+    // Inverse of ObjectTypeToSql, for the GetSchema read path: a persisted ColumnDescriptor carries
+    // only the SQL type string, but the catalog reports object_type + is_array. Built from the same
+    // two maps ObjectTypeToSql reads, so the two cannot disagree.
+    private static readonly IReadOnlyDictionary<string, (ObjectType Type, bool IsArray)> SqlTypeToObjectTypeMap =
+        ScalarTypeMap.Select(kv => (Sql: kv.Value.SqlType, ObjectType: kv.Key, IsArray: false))
+            .Concat(ArrayTypeOverrides.Select(kv => (Sql: kv.Value.SqlType, ObjectType: kv.Key, IsArray: true)))
+            .ToDictionary(x => x.Sql, x => (x.ObjectType, x.IsArray), StringComparer.OrdinalIgnoreCase);
 
-    internal static (ClrType Type, bool IsArray) SqlTypeToClr(string sqlType) =>
-        TrySqlTypeToClr(sqlType, out var mapping)
+    internal static (ObjectType Type, bool IsArray) SqlTypeToObjectType(string sqlType) =>
+        TrySqlTypeToObjectType(sqlType, out var mapping)
             ? mapping
             : throw new ArgumentOutOfRangeException(nameof(sqlType), sqlType,
                 $"Unhandled SQL type — add an entry to {nameof(SchemaBuilder)}.{nameof(ScalarTypeMap)}.");
 
     /// <summary>
-    /// Non-throwing form of <see cref="SqlTypeToClr"/>, for the GetSchema read path.
+    /// Non-throwing form of <see cref="SqlTypeToObjectType"/>, for the GetSchema read path.
     /// <see cref="SchemaRegistry"/> rehydrates persisted descriptors written by older builds, so a
     /// column may carry a SQL type string this build no longer maps. Skipping that one column keeps
     /// discovery available for every other type, rather than failing the whole RPC — matching how
-    /// <see cref="ClrTypeToEngagementType"/> and <see cref="SqlTypeToPayloadKind"/> degrade. The
-    /// write path (<see cref="ClrTypeToSql"/>) still throws, where failing registration is correct.
+    /// <see cref="ObjectTypeToEngagementType"/> and <see cref="SqlTypeToPayloadKind"/> degrade. The
+    /// write path (<see cref="ObjectTypeToSql"/>) still throws, where failing registration is correct.
     /// </summary>
-    internal static bool TrySqlTypeToClr(string sqlType, out (ClrType Type, bool IsArray) mapping) =>
-        SqlTypeToClrMap.TryGetValue(sqlType, out mapping);
+    internal static bool TrySqlTypeToObjectType(string sqlType, out (ObjectType Type, bool IsArray) mapping) =>
+        SqlTypeToObjectTypeMap.TryGetValue(sqlType, out mapping);
 
-    internal static string ClrTypeToEngagementType(string sqlType) =>
+    internal static string ObjectTypeToEngagementType(string sqlType) =>
         SqlTypeMap.TryGetValue(sqlType, out var mapping) ? mapping.StarRocksType : "STRING";
 
     internal static PayloadIndexKind SqlTypeToPayloadKind(string sqlType) =>

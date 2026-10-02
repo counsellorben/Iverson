@@ -44,10 +44,10 @@ public class SchemaRegistrationOrchestratorTests
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)
     {
         var td = new TypeDescriptor { TypeName = name };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
         foreach (var s in extraScalars)
-            td.Properties.Add(new PropertyDescriptor { Name = s, ClrType = ClrType.ClrString });
+            td.Properties.Add(new PropertyDescriptor { Name = s, ObjectType = ObjectType.String });
         return td;
     }
 
@@ -80,8 +80,8 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithNoTenantFieldDeclared_Registers_WithTheServerOwnedTenantColumn()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "Name", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Name", ObjectType = ObjectType.String });
 
         var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -94,8 +94,8 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithADeclaredTenantField_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -117,8 +117,8 @@ public class SchemaRegistrationOrchestratorTests
         // all. Pinning the message proves it is the new rule doing the rejecting and not a
         // resurrected field-reference validation.
         var td = new TypeDescriptor { TypeName = "Widget", TenantField = "DoesNotExist" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "Name", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Name", ObjectType = ObjectType.String });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -152,8 +152,8 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithAScalarPropertyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = SchemaDescriptor.TenantColumnName, ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = SchemaDescriptor.TenantColumnName, ObjectType = ObjectType.String });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -175,8 +175,8 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithADifferentlyCasedTenantColumnProperty_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "__tenantid", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "__tenantid", ObjectType = ObjectType.String });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -189,7 +189,7 @@ public class SchemaRegistrationOrchestratorTests
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
         td.Properties.Add(new PropertyDescriptor
-            { Name = SchemaDescriptor.TenantColumnName, ClrType = ClrType.ClrGuid, IsKey = true });
+            { Name = SchemaDescriptor.TenantColumnName, ObjectType = ObjectType.Guid, IsKey = true });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -207,7 +207,7 @@ public class SchemaRegistrationOrchestratorTests
         // never identifier-checked — so without this guard it reaches the FK lookup and is
         // rejected as "not a declared property", which is a misleading answer.
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Author",
@@ -271,8 +271,8 @@ public class SchemaRegistrationOrchestratorTests
         // ResolveRelationsAsync then re-injects the related object under the key __TenantId, putting
         // the reserved name straight back on the wire.
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "AuthorId", ClrType = ClrType.ClrGuid });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "AuthorId", ObjectType = ObjectType.Guid });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = SchemaDescriptor.TenantColumnName,
@@ -313,8 +313,8 @@ public class SchemaRegistrationOrchestratorTests
         // the reserved name back on the wire by exactly the mechanism Ruling 24 exists to close —
         // and the ManyToOne fixture above would stay green throughout.
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "AuthorIds", ClrType = ClrType.ClrGuid, IsArray = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "AuthorIds", ObjectType = ObjectType.Guid, IsArray = true });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = SchemaDescriptor.TenantColumnName,
@@ -398,7 +398,7 @@ public class SchemaRegistrationOrchestratorTests
     {
         var dependent = SimpleType("Author", "Name");
         dependent.Properties.Add(new PropertyDescriptor
-            { Name = SchemaDescriptor.TenantColumnName, ClrType = ClrType.ClrString });
+            { Name = SchemaDescriptor.TenantColumnName, ObjectType = ObjectType.String });
 
         var request = new SchemaRequest
         {
@@ -420,8 +420,8 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithNonStringOwnerFieldSqlType_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "Count", ClrType = ClrType.ClrInt32 });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Count", ObjectType = ObjectType.Int32 });
         td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "Count" };
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
@@ -434,10 +434,10 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithOwnerFieldCollidingWithReservedChunkPayloadKey_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "Text", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Text", ObjectType = ObjectType.String });
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Body", ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+            { Name = "Body", ObjectType = ObjectType.String, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
         td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "Text" }; // "Text".ToCamelCase() == "text"
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
@@ -450,9 +450,9 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithGuidTypedOwnerField_DoesNotThrow()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "OwnerId", ClrType = ClrType.ClrGuid });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "OwnerId", ObjectType = ObjectType.Guid });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
         td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "OwnerId" };
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
@@ -541,7 +541,7 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithManyToOneRelation_DoesNotThrow()
     {
         var td = SimpleType("Comment", "Body");
-        td.Properties.Add(new PropertyDescriptor { Name = "ArticleId", ClrType = ClrType.ClrGuid });
+        td.Properties.Add(new PropertyDescriptor { Name = "ArticleId", ObjectType = ObjectType.Guid });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Article",
@@ -590,9 +590,9 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithManyToManyRelation_DoesNotThrow()
     {
         var td = new TypeDescriptor { TypeName = "Post" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
-        td.Properties.Add(new PropertyDescriptor { Name = "TagIds",   ClrType = ClrType.ClrGuid,   IsArray = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id",       ObjectType = ObjectType.Guid,   IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
+        td.Properties.Add(new PropertyDescriptor { Name = "TagIds",   ObjectType = ObjectType.Guid,   IsArray = true });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Tags",
@@ -626,16 +626,16 @@ public class SchemaRegistrationOrchestratorTests
         var typeDesc = new TypeDescriptor { TypeName = "EmbeddableDoc" };
         typeDesc.Properties.Add(new PropertyDescriptor
         {
-            Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true
+            Name = "Id", ObjectType = ObjectType.Guid, IsKey = true
         });
         typeDesc.Properties.Add(new PropertyDescriptor
         {
-            Name = "TenantId", ClrType = ClrType.ClrString
+            Name = "TenantId", ObjectType = ObjectType.String
         });
         typeDesc.Properties.Add(new PropertyDescriptor
         {
             Name    = "Content",
-            ClrType = ClrType.ClrString,
+            ObjectType = ObjectType.String,
             IsEmbedding = true,
             VectorDim   = 0,
             ModelId     = string.Empty
@@ -659,11 +659,11 @@ public class SchemaRegistrationOrchestratorTests
         var typeDesc = SimpleType("EmptyModelDoc", "Name");
         typeDesc.Properties.Add(new PropertyDescriptor
         {
-            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty
+            Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty
         });
         typeDesc.Properties.Add(new PropertyDescriptor
         {
-            Name = "Body", ClrType = ClrType.ClrString, IsChunk = true,
+            Name = "Body", ObjectType = ObjectType.String, IsChunk = true,
             ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = string.Empty
         });
 
@@ -678,7 +678,7 @@ public class SchemaRegistrationOrchestratorTests
         var typeDesc = SimpleType("ArcticDoc", "Name");
         typeDesc.Properties.Add(new PropertyDescriptor
         {
-            Name = "Body", ClrType = ClrType.ClrString, IsChunk = true,
+            Name = "Body", ObjectType = ObjectType.String, IsChunk = true,
             ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
         });
 
@@ -693,11 +693,11 @@ public class SchemaRegistrationOrchestratorTests
         var typeDesc = SimpleType("ConflictedDoc", "Name");
         typeDesc.Properties.Add(new PropertyDescriptor
         {
-            Name = "Summary", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = "nomic-embed-text"
+            Name = "Summary", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = "nomic-embed-text"
         });
         typeDesc.Properties.Add(new PropertyDescriptor
         {
-            Name = "Body", ClrType = ClrType.ClrString, IsChunk = true,
+            Name = "Body", ObjectType = ObjectType.String, IsChunk = true,
             ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
         });
 
@@ -716,7 +716,7 @@ public class SchemaRegistrationOrchestratorTests
         var typeDesc = SimpleType("DualFlagDoc", "Name");
         typeDesc.Properties.Add(new PropertyDescriptor
         {
-            Name = "Body", ClrType = ClrType.ClrString,
+            Name = "Body", ObjectType = ObjectType.String,
             IsEmbedding = true, ModelId = "nomic-embed-text",
             IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
         });
@@ -735,12 +735,12 @@ public class SchemaRegistrationOrchestratorTests
         var typeDesc = SimpleType("AgreeingDoc", "Name");
         typeDesc.Properties.Add(new PropertyDescriptor
         {
-            Name = "Summary", ClrType = ClrType.ClrString, IsEmbedding = true,
+            Name = "Summary", ObjectType = ObjectType.String, IsEmbedding = true,
             ModelId = "snowflake-arctic-embed:s"
         });
         typeDesc.Properties.Add(new PropertyDescriptor
         {
-            Name = "Body", ClrType = ClrType.ClrString, IsChunk = true,
+            Name = "Body", ObjectType = ObjectType.String, IsChunk = true,
             ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
         });
 
@@ -765,13 +765,13 @@ public class SchemaRegistrationOrchestratorTests
 
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+            { Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty });
         await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var td2 = SimpleType("Doc", "Name");
         td2.Properties.Add(new PropertyDescriptor
         {
-            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true,
             ModelId = "snowflake-arctic-embed:s"
         });
 
@@ -791,12 +791,12 @@ public class SchemaRegistrationOrchestratorTests
     {
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+            { Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty });
         await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var td2 = SimpleType("Doc", "Name");
         td2.Properties.Add(new PropertyDescriptor
-            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+            { Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, null, CancellationToken.None);
 
@@ -815,13 +815,13 @@ public class SchemaRegistrationOrchestratorTests
 
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+            { Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty });
         await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var td2 = SimpleType("Doc", "Name");
         td2.Properties.Add(new PropertyDescriptor
         {
-            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true,
             ModelId = "snowflake-arctic-embed:s"
         });
 
@@ -856,7 +856,7 @@ public class SchemaRegistrationOrchestratorTests
     {
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+            { Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty });
         await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var unreachable = Substitute.For<IEmbeddingService>();
@@ -869,7 +869,7 @@ public class SchemaRegistrationOrchestratorTests
         var td2 = SimpleType("Doc", "Name");
         td2.Properties.Add(new PropertyDescriptor
         {
-            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true,
             ModelId = "snowflake-arctic-embed:s"
         });
 
@@ -898,7 +898,7 @@ public class SchemaRegistrationOrchestratorTests
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
         {
-            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true,
             ModelId = "snowflake-arctic-embed:s"
         });
 
@@ -925,7 +925,7 @@ public class SchemaRegistrationOrchestratorTests
 
         var td2 = SimpleType("Doc", "Name");
         td2.Properties.Add(new PropertyDescriptor
-            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+            { Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, null, CancellationToken.None);
 
@@ -940,7 +940,7 @@ public class SchemaRegistrationOrchestratorTests
         // the guard's three-way AND is false. This is removing vectors, not mixing two spaces.
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+            { Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty });
         await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var td2 = SimpleType("Doc", "Name");
@@ -960,7 +960,7 @@ public class SchemaRegistrationOrchestratorTests
         // when the deployment default moves out from under an already-registered type.
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+            { Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty });
         await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var newDefault = Substitute.For<IEmbeddingService>();
@@ -972,7 +972,7 @@ public class SchemaRegistrationOrchestratorTests
 
         var td2 = SimpleType("Doc", "Name");
         td2.Properties.Add(new PropertyDescriptor
-            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+            { Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, null, CancellationToken.None);
 
@@ -992,7 +992,7 @@ public class SchemaRegistrationOrchestratorTests
     {
         var td = SimpleType("Doc", "Name");
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+            { Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty });
         await _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
         var newDefault = Substitute.For<IEmbeddingService>();
@@ -1027,13 +1027,13 @@ public class SchemaRegistrationOrchestratorTests
 
         var root = SimpleType("Doc", "Name");
         root.Properties.Add(new PropertyDescriptor
-            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+            { Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = string.Empty });
 
         // A dependent sharing the ROOT's type name -- nothing upstream of the guard rejects this.
         var dependent = SimpleType("Doc", "Name");
         dependent.Properties.Add(new PropertyDescriptor
         {
-            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            Name = "Content", ObjectType = ObjectType.String, IsEmbedding = true,
             ModelId = "snowflake-arctic-embed:s"
         });
 
@@ -1053,11 +1053,11 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithNonStringEnrichmentTarget_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
-        td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ObjectType = ObjectType.String });
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Count", ClrType = ClrType.ClrInt32, IsSummaryTarget = true });
+            { Name = "Count", ObjectType = ObjectType.Int32, IsSummaryTarget = true });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -1069,10 +1069,10 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithKeyTenantOrOwnerAsEnrichmentTarget_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor
-            { Name = "TenantId", ClrType = ClrType.ClrString, IsSummaryTarget = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
+            { Name = "TenantId", ObjectType = ObjectType.String, IsSummaryTarget = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ObjectType = ObjectType.String });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -1084,12 +1084,12 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithEnrichmentTargetThatIsAlsoEmbeddingOrChunk_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
-        td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ObjectType = ObjectType.String });
         td.Properties.Add(new PropertyDescriptor
         {
-            Name = "Summary", ClrType = ClrType.ClrString, IsSummaryTarget = true,
+            Name = "Summary", ObjectType = ObjectType.String, IsSummaryTarget = true,
             IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64
         });
 
@@ -1105,11 +1105,11 @@ public class SchemaRegistrationOrchestratorTests
         // Source text is the concatenation of [IversonEmbedding]/[IversonChunk] properties only —
         // an ordinary string property does NOT count as a source, even though it's plain text.
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
-        td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ObjectType = ObjectType.String });
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Summary", ClrType = ClrType.ClrString, IsSummaryTarget = true });
+            { Name = "Summary", ObjectType = ObjectType.String, IsSummaryTarget = true });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -1121,12 +1121,12 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithEnrichmentTargetAndChunkSourceProperty_DoesNotThrow()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Body", ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+            { Name = "Body", ObjectType = ObjectType.String, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Summary", ClrType = ClrType.ClrString, IsSummaryTarget = true });
+            { Name = "Summary", ObjectType = ObjectType.String, IsSummaryTarget = true });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -1137,11 +1137,11 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithEmptyExtractHint_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
-        td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ObjectType = ObjectType.String });
         td.Properties.Add(new PropertyDescriptor
-            { Name = "Extracted", ClrType = ClrType.ClrString, ExtractHint = "   " });
+            { Name = "Extracted", ObjectType = ObjectType.String, ExtractHint = "   " });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -1191,7 +1191,7 @@ public class SchemaRegistrationOrchestratorTests
     {
         var td = SimpleType("Widget", "Name");
         td.Properties.Add(new PropertyDescriptor
-            { Name = "TagIds", ClrType = ClrType.ClrGuid, IsArray = true });
+            { Name = "TagIds", ObjectType = ObjectType.Guid, IsArray = true });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Tags",
@@ -1209,7 +1209,7 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithWellFormedManyToOneForeignKey_Registers()
     {
         var td = SimpleType("Widget", "Name");
-        td.Properties.Add(new PropertyDescriptor { Name = "UserId", ClrType = ClrType.ClrGuid });
+        td.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Owner",
@@ -1227,8 +1227,8 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithNonUuidKeyColumn_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrString, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.String, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
 
@@ -1240,7 +1240,7 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithNonUuidManyToOneForeignKeyColumn_ThrowsInvalidArgument()
     {
-        var td = SimpleType("Widget", "Name", "UserId");   // UserId is ClrString → TEXT
+        var td = SimpleType("Widget", "Name", "UserId");   // UserId is String → TEXT
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Owner",
@@ -1261,7 +1261,7 @@ public class SchemaRegistrationOrchestratorTests
     {
         var td = SimpleType("Widget", "Name");
         td.Properties.Add(new PropertyDescriptor
-            { Name = "TagIds", ClrType = ClrType.ClrGuid });   // UUID, not UUID[]
+            { Name = "TagIds", ObjectType = ObjectType.Guid });   // UUID, not UUID[]
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Tags",
@@ -1281,7 +1281,7 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithOneToManyRelation_DoesNotCheckForeignKeyColumnType()
     {
         // The FK lives on the related type's row; nothing on this type is checked.
-        var td = SimpleType("Widget", "Name", "WidgetId");   // WidgetId is ClrString → TEXT
+        var td = SimpleType("Widget", "Name", "WidgetId");   // WidgetId is String → TEXT
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Children",
@@ -1301,7 +1301,7 @@ public class SchemaRegistrationOrchestratorTests
         // Column exists and is UUID-typed, so it passes membership/type checks — but "OwnerId"
         // does not match the required "{RelatedTypeName}Id" == "AuthorId" for RelatedType "Author".
         var td = SimpleType("Widget", "Name");
-        td.Properties.Add(new PropertyDescriptor { Name = "OwnerId", ClrType = ClrType.ClrGuid });
+        td.Properties.Add(new PropertyDescriptor { Name = "OwnerId", ObjectType = ObjectType.Guid });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Owner",
@@ -1321,9 +1321,9 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithManyToManyForeignKeyNotNamedAfterRelatedType_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Post" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
-        td.Properties.Add(new PropertyDescriptor { Name = "LabelIds", ClrType = ClrType.ClrGuid,   IsArray = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id",       ObjectType = ObjectType.Guid,   IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
+        td.Properties.Add(new PropertyDescriptor { Name = "LabelIds", ObjectType = ObjectType.Guid,   IsArray = true });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Tags",
@@ -1363,7 +1363,7 @@ public class SchemaRegistrationOrchestratorTests
     public async Task RegisterAsync_WithManyToOnePropertyNameEqualsForeignKey_ThrowsInvalidArgument()
     {
         var td = SimpleType("Widget", "Name");
-        td.Properties.Add(new PropertyDescriptor { Name = "AuthorId", ClrType = ClrType.ClrGuid });
+        td.Properties.Add(new PropertyDescriptor { Name = "AuthorId", ObjectType = ObjectType.Guid });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "AuthorId",

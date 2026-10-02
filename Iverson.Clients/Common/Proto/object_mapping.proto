@@ -29,21 +29,21 @@ enum RelationKind {
     MANY_TO_MANY = 3;
 }
 
-enum ClrType {
-    CLR_STRING   = 0;
-    CLR_GUID     = 1;
-    CLR_INT32    = 2;
-    CLR_INT64    = 3;
-    CLR_DOUBLE   = 4;
-    CLR_FLOAT    = 5;
-    CLR_BOOL     = 6;
-    CLR_DATETIME = 7;
-    CLR_BYTES    = 8;
+enum ObjectType {
+    STRING   = 0;
+    GUID     = 1;
+    INT32    = 2;
+    INT64    = 3;
+    DOUBLE   = 4;
+    FLOAT    = 5;
+    BOOL     = 6;
+    DATETIME = 7;
+    BYTES    = 8;
 }
 
 message PropertyDescriptor {
     string  name          = 1;
-    ClrType clr_type      = 2;
+    ObjectType object_type = 2;
     bool    is_key        = 3;   // [IversonKey]
     bool    is_nullable   = 4;
     bool    is_array      = 5;   // float[], Guid[], etc.
@@ -140,7 +140,7 @@ message SchemaType {
 message SchemaField {
     string  name             = 1;
     string  description      = 2;
-    ClrType clr_type         = 3;
+    ObjectType object_type   = 3;
     bool    is_array         = 4;
     bool    is_key           = 5;
     bool    is_nullable      = 6;

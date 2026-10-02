@@ -68,10 +68,10 @@ public class ModelRejectedScenarioTests
             TypeName = typeName,
             Properties =
             {
-                new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
+                new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true },
                 new PropertyDescriptor
                 {
-                    Name = "Title", ClrType = ClrType.ClrString,
+                    Name = "Title", ObjectType = ObjectType.String,
                     IsEmbedding = true, ModelId = StoredModel, VectorDim = 768,
                 },
             },

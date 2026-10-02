@@ -270,8 +270,8 @@ public sealed class TenantRejectedScenario(
             TenantField = DeclaredTenantFieldName,
             Properties =
             {
-                new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
-                new PropertyDescriptor { Name = DeclaredTenantFieldName, ClrType = ClrType.ClrString, IsNullable = false },
+                new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true },
+                new PropertyDescriptor { Name = DeclaredTenantFieldName, ObjectType = ObjectType.String, IsNullable = false },
             },
         };
 
@@ -296,22 +296,22 @@ public sealed class TenantRejectedScenario(
         switch (fixture.Site)
         {
             case "scalar property":
-                descriptor.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+                descriptor.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
                 descriptor.Properties.Add(new PropertyDescriptor
                 {
-                    Name = ReservedTenantColumnName, ClrType = ClrType.ClrString, IsNullable = false,
+                    Name = ReservedTenantColumnName, ObjectType = ObjectType.String, IsNullable = false,
                 });
                 break;
 
             case "key property":
                 descriptor.Properties.Add(new PropertyDescriptor
                 {
-                    Name = ReservedTenantColumnName, ClrType = ClrType.ClrGuid, IsKey = true,
+                    Name = ReservedTenantColumnName, ObjectType = ObjectType.Guid, IsKey = true,
                 });
                 break;
 
             case "relation foreign key":
-                descriptor.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+                descriptor.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
                 descriptor.Relations.Add(new RelationDescriptor
                 {
                     PropertyName = "Owner",
@@ -322,13 +322,13 @@ public sealed class TenantRejectedScenario(
                 break;
 
             case "relation navigation property":
-                descriptor.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+                descriptor.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
                 // The foreign key is the correctly-derived "{RelatedType}Id" and IS a declared
                 // property, so the naming check and the FK-is-declared check both pass and the nav
                 // property's own arm is the only thing left that can reject this.
                 descriptor.Properties.Add(new PropertyDescriptor
                 {
-                    Name = "S10TenantNavOwnerId", ClrType = ClrType.ClrGuid, IsNullable = true,
+                    Name = "S10TenantNavOwnerId", ObjectType = ObjectType.Guid, IsNullable = true,
                 });
                 descriptor.Relations.Add(new RelationDescriptor
                 {
@@ -340,12 +340,12 @@ public sealed class TenantRejectedScenario(
                 break;
 
             case "authorization.owner_field":
-                descriptor.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+                descriptor.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
                 descriptor.Authorization = new AuthorizationRules { OwnerField = ReservedTenantColumnName };
                 break;
 
             case "authorization.field_permissions[].field_name":
-                descriptor.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+                descriptor.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
                 descriptor.Authorization = new AuthorizationRules
                 {
                     FieldPermissions =

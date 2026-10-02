@@ -31,18 +31,18 @@ public class ReregistrarTests
         TypeName = "S11ModelDotnet",
         Properties =
         {
-            new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
+            new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true },
             new PropertyDescriptor
             {
-                Name = "Title", ClrType = ClrType.ClrString,
+                Name = "Title", ObjectType = ObjectType.String,
                 IsEmbedding = true, ModelId = DeclaredModel, VectorDim = 768,
             },
             new PropertyDescriptor
             {
-                Name = "Body", ClrType = ClrType.ClrString,
+                Name = "Body", ObjectType = ObjectType.String,
                 IsChunk = true, ChunkModelId = DeclaredModel, ChunkVectorDim = 768,
             },
-            new PropertyDescriptor { Name = "Marker", ClrType = ClrType.ClrString },
+            new PropertyDescriptor { Name = "Marker", ObjectType = ObjectType.String },
         },
     });
 

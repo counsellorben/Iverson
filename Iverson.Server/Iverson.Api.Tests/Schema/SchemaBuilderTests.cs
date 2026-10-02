@@ -21,7 +21,7 @@ public class SchemaBuilderTests
         var typeDesc = new TypeDescriptor
         {
             TypeName   = "Article",
-            Properties = { new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true } },
+            Properties = { new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true } },
             Relations  = { }
         };
 
@@ -40,13 +40,13 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Article" };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id",          ClrType = ClrType.ClrGuid,     IsKey = true });
+            new PropertyDescriptor { Name = "Id",          ObjectType = ObjectType.Guid,     IsKey = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Category",    ClrType = ClrType.ClrString,   IsSearchKey = true,  SearchKeyOrder = 0 });
+            new PropertyDescriptor { Name = "Category",    ObjectType = ObjectType.String,   IsSearchKey = true,  SearchKeyOrder = 0 });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "PublishedAt", ClrType = ClrType.ClrDatetime, IsSearchKey = true,  SearchKeyOrder = 1 });
+            new PropertyDescriptor { Name = "PublishedAt", ObjectType = ObjectType.Datetime, IsSearchKey = true,  SearchKeyOrder = 1 });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Body",        ClrType = ClrType.ClrString,   IsLargeField = true });
+            new PropertyDescriptor { Name = "Body",        ObjectType = ObjectType.String,   IsLargeField = true });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -62,15 +62,15 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Article" };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id",          ClrType = ClrType.ClrGuid,   IsKey = true });
+            new PropertyDescriptor { Name = "Id",          ObjectType = ObjectType.Guid,   IsKey = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Body",        ClrType = ClrType.ClrString, IsLargeField = true });
+            new PropertyDescriptor { Name = "Body",        ObjectType = ObjectType.String, IsLargeField = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "EmbedField",  ClrType = ClrType.ClrString, IsEmbedding  = true });
+            new PropertyDescriptor { Name = "EmbedField",  ObjectType = ObjectType.String, IsEmbedding  = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "ChunkField",  ClrType = ClrType.ClrString, IsChunk      = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+            new PropertyDescriptor { Name = "ChunkField",  ObjectType = ObjectType.String, IsChunk      = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Normal",      ClrType = ClrType.ClrString });
+            new PropertyDescriptor { Name = "Normal",      ObjectType = ObjectType.String });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -120,9 +120,9 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Bad" };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
+            new PropertyDescriptor { Name = "Id",       ObjectType = ObjectType.Guid,   IsKey = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Category", ClrType = ClrType.ClrString, IsSearchKey = true, SearchKeyOrder = 0, IsLargeField = true });
+            new PropertyDescriptor { Name = "Category", ObjectType = ObjectType.String, IsSearchKey = true, SearchKeyOrder = 0, IsLargeField = true });
 
         var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -139,11 +139,11 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Bad" };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id",      ClrType = ClrType.ClrGuid,   IsKey = true });
+            new PropertyDescriptor { Name = "Id",      ObjectType = ObjectType.Guid,   IsKey = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Body",    ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+            new PropertyDescriptor { Name = "Body",    ObjectType = ObjectType.String, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Summary", ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+            new PropertyDescriptor { Name = "Summary", ObjectType = ObjectType.String, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
 
         var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -163,11 +163,11 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Article", DocumentTemplate = "{Title}" };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id",    ClrType = ClrType.ClrGuid,   IsKey = true });
+            new PropertyDescriptor { Name = "Id",    ObjectType = ObjectType.Guid,   IsKey = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Title", ClrType = ClrType.ClrString });
+            new PropertyDescriptor { Name = "Title", ObjectType = ObjectType.String });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Body",  ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+            new PropertyDescriptor { Name = "Body",  ObjectType = ObjectType.String, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -183,11 +183,11 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Article", Description = "An article." };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
+            new PropertyDescriptor { Name = "Id",       ObjectType = ObjectType.Guid,   IsKey = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Category", ClrType = ClrType.ClrString, IsMetadata = true, Description = "The category." });
+            new PropertyDescriptor { Name = "Category", ObjectType = ObjectType.String, IsMetadata = true, Description = "The category." });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Normal",   ClrType = ClrType.ClrString });
+            new PropertyDescriptor { Name = "Normal",   ObjectType = ObjectType.String });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -207,9 +207,9 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Article" };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id",    ClrType = ClrType.ClrGuid,   IsKey = true, Description = "The article id." });
+            new PropertyDescriptor { Name = "Id",    ObjectType = ObjectType.Guid,   IsKey = true, Description = "The article id." });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Title", ClrType = ClrType.ClrString, Description = "The title." });
+            new PropertyDescriptor { Name = "Title", ObjectType = ObjectType.String, Description = "The title." });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -226,7 +226,7 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Article" };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+            new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -246,7 +246,7 @@ public class SchemaBuilderTests
         embedding.Dimension.Returns(768);
         embedding.ModelId.Returns("nomic-embed-text");
 
-        var bad = new PropertyDescriptor { Name = "Bad", ClrType = ClrType.ClrString, IsMetadata = true };
+        var bad = new PropertyDescriptor { Name = "Bad", ObjectType = ObjectType.String, IsMetadata = true };
         switch (kind)
         {
             case "embedding": bad.IsEmbedding = true; break;
@@ -260,7 +260,7 @@ public class SchemaBuilderTests
         }
 
         var typeDesc = new TypeDescriptor { TypeName = "Bad" };
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
         typeDesc.Properties.Add(bad);
 
         var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
@@ -279,8 +279,8 @@ public class SchemaBuilderTests
         embedding.ModelId.Returns("nomic-embed-text");
 
         var typeDesc = new TypeDescriptor { TypeName = "Doc" };
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = name, ClrType = ClrType.ClrString, IsMetadata = true });
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = name, ObjectType = ObjectType.String, IsMetadata = true });
 
         var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -300,8 +300,8 @@ public class SchemaBuilderTests
 
         // ToCamelCase("ParentId") is "parentId", not the reserved "parent_id" — so this is legal.
         var typeDesc = new TypeDescriptor { TypeName = "Doc" };
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "ParentId", ClrType = ClrType.ClrString, IsMetadata = true });
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = "ParentId", ObjectType = ObjectType.String, IsMetadata = true });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -485,7 +485,7 @@ public class SchemaBuilderTests
     public void BuildDescriptor_ManyToManyRelation_MapsToInternalManyToMany()
     {
         var td = new TypeDescriptor { TypeName = "Article" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
         td.Relations.Add(new Iverson.Client.Contracts.RelationDescriptor
         {
             PropertyName = "Tags",
@@ -503,38 +503,38 @@ public class SchemaBuilderTests
     }
 
     [Theory]
-    [InlineData(ClrType.ClrGuid,     false, "UUID",             "VARCHAR(36)", PayloadIndexKind.Keyword)]
-    [InlineData(ClrType.ClrGuid,     true,  "UUID[]",           "STRING",      PayloadIndexKind.Keyword)]
-    [InlineData(ClrType.ClrString,   false, "TEXT",             "STRING",      PayloadIndexKind.Keyword)]
-    [InlineData(ClrType.ClrString,   true,  "TEXT[]",           "STRING",      PayloadIndexKind.Keyword)]
-    [InlineData(ClrType.ClrInt32,    false, "INTEGER",          "INT",         PayloadIndexKind.Integer)]
-    [InlineData(ClrType.ClrInt32,    true,  "INTEGER[]",        "STRING",      PayloadIndexKind.Integer)]
-    [InlineData(ClrType.ClrInt64,    false, "BIGINT",           "BIGINT",      PayloadIndexKind.Integer)]
-    [InlineData(ClrType.ClrInt64,    true,  "BIGINT[]",         "STRING",      PayloadIndexKind.Integer)]
-    [InlineData(ClrType.ClrFloat,    false, "REAL",             "FLOAT",       PayloadIndexKind.Float)]
-    [InlineData(ClrType.ClrFloat,    true,  "REAL[]",           "STRING",      PayloadIndexKind.Keyword)]
-    [InlineData(ClrType.ClrDouble,   false, "DOUBLE PRECISION", "DOUBLE",      PayloadIndexKind.Float)]
-    [InlineData(ClrType.ClrDouble,   true,  "DOUBLE PRECISION[]", "STRING",    PayloadIndexKind.Float)]
-    [InlineData(ClrType.ClrBool,     false, "BOOLEAN",          "BOOLEAN",     PayloadIndexKind.Boolean)]
-    [InlineData(ClrType.ClrBool,     true,  "BOOLEAN[]",        "STRING",      PayloadIndexKind.Boolean)]
-    [InlineData(ClrType.ClrDatetime, false, "TIMESTAMPTZ",      "DATETIME",    PayloadIndexKind.Datetime)]
-    [InlineData(ClrType.ClrDatetime, true,  "TIMESTAMPTZ[]",    "STRING",      PayloadIndexKind.Datetime)]
-    [InlineData(ClrType.ClrBytes,    false, "BYTEA",            "VARBINARY",   PayloadIndexKind.Keyword)]
-    [InlineData(ClrType.ClrBytes,    true,  "BYTEA[]",          "STRING",      PayloadIndexKind.Keyword)]
+    [InlineData(ObjectType.Guid,     false, "UUID",             "VARCHAR(36)", PayloadIndexKind.Keyword)]
+    [InlineData(ObjectType.Guid,     true,  "UUID[]",           "STRING",      PayloadIndexKind.Keyword)]
+    [InlineData(ObjectType.String,   false, "TEXT",             "STRING",      PayloadIndexKind.Keyword)]
+    [InlineData(ObjectType.String,   true,  "TEXT[]",           "STRING",      PayloadIndexKind.Keyword)]
+    [InlineData(ObjectType.Int32,    false, "INTEGER",          "INT",         PayloadIndexKind.Integer)]
+    [InlineData(ObjectType.Int32,    true,  "INTEGER[]",        "STRING",      PayloadIndexKind.Integer)]
+    [InlineData(ObjectType.Int64,    false, "BIGINT",           "BIGINT",      PayloadIndexKind.Integer)]
+    [InlineData(ObjectType.Int64,    true,  "BIGINT[]",         "STRING",      PayloadIndexKind.Integer)]
+    [InlineData(ObjectType.Float,    false, "REAL",             "FLOAT",       PayloadIndexKind.Float)]
+    [InlineData(ObjectType.Float,    true,  "REAL[]",           "STRING",      PayloadIndexKind.Keyword)]
+    [InlineData(ObjectType.Double,   false, "DOUBLE PRECISION", "DOUBLE",      PayloadIndexKind.Float)]
+    [InlineData(ObjectType.Double,   true,  "DOUBLE PRECISION[]", "STRING",    PayloadIndexKind.Float)]
+    [InlineData(ObjectType.Bool,     false, "BOOLEAN",          "BOOLEAN",     PayloadIndexKind.Boolean)]
+    [InlineData(ObjectType.Bool,     true,  "BOOLEAN[]",        "STRING",      PayloadIndexKind.Boolean)]
+    [InlineData(ObjectType.Datetime, false, "TIMESTAMPTZ",      "DATETIME",    PayloadIndexKind.Datetime)]
+    [InlineData(ObjectType.Datetime, true,  "TIMESTAMPTZ[]",    "STRING",      PayloadIndexKind.Datetime)]
+    [InlineData(ObjectType.Bytes,    false, "BYTEA",            "VARBINARY",   PayloadIndexKind.Keyword)]
+    [InlineData(ObjectType.Bytes,    true,  "BYTEA[]",          "STRING",      PayloadIndexKind.Keyword)]
     public void TypeMapping_IsConsistentAcrossAllThreeConversions(
-        ClrType clrType, bool isArray, string expectedSql, string expectedStarRocksType, PayloadIndexKind expectedPayloadKind)
+        ObjectType objectType, bool isArray, string expectedSql, string expectedStarRocksType, PayloadIndexKind expectedPayloadKind)
     {
-        var sql = SchemaBuilder.ClrTypeToSql(clrType, isArray);
+        var sql = SchemaBuilder.ObjectTypeToSql(objectType, isArray);
 
         sql.Should().Be(expectedSql);
-        SchemaBuilder.ClrTypeToEngagementType(sql).Should().Be(expectedStarRocksType);
+        SchemaBuilder.ObjectTypeToEngagementType(sql).Should().Be(expectedStarRocksType);
         SchemaBuilder.SqlTypeToPayloadKind(sql).Should().Be(expectedPayloadKind);
     }
 
     [Fact]
-    public void ClrTypeToStarRocksType_UnknownSqlType_FallsBackToString()
+    public void ObjectTypeToStarRocksType_UnknownSqlType_FallsBackToString()
     {
-        SchemaBuilder.ClrTypeToEngagementType("NOT_A_REAL_TYPE").Should().Be("STRING");
+        SchemaBuilder.ObjectTypeToEngagementType("NOT_A_REAL_TYPE").Should().Be("STRING");
     }
 
     [Fact]
@@ -543,52 +543,52 @@ public class SchemaBuilderTests
         SchemaBuilder.SqlTypeToPayloadKind("NOT_A_REAL_TYPE").Should().Be(PayloadIndexKind.Keyword);
     }
 
-    // ClrFloat is a deliberate, named exception: it keeps Keyword in the array table because
-    // changing it would retype a live Qdrant index. Every other ClrType is element-typed.
+    // Float is a deliberate, named exception: it keeps Keyword in the array table because
+    // changing it would retype a live Qdrant index. Every other ObjectType is element-typed.
     // This table is written out explicitly rather than derived from ScalarTypeMap so it does
     // not silently agree with a future regression on that exact row.
-    private static readonly IReadOnlyDictionary<ClrType, PayloadIndexKind> ExpectedArrayPayloadKinds =
-        new Dictionary<ClrType, PayloadIndexKind>
+    private static readonly IReadOnlyDictionary<ObjectType, PayloadIndexKind> ExpectedArrayPayloadKinds =
+        new Dictionary<ObjectType, PayloadIndexKind>
         {
-            [ClrType.ClrGuid]     = PayloadIndexKind.Keyword,
-            [ClrType.ClrString]   = PayloadIndexKind.Keyword,
-            [ClrType.ClrInt32]    = PayloadIndexKind.Integer,
-            [ClrType.ClrInt64]    = PayloadIndexKind.Integer,
-            [ClrType.ClrFloat]    = PayloadIndexKind.Keyword, // named exception — see comment above
-            [ClrType.ClrDouble]   = PayloadIndexKind.Float,
-            [ClrType.ClrBool]     = PayloadIndexKind.Boolean,
-            [ClrType.ClrDatetime] = PayloadIndexKind.Datetime,
-            [ClrType.ClrBytes]    = PayloadIndexKind.Keyword
+            [ObjectType.Guid]     = PayloadIndexKind.Keyword,
+            [ObjectType.String]   = PayloadIndexKind.Keyword,
+            [ObjectType.Int32]    = PayloadIndexKind.Integer,
+            [ObjectType.Int64]    = PayloadIndexKind.Integer,
+            [ObjectType.Float]    = PayloadIndexKind.Keyword, // named exception — see comment above
+            [ObjectType.Double]   = PayloadIndexKind.Float,
+            [ObjectType.Bool]     = PayloadIndexKind.Boolean,
+            [ObjectType.Datetime] = PayloadIndexKind.Datetime,
+            [ObjectType.Bytes]    = PayloadIndexKind.Keyword
         };
 
     [Fact]
-    public void ArrayTypeOverrides_IsTotalOverClrType()
+    public void ArrayTypeOverrides_IsTotalOverObjectType()
     {
-        foreach (var clrType in Enum.GetValues<ClrType>())
+        foreach (var objectType in Enum.GetValues<ObjectType>())
         {
-            var scalarSql = SchemaBuilder.ClrTypeToSql(clrType, isArray: false);
-            var arraySql = SchemaBuilder.ClrTypeToSql(clrType, isArray: true);
+            var scalarSql = SchemaBuilder.ObjectTypeToSql(objectType, isArray: false);
+            var arraySql = SchemaBuilder.ObjectTypeToSql(objectType, isArray: true);
 
-            arraySql.Should().Be(scalarSql + "[]", $"array SQL type for {clrType} should be its scalar type plus []");
-            SchemaBuilder.ClrTypeToEngagementType(arraySql).Should().Be("STRING", $"StarRocks type for array {clrType} should be STRING");
+            arraySql.Should().Be(scalarSql + "[]", $"array SQL type for {objectType} should be its scalar type plus []");
+            SchemaBuilder.ObjectTypeToEngagementType(arraySql).Should().Be("STRING", $"StarRocks type for array {objectType} should be STRING");
             SchemaBuilder.SqlTypeToPayloadKind(arraySql).Should().Be(
-                ExpectedArrayPayloadKinds[clrType],
-                $"payload kind for array {clrType} should match the expected table");
+                ExpectedArrayPayloadKinds[objectType],
+                $"payload kind for array {objectType} should match the expected table");
         }
     }
 
     [Fact]
-    public void SqlTypeToClr_RecoversEveryClrType_ScalarAndArray()
+    public void SqlTypeToObjectType_RecoversEveryObjectType_ScalarAndArray()
     {
-        foreach (var clrType in Enum.GetValues<ClrType>())
+        foreach (var objectType in Enum.GetValues<ObjectType>())
         {
-            var scalarSql = SchemaBuilder.ClrTypeToSql(clrType, isArray: false);
-            SchemaBuilder.SqlTypeToClr(scalarSql).Should().Be((clrType, false),
-                $"scalar SQL type for {clrType} should map back to ({clrType}, false)");
+            var scalarSql = SchemaBuilder.ObjectTypeToSql(objectType, isArray: false);
+            SchemaBuilder.SqlTypeToObjectType(scalarSql).Should().Be((objectType, false),
+                $"scalar SQL type for {objectType} should map back to ({objectType}, false)");
 
-            var arraySql = SchemaBuilder.ClrTypeToSql(clrType, isArray: true);
-            SchemaBuilder.SqlTypeToClr(arraySql).Should().Be((clrType, true),
-                $"array SQL type for {clrType} should map back to ({clrType}, true)");
+            var arraySql = SchemaBuilder.ObjectTypeToSql(objectType, isArray: true);
+            SchemaBuilder.SqlTypeToObjectType(arraySql).Should().Be((objectType, true),
+                $"array SQL type for {objectType} should map back to ({objectType}, true)");
         }
     }
 
@@ -602,7 +602,7 @@ public class SchemaBuilderTests
         var typeDesc = new TypeDescriptor
         {
             TypeName         = "Article",
-            Properties       = { new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true } },
+            Properties       = { new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true } },
             DocumentTemplate = "{Title}"
         };
 
@@ -626,7 +626,7 @@ public class SchemaBuilderTests
         var typeDesc = new TypeDescriptor
         {
             TypeName         = "Article",
-            Properties       = { new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true } },
+            Properties       = { new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true } },
             DocumentTemplate = "{Title}"
             // DocumentMaxTokens / DocumentOverlap left unset (proto3 default 0).
         };
@@ -648,7 +648,7 @@ public class SchemaBuilderTests
         var typeDesc = new TypeDescriptor
         {
             TypeName   = "Article",
-            Properties = { new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true } }
+            Properties = { new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true } }
         };
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
@@ -669,9 +669,9 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Comment" };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id",        ClrType = ClrType.ClrGuid,     IsKey = true });
+            new PropertyDescriptor { Name = "Id",        ObjectType = ObjectType.Guid,     IsKey = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "PostedAt",  ClrType = ClrType.ClrDatetime, IsPopularitySignal = true });
+            new PropertyDescriptor { Name = "PostedAt",  ObjectType = ObjectType.Datetime, IsPopularitySignal = true });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -687,9 +687,9 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Comment" };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
+            new PropertyDescriptor { Name = "Id",       ObjectType = ObjectType.Guid,   IsKey = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "PostedAt", ClrType = ClrType.ClrDatetime });
+            new PropertyDescriptor { Name = "PostedAt", ObjectType = ObjectType.Datetime });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -705,11 +705,11 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Comment" };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id",        ClrType = ClrType.ClrGuid,     IsKey = true });
+            new PropertyDescriptor { Name = "Id",        ObjectType = ObjectType.Guid,     IsKey = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "PostedAt",  ClrType = ClrType.ClrDatetime, IsPopularitySignal = true });
+            new PropertyDescriptor { Name = "PostedAt",  ObjectType = ObjectType.Datetime, IsPopularitySignal = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "EditedAt",  ClrType = ClrType.ClrDatetime, IsPopularitySignal = true });
+            new PropertyDescriptor { Name = "EditedAt",  ObjectType = ObjectType.Datetime, IsPopularitySignal = true });
 
         var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -726,9 +726,9 @@ public class SchemaBuilderTests
 
         var typeDesc = new TypeDescriptor { TypeName = "Comment" };
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "Id",         ClrType = ClrType.ClrGuid,   IsKey = true });
+            new PropertyDescriptor { Name = "Id",         ObjectType = ObjectType.Guid,   IsKey = true });
         typeDesc.Properties.Add(
-            new PropertyDescriptor { Name = "InteractedAt", ClrType = ClrType.ClrString, IsPopularitySignal = true });
+            new PropertyDescriptor { Name = "InteractedAt", ObjectType = ObjectType.String, IsPopularitySignal = true });
 
         var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 

@@ -172,7 +172,7 @@ public sealed class DocumentRenderer(SchemaRegistry registry, IEntityRepository 
     // reads arrives as a JsonElement produced by System.Text.Json — which serializes Guid as
     // lowercase-D, DateTime/DateTimeOffset as ISO 8601, and numerics without group separators,
     // all independent of thread culture — so JsonValueKind alone is enough to reproduce the
-    // required formatting without inspecting the declared CLR/SQL type:
+    // required formatting without inspecting the declared object/SQL type:
     //   string        -> verbatim
     //   number/bool   -> the raw JSON literal (already invariant, no group separators)
     //   array         -> elements formatted the same way, joined with ", "

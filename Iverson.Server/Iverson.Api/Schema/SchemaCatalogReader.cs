@@ -174,7 +174,7 @@ public sealed class SchemaCatalogReader(
     /// </summary>
     private static SchemaField? ProjectField(ColumnDescriptor col, SchemaDescriptor schema, ILogger logger)
     {
-        if (!SchemaBuilder.TrySqlTypeToClr(col.SqlType, out var mapping))
+        if (!SchemaBuilder.TrySqlTypeToObjectType(col.SqlType, out var mapping))
         {
             if (col.Name == schema.KeyColumn.Name)
                 throw new ArgumentOutOfRangeException(nameof(col), col.SqlType,
@@ -187,14 +187,14 @@ public sealed class SchemaCatalogReader(
             return null;
         }
 
-        var (clrType, isArray) = mapping;
+        var (objectType, isArray) = mapping;
         var searchKeyOrder = schema.SearchKeyColumns.IndexOf(col.Name);
 
         var field = new SchemaField
         {
             Name           = col.Name,
             Description    = schema.FieldDescriptions.TryGetValue(col.Name, out var desc) ? desc : string.Empty,
-            ClrType        = clrType,
+            ObjectType        = objectType,
             IsArray        = isArray,
             IsKey          = col.Name == schema.KeyColumn.Name,
             IsNullable     = col.IsNullable,

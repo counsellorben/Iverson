@@ -301,7 +301,7 @@ public class SchemaRegistrarTests
         authorRequest.Should().NotBeNull();
         var keyProp = authorRequest!.RootType!.Properties.Single(p => p.IsKey);
         keyProp.Name.Should().Be("Id");
-        keyProp.ClrType.Should().Be(ClrType.ClrGuid);
+        keyProp.ObjectType.Should().Be(ObjectType.Guid);
     }
 
     [Fact]

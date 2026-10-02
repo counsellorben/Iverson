@@ -727,11 +727,11 @@ public sealed class SchemaRegistrationOrchestrator(
             var property = typeDesc.Properties.First(p =>
                 string.Equals(p.Name, target.ColumnName, StringComparison.OrdinalIgnoreCase));
 
-            if (property.ClrType != ClrType.ClrString)
+            if (property.ObjectType != ObjectType.String)
             {
                 throw new RpcException(new Status(StatusCode.InvalidArgument,
                     $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' must be a string " +
-                    $"property; it is '{property.ClrType}'."));
+                    $"property; it is '{property.ObjectType}'."));
             }
 
             // The TenantColumn clause is UNREACHABLE BY CONSTRUCTION, and is kept for the same
