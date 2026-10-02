@@ -297,8 +297,8 @@ public sealed class NavPropertyRejectedScenario(
     {
         var properties = new List<PropertyDescriptor>
         {
-            new() { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
-            new() { Name = "TenantId", ClrType = ClrType.ClrString, IsNullable = false },
+            new() { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true },
+            new() { Name = "TenantId", ObjectType = ObjectType.String, IsNullable = false },
         };
 
         if (fixture.RequiresForeignKeyProperty)
@@ -306,7 +306,7 @@ public sealed class NavPropertyRejectedScenario(
             properties.Add(new PropertyDescriptor
             {
                 Name = fixture.ForeignKeyName,
-                ClrType = ClrType.ClrGuid,
+                ObjectType = ObjectType.Guid,
                 IsArray = fixture.ForeignKeyIsArray,
                 IsNullable = true,
             });
@@ -355,10 +355,10 @@ public sealed class NavPropertyRejectedScenario(
             },
             Properties =
             {
-                new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
-                new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString, IsNullable = false },
-                new PropertyDescriptor { Name = "OwnerId", ClrType = ClrType.ClrString, IsNullable = true },
-                new PropertyDescriptor { Name = ForeignKeyName, ClrType = ClrType.ClrGuid, IsNullable = true },
+                new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true },
+                new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String, IsNullable = false },
+                new PropertyDescriptor { Name = "OwnerId", ObjectType = ObjectType.String, IsNullable = true },
+                new PropertyDescriptor { Name = ForeignKeyName, ObjectType = ObjectType.Guid, IsNullable = true },
             },
             Relations =
             {

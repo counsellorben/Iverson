@@ -8,7 +8,7 @@ import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import io.iverson.client.annotations.*;
 import iverson.ObjectMapping;
-import iverson.ObjectMapping.ClrType;
+import iverson.ObjectMapping.ObjectType;
 import iverson.ObjectMapping.PropertyDescriptor;
 import iverson.ObjectMapping.RelationDescriptor;
 import iverson.ObjectMapping.RelationKind;
@@ -281,7 +281,7 @@ class SchemaRegistrarTest {
             .orElseThrow(() -> new AssertionError("No key property found"));
 
         assertEquals("Id", keyProp.getName());
-        assertEquals(ClrType.CLR_GUID, keyProp.getClrType());
+        assertEquals(ObjectType.GUID, keyProp.getObjectType());
         assertTrue(keyProp.getIsKey());
     }
 
@@ -363,7 +363,7 @@ class SchemaRegistrarTest {
             .orElseThrow(() -> new AssertionError("Tags property not found"));
 
         assertTrue(tagsProp.getIsArray(), "List<String> field should be marked is_array");
-        assertEquals(ClrType.CLR_STRING, tagsProp.getClrType());
+        assertEquals(ObjectType.STRING, tagsProp.getObjectType());
     }
 
     @Test
@@ -381,11 +381,11 @@ class SchemaRegistrarTest {
             .orElseThrow(() -> new AssertionError("Labels property not found"));
 
         assertTrue(labelsProp.getIsArray(), "String[] field should be marked is_array");
-        assertEquals(ClrType.CLR_STRING, labelsProp.getClrType());
+        assertEquals(ObjectType.STRING, labelsProp.getObjectType());
     }
 
     @Test
-    void registerAll_byteArrayField_stillRegistersAsClrBytesScalar() {
+    void registerAll_byteArrayField_stillRegistersAsBytesScalar() {
         ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
 
         sut.registerAll(ArrayTestEntity.class);
@@ -398,8 +398,8 @@ class SchemaRegistrarTest {
             .findFirst()
             .orElseThrow(() -> new AssertionError("Payload property not found"));
 
-        assertEquals(ClrType.CLR_BYTES, payloadProp.getClrType());
-        assertFalse(payloadProp.getIsArray(), "byte[] must remain the ClrBytes scalar, not an array");
+        assertEquals(ObjectType.BYTES, payloadProp.getObjectType());
+        assertFalse(payloadProp.getIsArray(), "byte[] must remain the Bytes scalar, not an array");
     }
 
     // ── registerAll: @IversonSearchKey ────────────────────────────────────────

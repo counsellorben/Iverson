@@ -18,7 +18,7 @@ namespace Iverson.Client.Conformance.Driver.Models;
 /// so each language's three rows form one partition. Its spelling (<c>pat-&lt;lang&gt;</c>) must
 /// match the orchestrator's <c>MatchPatternScenario</c>.</description></item>
 /// <item><description><c>Seq</c> is the ORDER BY column and the value <c>DEFINE B AS Seq &gt;
-/// PREV(Seq)</c> compares; an <c>int</c> so it registers as CLR_INT32.</description></item>
+/// PREV(Seq)</c> compares; an <c>int</c> so it registers as INT32.</description></item>
 /// <item><description><c>Title</c> is the <c>[IversonEmbedding]</c> property the similarity
 /// request's <c>SIMILARITY(Title, …)</c> scores.</description></item>
 /// </list>

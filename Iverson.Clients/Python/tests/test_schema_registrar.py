@@ -383,14 +383,14 @@ class TestSchemaRegistrar:
 
         assert "RegAuthorId" in props  # many_to_one
         fk_prop = props["RegAuthorId"]
-        assert fk_prop.clr_type == mapping_pb.CLR_GUID
+        assert fk_prop.object_type == mapping_pb.GUID
         assert fk_prop.is_array is False
         assert fk_prop.is_nullable is True
         assert fk_prop.is_key is False
 
         assert "RegTagIds" in props  # many_to_many
         mtm_prop = props["RegTagIds"]
-        assert mtm_prop.clr_type == mapping_pb.CLR_GUID
+        assert mtm_prop.object_type == mapping_pb.GUID
         assert mtm_prop.is_array is True
         assert mtm_prop.is_nullable is True
         assert mtm_prop.is_key is False
@@ -731,19 +731,19 @@ class TestArrayProperties:
         request = register_request(RegArrayArticle)
         props = {p.name: p for p in request.root_type.properties}
         assert props["Tags"].is_array is True
-        assert props["Tags"].clr_type == mapping_pb.CLR_STRING
+        assert props["Tags"].object_type == mapping_pb.STRING
 
     def test_list_int_flagged_as_array_of_int32(self):
         request = register_request(RegArrayArticle)
         props = {p.name: p for p in request.root_type.properties}
         assert props["Counts"].is_array is True
-        assert props["Counts"].clr_type == mapping_pb.CLR_INT32
+        assert props["Counts"].object_type == mapping_pb.INT32
 
     def test_bytes_still_scalar_not_array(self):
         request = register_request(RegArrayArticle)
         props = {p.name: p for p in request.root_type.properties}
         assert props["Blob"].is_array is False
-        assert props["Blob"].clr_type == mapping_pb.CLR_BYTES
+        assert props["Blob"].object_type == mapping_pb.BYTES
 
     def test_nested_array_rejected(self):
         # Silently collapsing list[list[str]] to a TEXT[] column would register a schema the

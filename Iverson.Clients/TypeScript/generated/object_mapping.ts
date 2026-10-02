@@ -67,76 +67,76 @@ export function relationKindToJSON(object: RelationKind): string {
   }
 }
 
-export enum ClrType {
-  CLR_STRING = 0,
-  CLR_GUID = 1,
-  CLR_INT32 = 2,
-  CLR_INT64 = 3,
-  CLR_DOUBLE = 4,
-  CLR_FLOAT = 5,
-  CLR_BOOL = 6,
-  CLR_DATETIME = 7,
-  CLR_BYTES = 8,
+export enum ObjectType {
+  STRING = 0,
+  GUID = 1,
+  INT32 = 2,
+  INT64 = 3,
+  DOUBLE = 4,
+  FLOAT = 5,
+  BOOL = 6,
+  DATETIME = 7,
+  BYTES = 8,
   UNRECOGNIZED = -1,
 }
 
-export function clrTypeFromJSON(object: any): ClrType {
+export function objectTypeFromJSON(object: any): ObjectType {
   switch (object) {
     case 0:
-    case "CLR_STRING":
-      return ClrType.CLR_STRING;
+    case "STRING":
+      return ObjectType.STRING;
     case 1:
-    case "CLR_GUID":
-      return ClrType.CLR_GUID;
+    case "GUID":
+      return ObjectType.GUID;
     case 2:
-    case "CLR_INT32":
-      return ClrType.CLR_INT32;
+    case "INT32":
+      return ObjectType.INT32;
     case 3:
-    case "CLR_INT64":
-      return ClrType.CLR_INT64;
+    case "INT64":
+      return ObjectType.INT64;
     case 4:
-    case "CLR_DOUBLE":
-      return ClrType.CLR_DOUBLE;
+    case "DOUBLE":
+      return ObjectType.DOUBLE;
     case 5:
-    case "CLR_FLOAT":
-      return ClrType.CLR_FLOAT;
+    case "FLOAT":
+      return ObjectType.FLOAT;
     case 6:
-    case "CLR_BOOL":
-      return ClrType.CLR_BOOL;
+    case "BOOL":
+      return ObjectType.BOOL;
     case 7:
-    case "CLR_DATETIME":
-      return ClrType.CLR_DATETIME;
+    case "DATETIME":
+      return ObjectType.DATETIME;
     case 8:
-    case "CLR_BYTES":
-      return ClrType.CLR_BYTES;
+    case "BYTES":
+      return ObjectType.BYTES;
     case -1:
     case "UNRECOGNIZED":
     default:
-      return ClrType.UNRECOGNIZED;
+      return ObjectType.UNRECOGNIZED;
   }
 }
 
-export function clrTypeToJSON(object: ClrType): string {
+export function objectTypeToJSON(object: ObjectType): string {
   switch (object) {
-    case ClrType.CLR_STRING:
-      return "CLR_STRING";
-    case ClrType.CLR_GUID:
-      return "CLR_GUID";
-    case ClrType.CLR_INT32:
-      return "CLR_INT32";
-    case ClrType.CLR_INT64:
-      return "CLR_INT64";
-    case ClrType.CLR_DOUBLE:
-      return "CLR_DOUBLE";
-    case ClrType.CLR_FLOAT:
-      return "CLR_FLOAT";
-    case ClrType.CLR_BOOL:
-      return "CLR_BOOL";
-    case ClrType.CLR_DATETIME:
-      return "CLR_DATETIME";
-    case ClrType.CLR_BYTES:
-      return "CLR_BYTES";
-    case ClrType.UNRECOGNIZED:
+    case ObjectType.STRING:
+      return "STRING";
+    case ObjectType.GUID:
+      return "GUID";
+    case ObjectType.INT32:
+      return "INT32";
+    case ObjectType.INT64:
+      return "INT64";
+    case ObjectType.DOUBLE:
+      return "DOUBLE";
+    case ObjectType.FLOAT:
+      return "FLOAT";
+    case ObjectType.BOOL:
+      return "BOOL";
+    case ObjectType.DATETIME:
+      return "DATETIME";
+    case ObjectType.BYTES:
+      return "BYTES";
+    case ObjectType.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
   }
@@ -190,7 +190,7 @@ export function schemaEnrichmentKindToJSON(object: SchemaEnrichmentKind): string
 
 export interface PropertyDescriptor {
   name: string;
-  clrType: ClrType;
+  objectType: ObjectType;
   /** [IversonKey] */
   isKey: boolean;
   isNullable: boolean;
@@ -327,7 +327,7 @@ export interface SchemaType {
 export interface SchemaField {
   name: string;
   description: string;
-  clrType: ClrType;
+  objectType: ObjectType;
   isArray: boolean;
   isKey: boolean;
   isNullable: boolean;
@@ -382,7 +382,7 @@ export interface MappingDeleteResponse {
 function createBasePropertyDescriptor(): PropertyDescriptor {
   return {
     name: "",
-    clrType: 0,
+    objectType: 0,
     isKey: false,
     isNullable: false,
     isArray: false,
@@ -412,8 +412,8 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
     if (message.name !== "") {
       writer.uint32(10).string(message.name);
     }
-    if (message.clrType !== 0) {
-      writer.uint32(16).int32(message.clrType);
+    if (message.objectType !== 0) {
+      writer.uint32(16).int32(message.objectType);
     }
     if (message.isKey !== false) {
       writer.uint32(24).bool(message.isKey);
@@ -507,7 +507,7 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
               break;
             }
 
-            message.clrType = reader.int32() as any;
+            message.objectType = reader.int32() as any;
             continue;
           }
           case 3: {
@@ -693,10 +693,10 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
   fromJSON(object: any): PropertyDescriptor {
     return {
       name: isSet(object.name) ? globalThis.String(object.name) : "",
-      clrType: isSet(object.clrType)
-        ? clrTypeFromJSON(object.clrType)
-        : isSet(object.clr_type)
-        ? clrTypeFromJSON(object.clr_type)
+      objectType: isSet(object.objectType)
+        ? objectTypeFromJSON(object.objectType)
+        : isSet(object.object_type)
+        ? objectTypeFromJSON(object.object_type)
         : 0,
       isKey: isSet(object.isKey)
         ? globalThis.Boolean(object.isKey)
@@ -807,8 +807,8 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
     if (message.name !== "") {
       obj.name = message.name;
     }
-    if (message.clrType !== 0) {
-      obj.clrType = clrTypeToJSON(message.clrType);
+    if (message.objectType !== 0) {
+      obj.objectType = objectTypeToJSON(message.objectType);
     }
     if (message.isKey !== false) {
       obj.isKey = message.isKey;
@@ -882,7 +882,7 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
   fromPartial<I extends Exact<DeepPartial<PropertyDescriptor>, I>>(object: I): PropertyDescriptor {
     const message = createBasePropertyDescriptor();
     message.name = object.name ?? "";
-    message.clrType = object.clrType ?? 0;
+    message.objectType = object.objectType ?? 0;
     message.isKey = object.isKey ?? false;
     message.isNullable = object.isNullable ?? false;
     message.isArray = object.isArray ?? false;
@@ -2147,7 +2147,7 @@ function createBaseSchemaField(): SchemaField {
   return {
     name: "",
     description: "",
-    clrType: 0,
+    objectType: 0,
     isArray: false,
     isKey: false,
     isNullable: false,
@@ -2168,8 +2168,8 @@ export const SchemaField: MessageFns<SchemaField> = {
     if (message.description !== "") {
       writer.uint32(18).string(message.description);
     }
-    if (message.clrType !== 0) {
-      writer.uint32(24).int32(message.clrType);
+    if (message.objectType !== 0) {
+      writer.uint32(24).int32(message.objectType);
     }
     if (message.isArray !== false) {
       writer.uint32(32).bool(message.isArray);
@@ -2237,7 +2237,7 @@ export const SchemaField: MessageFns<SchemaField> = {
               break;
             }
 
-            message.clrType = reader.int32() as any;
+            message.objectType = reader.int32() as any;
             continue;
           }
           case 4: {
@@ -2338,10 +2338,10 @@ export const SchemaField: MessageFns<SchemaField> = {
     return {
       name: isSet(object.name) ? globalThis.String(object.name) : "",
       description: isSet(object.description) ? globalThis.String(object.description) : "",
-      clrType: isSet(object.clrType)
-        ? clrTypeFromJSON(object.clrType)
-        : isSet(object.clr_type)
-        ? clrTypeFromJSON(object.clr_type)
+      objectType: isSet(object.objectType)
+        ? objectTypeFromJSON(object.objectType)
+        : isSet(object.object_type)
+        ? objectTypeFromJSON(object.object_type)
         : 0,
       isArray: isSet(object.isArray)
         ? globalThis.Boolean(object.isArray)
@@ -2397,8 +2397,8 @@ export const SchemaField: MessageFns<SchemaField> = {
     if (message.description !== "") {
       obj.description = message.description;
     }
-    if (message.clrType !== 0) {
-      obj.clrType = clrTypeToJSON(message.clrType);
+    if (message.objectType !== 0) {
+      obj.objectType = objectTypeToJSON(message.objectType);
     }
     if (message.isArray !== false) {
       obj.isArray = message.isArray;
@@ -2437,7 +2437,7 @@ export const SchemaField: MessageFns<SchemaField> = {
     const message = createBaseSchemaField();
     message.name = object.name ?? "";
     message.description = object.description ?? "";
-    message.clrType = object.clrType ?? 0;
+    message.objectType = object.objectType ?? 0;
     message.isArray = object.isArray ?? false;
     message.isKey = object.isKey ?? false;
     message.isNullable = object.isNullable ?? false;

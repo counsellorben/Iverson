@@ -175,9 +175,9 @@ public class CrudRoundtripScenarioTests
         {
           "typeName": "Article",
           "properties": [
-            { "name": "id", "clrType": "CLR_GUID", "isKey": true },
-            { "name": "author_id", "clrType": "CLR_GUID" },
-            { "name": "tag_ids", "clrType": "CLR_GUID", "isArray": true }
+            { "name": "id", "objectType": "GUID", "isKey": true },
+            { "name": "author_id", "objectType": "GUID" },
+            { "name": "tag_ids", "objectType": "GUID", "isArray": true }
           ],
           "relations": [
             { "propertyName": "Author", "kind": "MANY_TO_ONE", "relatedType": "author", "foreignKey": "author_id" },
@@ -192,7 +192,7 @@ public class CrudRoundtripScenarioTests
         {
           "typeName": "Author",
           "properties": [
-            { "name": "id", "clrType": "CLR_GUID", "isKey": true }
+            { "name": "id", "objectType": "GUID", "isKey": true }
           ],
           "relations": [
             { "propertyName": "Articles", "kind": "ONE_TO_MANY", "relatedType": "article", "foreignKey": "author_id" }

@@ -446,7 +446,7 @@ public class NavPropertyRejectedScenarioTests
         // unrelated reason" is fictional and the test grades nothing real. This is
         // SchemaRegistrationOrchestrator's key-must-be-UUID rejection verbatim, and that check does
         // precede the collision loop. What it is NOT is a message THIS fixture could elicit:
-        // RegisterCollisionFixtureAsync declares Id as ClrGuid, so the fixture's key is UUID and the
+        // RegisterCollisionFixtureAsync declares Id as Guid, so the fixture's key is UUID and the
         // real server would never take that branch for it. That is deliberate and harmless —
         // JudgeCollision is a pure function of (fixture, exception), so the fixture here only
         // supplies the type/FK names the message assertion looks for, and pairing it with a

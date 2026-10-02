@@ -35,16 +35,16 @@ public class InheritedModelScenarioTests
 
     // ── the pure judgement, over an already-parsed descriptor ────────────────────────────────
 
-    private static PropertyDescriptor Key() => new() { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true };
+    private static PropertyDescriptor Key() => new() { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true };
 
     private static PropertyDescriptor Embedding(string? modelId) => new()
     {
-        Name = "Title", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = modelId ?? string.Empty,
+        Name = "Title", ObjectType = ObjectType.String, IsEmbedding = true, ModelId = modelId ?? string.Empty,
     };
 
     private static PropertyDescriptor Chunk(string? chunkModelId) => new()
     {
-        Name = "Body", ClrType = ClrType.ClrString, IsChunk = true, ChunkModelId = chunkModelId ?? string.Empty,
+        Name = "Body", ObjectType = ObjectType.String, IsChunk = true, ChunkModelId = chunkModelId ?? string.Empty,
     };
 
     private static TypeDescriptor Descriptor(params PropertyDescriptor[] properties)
@@ -188,19 +188,19 @@ public class InheritedModelScenarioTests
         bool includeEmbeddingProperty = true,
         bool includeChunkProperty = true)
     {
-        var key = "{\"name\":\"Id\",\"clrType\":\"CLR_GUID\",\"isKey\":true}";
+        var key = "{\"name\":\"Id\",\"objectType\":\"GUID\",\"isKey\":true}";
 
         var properties = new List<string> { key };
 
         if (includeEmbeddingProperty)
         {
-            properties.Add("{\"name\":\"Title\",\"clrType\":\"CLR_STRING\",\"isEmbedding\":true"
+            properties.Add("{\"name\":\"Title\",\"objectType\":\"STRING\",\"isEmbedding\":true"
                 + (modelIdField is null ? "" : "," + modelIdField) + "}");
         }
 
         if (includeChunkProperty)
         {
-            properties.Add("{\"name\":\"Body\",\"clrType\":\"CLR_STRING\",\"isChunk\":true"
+            properties.Add("{\"name\":\"Body\",\"objectType\":\"STRING\",\"isChunk\":true"
                 + (chunkModelIdField is null ? "" : "," + chunkModelIdField) + "}");
         }
 
@@ -265,7 +265,7 @@ public class InheritedModelScenarioTests
     /// Pins the OTHER load-bearing constraint at the wiring level: the descriptor is read through
     /// <c>Verifier.ParseDescriptor</c>, protobuf's own JSON parser, which — per the proto3 JSON
     /// spec — accepts EITHER the lowerCamelCase name or the original proto field name
-    /// (<c>object_mapping.proto</c> declares <c>type_name</c>, <c>clr_type</c>, <c>is_embedding</c>,
+    /// (<c>object_mapping.proto</c> declares <c>type_name</c>, <c>object_type</c>, <c>is_embedding</c>,
     /// <c>model_id</c>, <c>is_chunk</c>, <c>chunk_model_id</c>). Every other test in this file
     /// scripts camelCase JSON, which a hand-rolled <c>JsonElement</c> indexer keyed on camelCase
     /// property names would also read correctly — so none of them can tell
@@ -279,9 +279,9 @@ public class InheritedModelScenarioTests
     {
         var typeName = InheritedModelScenario.TypeNameFor("dotnet");
         var json = "{\"type_name\":\"" + typeName + "\",\"properties\":["
-            + "{\"name\":\"Id\",\"clr_type\":\"CLR_GUID\",\"is_key\":true},"
-            + "{\"name\":\"Title\",\"clr_type\":\"CLR_STRING\",\"is_embedding\":true,\"model_id\":\"" + Expected + "\"},"
-            + "{\"name\":\"Body\",\"clr_type\":\"CLR_STRING\",\"is_chunk\":true,\"chunk_model_id\":\"" + Expected + "\"}"
+            + "{\"name\":\"Id\",\"object_type\":\"GUID\",\"is_key\":true},"
+            + "{\"name\":\"Title\",\"object_type\":\"STRING\",\"is_embedding\":true,\"model_id\":\"" + Expected + "\"},"
+            + "{\"name\":\"Body\",\"object_type\":\"STRING\",\"is_chunk\":true,\"chunk_model_id\":\"" + Expected + "\"}"
             + "]}";
         var descriptor = JsonDocument.Parse(json).RootElement.Clone();
         var runner = new ScriptedDriverRunner().Script(Phase.Register, Registered("dotnet", descriptor));

@@ -653,10 +653,10 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
     // All 18 SQL types PostgresSchemaManager can be asked to apply — the 9 scalar entries in
     // SchemaBuilder.ScalarTypeMap and the 9 array entries in ArrayTypeOverrides. Hardcoded here
-    // rather than reflected off ClrType because Iverson.Sql.Tests has no reference to Iverson.Api
-    // (where ClrType/SchemaBuilder live) and adding one purely for this list is out of scope.
+    // rather than reflected off ObjectType because Iverson.Sql.Tests has no reference to Iverson.Api
+    // (where ObjectType/SchemaBuilder live) and adding one purely for this list is out of scope.
     //
-    // TRIPWIRE: because the list is hand-maintained, it silently DRIFTS. Adding a new ClrType (or
+    // TRIPWIRE: because the list is hand-maintained, it silently DRIFTS. Adding a new ObjectType (or
     // changing an existing type's SQL mapping) in SchemaBuilder without updating this list leaves
     // that SQL type entirely unexercised by ApplySchemaAsync_AllMappedSqlTypes_RoundTripWithoutDrift
     // — nothing fails, and a NormalizePgType gap that makes every registration of the new type

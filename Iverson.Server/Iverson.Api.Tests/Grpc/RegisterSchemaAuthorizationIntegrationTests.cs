@@ -203,9 +203,9 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)
     {
         var td = new TypeDescriptor { TypeName = name };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
         foreach (var s in extraScalars)
-            td.Properties.Add(new PropertyDescriptor { Name = s, ClrType = ClrType.ClrString });
+            td.Properties.Add(new PropertyDescriptor { Name = s, ObjectType = ObjectType.String });
         return td;
     }
 

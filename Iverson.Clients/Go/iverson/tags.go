@@ -260,7 +260,7 @@ func InspectType(v interface{}) (EntityMeta, error) {
 			// inherits its declaration by promotion. Without this skip it would
 			// register as a phantom string property named after the embedded type,
 			// because ParseTag returns a plain field for its empty tag and
-			// goTypeToClr discards the "unsupported" flag on the non-array path.
+			// goTypeToObjectType discards the "unsupported" flag on the non-array path.
 			//
 			// This check is deliberately narrower than bare sf.Anonymous: an
 			// anonymously embedded NON-struct type (e.g. `type ID string; type Doc
@@ -272,7 +272,7 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		}
 		if sf.Name == HydratedFieldName {
 			// The read-path carrier for hydrated relation children (map[string]any)
-			// isn't schema metadata at all — goTypeToClr has no mapping for a map
+			// isn't schema metadata at all — goTypeToObjectType has no mapping for a map
 			// type, so leaving it in this walk fails Register outright.
 			continue
 		}

@@ -84,7 +84,7 @@ public class AuthorizationRulesOwnerFieldTests
         var typeDesc = new TypeDescriptor
         {
             TypeName   = "Article",
-            Properties = { new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true } },
+            Properties = { new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true } },
             // No owner_field set: proto3 reports "" here, never null.
             Authorization = new ContractsAuthorizationRules
             {

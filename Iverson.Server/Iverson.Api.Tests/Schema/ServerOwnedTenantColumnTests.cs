@@ -40,8 +40,8 @@ public class ServerOwnedTenantColumnTests
     {
         var td = new TypeDescriptor { TypeName = "Article" };
         if (tenantField is not null) td.TenantField = tenantField;
-        td.Properties.Add(new PropertyDescriptor { Name = "Id",    ClrType = ClrType.ClrGuid,   IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "Title", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id",    ObjectType = ObjectType.Guid,   IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Title", ObjectType = ObjectType.String });
         return td;
     }
 
@@ -130,7 +130,7 @@ public class ServerOwnedTenantColumnTests
     public void ToCollectionSchema_IncludesTheTenantColumnPayloadIndex()
     {
         var td = ArticleType();
-        td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString, IsEmbedding = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ObjectType = ObjectType.String, IsEmbedding = true });
         var descriptor = SchemaBuilder.BuildDescriptor(td, Embedding());
 
         var collection = SchemaBuilder.ToCollectionSchema(descriptor);

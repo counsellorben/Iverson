@@ -35,15 +35,15 @@ T = TypeVar("T")
 
 # ── Type mapping helpers ───────────────────────────────────────────────────────
 
-_PY_TO_CLR: dict[str, int] = {
-    "str":      mapping_pb.CLR_STRING,
-    "uuid":     mapping_pb.CLR_GUID,
-    "UUID":     mapping_pb.CLR_GUID,
-    "int":      mapping_pb.CLR_INT32,
-    "float":    mapping_pb.CLR_FLOAT,
-    "bool":     mapping_pb.CLR_BOOL,
-    "datetime": mapping_pb.CLR_DATETIME,
-    "bytes":    mapping_pb.CLR_BYTES,
+_PY_TO_OBJECT_TYPE: dict[str, int] = {
+    "str":      mapping_pb.STRING,
+    "uuid":     mapping_pb.GUID,
+    "UUID":     mapping_pb.GUID,
+    "int":      mapping_pb.INT32,
+    "float":    mapping_pb.FLOAT,
+    "bool":     mapping_pb.BOOL,
+    "datetime": mapping_pb.DATETIME,
+    "bytes":    mapping_pb.BYTES,
 }
 
 _RELATION_KIND_MAP: dict[str, int] = {
@@ -54,8 +54,11 @@ _RELATION_KIND_MAP: dict[str, int] = {
 }
 
 
-def _python_type_to_clr(type_hint: str | type | None, prop_name: str = "") -> tuple[int, bool]:
-    """Map a Python type annotation to (ClrType enum value, is_array).
+def _python_type_to_object_type(
+    type_hint: str | type | None,
+    prop_name: str = "",
+) -> tuple[int, bool]:
+    """Map a Python type annotation to (ObjectType enum value, is_array).
 
     An array whose element is itself a generic (e.g. ``list[list[str]]``) or is not a supported
     scalar is REJECTED rather than silently falling back to ``str``: the server would register a
@@ -63,15 +66,15 @@ def _python_type_to_clr(type_hint: str | type | None, prop_name: str = "") -> tu
     ``json_populate_record`` fails on the first insert.
     """
     if type_hint is None:
-        return mapping_pb.CLR_STRING, False
+        return mapping_pb.STRING, False
     # bytes is a scalar — check before the array unwrap.
     if type_hint is bytes:
-        return mapping_pb.CLR_BYTES, False
+        return mapping_pb.BYTES, False
     if get_origin(type_hint) is list:
         args = get_args(type_hint)
         element = args[0] if args else None
         if element is bytes:
-            return mapping_pb.CLR_BYTES, True
+            return mapping_pb.BYTES, True
         where = f" on property '{prop_name}'" if prop_name else ""
         if element is None:
             raise ValueError(
@@ -84,14 +87,14 @@ def _python_type_to_clr(type_hint: str | type | None, prop_name: str = "") -> tu
                 "declare a list of a supported scalar type."
             )
         name = getattr(element, "__name__", None)
-        if name is None or name not in _PY_TO_CLR:
+        if name is None or name not in _PY_TO_OBJECT_TYPE:
             raise ValueError(
                 f"Array element type {element!r}{where} is not a supported scalar; "
-                f"supported element types are: {', '.join(sorted(_PY_TO_CLR))}."
+                f"supported element types are: {', '.join(sorted(_PY_TO_OBJECT_TYPE))}."
             )
-        return _PY_TO_CLR[name], True
+        return _PY_TO_OBJECT_TYPE[name], True
     name = type_hint if isinstance(type_hint, str) else getattr(type_hint, "__name__", str(type_hint))
-    return _PY_TO_CLR.get(name, mapping_pb.CLR_STRING), False
+    return _PY_TO_OBJECT_TYPE.get(name, mapping_pb.STRING), False
 
 
 def _to_pascal_case(snake: str) -> str:
@@ -266,14 +269,14 @@ class SchemaRegistrar:
             if field_name in relation_fields:
                 continue
             type_hint = annotations.get(field_name)
-            clr_type, is_array = _python_type_to_clr(type_hint, field_name)
+            object_type, is_array = _python_type_to_object_type(type_hint, field_name)
             is_chunk = field_name in chunk_fields_by_name
             chunk_max_tokens, chunk_overlap, chunk_contextual = chunk_fields_by_name.get(
                 field_name, (0, 0, False)
             )
             prop = mapping_pb.PropertyDescriptor(
                 name=_to_pascal_case(field_name),
-                clr_type=clr_type,
+                object_type=object_type,
                 is_key=(field_name == key_field),
                 is_nullable=(field_name != key_field),
                 is_array=is_array,
@@ -305,7 +308,7 @@ class SchemaRegistrar:
             properties.append(
                 mapping_pb.PropertyDescriptor(
                     name=fk_name,
-                    clr_type=mapping_pb.CLR_GUID,
+                    object_type=mapping_pb.GUID,
                     is_key=False,
                     is_nullable=True,
                     is_array=(rel["kind"] == "many_to_many"),

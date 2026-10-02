@@ -49,19 +49,19 @@ public class DocumentTemplateValidationTests
         {
             TypeName = "Widget", DocumentTemplate = documentTemplate
         };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
-        td.Properties.Add(new PropertyDescriptor { Name = "Name", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
+        td.Properties.Add(new PropertyDescriptor { Name = "Name", ObjectType = ObjectType.String });
         return td;
     }
 
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)
     {
         var td = new TypeDescriptor { TypeName = name };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String });
         foreach (var s in extraScalars)
-            td.Properties.Add(new PropertyDescriptor { Name = s, ClrType = ClrType.ClrString });
+            td.Properties.Add(new PropertyDescriptor { Name = s, ObjectType = ObjectType.String });
         return td;
     }
 
@@ -97,7 +97,7 @@ public class DocumentTemplateValidationTests
     public async Task RegisterAsync_OneHopScalarNotOnTargetType_ThrowsInvalidArgument()
     {
         var root = WidgetType("{Owner.Bio}"); // Owner (User) has no Bio property
-        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ClrType = ClrType.ClrGuid });
+        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
         root.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
@@ -138,7 +138,7 @@ public class DocumentTemplateValidationTests
     public async Task RegisterAsync_BlockOnSingleValuedRelation_ThrowsInvalidArgument()
     {
         var root = WidgetType("{#Owner}{Name}{/Owner}");
-        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ClrType = ClrType.ClrGuid });
+        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
         root.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
@@ -163,7 +163,7 @@ public class DocumentTemplateValidationTests
         // ToSnakeCase("Document") == "document", so both derive the vector name "document_vector".
         td.Properties.Add(new PropertyDescriptor
         {
-            Name = "document", ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64
+            Name = "document", ObjectType = ObjectType.String, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64
         });
 
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
@@ -198,7 +198,7 @@ public class DocumentTemplateValidationTests
     public async Task RegisterAsync_TemplateReferencesFieldPermissionCarryingPropertyOnOneHopTarget_ThrowsInvalidArgument()
     {
         var root = WidgetType("{Owner.Name}");
-        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ClrType = ClrType.ClrGuid });
+        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
         root.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
@@ -226,7 +226,7 @@ public class DocumentTemplateValidationTests
     public async Task RegisterAsync_OneHopTraversesToRowOwnedTypeWithOwnerField_ThrowsInvalidArgument()
     {
         var root = WidgetType("{Owner.Name}");
-        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ClrType = ClrType.ClrGuid });
+        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
         root.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
@@ -249,7 +249,7 @@ public class DocumentTemplateValidationTests
     public async Task RegisterAsync_OneHopTraversesToRowOwnedTypeWithRowPermissions_ThrowsInvalidArgument()
     {
         var root = WidgetType("{Owner.Name}");
-        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ClrType = ClrType.ClrGuid });
+        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
         root.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
@@ -349,7 +349,7 @@ public class DocumentTemplateValidationTests
 
         var article = SimpleType("Article");
         article.DocumentTemplate = "{Author.Bio}";
-        article.Properties.Add(new PropertyDescriptor { Name = "UserId", ClrType = ClrType.ClrGuid });
+        article.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
         article.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Author", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
@@ -375,7 +375,7 @@ public class DocumentTemplateValidationTests
     public async Task RegisterAsync_RootTemplateReferencesLaterDependent_Succeeds()
     {
         var root = WidgetType("{Owner.Name}");
-        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ClrType = ClrType.ClrGuid });
+        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
         root.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
@@ -496,7 +496,7 @@ public class DocumentTemplateValidationTests
     public async Task RegisterAsync_UnclosedBlock_ThrowsInvalidArgumentNotUnknown()
     {
         var td = WidgetType("{#Owner}{Name}"); // no closing {/Owner}
-        td.Properties.Add(new PropertyDescriptor { Name = "UserId", ClrType = ClrType.ClrGuid });
+        td.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"

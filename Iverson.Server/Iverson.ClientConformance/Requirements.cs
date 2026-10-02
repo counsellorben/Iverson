@@ -27,7 +27,7 @@ public static class Requirements
     /// <summary>
     /// The key property is typed <c>UUID</c>. Discharged by
     /// <c>Verifier.VerifyRegistration</c>'s "key property is typed UUID" assertion, asserted
-    /// directly from the descriptor's own <c>ClrType</c> — <c>ClrGuid</c> is exactly the CLR
+    /// directly from the descriptor's own <c>ObjectType</c> — <c>Guid</c> is exactly the object
     /// type the server maps to a <c>UUID</c> column.
     /// </summary>
     public const string DeclKeyTypedUuid = "IVC-DECL-003";
@@ -45,9 +45,9 @@ public static class Requirements
     public const string DeclKeyWellFormedUuid = "IVC-DECL-004";
 
     /// <summary>
-    /// A property declared array-typed never declares its CLR type as a delimited string.
+    /// A property declared array-typed never declares its object type as a delimited string.
     /// Discharged by <c>Verifier.VerifyRegistration</c>'s "array-typed property does not declare
-    /// CLR_STRING" assertion, fired over every array-typed property on the descriptor — this is
+    /// STRING" assertion, fired over every array-typed property on the descriptor — this is
     /// a declaration-level check independent of <c>IVC-REL-007</c>, which checks the wire value
     /// actually sent rather than the declared type.
     /// </summary>
@@ -770,7 +770,7 @@ public static class Requirements
     /// element), and cites this const only when <c>isKey</c> is false.</description></item>
     /// <item><description>Typing: <c>Verifier.VerifyRegistration</c>'s "foreign key ... is typed
     /// UUID" assertion, asserted directly from the descriptor the driver reported —
-    /// <c>fkProperty.ClrType == ClrType.ClrGuid</c> — rather than deferred to the server-side
+    /// <c>fkProperty.ObjectType == ObjectType.Guid</c> — rather than deferred to the server-side
     /// enforcement in <c>SchemaRegistrationOrchestrator.cs</c> that the harness never
     /// observes.</description></item>
     /// </list>

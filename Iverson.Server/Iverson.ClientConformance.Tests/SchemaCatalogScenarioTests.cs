@@ -43,7 +43,7 @@ public class SchemaCatalogScenarioTests
             descriptor.Properties.Add(new PropertyDescriptor
             {
                 Name = name,
-                ClrType = name == "Id" ? ClrType.ClrGuid : ClrType.ClrString,
+                ObjectType = name == "Id" ? ObjectType.Guid : ObjectType.String,
                 IsKey = name == "Id",
             });
         }

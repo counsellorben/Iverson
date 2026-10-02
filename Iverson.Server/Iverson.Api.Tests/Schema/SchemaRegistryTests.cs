@@ -672,9 +672,9 @@ public class SchemaRegistryTests
     {
         var typeDesc = new Iverson.Client.Contracts.TypeDescriptor { TypeName = "Article" };
         typeDesc.Properties.Add(new Iverson.Client.Contracts.PropertyDescriptor
-            { Name = "Id", ClrType = Iverson.Client.Contracts.ClrType.ClrGuid, IsKey = true });
+            { Name = "Id", ObjectType = Iverson.Client.Contracts.ObjectType.Guid, IsKey = true });
         typeDesc.Properties.Add(new Iverson.Client.Contracts.PropertyDescriptor
-            { Name = "Title", ClrType = Iverson.Client.Contracts.ClrType.ClrString });
+            { Name = "Title", ObjectType = Iverson.Client.Contracts.ObjectType.String });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, Substitute.For<Iverson.Embeddings.IEmbeddingService>());
         descriptor.ScalarColumns.Select(c => c.Name).Should().Contain("__TenantId",

@@ -43,7 +43,7 @@ import {
     getRelationsWithFactory,
     getEmbeddingModel,
 } from '../src/annotations.js';
-import { ClrType } from '../generated/object_mapping.js';
+import { ObjectType } from '../generated/object_mapping.js';
 import * as annotations from '../src/annotations.js';
 import * as pkg from '../src/index.js';
 
@@ -472,16 +472,16 @@ const accumulateSites: AccumulateSite[] = [
     },
     {
         label: 'IversonArray / getArrayFields (Map)',
-        decorate: (klass, key) => { IversonArray(ClrType.CLR_STRING)(klass.prototype, key); },
+        decorate: (klass, key) => { IversonArray(ObjectType.STRING)(klass.prototype, key); },
         has: (target, key) => getArrayFields(target).has(key),
         size: (target) => getArrayFields(target).size,
     },
     {
         label: 'IversonType / getTypeFields (Map)',
-        decorate: (klass, key) => { IversonType(ClrType.CLR_INT32)(klass.prototype, key); },
+        decorate: (klass, key) => { IversonType(ObjectType.INT32)(klass.prototype, key); },
         // Compares the stored type, not just presence, so a decorator that recorded the wrong
-        // ClrType fails here too.
-        has: (target, key) => getTypeFields(target).get(key) === ClrType.CLR_INT32,
+        // ObjectType fails here too.
+        has: (target, key) => getTypeFields(target).get(key) === ObjectType.INT32,
         size: (target) => getTypeFields(target).size,
     },
     {

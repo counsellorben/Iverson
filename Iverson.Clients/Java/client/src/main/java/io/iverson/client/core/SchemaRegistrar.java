@@ -3,7 +3,7 @@ package io.iverson.client.core;
 import io.grpc.StatusRuntimeException;
 import io.iverson.client.annotations.*;
 import iverson.ObjectMapping;
-import iverson.ObjectMapping.ClrType;
+import iverson.ObjectMapping.ObjectType;
 import iverson.ObjectMapping.PropertyDescriptor;
 import iverson.ObjectMapping.RelationDescriptor;
 import iverson.ObjectMapping.RelationKind;
@@ -181,12 +181,12 @@ public final class SchemaRegistrar {
     }
 
     private PropertyDescriptor buildKeyDescriptor(Field field) {
-        DetectedType detected = detectClrType(field.getGenericType());
-        ClrType clrType = detected != null ? detected.clrType() : ClrType.CLR_STRING; // fallback
+        DetectedType detected = detectObjectType(field.getGenericType());
+        ObjectType objectType = detected != null ? detected.objectType() : ObjectType.STRING; // fallback
         boolean isArray = detected != null && detected.isArray();
         PropertyDescriptor.Builder b = PropertyDescriptor.newBuilder()
             .setName(StructConverter.toPascalCase(field.getName()))
-            .setClrType(clrType)
+            .setObjectType(objectType)
             .setIsKey(true)
             .setIsNullable(false)
             .setIsArray(isArray);
@@ -195,13 +195,13 @@ public final class SchemaRegistrar {
     }
 
     private PropertyDescriptor tryBuildPropertyDescriptor(Field field) {
-        DetectedType detected = detectClrType(field.getGenericType());
+        DetectedType detected = detectObjectType(field.getGenericType());
         if (detected == null) return null;
 
         boolean isNullable = !field.getType().isPrimitive();
         PropertyDescriptor.Builder b = PropertyDescriptor.newBuilder()
             .setName(StructConverter.toPascalCase(field.getName()))
-            .setClrType(detected.clrType())
+            .setObjectType(detected.objectType())
             .setIsKey(false)
             .setIsNullable(isNullable)
             .setIsArray(detected.isArray());
@@ -321,14 +321,14 @@ public final class SchemaRegistrar {
 
     // ── Type detection ─────────────────────────────────────────────────────────
 
-    private record DetectedType(ClrType clrType, boolean isArray) {}
+    private record DetectedType(ObjectType objectType, boolean isArray) {}
 
-    private static DetectedType detectClrType(java.lang.reflect.Type type) {
+    private static DetectedType detectObjectType(java.lang.reflect.Type type) {
         // byte[] is a primitive scalar — check before the array unwrap.
-        if (type == byte[].class) return new DetectedType(ClrType.CLR_BYTES, false);
+        if (type == byte[].class) return new DetectedType(ObjectType.BYTES, false);
 
         if (type instanceof Class<?> c && c.isArray()) {
-            ClrType element = detectClrType(c.getComponentType());
+            ObjectType element = detectObjectType(c.getComponentType());
             return element == null ? null : new DetectedType(element, true);
         }
         if (type instanceof java.lang.reflect.ParameterizedType p
@@ -336,29 +336,29 @@ public final class SchemaRegistrar {
                 && java.util.Collection.class.isAssignableFrom(raw)) {
             java.lang.reflect.Type[] args = p.getActualTypeArguments();
             if (args.length == 1 && args[0] instanceof Class<?> elementClass) {
-                ClrType element = detectClrType(elementClass);
+                ObjectType element = detectObjectType(elementClass);
                 return element == null ? null : new DetectedType(element, true);
             }
             return null;
         }
         if (type instanceof Class<?> c) {
-            ClrType scalar = detectClrType(c);
+            ObjectType scalar = detectObjectType(c);
             return scalar == null ? null : new DetectedType(scalar, false);
         }
         return null;
     }
 
-    private static ClrType detectClrType(Class<?> type) {
-        if (type == String.class)              return ClrType.CLR_STRING;
-        if (type == java.util.UUID.class)      return ClrType.CLR_GUID;
-        if (type == int.class || type == Integer.class)   return ClrType.CLR_INT32;
-        if (type == long.class || type == Long.class)     return ClrType.CLR_INT64;
-        if (type == float.class || type == Float.class)   return ClrType.CLR_FLOAT;
-        if (type == double.class || type == Double.class) return ClrType.CLR_DOUBLE;
-        if (type == boolean.class || type == Boolean.class) return ClrType.CLR_BOOL;
+    private static ObjectType detectObjectType(Class<?> type) {
+        if (type == String.class)              return ObjectType.STRING;
+        if (type == java.util.UUID.class)      return ObjectType.GUID;
+        if (type == int.class || type == Integer.class)   return ObjectType.INT32;
+        if (type == long.class || type == Long.class)     return ObjectType.INT64;
+        if (type == float.class || type == Float.class)   return ObjectType.FLOAT;
+        if (type == double.class || type == Double.class) return ObjectType.DOUBLE;
+        if (type == boolean.class || type == Boolean.class) return ObjectType.BOOL;
         if (type == OffsetDateTime.class || type == LocalDateTime.class ||
-            type == java.time.Instant.class)  return ClrType.CLR_DATETIME;
-        if (type == byte[].class)              return ClrType.CLR_BYTES;
+            type == java.time.Instant.class)  return ObjectType.DATETIME;
+        if (type == byte[].class)              return ObjectType.BYTES;
         // Unsupported (collection nav props, custom types, etc.)
         return null;
     }

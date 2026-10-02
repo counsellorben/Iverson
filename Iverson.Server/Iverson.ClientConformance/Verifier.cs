@@ -134,8 +134,8 @@ public static class Verifier
         var keyProperty = descriptor.Properties.FirstOrDefault(p => p.IsKey);
         results.Add(Assertion.From(
             $"{label}: key property is typed UUID",
-            keyProperty is not null && keyProperty.ClrType == ClrType.ClrGuid,
-            keyProperty is not null ? $"clrType={keyProperty.ClrType}" : "no key property declared",
+            keyProperty is not null && keyProperty.ObjectType == ObjectType.Guid,
+            keyProperty is not null ? $"objectType={keyProperty.ObjectType}" : "no key property declared",
             Requirements.DeclKeyTypedUuid));
 
         // Asserted unconditionally — including (and especially) when Relations is empty. Every
@@ -244,14 +244,14 @@ public static class Verifier
             {
                 // IVC-REL-010's second clause — foreign-key columns typed UUID or UUID[] — is
                 // asserted here, from the descriptor the driver itself reported, rather than
-                // deferred to server-side enforcement the harness never observes. `ClrGuid` is
-                // exactly the CLR type the server maps to a `UUID`/`UUID[]` SQL column
+                // deferred to server-side enforcement the harness never observes. `Guid` is
+                // exactly the object type the server maps to a `UUID`/`UUID[]` SQL column
                 // (`SchemaRegistrationOrchestrator.cs`); the array/scalar split itself is already
                 // covered by IVC-REL-004's isArray checks above.
                 results.Add(Assertion.From(
                     $"{name}: foreign key '{relation.ForeignKey}' is typed UUID",
-                    declared && fkProperty!.ClrType == ClrType.ClrGuid,
-                    declared ? $"clrType={fkProperty!.ClrType}" : "foreign key not declared",
+                    declared && fkProperty!.ObjectType == ObjectType.Guid,
+                    declared ? $"objectType={fkProperty!.ObjectType}" : "foreign key not declared",
                     Requirements.RelForeignKeyWellFormedUuid));
             }
 
@@ -275,12 +275,12 @@ public static class Verifier
                 Requirements.RelIsArraySetForManyToManyOnly));
 
             // IVC-DECL-006: a declaration-level check, independent of IVC-REL-007's wire-level
-            // check — a property that is array-typed must never ALSO declare its CLR type as a
+            // check — a property that is array-typed must never ALSO declare its object type as a
             // delimited string.
             results.Add(Assertion.From(
-                $"{label}.{property.Name}: array-typed property does not declare CLR_STRING",
-                property.ClrType != ClrType.ClrString,
-                $"clrType={property.ClrType}",
+                $"{label}.{property.Name}: array-typed property does not declare STRING",
+                property.ObjectType != ObjectType.String,
+                $"objectType={property.ObjectType}",
                 Requirements.DeclArrayNotDelimitedString));
         }
 

@@ -421,9 +421,9 @@ public sealed class NamingRejectedScenario(
             TypeName = ServerSideTypeName,
             Properties =
             {
-                new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
-                new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString, IsNullable = false },
-                new PropertyDescriptor { Name = ServerSideActualForeignKeyName, ClrType = ClrType.ClrGuid, IsNullable = true },
+                new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true },
+                new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String, IsNullable = false },
+                new PropertyDescriptor { Name = ServerSideActualForeignKeyName, ObjectType = ObjectType.Guid, IsNullable = true },
             },
             Relations =
             {
@@ -454,12 +454,12 @@ public sealed class NamingRejectedScenario(
             TypeName = ServerSideManyToManyTypeName,
             Properties =
             {
-                new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
-                new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString, IsNullable = false },
+                new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true },
+                new PropertyDescriptor { Name = "TenantId", ObjectType = ObjectType.String, IsNullable = false },
                 new PropertyDescriptor
                 {
                     Name = ServerSideManyToManyActualForeignKeyName,
-                    ClrType = ClrType.ClrGuid,
+                    ObjectType = ObjectType.Guid,
                     IsArray = true,
                     IsNullable = true,
                 },

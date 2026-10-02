@@ -20,10 +20,10 @@ public class VerifierTests
               "typeName": "DotNetArticle",
               "tenantField": "TenantId",
               "properties": [
-                { "name": "Id", "clrType": "CLR_GUID", "isKey": true, "isArray": false },
-                { "name": "TenantId", "clrType": "CLR_STRING", "isKey": false, "isArray": false },
-                { "name": "DotNetAuthorId", "clrType": "CLR_GUID", "isKey": false, "isArray": false },
-                { "name": "DotNetTagIds", "clrType": "CLR_GUID", "isKey": false, "isArray": true }
+                { "name": "Id", "objectType": "GUID", "isKey": true, "isArray": false },
+                { "name": "TenantId", "objectType": "STRING", "isKey": false, "isArray": false },
+                { "name": "DotNetAuthorId", "objectType": "GUID", "isKey": false, "isArray": false },
+                { "name": "DotNetTagIds", "objectType": "GUID", "isKey": false, "isArray": true }
               ],
               "relations": [
                 { "propertyName": "DotNetAuthor", "kind": "MANY_TO_ONE", "relatedType": "DotNetAuthor", "foreignKey": "DotNetAuthorId" },
@@ -48,7 +48,7 @@ public class VerifierTests
             """));
         var written = Verifier.ParseDescriptor(Json("""
             { "typeName": "GoArticle", "tenantField": "", "relations": [],
-              "properties": [ { "name": "Id", "clrType": "CLR_STRING", "isKey": true, "isArray": false } ] }
+              "properties": [ { "name": "Id", "objectType": "STRING", "isKey": true, "isArray": false } ] }
             """));
 
         omitted.Should().Be(written);
@@ -61,10 +61,10 @@ public class VerifierTests
           "typeName": "{{prefix}}Article",
           "tenantField": "tenant_id",
           "properties": [
-            { "name": "id", "clrType": "CLR_GUID", "isKey": true },
-            { "name": "tenant_id", "clrType": "CLR_STRING" },
-            { "name": "{{prefix}}_author_id", "clrType": "CLR_GUID" },
-            { "name": "{{prefix}}_tag_ids", "clrType": "CLR_GUID", "isArray": true }
+            { "name": "id", "objectType": "GUID", "isKey": true },
+            { "name": "tenant_id", "objectType": "STRING" },
+            { "name": "{{prefix}}_author_id", "objectType": "GUID" },
+            { "name": "{{prefix}}_tag_ids", "objectType": "GUID", "isArray": true }
           ],
           "relations": [
             { "propertyName": "{{prefix}}Author", "kind": "MANY_TO_ONE", "relatedType": "{{prefix}}_author", "foreignKey": "{{prefix}}_author_id" },
@@ -93,8 +93,8 @@ public class VerifierTests
             {
               "typeName": "Article", "tenantField": "tenant_id",
               "properties": [
-                { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" },
-                { "name": "detail_id", "clrType": "CLR_GUID" }
+                { "name": "id", "objectType": "GUID", "isKey": true }, { "name": "tenant_id" },
+                { "name": "detail_id", "objectType": "GUID" }
               ],
               "relations": [
                 { "propertyName": "detail", "kind": "ONE_TO_ONE", "relatedType": "detail", "foreignKey": "detail_id" }
@@ -118,7 +118,7 @@ public class VerifierTests
               "typeName": "Article", "tenantField": "tenant_id",
               "properties": [
                 { "name": "id", "isKey": true }, { "name": "tenant_id" },
-                { "name": "detail_id", "clrType": "CLR_GUID" }
+                { "name": "detail_id", "objectType": "GUID" }
               ],
               "relations": [
                 { "propertyName": "detail_id", "kind": "ONE_TO_ONE", "relatedType": "detail", "foreignKey": "detail_id" }
@@ -226,7 +226,7 @@ public class VerifierTests
         var descriptor = Verifier.ParseDescriptor(Json("""
             {
               "typeName": "JavaAuthor", "tenantField": "tenantId",
-              "properties": [ { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenantId" } ],
+              "properties": [ { "name": "id", "objectType": "GUID", "isKey": true }, { "name": "tenantId" } ],
               "relations": [
                 { "propertyName": "javaArticles", "kind": "ONE_TO_MANY", "relatedType": "JavaArticle", "foreignKey": "javaAuthorId" }
               ]
@@ -247,7 +247,7 @@ public class VerifierTests
               "typeName": "JavaAuthor", "tenantField": "tenantId",
               "properties": [
                 { "name": "id", "isKey": true }, { "name": "tenantId" },
-                { "name": "javaArticleId", "clrType": "CLR_GUID" }
+                { "name": "javaArticleId", "objectType": "GUID" }
               ],
               "relations": [
                 { "propertyName": "javaArticles", "kind": "ONE_TO_MANY", "relatedType": "JavaArticle", "foreignKey": "javaAuthorId" }
@@ -274,7 +274,7 @@ public class VerifierTests
               "typeName": "JavaAuthor", "tenantField": "tenantId",
               "properties": [
                 { "name": "id", "isKey": true }, { "name": "tenantId" },
-                { "name": "javaAuthorId", "clrType": "CLR_GUID" }
+                { "name": "javaAuthorId", "objectType": "GUID" }
               ],
               "relations": [
                 { "propertyName": "javaArticles", "kind": "ONE_TO_MANY", "relatedType": "JavaArticle", "foreignKey": "javaAuthorId" }
@@ -319,7 +319,7 @@ public class VerifierTests
               "typeName": "Bad", "tenantField": "tenant_id",
               "properties": [
                 { "name": "id", "isKey": true }, { "name": "tenant_id" },
-                { "name": "tag_ids", "clrType": "CLR_GUID", "isArray": true }
+                { "name": "tag_ids", "objectType": "GUID", "isArray": true }
               ],
               "relations": [
                 { "propertyName": "tags", "kind": "MANY_TO_MANY", "relatedType": "wrong_type", "foreignKey": "tag_ids" }
@@ -341,7 +341,7 @@ public class VerifierTests
               "typeName": "Bad", "tenantField": "tenant_id",
               "properties": [
                 { "name": "id", "isKey": true }, { "name": "tenant_id" },
-                { "name": "author_id", "clrType": "CLR_STRING" }
+                { "name": "author_id", "objectType": "STRING" }
               ],
               "relations": [
                 { "propertyName": "author", "kind": "MANY_TO_ONE", "relatedType": "author", "foreignKey": "author_id" }
@@ -461,7 +461,7 @@ public class VerifierTests
     {
         var descriptor = Verifier.ParseDescriptor(Json("""
             { "typeName": "Tag", "tenantField": "tenant_id",
-              "properties": [ { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" } ],
+              "properties": [ { "name": "id", "objectType": "GUID", "isKey": true }, { "name": "tenant_id" } ],
               "relations": [] }
             """));
 
@@ -475,7 +475,7 @@ public class VerifierTests
     {
         var descriptor = Verifier.ParseDescriptor(Json("""
             { "typeName": "Tag", "tenantField": "tenant_id",
-              "properties": [ { "name": "id", "clrType": "CLR_STRING", "isKey": true }, { "name": "tenant_id" } ],
+              "properties": [ { "name": "id", "objectType": "STRING", "isKey": true }, { "name": "tenant_id" } ],
               "relations": [] }
             """));
 
@@ -489,7 +489,7 @@ public class VerifierTests
     {
         var descriptor = Verifier.ParseDescriptor(Json("""
             { "typeName": "Tag", "tenantField": "tenant_id",
-              "properties": [ { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" } ],
+              "properties": [ { "name": "id", "objectType": "GUID", "isKey": true }, { "name": "tenant_id" } ],
               "relations": [] }
             """));
 
@@ -498,13 +498,13 @@ public class VerifierTests
     }
 
     [Fact]
-    public void VerifyRegistration_fails_DECL006_when_an_array_typed_property_declares_CLR_STRING()
+    public void VerifyRegistration_fails_DECL006_when_an_array_typed_property_declares_STRING()
     {
         var descriptor = Verifier.ParseDescriptor(Json("""
             { "typeName": "Bad", "tenantField": "tenant_id",
               "properties": [
-                { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" },
-                { "name": "tag_ids", "clrType": "CLR_STRING", "isArray": true }
+                { "name": "id", "objectType": "GUID", "isKey": true }, { "name": "tenant_id" },
+                { "name": "tag_ids", "objectType": "STRING", "isArray": true }
               ],
               "relations": [
                 { "propertyName": "tags", "kind": "MANY_TO_MANY", "relatedType": "T", "foreignKey": "tag_ids" }
@@ -512,18 +512,18 @@ public class VerifierTests
             """));
 
         Verifier.VerifyRegistration("article", descriptor)
-            .Should().Contain(r => !r.Passed && r.Name.Contains("does not declare CLR_STRING") &&
+            .Should().Contain(r => !r.Passed && r.Name.Contains("does not declare STRING") &&
                 r.RequirementId == Requirements.DeclArrayNotDelimitedString);
     }
 
     [Fact]
-    public void VerifyRegistration_passes_DECL006_when_an_array_typed_property_declares_CLR_GUID()
+    public void VerifyRegistration_passes_DECL006_when_an_array_typed_property_declares_GUID()
     {
         var descriptor = Verifier.ParseDescriptor(Json("""
             { "typeName": "Good", "tenantField": "tenant_id",
               "properties": [
-                { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" },
-                { "name": "tag_ids", "clrType": "CLR_GUID", "isArray": true }
+                { "name": "id", "objectType": "GUID", "isKey": true }, { "name": "tenant_id" },
+                { "name": "tag_ids", "objectType": "GUID", "isArray": true }
               ],
               "relations": [
                 { "propertyName": "tags", "kind": "MANY_TO_MANY", "relatedType": "T", "foreignKey": "tag_ids" }
@@ -531,7 +531,7 @@ public class VerifierTests
             """));
 
         Verifier.VerifyRegistration("article", descriptor)
-            .Should().Contain(r => r.Passed && r.Name.Contains("does not declare CLR_STRING"));
+            .Should().Contain(r => r.Passed && r.Name.Contains("does not declare STRING"));
     }
 
     [Fact]
@@ -681,8 +681,8 @@ public class VerifierTests
     private static TypeDescriptor ArticleWithManyToOneAuthor => Verifier.ParseDescriptor(Json("""
         { "typeName": "Article", "tenantField": "tenant_id",
           "properties": [
-            { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" },
-            { "name": "author_id", "clrType": "CLR_GUID" }
+            { "name": "id", "objectType": "GUID", "isKey": true }, { "name": "tenant_id" },
+            { "name": "author_id", "objectType": "GUID" }
           ],
           "relations": [
             { "propertyName": "author", "kind": "MANY_TO_ONE", "relatedType": "author", "foreignKey": "author_id" }

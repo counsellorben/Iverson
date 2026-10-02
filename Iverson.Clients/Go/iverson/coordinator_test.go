@@ -224,8 +224,8 @@ func registerHydFixtures(t *testing.T) {
 
 func TestBuildRequest_HydratedCarrier_RegistersSuccessfully(t *testing.T) {
 	// This is what Step 1's InspectType exclusion buys. Without it, the Hydrated
-	// map[string]any field still reaches this point (goTypeToClr's default case
-	// falls back to CLR_STRING for an unrecognized kind rather than erroring), but
+	// map[string]any field still reaches this point (goTypeToObjectType's default case
+	// falls back to STRING for an unrecognized kind rather than erroring), but
 	// it is wrongly registered as a bogus scalar "Hydrated" property on the
 	// server-side schema — a silent corruption, not a client-side failure. Assert
 	// its absence from the built properties, which is the part that actually
@@ -446,8 +446,8 @@ func assertFkProperty(t *testing.T, props map[string]*pb.PropertyDescriptor, nam
 	if !ok {
 		t.Fatalf("expected %s property in schema, got: %v", name, props)
 	}
-	if p.ClrType != pb.ClrType_CLR_GUID {
-		t.Errorf("%s.ClrType = %v, want CLR_GUID", name, p.ClrType)
+	if p.ObjectType != pb.ObjectType_GUID {
+		t.Errorf("%s.ObjectType = %v, want GUID", name, p.ObjectType)
 	}
 	if p.IsArray != wantArray {
 		t.Errorf("%s.IsArray = %v, want %v", name, p.IsArray, wantArray)
@@ -518,7 +518,7 @@ func TestBuildRequest_OneToMany_DeclaresNoForeignKeyProperty(t *testing.T) {
 	}
 }
 
-func TestGuidTagYieldsClrGuid(t *testing.T) {
+func TestGuidTagYieldsGuid(t *testing.T) {
 	type GuidTagEntity struct {
 		Id       string `iverson_key:"true" iverson_guid:"true"`
 		Name     string
@@ -527,15 +527,15 @@ func TestGuidTagYieldsClrGuid(t *testing.T) {
 
 	props := propsByName(t, &GuidTagEntity{})
 
-	if got := props["Id"].ClrType; got != pb.ClrType_CLR_GUID {
-		t.Errorf("Id.ClrType = %v, want CLR_GUID", got)
+	if got := props["Id"].ObjectType; got != pb.ObjectType_GUID {
+		t.Errorf("Id.ObjectType = %v, want GUID", got)
 	}
-	if got := props["Name"].ClrType; got != pb.ClrType_CLR_STRING {
-		t.Errorf("Name.ClrType = %v, want CLR_STRING (untagged string stays a string)", got)
+	if got := props["Name"].ObjectType; got != pb.ObjectType_STRING {
+		t.Errorf("Name.ObjectType = %v, want STRING (untagged string stays a string)", got)
 	}
 }
 
-func TestGuidTagOnStringSliceYieldsClrGuidArray(t *testing.T) {
+func TestGuidTagOnStringSliceYieldsGuidArray(t *testing.T) {
 	type GuidSliceEntity struct {
 		Id       string   `iverson_key:"true"`
 		TagIds   []string `iverson_guid:"true"`
@@ -548,8 +548,8 @@ func TestGuidTagOnStringSliceYieldsClrGuidArray(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected TagIds property, got: %v", props)
 	}
-	if p.ClrType != pb.ClrType_CLR_GUID {
-		t.Errorf("TagIds.ClrType = %v, want CLR_GUID", p.ClrType)
+	if p.ObjectType != pb.ObjectType_GUID {
+		t.Errorf("TagIds.ObjectType = %v, want GUID", p.ObjectType)
 	}
 	if !p.IsArray {
 		t.Errorf("TagIds.IsArray = false, want true")
