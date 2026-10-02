@@ -44,6 +44,7 @@ import {
     getEmbeddingModel,
 } from '../src/annotations.js';
 import { ClrType } from '../generated/object_mapping.js';
+import * as annotations from '../src/annotations.js';
 import * as pkg from '../src/index.js';
 
 // ── Test entities ─────────────────────────────────────────────────────────────
@@ -478,7 +479,9 @@ const accumulateSites: AccumulateSite[] = [
     {
         label: 'IversonType / getTypeFields (Map)',
         decorate: (klass, key) => { IversonType(ClrType.CLR_INT32)(klass.prototype, key); },
-        has: (target, key) => getTypeFields(target).has(key),
+        // Compares the stored type, not just presence, so a decorator that recorded the wrong
+        // ClrType fails here too.
+        has: (target, key) => getTypeFields(target).get(key) === ClrType.CLR_INT32,
         size: (target) => getTypeFields(target).size,
     },
     {
@@ -538,14 +541,16 @@ describe.each(accumulateSites)('Sibling subclasses do not leak accumulated decor
 });
 
 describe('package entry exports', () => {
-    it.each([
-        'IversonType', 'getTypeFields',
-        'IversonGuid', 'getGuidFields',
-        'IversonSummary', 'getSummaryFields',
-        'IversonKeywords', 'getKeywordsFields',
-        'IversonExtracted', 'getExtractedFields',
-        'IversonEmbeddingModel', 'getEmbeddingModel',
-    ])('exports %s', name => {
-        expect(typeof (pkg as Record<string, unknown>)[name]).toBe('function');
+    // Derived from annotations.ts rather than listed by hand, so a decorator added there but
+    // left out of index.ts fails here. getRelationsWithFactory is the one deliberate omission:
+    // the read path in core.ts uses it internally and it is not public API.
+    const internalOnly = new Set(['getRelationsWithFactory']);
+
+    it('re-exports every public annotation function', () => {
+        const missing = Object.entries(annotations)
+            .filter(([name, value]) => typeof value === 'function' && !internalOnly.has(name))
+            .map(([name]) => name)
+            .filter(name => typeof (pkg as Record<string, unknown>)[name] !== 'function');
+        expect(missing).toEqual([]);
     });
 });
