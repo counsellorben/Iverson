@@ -69,7 +69,7 @@ Consequences:
 All three are thrown from `describeEntity` as `new Error(...)`, in the existing `${typeName}.${fieldName} …; why; what to do` style (`core.ts:327`, `:335`, `:355`):
 
 1. **Type can't be determined.** Covers no initializer, a `null`/`undefined` initializer, and an unrecognized initializer. The message must say that TypeScript erased the type, and must name both remedies: add an initializer, or add `@IversonType(ClrType.CLR_…)`. This mirrors the existing array error (`core.ts:326-331`).
-2. **`@IversonType` on an array property.** Scalar only: point the user to `@IversonArray(ClrType.CLR_…)`. This mirrors the existing `@IversonGuid` rule (`core.ts:333-339`).
+2. **`@IversonType` on an array property.** Fires when the property also carries `@IversonArray` (co-presence, like error 3's check against `@IversonGuid`) or when it looks like an array (`design:type` `Array`, or an array initializer). Scalar only: point the user to `@IversonArray(ClrType.CLR_…)`.
 3. **`@IversonType` and `@IversonGuid` on the same property.** Two type declarations: ask the user to keep one.
 
 Deliberately not added:
@@ -102,7 +102,7 @@ Vitest, in the existing suites:
     - `@IversonType(ClrType.CLR_INT32)` on a `number` → `CLR_INT32`
     - `@IversonType(ClrType.CLR_DATETIME)` on `Date | null = null` → `CLR_DATETIME`
     - `x: string | number = ''` → `CLR_STRING`
-  - **Each of errors 1–3,** including `x?: number` (no initializer) and `x: Date | null = null` (undecorated).
+  - **Each of errors 1–3,** including `x?: number` (no initializer), `x: Date | null = null` (undecorated), undecorated `x?: string`, and error 2 on `@IversonArray(ClrType.CLR_STRING)` + `@IversonType(ClrType.CLR_STRING)` on `x: string[] | null = null`.
   - **The bug's reproduction:** an `Article`-shaped model's `WordCount` → `CLR_DOUBLE`.
 - **The no-metadata (esbuild) path.** The repo's vitest emits `design:type` for decorated members, so at least one case must apply its decorators by hand. Calling `IversonX(...)(klass.prototype, key)` emits no metadata. That case has to show that steps 2 and 4 resolve without `design:type`.
 - **`tests/annotations.test.ts` per-decorator table** (around `:471`): add an `IversonType / getTypeFields (Map)` row.
@@ -116,6 +116,7 @@ When a type is re-registered through the TS SDK, its affected column now resolve
 - an undecorated non-string scalar property (was `CLR_STRING`)
 - any `number` property (was `CLR_FLOAT`)
 - a decorated `number | null` or `Date | null` (was `CLR_STRING`; it now throws until declared with `@IversonType`)
+- any property whose type cannot be determined now throws error 1 at registration, before that type's RegisterSchema RPC is sent. This includes `string` properties that registered correctly as `CLR_STRING` until now: undecorated strings with no initializer (`x?: string`, `x!: string`, plain `x: string`), `x: string | null = null` (decorated or not), and, on builds that emit no decorator metadata (e.g. esbuild), every property that has no non-null initializer and none of `@IversonArray`, `@IversonGuid` or `@IversonType`. Remedy: add an initializer or `@IversonType(ClrType.CLR_STRING)`.
 
 If such a table already exists, re-registration fails **before any DDL** with `FailedPrecondition`: `Column "…" has type 'text' but the registered schema expects 'double precision'. Migrate the column by hand, then retry registration.` The path is `PostgresSchemaManager.cs:84-113` → `SchemaRegistrationOrchestrator.cs:344-348`.
 
@@ -146,3 +147,5 @@ StarRocks does `CREATE TABLE IF NOT EXISTS` only (`EngagementRepository.cs:471`)
 | 13 | Docs or a changelog exist | **False** — no TS SDK README and no CHANGELOG in the repo; the breaking note goes in the commit message |
 | — | `design:type` per shape, tsc vs Oxc | 12-property probe under tsc 7.0.2 and vitest 5/Oxc: identical (table in Problem) |
 | — | Drift fails loudly before DDL | `PostgresSchemaManager.cs:84-113`, `SchemaRegistrationOrchestrator.cs:344-348` |
+| — | Which currently-working properties newly throw | Prototype of steps 1–5 run through `describeEntity` (Oxc + by-hand no-metadata): undecorated `x?`/`x!`/plain `x: string`, `x: string \| null = null` decorated or not, and a no-metadata `o?: string` all throw error 1; `@IversonType(ClrType.CLR_STRING)` on `x?: string` and `x: string \| null = null` → `CLR_STRING`; no-metadata `@IversonGuid`/`@IversonArray`/`@IversonType` uninitialized properties resolve |
+| — | Error 2 needs co-presence detection | Prototype run through `describeEntity`: `@IversonArray` + `@IversonType` on `x: string[] \| null = null` (Oxc) and on no-metadata `x?: string[]` register silently (`isArray=true`) under `looksArray`-only detection and throw with co-presence added; `x: string[] = []` throws either way; scalar `@IversonType(CLR_INT32) n = 0` → `CLR_INT32`, unaffected |
