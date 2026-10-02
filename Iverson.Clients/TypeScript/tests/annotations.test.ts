@@ -44,6 +44,7 @@ import {
     getEmbeddingModel,
 } from '../src/annotations.js';
 import { ClrType } from '../generated/object_mapping.js';
+import * as pkg from '../src/index.js';
 
 // ── Test entities ─────────────────────────────────────────────────────────────
 
@@ -533,5 +534,18 @@ describe.each(accumulateSites)('Sibling subclasses do not leak accumulated decor
     it('a subclass with no own decorator still inherits only the parent entry', () => {
         expect(site.size(LeakSiblingNoOwnDecorator)).toBe(1);
         expect(site.has(LeakSiblingNoOwnDecorator, 'parentField')).toBe(true);
+    });
+});
+
+describe('package entry exports', () => {
+    it.each([
+        'IversonType', 'getTypeFields',
+        'IversonGuid', 'getGuidFields',
+        'IversonSummary', 'getSummaryFields',
+        'IversonKeywords', 'getKeywordsFields',
+        'IversonExtracted', 'getExtractedFields',
+        'IversonEmbeddingModel', 'getEmbeddingModel',
+    ])('exports %s', name => {
+        expect(typeof (pkg as Record<string, unknown>)[name]).toBe('function');
     });
 });
