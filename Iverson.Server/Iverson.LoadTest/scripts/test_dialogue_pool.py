@@ -218,3 +218,37 @@ def test_score_runs_both_arms_and_records_per_dialogue_predictions(pool_run):
     assert "ci95" in results["bootstrap"]["pool_minus_keyword"]
     with pytest.raises(SystemExit, match="scored once"):
         dpool.cmd_score(tdp.live_for(out, PoolEngine(pool_turns())), tdp.SPLITS, from_run)
+
+
+def test_score_results_orients_the_delta_and_ci_as_pool_minus_keyword():
+    """Pool predicts exactly the gold dialogues of every pair and keyword predicts none, so the delta is
+    positive, the CI's upper bound is positive, and the verdict is GO; flipping the orientation fails this."""
+    test = tdp.SPLITS["test"]
+    ids = dp.split_ids(test)
+    gold = dp.gold_labels({d["dialogue_id"]: dp.onsets(d) for d in test}, ids)
+    matches = {"pool_semantic": {p: {d for d, g in zip(ids, gold[p]) if g} for p in dp.PAIRS},
+               "ordered_keyword": {p: set() for p in dp.PAIRS}}
+    single = {i: {(d, 0): 0.0 for d in ids} for i in dp.INTENTS}
+    results = dpool.score_results(tdp.SPLITS, matches, single, {i: {"theta": 0.5} for i in dp.INTENTS})
+    b = results["bootstrap"]["pool_minus_keyword"]
+    assert b["delta"] == results["macro_f1"]["pool_semantic"] - results["macro_f1"]["ordered_keyword"] > 0
+    assert 0 <= b["ci95"][0] <= b["ci95"][1] and b["ci95"][1] > 0
+    assert results["gate"] == "GO"
+
+
+def test_score_combines_every_selected_phrasing_for_single_intent(pool_run):
+    """A hand-written two-phrasing hotel selection: only the second phrasing scores T4 (no hotel) above theta,
+    so the combined single-intent prediction has one false positive; first-phrasing-only would have none."""
+    from_run, out = pool_run
+    selection = {i: {"chosen": [0], "phrasings": [TEST_POOL[i][0]], "theta": 0.5} for i in dp.INTENTS}
+    selection[HOTEL] = {"chosen": [0, 1], "phrasings": list(TEST_POOL[HOTEL]), "theta": 0.5}
+    (out / "selection.json").write_text(json.dumps({"selection": selection}))
+    turns = pool_turns()
+    for t in turns:
+        if (t["DialogueId"], t["TurnIndex"]) == ("T4", 0):
+            t["sims"][TEST_POOL[HOTEL][1]] = 0.95
+    engine = PoolEngine(turns)
+    dpool.cmd_score(tdp.live_for(out, engine), tdp.SPLITS, from_run)
+    results = json.loads((out / "results.json").read_text())
+    assert len(results["calls"]) == 12 + 12 + 5                # two hotel single-intent calls, one per other intent
+    assert results["single_intent"][HOTEL]["fp"] == 1          # T4 via the second phrasing
