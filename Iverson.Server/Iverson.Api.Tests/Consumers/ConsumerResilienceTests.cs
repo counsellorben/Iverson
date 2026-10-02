@@ -67,4 +67,25 @@ public class ConsumerResilienceTests
 
         callCount.Should().Be(1);
     }
+
+    [Fact]
+    public async Task RunWithRestartAsync_TimeoutWhileRunning_RestartsInsteadOfExiting()
+    {
+        using var cts = new CancellationTokenSource();
+        var callCount = 0;
+
+        Task RunConsumers()
+        {
+            callCount++;
+            if (callCount == 1)
+                throw new TaskCanceledException("timed out", new TimeoutException());
+            cts.Cancel();
+            return Task.CompletedTask;
+        }
+
+        await ConsumerResilience.RunWithRestartAsync(
+            RunConsumers, NullLogger.Instance, "Test", cts.Token, TimeSpan.FromMilliseconds(1));
+
+        callCount.Should().Be(2);
+    }
 }

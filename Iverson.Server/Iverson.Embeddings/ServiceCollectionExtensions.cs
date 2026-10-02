@@ -16,6 +16,7 @@ public static class ServiceCollectionExtensions
                 var opts = sp.GetRequiredService<
                     Microsoft.Extensions.Options.IOptions<EmbeddingServiceOptions>>().Value;
                 client.BaseAddress = new Uri(opts.BaseUrl);
+                client.Timeout     = opts.Timeout;
             });
 
         services.AddSingleton<IEmbeddingService, EmbeddingService>();

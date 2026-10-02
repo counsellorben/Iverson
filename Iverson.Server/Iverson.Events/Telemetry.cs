@@ -17,5 +17,5 @@ internal static class Telemetry
         Meter.CreateCounter<long>("consumer.dlq_routed", description: "Messages routed to the dead-letter queue");
 
     internal static readonly Counter<long> ConsumerTransientHalts =
-        Meter.CreateCounter<long>("consumer.transient_halts", description: "Consumer halts on a transient failure that persisted past the dispatcher's attempts");
+        Meter.CreateCounter<long>("consumer.transient_halts", description: "Consumer halts for redelivery: a transient failure that persisted past the dispatcher's attempts, or a dependency timeout");
 }

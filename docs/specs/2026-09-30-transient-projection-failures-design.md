@@ -32,7 +32,7 @@ The consumer loop already implements "halt rather than lose":
 
 This was probed against the live broker (see Verified assumptions). Until now, the only thing that reaches this path is a failed DLQ write.
 
-This design routes transient dependency failures into the same path. After the dispatcher's existing bounded attempts, a transient failure is **rethrown instead of dead-lettered**. The loop halts and restarts about every 13 s until the dependency is back.
+This design routes transient dependency failures into the same path. After the dispatcher's existing bounded attempts, a transient failure is **rethrown instead of dead-lettered**. The loop halts and restarts about every 13 s until the dependency is back. (The halt path closes the Kafka consumer before rethrowing, so the restarted consumer rejoins at once: `docs/specs/2026-10-01-consumer-timeout-halt-design.md`.)
 
 Rejected alternatives:
 - **Retry in place forever inside the dispatcher.** A handler blocked past `max.poll.interval.ms` (librdkafka default 300 s; nothing in the repo sets it) is evicted from its group, and its later commit fails into B's path anyway, through an error.
@@ -72,9 +72,9 @@ Everything else is non-transient, including:
   - increment a new counter, `Telemetry.ConsumerTransientHalts` (`consumer.transient_halts`), next to the existing `consumer.retries` and `consumer.dlq_routed` counters at `Telemetry.cs:13-17`;
   - rethrow the original exception, with no DLQ write.
 
-  Otherwise it dead-letters as today. Poison messages still dead-letter immediately. `OperationCanceledException` still rethrows immediately, and a failed DLQ write still throws.
+  Otherwise it dead-letters as today. Poison messages still dead-letter immediately. `OperationCanceledException` still rethrows immediately on shutdown; a cancellation while the consumer's token is live (a dependency timeout) halts at once instead (`docs/specs/2026-10-01-consumer-timeout-halt-design.md`). A failed DLQ write still throws.
 - **`AddKafka`** (`Iverson.Events/ServiceCollectionExtensions.cs:11`) gains an optional `Func<Exception, bool>? isTransient = null` parameter. The single production construction site (`:47`) passes it into `new MessageDispatcherOptions { IsTransient = isTransient ?? (_ => false) }`. `Program.cs:340` changes to `builder.Services.AddKafka(cfg, isTransient: TransientFailures.IsTransient);`.
-- **`KafkaConsumer.ConsumeAsync`** has no behavior change. Only the comment and log wording at the halt site change: from "the DLQ write itself failed" to "the DLQ write failed or a dependency is transiently unavailable".
+- **`KafkaConsumer.ConsumeAsync`** has no behavior change. Only the comment and log wording at the halt site change: from "the DLQ write itself failed" to "the DLQ write failed or a dependency is transiently unavailable". A later change filters its cancellation catches on the consumer token so that a timeout halts (`docs/specs/2026-10-01-consumer-timeout-halt-design.md`).
 - **`ConsumerResilience`** is unchanged. Each of the five consumers runs its own group and loop, so an outage halts only the consumers that need the missing dependency.
 
 ### 3. The three consumers that swallow failures
@@ -149,7 +149,7 @@ All unit tests use each project's existing fakes. No containers are needed.
 - **Extra round-trip:** one FE liveness check per StarRocks failure that is neither transient nor an expected missing resource.
 - **gRPC behavior change:** reads return `Unavailable` during a StarRocks backend outage (§5).
 - **Misclassification has a cost in both directions.** A transient failure classified as permanent is still dead-lettered. A permanent failure classified as transient stalls its consumer until someone intervenes. The classifier test matrix is the guard.
-- **HTTP timeouts reaching the dispatcher directly (Engagement, Intelligence: existing, unchanged):** an HTTP timeout is a `TaskCanceledException`, which is an `OperationCanceledException`. The dispatcher and `KafkaConsumer` already treat it as cancellation: the loop exits, `ConsumeAsync` returns, and `ConsumerResilience` restarts immediately with no 10 s delay. It is redelivered either way, with no halt log or `consumer.transient_halts` count. Enrichment no longer takes this path: its Ollama timeouts are skipped, logged and counted (`docs/specs/2026-10-01-enrichment-timeout-skip-design.md`).
+- **HTTP timeouts reaching the dispatcher directly (resolved):** Engagement makes no HTTP calls (it reaches StarRocks through MySqlConnector), so only Intelligence's embedding timeouts reach the dispatcher, as a `TaskCanceledException`. They now halt like any transient outage: a Critical log, `consumer.transient_halts`, the 10 s restart delay and redelivery, instead of a silent immediate restart (`docs/specs/2026-10-01-consumer-timeout-halt-design.md`). Enrichment's Ollama timeouts are skipped, logged and counted before they reach the dispatcher (`docs/specs/2026-10-01-enrichment-timeout-skip-design.md`).
 
 ## Out of scope
 

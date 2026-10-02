@@ -113,7 +113,7 @@ All tests go in `Iverson.Server/Iverson.Api.Tests/Consumers/EnrichmentConsumerTe
 
 - **During an Ollama overload, objects stay unenriched until recovered.** While Ollama is slow enough to time out, every object it times out on is skipped and stays unenriched until its next change or a reconcile. That is the best-effort contract Enrichment had before the transient change, now with a per-object Warning and a counter.
 - **A skip is not a lasting fix.** A document that always times out is skipped on every event for it, and is never enriched until its source text changes.
-- **Engagement and Intelligence timeouts are unchanged.** Their HTTP timeouts keep the existing immediate-restart cancellation path: redelivered, with no halt log or counter. "Never block" doesn't apply to them, because skipping would drop vectors or projections, which are not best-effort.
+- **Engagement and Intelligence timeouts are not skipped.** Engagement makes no HTTP calls, and Intelligence's embedding timeouts halt, are counted and back off (`docs/specs/2026-10-01-consumer-timeout-halt-design.md`). "Never block" doesn't apply to them, because skipping would drop vectors or projections, which are not best-effort.
 
 ## Out of scope
 

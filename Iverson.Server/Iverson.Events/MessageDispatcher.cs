@@ -38,6 +38,9 @@ public sealed class MessageDispatcherOptions
 ///     failing after the bounded attempts → throw, no dead-letter (caller must NOT commit — the
 ///     consumer halts and the message is redelivered once the dependency is back);
 ///   - PoisonMessageException → dead-letter immediately (no retry);
+///   - OperationCanceledException while <c>ct</c> is live (a dependency timeout: HttpClient surfaces
+///     its timeout as a TaskCanceledException) → throw at once, no retry and no dead-letter (caller
+///     must NOT commit); on shutdown it is rethrown as cancellation;
 ///   - success or successful dead-letter → return normally (caller commits the offset);
 ///   - DLQ write itself fails → throw (caller must NOT commit — halt rather than lose).
 /// </summary>
@@ -71,8 +74,22 @@ public sealed class MessageDispatcher(
                 await DeadLetterAsync(ctx, ex, attempt + 1, ct);
                 return;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                throw;
+            }
+            catch (OperationCanceledException ex)
+            {
+                // Cancelled while the consumer's token is live: a dependency timeout (HttpClient surfaces its
+                // timeout as a TaskCanceledException). Not a bad message, so never dead-lettered; not retried in
+                // place, because one attempt can take HttpClient's 100 s and three would pass Kafka's 300 s
+                // max.poll.interval.ms.
+                logger.LogCritical(ex,
+                    "[Dispatch] Handler cancelled while the consumer is running (a dependency timeout) topic={Topic} key={Key} — not dead-lettering; halting for redelivery",
+                    ctx.SourceTopic, ctx.Key);
+                Telemetry.ConsumerTransientHalts.Add(1,
+                    new KeyValuePair<string, object?>("consumer.group", ctx.ConsumerGroup),
+                    new KeyValuePair<string, object?>("reason", "timeout"));
                 throw;
             }
             catch (Exception ex)
@@ -88,7 +105,9 @@ public sealed class MessageDispatcher(
                             _options.MaxAttempts,
                             ctx.SourceTopic,
                             ctx.Key);
-                        Telemetry.ConsumerTransientHalts.Add(1);
+                        Telemetry.ConsumerTransientHalts.Add(1,
+                            new KeyValuePair<string, object?>("consumer.group", ctx.ConsumerGroup),
+                            new KeyValuePair<string, object?>("reason", "transient"));
                         throw;
                     }
 

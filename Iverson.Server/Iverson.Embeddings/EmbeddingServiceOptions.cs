@@ -6,6 +6,10 @@ public sealed class EmbeddingServiceOptions
     public string  BaseUrl        { get; set; } = "http://localhost:8091";
     public string  ModelId        { get; set; } = "BAAI/bge-base-en-v1.5";
 
+    // 100 s is HttpClient's default, so the default changes nothing. Operators raise it (Embeddings__Timeout)
+    // when a long document's embedding keeps timing out and halting the Intelligence consumer.
+    public TimeSpan Timeout       { get; set; } = TimeSpan.FromSeconds(100);
+
     // null means "derive from ModelId"; "" means "deliberately no prefix". These are different:
     // arctic's document prefix IS the empty string, so "" cannot double as unset.
     public string? DocumentPrefix { get; set; }
