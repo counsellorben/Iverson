@@ -62,22 +62,25 @@ These assumptions were verified by `thorough-brainstorming` and reconfirmed by C
 
 ## Verified plan-level assumptions
 
-Task 1's code was prototyped on the throwaway branch `pool-proto` (`.worktrees/pool-proto`), one commit on `d5bfc011`. The patch below is `git diff d5bfc011 pool-proto`.
+Task 1's code was prototyped on the throwaway branch `pool-proto` (`.worktrees/pool-proto`), two commits on `d5bfc011`. The patch below is `git diff d5bfc011 pool-proto`.
 
 | # | Category | Assumption | Evidence |
 |---|---|---|---|
 | 1 | Paths | `dialogue_pool.py` and `test_dialogue_pool.py` are new, and the patch creates only these two files. `OUT` exists and holds only `design-probes/`, so neither `selection.json` nor `results.json` exists yet. | The patch's `+++ b/` list. `ls` of `OUT` shows `design-probes` only. |
-| 2 | Signature | Every `dialogue_patterns` / `pattern_leg` symbol the script uses exists with the called shape: <br>• `theta_grid(scores, gold, ids)`, `strict_turn_scores(rows, expected, what)`, `matched_dialogues(rows, written, what)`; <br>• `all_rows_request(split, text)`, `arm_request("ordered_keyword", split, x, y, None)`, `_split_rows`, `ORDERED_PATTERN`, `LIMIT`; <br>• `wait_until_ready`, `checked(live, expected, name, body)`, `timed_call`, `Live(out, coordinator, fetch_build, build_url, …)`; <br>• `read_json`, `out_path`, `refuse_existing`, `check_ingest_matches_data`, `written_turns`, `written_dialogues`, `split_ids`, `onsets`, `gold_labels`, `single_intent_gold`, `single_intent_predictions`, `prf`, `macro_f1`, `tie_count`, `bootstrap_macro_f1`, `percentile_ci`, `ensure_data`, `load_splits`; <br>• `EntityCoordinator`, `DialogueTurn`; <br>• `pl.similarity`, `pl.format_theta`, `pl.write_json`, `pl.TokenSession`, `pl.connect`, `pl.fetch_build`, `pl.mint_acting_user_token`, `pl.mint_service_token_from_env`, `pl.BYPASS_USERNAME`. | `dialogue_patterns.py:274-321`, `:331-470`, `:565-640`, `:885-905`; `pattern_leg.py:148-163`. The prototype imports and calls every one of them in its 19 tests. |
+| 2 | Signature | Every `dialogue_patterns` / `pattern_leg` symbol the script uses exists with the called shape: <br>• `theta_grid(scores, gold, ids)`, `strict_turn_scores(rows, expected, what)`, `matched_dialogues(rows, written, what)`; <br>• `all_rows_request(split, text)`, `arm_request("ordered_keyword", split, x, y, None)`, `_split_rows`, `ORDERED_PATTERN`, `LIMIT`; <br>• `wait_until_ready`, `checked(live, expected, name, body)`, `timed_call`, `Live(out, coordinator, fetch_build, build_url, …)`; <br>• `read_json`, `out_path`, `refuse_existing`, `check_ingest_matches_data`, `written_turns`, `written_dialogues`, `split_ids`, `onsets`, `gold_labels`, `single_intent_gold`, `single_intent_predictions`, `prf`, `macro_f1`, `tie_count`, `bootstrap_macro_f1`, `percentile_ci`, `ensure_data`, `load_splits`; <br>• `EntityCoordinator`, `DialogueTurn`; <br>• `pl.similarity`, `pl.format_theta`, `pl.write_json`, `pl.TokenSession`, `pl.connect`, `pl.fetch_build`, `pl.mint_acting_user_token`, `pl.mint_service_token_from_env`, `pl.BYPASS_USERNAME`. | `dialogue_patterns.py:274-321`, `:331-470`, `:565-640`, `:885-905`; `pattern_leg.py:148-163`. The 19 tests call every one except `main()`'s wiring symbols (`TokenSession`, `connect`, `fetch_build`, `mint_*`, `BYPASS_USERNAME`, `ensure_data`, `load_splits`, `EntityCoordinator`, `DialogueTurn`), which CIR round 1 exercised by driving `main()` against the real 2026-09-29 directory. |
 | 3 | Signature | `load_ready_ingest` reads `ingest.json` from `live.out`, so the script loads the from-run `ingest.json` itself (`load_from_run`): it requires a passed readiness check and runs `check_ingest_matches_data`. `ensure_data` md5-checks the pinned files that are present and downloads nothing. | `dialogue_patterns.py:725-730` (`load_ready_ingest`), `:487-511` (`ensure_data`). CDR round 1 ran `ensure_data`, `load_ready_ingest` and `check_ingest_matches_data` on the real 2026-09-29 directory: no download, 4 md5s, pass. |
 | 4 | Command | Expected counts: <br>• `test_dialogue_pool.py`: 19 passed; <br>• whole scripts suite (`Iverson.Server/Iverson.LoadTest/scripts`): 577 → 596, with the 1 pre-existing warning. | Measured on `main` (577 passed, 1 warning) and on the prototype (596 passed, 1 warning). |
 | 5 | Code validity | The prototype's own `select_phrasings` reproduces `FIDELITY_PIN` on real dev data, and its predicted θs are hotel p90 0.5580, restaurant p89 0.5233, train p90 0.6486 and attraction p92 0.5465. | Offline replica (stored Qdrant vectors plus TEI `/embed` with the bge-base query prefix) through `dialogue_pool.select_phrasings`: `FIDELITY_PIN match: True`. |
-| 6 | Mutation | Each guard is falsifiable. Each mutant was applied to the prototype, `test_dialogue_pool.py` run, and the file restored byte for byte: <br>• `cmd_select` skipping the pin fails `test_a_failed_fidelity_pin_writes_no_selection`; <br>• ties to the higher index fail 3 selection tests; <br>• the gate admitting −0.02 fails `test_non_inferiority_gate[-0.02-NO-GO]`; <br>• `AND` instead of `OR` fails the define test; <br>• no strict-improvement stop fails 3 tests; <br>• a cap of 2 fails the cap test; <br>• reversed prediction order fails the score test; <br>• the keyword arm sent pool requests fails the score test (after its define assertions were added); <br>• no `/build` check in `select` fails `test_select_aborts_on_a_rebuilt_stack`. | 9 of 9 mutants killed. |
+| 6 | Mutation | Each guard is falsifiable. Each mutant was applied to the prototype, `test_dialogue_pool.py` run, and the file restored byte for byte: <br>• `cmd_select` skipping the pin fails `test_a_failed_fidelity_pin_writes_no_selection`; <br>• ties to the higher index fail 3 selection tests; <br>• the gate admitting −0.02 fails `test_non_inferiority_gate[-0.02-NO-GO]`; <br>• `AND` instead of `OR` fails the define test; <br>• no strict-improvement stop fails 3 tests; <br>• a cap of 2 fails the cap test; <br>• reversed prediction order fails the score test; <br>• the keyword arm sent pool requests fails the score test (after its define assertions were added); <br>• no `/build` check in `select` fails `test_select_aborts_on_a_rebuilt_stack`; <br>• dropping the grid fails `test_select_runs_one_call_per_phrasing_and_writes_the_selection`; <br>• letting `score` run without a selection fails `test_score_refuses_to_run_without_a_selection`. | 11 of 11 mutants killed. |
 | 7 | Consumer impact | `dialogue_patterns.py` and `test_dialogue_patterns.py` are unchanged; the new test file only imports the latter's fixtures. Pytest has no conftest or `pytest.ini` here. | Whole suite 596 passed on the prototype, including all 577 existing tests. `ls` of the scripts dir and `Iverson.LoadTest` shows no `conftest.py` or `pytest.ini`. |
-| 8 | Environment | The stack is the 14 `iversonserver` compose containers, all stopped. `iverson-api` serves gRPC on 8080 and `/build` over HTTP on 8081 (both bound to 127.0.0.1) and carries `Patterns__Limits__MaxOutputRows=18623` and `MaxExpressionLength=25000`, which `docker start` keeps. Its image computes composite `ded69e9492bdc081`. | `docker ps -a` labels (project `iversonserver`); `docker inspect iverson-api` port bindings and env; CDR round 2 hashed the image's 8 `Iverson.*.dll` MVIDs with `BuildIdentity.cs:22-42`. |
+| 8 | Environment | The stack is the 14 `iversonserver` compose containers, all stopped. `iverson-api` serves gRPC on 8080 and `/build` over HTTP on 8081 (both bound to 127.0.0.1) and carries `Patterns__Limits__MaxOutputRows=18623` and `MaxExpressionLength=25000`, which `docker start` keeps. Its image computes composite `ded69e9492bdc081`. | `docker ps -a` labels (project `iversonserver`); `docker inspect iverson-api` port bindings and env; CDR round 2 hashed the image's 8 `Iverson.*.dll` MVIDs with `BuildIdentity.cs:22-42`. 12 of the 14 have a `Config.Healthcheck`; `iverson-worker` and `iverson-zookeeper` have none (`docker inspect`). |
 | 9 | Environment | Credentials follow the 2026-09-29 state file: <br>• `bench-env.sh` for `IVERSON_GRPC_URL`, `IVERSON_CLIENT_ID`, the token endpoint and scope; <br>• `IVERSON_CLIENT_SECRET` overridden from `.env`'s `IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET` (the `bench-env.sh` copy is stale); <br>• `IVERSON_ACTING_USER_BYPASS_PASSWORD` from `.env`'s `IVERSON_BYPASS_PASSWORD`. | 2026-09-29 plan, Task 2 setup and its VA 11; `bench-env.sh` exports (values not printed). |
 | 10 | Ordering | Task 2 needs Task 1's script, and Task 3 needs Task 2's `selection.json`. `cmd_score` refuses without it. | `cmd_score` reads `selection.json` before any call; `test_score_refuses_to_run_without_a_selection`. |
 | 11 | Call count | Logged calls are 32 in `select` and 34 in `score` (12 + 12 + one per selected phrasing: 3 + 1 + 3 + 3). Each subcommand also makes one or more readiness calls, which are not logged. | `cmd_select`/`cmd_score` log through `timed_call` only; `wait_until_ready` calls `pl.execute` directly (`dialogue_patterns.py:634-657`). |
 | 12 | Convention | The commit style is a lowercase imperative subject plus the trailer. | `git log --format=%s -8`. |
+| 13 | Environment | Every bind-mount source of the 14 containers exists, so `docker start` can succeed. | Verified by CIR round 1 (`docker inspect` mounts; every source path present). |
+| 14 | Integrity | `main()` reads the 2026-09-29 directory and never writes it. | CIR round 1 drove the real `main()` against it: the directory's digest was unchanged. |
+| 15 | Environment | The live script needs no `QDRANT__SERVICE__API_KEY`, which the state file does not set. | CIR round 1: the script imports and runs `--help` without it. |
 
 ## Tasks
 
@@ -104,7 +107,7 @@ If `--check` fails, stop and report. Do not hand-edit. The patch:
 ```diff
 diff --git a/Iverson.Server/Iverson.LoadTest/scripts/dialogue_pool.py b/Iverson.Server/Iverson.LoadTest/scripts/dialogue_pool.py
 new file mode 100644
-index 00000000..03210284
+index 00000000..5f3431cb
 --- /dev/null
 +++ b/Iverson.Server/Iverson.LoadTest/scripts/dialogue_pool.py
 @@ -0,0 +1,313 @@
@@ -207,7 +210,7 @@ index 00000000..03210284
 +def select_phrasings(per_phrasing_scores, gold, dialogue_ids):
 +    """Spec "Selection": greedily add phrasings (max-combined) while dialogue-level single-intent F1 at the
 +    theta_grid optimum strictly improves; the lowest pool index wins equal F1s; at most MAX_PHRASINGS.
-+    Returns {"chosen", "theta", "percentile", "f1", "at_grid_edge", "steps"}."""
++    Returns {"chosen", "theta", "percentile", "f1", "at_grid_edge", "grid", "steps"}."""
 +    chosen, current, steps = [], None, []
 +    while len(chosen) < MAX_PHRASINGS:
 +        best = None                                           # (f1, index, grid)
@@ -226,7 +229,7 @@ index 00000000..03210284
 +        current = best[2]
 +        steps.append({"candidates": candidates, "added": best[1]})
 +    return {"chosen": chosen, "theta": current["theta"], "percentile": current["percentile"],
-+            "f1": current["f1"], "at_grid_edge": current["at_grid_edge"], "steps": steps}
++            "f1": current["f1"], "at_grid_edge": current["at_grid_edge"], "grid": current["grid"], "steps": steps}
 +
 +
 +def check_fidelity(picks):
@@ -423,10 +426,10 @@ index 00000000..03210284
 +    main()
 diff --git a/Iverson.Server/Iverson.LoadTest/scripts/test_dialogue_pool.py b/Iverson.Server/Iverson.LoadTest/scripts/test_dialogue_pool.py
 new file mode 100644
-index 00000000..ecb3abf5
+index 00000000..ee53f23a
 --- /dev/null
 +++ b/Iverson.Server/Iverson.LoadTest/scripts/test_dialogue_pool.py
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,220 @@
 +"""pytest suite for dialogue_pool.py (spec docs/specs/2026-10-02-matchpattern-dialogue-pool-design.md,
 +"Testing"). Run with the python-libs PYTHONPATH (dialogue_patterns imports numpy):
 +
@@ -545,9 +548,11 @@ index 00000000..ecb3abf5
 +        dpool.cmd_score(live_at(tmp_path), {}, str(tmp_path))
 +
 +
-+def test_score_refuses_to_run_without_a_selection(tmp_path):
-+    with pytest.raises(SystemExit):
-+        dpool.cmd_score(live_at(tmp_path), {}, str(tmp_path))
++def test_score_refuses_to_run_without_a_selection(pool_run):
++    from_run, out = pool_run                                 # a ready from-run: only selection.json is missing
++    with pytest.raises(SystemExit, match="selection.json is missing -- run select first"):
++        dpool.cmd_score(tdp.live_for(out, PoolEngine(pool_turns())), tdp.SPLITS, from_run)
++    assert not (out / "results.json").exists()
 +
 +
 +# ── the live flow over fakes (synthetic splits and engine from test_dialogue_patterns) ───────
@@ -604,6 +609,7 @@ index 00000000..ecb3abf5
 +    assert [c["what"] for c in saved["calls"]] == [f"calibration {i} [{j}]" for i in dp.INTENTS for j in (0, 1)]
 +    assert all(saved["selection"][i]["chosen"] == [0] for i in dp.INTENTS)
 +    assert saved["selection"][HOTEL]["phrasings"] == [tdp.D_HOTEL]
++    assert [g[0] for g in saved["selection"][HOTEL]["grid"]] == list(dp.THETA_PERCENTILES)  # grid reported
 +    assert saved["build"]["before"] == saved["build"]["after"] == "c1"
 +
 +
@@ -654,8 +660,8 @@ md5sum Iverson.Server/Iverson.LoadTest/scripts/dialogue_pool.py Iverson.Server/I
 
 Expected:
 ```
-a26683ca1ac432b9da2edee54616f85e  Iverson.Server/Iverson.LoadTest/scripts/dialogue_pool.py
-0ec9925da1f654f5258ec3dd8a09cd00  Iverson.Server/Iverson.LoadTest/scripts/test_dialogue_pool.py
+29cf489b55451d2e8bbf67ce303108c2  Iverson.Server/Iverson.LoadTest/scripts/dialogue_pool.py
+3278f560906568d902772a546f498182  Iverson.Server/Iverson.LoadTest/scripts/test_dialogue_pool.py
 ```
 
 - [ ] **Step 3: Run the tests.** From the repository root:
@@ -714,11 +720,16 @@ docker start iverson-postgres iverson-redis iverson-zookeeper iverson-qdrant ive
 docker start iverson-kafka iverson-starrocks
 docker start iverson-authentik-server iverson-authentik-worker
 docker start iverson-api iverson-worker
+HC="iverson-postgres iverson-redis iverson-qdrant iverson-tei-embed iverson-ollama iverson-jaeger iverson-prometheus iverson-kafka iverson-starrocks iverson-authentik-server iverson-authentik-worker iverson-api"
+for i in $(seq 1 60); do bad=$(docker inspect -f '{{.Name}} {{.State.Running}} {{.State.Health.Status}}' $HC | command grep -v ' true healthy$'); [ -z "$bad" ] && break; sleep 10; done; echo "not healthy: ${bad:-none}"
 for i in $(seq 1 60); do c=$(curl -sf http://localhost:8081/build 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["composite"])' 2>/dev/null) && [ -n "$c" ] && break; sleep 5; done; echo "composite=$c"
 docker exec iverson-api env | command grep -E '^Patterns__Limits__'
 ```
 
+Run this step with a 600000 ms Bash timeout; the default 120000 ms would cut the waits short.
+
 Expected:
+- `not healthy: none`: every healthchecked container is running and healthy. Any other output after 10 minutes means **stop and report**.
 - `composite=ded69e9492bdc081`.
 - The two `Patterns__Limits__` lines (`MaxOutputRows=18623`, `MaxExpressionLength=25000`).
 
@@ -774,7 +785,7 @@ docker stop iverson-worker iverson-api iverson-authentik-worker iverson-authenti
      - The rule in one sentence: GO when the CI lower bound exceeds −0.02.
   2. **Pre-registration.**
      - The pool (from `selection.json` `pool`) and the selection rule (from the spec).
-     - The selection per intent: chosen indices, phrasings, θ, percentile and dev F1, from `selection.json` `selection`.
+     - The selection per intent: chosen indices, phrasings, θ, percentile and dev F1, and its θ grid, from `selection.json` `selection`.
      - The fidelity pin and the note that it passed.
   3. **Results.**
      - The per-pair P, R and F1 table for both arms, with each pair's gold-positive and reversed-negative counts (`results.json` `pairs`).
