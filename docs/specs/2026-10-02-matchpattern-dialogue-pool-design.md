@@ -128,7 +128,7 @@ Everything below is frozen in code before any test-split call.
    - makes 12 pool-semantic pair calls, 12 keyword pair calls, and one single-intent calibration-shape call per selected phrasing (10 with the expected picks);
    - writes `results.json`, which includes **per-dialogue predictions** for both gated arms, the CI and the verdict.
 
-**Calls.** 32 + 12 + 12 + 10 = **66** MatchPattern calls, all reads. Nothing is ingested; the run uses the 14,746 `DialogueTurn` rows already stored. The full local stack must be up.
+**Calls.** 32 + 12 + 12 + 10 = **66** MatchPattern calls, all reads. Nothing is ingested; the run uses the 14,746 `DialogueTurn` rows already stored. The full local stack must be up, on the un-rebuilt image that served the 2026-09-29 run. Both subcommands check `/build` before and after against `ingest.json`'s composite (`ded69e9492bdc081`), as the original `calibrate` and `score` did, and abort on a mismatch. Rebuilding the stack before `score` finishes therefore aborts the run, and the pool arm stays on the same build as the published 0.5102.
 
 **Fidelity pin.** `select` must reproduce the offline replica's dev selection exactly:
 
@@ -189,3 +189,4 @@ Unit tests in `Iverson.Server/Iverson.LoadTest/scripts/test_dialogue_pool.py`, r
 | 11 | The bootstrap accepts arbitrary arm names. | `bootstrap_macro_f1(predictions, gold)` takes `{arm: {pair: [bool]}}` (`dialogue_patterns.py:440-460`). |
 | 12 | The stored vectors are intact. | Qdrant collection `dialogue_turns_tenant_bypass_a8j5vpgduxk1bsvma7542yqnk`: `points_count` 14,746, `utterance_vector` size 768. The StarRocks rows are checked at run time by the readiness step. |
 | 13 | The output-row and expression limits cover the calls. | The 2026-09-29 gate doc records `MaxOutputRows=18623` and `MaxExpressionLength=25000`. Dev calibration calls return 7,374 rows; the longest pair `DEFINE` is under 1,000 characters. |
+| 14 | The build the run must match is `ingest.json`'s composite, and the reused machinery checks it before and after every pass. | `ingest.json` `composite` = `ded69e9492bdc081`; `dialogue_patterns.checked` → `pattern_leg.run_checked_pass` (`pattern_leg.py:536-541`), called with `ingest["composite"]` by readiness (`dialogue_patterns.py:711`), calibrate (`:791`) and score (`:858`). |
