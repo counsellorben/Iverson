@@ -898,6 +898,7 @@ describe('_buildRequest — scalar type resolution', () => {
         }
 
         expect(() => propsOf(OptionalNumber)).toThrow(/OptionalNumber\.x has no type .*cannot be inferred/);
+        expect(() => propsOf(OptionalNumber)).toThrow(/initializer.*@IversonType\(ClrType\.CLR_.*@IversonArray\(ClrType\.CLR_/);
     });
 
     it('throws when an undecorated nullable Date is initialized to null', () => {
@@ -922,6 +923,30 @@ describe('_buildRequest — scalar type resolution', () => {
         }
 
         expect(() => propsOf(OptionalString)).toThrow(/OptionalString\.x has no type .*cannot be inferred/);
+    });
+
+    it('names @IversonArray when an undecorated nullable array is initialized to null', () => {
+        @IversonEntity()
+        class NullArray {
+            @IversonKey()
+            id: string = '';
+
+            tags: string[] | null = null;
+        }
+
+        expect(() => propsOf(NullArray)).toThrow(/NullArray\.tags has no type .*@IversonArray\(ClrType\.CLR_/);
+    });
+
+    it('does not infer an undecorated Uint8Array initializer', () => {
+        @IversonEntity()
+        class UndecoratedBytes {
+            @IversonKey()
+            id: string = '';
+
+            data: Uint8Array = new Uint8Array();
+        }
+
+        expect(() => propsOf(UndecoratedBytes)).toThrow(/UndecoratedBytes\.data has no type .*cannot be inferred/);
     });
 
     it('throws when @IversonType sits on a nullable @IversonArray property', () => {

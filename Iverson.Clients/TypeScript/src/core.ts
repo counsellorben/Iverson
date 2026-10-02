@@ -79,6 +79,7 @@ import { createActingUserMetadata } from './auth.js';
 
 // ── Type helpers ──────────────────────────────────────────────────────────────
 
+/** Convert a JS type name string to a ClrType enum value. */
 function jsTypeToClr(typeName: string): ClrType | undefined {
     switch (typeName) {
         case 'String':   return ClrType.CLR_STRING;
@@ -395,7 +396,8 @@ export function describeEntity(cls: Function): TypeDescriptor {
                 `${typeName}.${fieldName} has no type the SDK can read, so its column type cannot be inferred: ` +
                 'TypeScript erases it (decorator metadata is absent, or a union such as `T | null` reports Object), ' +
                 'and the initializer is missing, null, or not a string, number, boolean or Date. ' +
-                'Give it an initializer, or add @IversonType(ClrType.CLR_…) naming the type.',
+                'Give it an initializer, or add @IversonType(ClrType.CLR_…) naming the type ' +
+                '(for an array property, @IversonArray(ClrType.CLR_…) naming the element type).',
             );
         }
 
