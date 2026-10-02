@@ -27,9 +27,9 @@ import {
 import { IversonClient, SchemaRegistrar } from '../src/core.js';
 import {
     AuthorizationRules,
-    ObjectType,
     GetSchemaResponse,
     ObjectMappingServiceClient,
+    ObjectType,
     RelationKind,
     SchemaEnrichmentKind,
     SchemaRequest,

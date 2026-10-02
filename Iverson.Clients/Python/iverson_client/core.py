@@ -54,7 +54,10 @@ _RELATION_KIND_MAP: dict[str, int] = {
 }
 
 
-def _python_type_to_object_type(type_hint: str | type | None, prop_name: str = "") -> tuple[int, bool]:
+def _python_type_to_object_type(
+    type_hint: str | type | None,
+    prop_name: str = "",
+) -> tuple[int, bool]:
     """Map a Python type annotation to (ObjectType enum value, is_array).
 
     An array whose element is itself a generic (e.g. ``list[list[str]]``) or is not a supported

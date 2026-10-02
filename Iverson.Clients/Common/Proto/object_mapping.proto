@@ -42,19 +42,19 @@ enum ObjectType {
 }
 
 message PropertyDescriptor {
-    string  name          = 1;
-    ObjectType object_type = 2;
-    bool    is_key        = 3;   // [IversonKey]
-    bool    is_nullable   = 4;
-    bool    is_array      = 5;   // float[], Guid[], etc.
-    bool    is_embedding  = 6;   // [IversonEmbedding] present
-    int32   vector_dim    = 7;   // dimension when is_embedding = true
-    string  model_id      = 8;   // e.g. "text-embedding-3-small"
-    bool    is_chunk      = 9;   // [IversonChunk] present
-    int32   chunk_max_tokens = 10;
-    int32   chunk_overlap    = 11;
-    string  chunk_model_id   = 12;  // embedding model for [IversonChunk]
-    int32   chunk_vector_dim = 13;  // vector dimension for chunk embeddings
+    string     name          = 1;
+    ObjectType object_type   = 2;
+    bool       is_key        = 3;   // [IversonKey]
+    bool       is_nullable   = 4;
+    bool       is_array      = 5;   // float[], Guid[], etc.
+    bool       is_embedding  = 6;   // [IversonEmbedding] present
+    int32      vector_dim    = 7;   // dimension when is_embedding = true
+    string     model_id      = 8;   // e.g. "text-embedding-3-small"
+    bool       is_chunk      = 9;   // [IversonChunk] present
+    int32      chunk_max_tokens = 10;
+    int32      chunk_overlap    = 11;
+    string     chunk_model_id   = 12;  // embedding model for [IversonChunk]
+    int32      chunk_vector_dim = 13;  // vector dimension for chunk embeddings
     bool   is_search_key    = 14;  // [IversonSearchKey] present
     int32  search_key_order = 15;  // sort position when is_search_key = true
     bool   is_large_field   = 16;  // [IversonLargeField] present — excluded from fast-path indices
@@ -138,17 +138,17 @@ message SchemaType {
 }
 
 message SchemaField {
-    string  name             = 1;
-    string  description      = 2;
-    ObjectType object_type   = 3;
-    bool    is_array         = 4;
-    bool    is_key           = 5;
-    bool    is_nullable      = 6;
-    bool    is_metadata      = 7;
-    bool    is_search_key    = 8;
-    int32   search_key_order = 9;
-    bool    is_embedding     = 10;
-    bool    is_chunk         = 11;
+    string     name             = 1;
+    string     description      = 2;
+    ObjectType object_type      = 3;
+    bool       is_array         = 4;
+    bool       is_key           = 5;
+    bool       is_nullable      = 6;
+    bool       is_metadata      = 7;
+    bool       is_search_key    = 8;
+    int32      search_key_order = 9;
+    bool       is_embedding     = 10;
+    bool       is_chunk         = 11;
     repeated SchemaEnrichmentKind enrichment = 12;
 }
 

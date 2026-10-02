@@ -7,7 +7,6 @@ import * as grpc from '@grpc/grpc-js';
 
 import {
     AuthorizationRules,
-    ObjectType,
     GetSchemaRequest,
     GetSchemaResponse,
     MappingDeleteRequest,
@@ -15,6 +14,7 @@ import {
     MappingResponse,
     MappingWriteRequest,
     ObjectMappingServiceClient,
+    ObjectType,
     PropertyDescriptor,
     RelationDescriptor,
     RelationKind,

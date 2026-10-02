@@ -329,7 +329,7 @@ export function getGuidFields(target: Function): Set<string> {
     return Reflect.getMetadata(IVERSON_GUID_KEY, target) ?? new Set();
 }
 
-// ── @IversonType(objectType) ─────────────────────────────────────────────────────
+// ── @IversonType(objectType) ──────────────────────────────────────────────────
 
 const IVERSON_TYPE_KEY = Symbol('iverson:type');
 
