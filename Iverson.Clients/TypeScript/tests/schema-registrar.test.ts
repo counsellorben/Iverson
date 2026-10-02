@@ -27,7 +27,7 @@ import {
 import { IversonClient, SchemaRegistrar } from '../src/core.js';
 import {
     AuthorizationRules,
-    ClrType,
+    ObjectType,
     GetSchemaResponse,
     ObjectMappingServiceClient,
     RelationKind,
@@ -368,7 +368,7 @@ describe('SchemaRegistrar', () => {
             expect(rel.kind).toBe(RelationKind.ONE_TO_MANY);
         });
 
-        it('registers a @IversonGuid property as CLR_GUID and leaves untagged strings alone', () => {
+        it('registers a @IversonGuid property as GUID and leaves untagged strings alone', () => {
             @IversonEntity()
             class GuidKeyEntity {
                 @IversonKey() @IversonGuid()
@@ -386,8 +386,8 @@ describe('SchemaRegistrar', () => {
             const req = registrar._buildRequest(GuidKeyEntity);
             const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
 
-            expect(props['Id'].clrType).toBe(ClrType.CLR_GUID);
-            expect(props['Name'].clrType).toBe(ClrType.CLR_STRING);
+            expect(props['Id'].objectType).toBe(ObjectType.GUID);
+            expect(props['Name'].objectType).toBe(ObjectType.STRING);
         });
 
         it('rejects @IversonGuid() on a non-string property', () => {
@@ -407,12 +407,12 @@ describe('SchemaRegistrar', () => {
             expect(() => registrar._buildRequest(GuidOnNumberEntity)).toThrow(/IversonGuid/);
         });
 
-        it('rejects @IversonGuid() on an array property, pointing at @IversonArray(ClrType.CLR_GUID)', () => {
+        it('rejects @IversonGuid() on an array property, pointing at @IversonArray(ObjectType.GUID)', () => {
             @IversonEntity()
             class GuidOnArrayEntity {
                 @IversonKey()
                 id: string = '';
-                @IversonArray(ClrType.CLR_STRING)
+                @IversonArray(ObjectType.STRING)
                 @IversonGuid()
                 tagIds: string[] = [];
                 tenantId: string = '';
@@ -421,7 +421,7 @@ describe('SchemaRegistrar', () => {
             const stub = makeStub();
             const registrar = new SchemaRegistrar(stub, [GuidOnArrayEntity]);
             expect(() => registrar._buildRequest(GuidOnArrayEntity)).toThrow(/tagIds/);
-            expect(() => registrar._buildRequest(GuidOnArrayEntity)).toThrow(/IversonArray\(ClrType\.CLR_GUID\)/);
+            expect(() => registrar._buildRequest(GuidOnArrayEntity)).toThrow(/IversonArray\(ObjectType\.GUID\)/);
         });
 
         it('accepts @IversonGuid() when design:type metadata says String (tsc production path)', () => {
@@ -440,7 +440,7 @@ describe('SchemaRegistrar', () => {
             const registrar = new SchemaRegistrar(stub, [GuidMetadataStringEntity]);
             const req = registrar._buildRequest(GuidMetadataStringEntity);
             const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
-            expect(props['Id'].clrType).toBe(ClrType.CLR_GUID);
+            expect(props['Id'].objectType).toBe(ObjectType.GUID);
         });
 
         it('rejects @IversonGuid() when design:type metadata says Number (tsc production path)', () => {
@@ -476,15 +476,15 @@ describe('SchemaRegistrar', () => {
             const registrar = new SchemaRegistrar(stub, [GuidNoInitializerEntity]);
             const req = registrar._buildRequest(GuidNoInitializerEntity);
             const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
-            expect(props['Id'].clrType).toBe(ClrType.CLR_GUID);
+            expect(props['Id'].objectType).toBe(ObjectType.GUID);
         });
 
-        it('synthesizes relation foreign keys as CLR_GUID', () => {
+        it('synthesizes relation foreign keys as GUID', () => {
             const stub = makeStub();
             const registrar = new SchemaRegistrar(stub, [RegArticle]);
             const props = Object.fromEntries(
                 registrar._buildRequest(RegArticle).rootType!.properties.map(p => [p.name, p]));
-            expect(props['RegAuthorId'].clrType).toBe(ClrType.CLR_GUID);
+            expect(props['RegAuthorId'].objectType).toBe(ObjectType.GUID);
             expect(props['RegAuthorId'].isArray).toBe(false);
 
             @IversonEntity()
@@ -497,7 +497,7 @@ describe('SchemaRegistrar', () => {
 
             const mtm = Object.fromEntries(
                 new SchemaRegistrar(makeStub(), [TaggedPost])._buildRequest(TaggedPost).rootType!.properties.map(p => [p.name, p]));
-            expect(mtm['RegAuthorIds'].clrType).toBe(ClrType.CLR_GUID);
+            expect(mtm['RegAuthorIds'].objectType).toBe(ObjectType.GUID);
             expect(mtm['RegAuthorIds'].isArray).toBe(true);
         });
     });
@@ -702,7 +702,7 @@ describe('_buildRequest — ingest enrichment targets', () => {
 // ── Array fields ────────────────────────────────────────────────────────────
 
 describe('_buildRequest — array fields', () => {
-    it('registers a decorated array property with isArray=true and the declared clrType', () => {
+    it('registers a decorated array property with isArray=true and the declared objectType', () => {
         @IversonEntity()
         class WithArray {
             @IversonKey()
@@ -710,7 +710,7 @@ describe('_buildRequest — array fields', () => {
 
             orgId: string = '';
 
-            @IversonArray(ClrType.CLR_STRING)
+            @IversonArray(ObjectType.STRING)
             tags: string[] = [];
         }
 
@@ -720,7 +720,7 @@ describe('_buildRequest — array fields', () => {
         const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
 
         expect(props['Tags'].isArray).toBe(true);
-        expect(props['Tags'].clrType).toBe(ClrType.CLR_STRING);
+        expect(props['Tags'].objectType).toBe(ObjectType.STRING);
     });
 
     it('throws when an array property is decorated but not with @IversonArray', () => {
@@ -781,12 +781,12 @@ describe('_buildRequest — scalar type resolution', () => {
         }
 
         const props = propsOf(ScalarInitialized);
-        expect(props['N'].clrType).toBe(ClrType.CLR_DOUBLE);
-        expect(props['B'].clrType).toBe(ClrType.CLR_BOOL);
-        expect(props['D'].clrType).toBe(ClrType.CLR_DATETIME);
+        expect(props['N'].objectType).toBe(ObjectType.DOUBLE);
+        expect(props['B'].objectType).toBe(ObjectType.BOOL);
+        expect(props['D'].objectType).toBe(ObjectType.DATETIME);
     });
 
-    it('maps a decorated number to CLR_DOUBLE', () => {
+    it('maps a decorated number to DOUBLE', () => {
         @IversonEntity()
         class DecoratedNumber {
             @IversonKey()
@@ -796,7 +796,7 @@ describe('_buildRequest — scalar type resolution', () => {
             n: number = 0;
         }
 
-        expect(propsOf(DecoratedNumber)['N'].clrType).toBe(ClrType.CLR_DOUBLE);
+        expect(propsOf(DecoratedNumber)['N'].objectType).toBe(ObjectType.DOUBLE);
     });
 
     it('resolves a string | number union from its string initializer', () => {
@@ -808,7 +808,7 @@ describe('_buildRequest — scalar type resolution', () => {
             x: string | number = '';
         }
 
-        expect(propsOf(StringOrNumber)['X'].clrType).toBe(ClrType.CLR_STRING);
+        expect(propsOf(StringOrNumber)['X'].objectType).toBe(ObjectType.STRING);
     });
 
     it('resolves a decorated nullable union from its non-null initializer', () => {
@@ -821,7 +821,7 @@ describe('_buildRequest — scalar type resolution', () => {
             x: number | null = 5;
         }
 
-        expect(propsOf(InitializedUnion)['X'].clrType).toBe(ClrType.CLR_DOUBLE);
+        expect(propsOf(InitializedUnion)['X'].objectType).toBe(ObjectType.DOUBLE);
     });
 
     it('prefers design:type over the initializer when both are known', () => {
@@ -834,7 +834,7 @@ describe('_buildRequest — scalar type resolution', () => {
             x: string = 0 as unknown as string;
         }
 
-        expect(propsOf(StringTypedNumberInit)['X'].clrType).toBe(ClrType.CLR_STRING);
+        expect(propsOf(StringTypedNumberInit)['X'].objectType).toBe(ObjectType.STRING);
     });
 
     it('lets @IversonType override the inferred type', () => {
@@ -843,11 +843,11 @@ describe('_buildRequest — scalar type resolution', () => {
             @IversonKey()
             id: string = '';
 
-            @IversonType(ClrType.CLR_INT32)
+            @IversonType(ObjectType.INT32)
             n: number = 0;
         }
 
-        expect(propsOf(DeclaredInt)['N'].clrType).toBe(ClrType.CLR_INT32);
+        expect(propsOf(DeclaredInt)['N'].objectType).toBe(ObjectType.INT32);
     });
 
     it('lets @IversonType declare a nullable Date', () => {
@@ -856,15 +856,15 @@ describe('_buildRequest — scalar type resolution', () => {
             @IversonKey()
             id: string = '';
 
-            @IversonType(ClrType.CLR_DATETIME)
+            @IversonType(ObjectType.DATETIME)
             d: Date | null = null;
         }
 
-        expect(propsOf(DeclaredNullableDate)['D'].clrType).toBe(ClrType.CLR_DATETIME);
+        expect(propsOf(DeclaredNullableDate)['D'].objectType).toBe(ObjectType.DATETIME);
     });
 
-    it('registers an undecorated number initializer as CLR_DOUBLE, not CLR_STRING', () => {
-        expect(propsOf(RegArticle)['WordCount'].clrType).toBe(ClrType.CLR_DOUBLE);
+    it('registers an undecorated number initializer as DOUBLE, not STRING', () => {
+        expect(propsOf(RegArticle)['WordCount'].objectType).toBe(ObjectType.DOUBLE);
     });
 
     it('resolves @IversonType and initializers when the build emits no decorator metadata', () => {
@@ -879,13 +879,13 @@ describe('_buildRequest — scalar type resolution', () => {
         }
         IversonEntity()(NoMetadata);
         IversonKey()(NoMetadata.prototype, 'id');
-        IversonType(ClrType.CLR_DATETIME)(NoMetadata.prototype, 'e');
+        IversonType(ObjectType.DATETIME)(NoMetadata.prototype, 'e');
 
         const props = propsOf(NoMetadata);
-        expect(props['N'].clrType).toBe(ClrType.CLR_DOUBLE);
-        expect(props['D'].clrType).toBe(ClrType.CLR_DATETIME);
-        expect(props['B'].clrType).toBe(ClrType.CLR_BOOL);
-        expect(props['E'].clrType).toBe(ClrType.CLR_DATETIME);
+        expect(props['N'].objectType).toBe(ObjectType.DOUBLE);
+        expect(props['D'].objectType).toBe(ObjectType.DATETIME);
+        expect(props['B'].objectType).toBe(ObjectType.BOOL);
+        expect(props['E'].objectType).toBe(ObjectType.DATETIME);
     });
 
     it('throws when an optional number has no initializer', () => {
@@ -898,7 +898,7 @@ describe('_buildRequest — scalar type resolution', () => {
         }
 
         expect(() => propsOf(OptionalNumber)).toThrow(/OptionalNumber\.x has no type .*cannot be inferred/);
-        expect(() => propsOf(OptionalNumber)).toThrow(/initializer.*@IversonType\(ClrType\.CLR_.*@IversonArray\(ClrType\.CLR_/);
+        expect(() => propsOf(OptionalNumber)).toThrow(/initializer.*@IversonType\(ObjectType\..*@IversonArray\(ObjectType\./);
     });
 
     it('throws when an undecorated nullable Date is initialized to null', () => {
@@ -934,7 +934,7 @@ describe('_buildRequest — scalar type resolution', () => {
             tags: string[] | null = null;
         }
 
-        expect(() => propsOf(NullArray)).toThrow(/NullArray\.tags has no type .*@IversonArray\(ClrType\.CLR_/);
+        expect(() => propsOf(NullArray)).toThrow(/NullArray\.tags has no type .*@IversonArray\(ObjectType\./);
     });
 
     it('does not infer an undecorated Uint8Array initializer', () => {
@@ -955,8 +955,8 @@ describe('_buildRequest — scalar type resolution', () => {
             @IversonKey()
             id: string = '';
 
-            @IversonArray(ClrType.CLR_STRING)
-            @IversonType(ClrType.CLR_STRING)
+            @IversonArray(ObjectType.STRING)
+            @IversonType(ObjectType.STRING)
             x: string[] | null = null;
         }
 
@@ -969,7 +969,7 @@ describe('_buildRequest — scalar type resolution', () => {
             @IversonKey()
             id: string = '';
 
-            @IversonType(ClrType.CLR_STRING)
+            @IversonType(ObjectType.STRING)
             x: string[] = [];
         }
 
@@ -983,7 +983,7 @@ describe('_buildRequest — scalar type resolution', () => {
             id: string = '';
 
             @IversonGuid()
-            @IversonType(ClrType.CLR_GUID)
+            @IversonType(ObjectType.GUID)
             x: string = '';
         }
 
@@ -1004,7 +1004,7 @@ describe('IversonClient.getSchema', () => {
                         {
                             name: 'category',
                             description: '',
-                            clrType: ClrType.CLR_STRING,
+                            objectType: ObjectType.STRING,
                             isArray: false,
                             isKey: false,
                             isNullable: false,
@@ -1037,7 +1037,7 @@ describe('IversonClient.getSchema', () => {
         expect(types[0].name).toBe('Article');
         expect(types[0].fields).toHaveLength(1);
         expect(types[0].fields[0].name).toBe('category');
-        expect(types[0].fields[0].clrType).toBe(ClrType.CLR_STRING);
+        expect(types[0].fields[0].objectType).toBe(ObjectType.STRING);
         expect(types[0].fields[0].isSearchKey).toBe(true);
         expect(types[0].fields[0].searchKeyOrder).toBe(0);
         expect(getSchema).toHaveBeenCalledTimes(1);

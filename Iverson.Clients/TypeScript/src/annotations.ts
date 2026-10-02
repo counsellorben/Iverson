@@ -19,7 +19,7 @@
  */
 import 'reflect-metadata';
 
-import { ClrType } from '../generated/object_mapping.js';
+import { ObjectType } from '../generated/object_mapping.js';
 
 // ── Metadata symbol keys ───────────────────────────────────────────────────────
 
@@ -291,19 +291,19 @@ const IVERSON_ARRAY_KEY = Symbol('iverson:array');
  * TypeScript cannot infer the element type: `emitDecoratorMetadata` erases it
  * (design:type reports only the `Array` constructor), and an initialized `[]`
  * carries no element type either. Without this decorator, the registrar would
- * either silently fall back to a scalar CLR_STRING column or, for undecorated
+ * either silently fall back to a scalar STRING column or, for undecorated
  * declarations, skip detection entirely.
  */
-export function IversonArray(elementType: ClrType): PropertyDecorator {
+export function IversonArray(elementType: ObjectType): PropertyDecorator {
     return (target, propertyKey) => {
-        const existing: Map<string, ClrType> =
+        const existing: Map<string, ObjectType> =
             new Map(Reflect.getMetadata(IVERSON_ARRAY_KEY, target.constructor) ?? []);
         existing.set(String(propertyKey), elementType);
         Reflect.defineMetadata(IVERSON_ARRAY_KEY, existing, target.constructor);
     };
 }
 
-export function getArrayFields(target: Function): Map<string, ClrType> {
+export function getArrayFields(target: Function): Map<string, ObjectType> {
     return Reflect.getMetadata(IVERSON_ARRAY_KEY, target) ?? new Map();
 }
 
@@ -329,7 +329,7 @@ export function getGuidFields(target: Function): Set<string> {
     return Reflect.getMetadata(IVERSON_GUID_KEY, target) ?? new Set();
 }
 
-// ── @IversonType(clrType) ─────────────────────────────────────────────────────
+// ── @IversonType(objectType) ─────────────────────────────────────────────────────
 
 const IVERSON_TYPE_KEY = Symbol('iverson:type');
 
@@ -339,16 +339,16 @@ const IVERSON_TYPE_KEY = Symbol('iverson:type');
  * unions such as `number | null`), and a missing or null initializer carries none.
  * Scalar-only — an array column uses @IversonArray(elementType).
  */
-export function IversonType(clrType: ClrType): PropertyDecorator {
+export function IversonType(objectType: ObjectType): PropertyDecorator {
     return (target, propertyKey) => {
-        const existing: Map<string, ClrType> =
+        const existing: Map<string, ObjectType> =
             new Map(Reflect.getMetadata(IVERSON_TYPE_KEY, target.constructor) ?? []);
-        existing.set(String(propertyKey), clrType);
+        existing.set(String(propertyKey), objectType);
         Reflect.defineMetadata(IVERSON_TYPE_KEY, existing, target.constructor);
     };
 }
 
-export function getTypeFields(target: Function): Map<string, ClrType> {
+export function getTypeFields(target: Function): Map<string, ObjectType> {
     return Reflect.getMetadata(IVERSON_TYPE_KEY, target) ?? new Map();
 }
 

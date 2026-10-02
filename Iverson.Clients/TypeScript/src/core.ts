@@ -7,7 +7,7 @@ import * as grpc from '@grpc/grpc-js';
 
 import {
     AuthorizationRules,
-    ClrType,
+    ObjectType,
     GetSchemaRequest,
     GetSchemaResponse,
     MappingDeleteRequest,
@@ -79,25 +79,25 @@ import { createActingUserMetadata } from './auth.js';
 
 // ── Type helpers ──────────────────────────────────────────────────────────────
 
-/** Convert a JS type name string to a ClrType enum value. */
-function jsTypeToClr(typeName: string): ClrType | undefined {
+/** Convert a JS type name string to a ObjectType enum value. */
+function jsTypeToObjectType(typeName: string): ObjectType | undefined {
     switch (typeName) {
-        case 'String':   return ClrType.CLR_STRING;
-        case 'Number':   return ClrType.CLR_DOUBLE;
-        case 'Boolean':  return ClrType.CLR_BOOL;
-        case 'Date':     return ClrType.CLR_DATETIME;
+        case 'String':   return ObjectType.STRING;
+        case 'Number':   return ObjectType.DOUBLE;
+        case 'Boolean':  return ObjectType.BOOL;
+        case 'Date':     return ObjectType.DATETIME;
         case 'Buffer':
-        case 'Uint8Array': return ClrType.CLR_BYTES;
+        case 'Uint8Array': return ObjectType.BYTES;
         default:         return undefined;
     }
 }
 
 /** Step-4 inference from an initializer's runtime value; undefined when it identifies no type. */
-function runtimeValueToClr(value: unknown): ClrType | undefined {
-    if (typeof value === 'string')  return ClrType.CLR_STRING;
-    if (typeof value === 'number')  return ClrType.CLR_DOUBLE;
-    if (typeof value === 'boolean') return ClrType.CLR_BOOL;
-    if (value instanceof Date)      return ClrType.CLR_DATETIME;
+function runtimeValueToObjectType(value: unknown): ObjectType | undefined {
+    if (typeof value === 'string')  return ObjectType.STRING;
+    if (typeof value === 'number')  return ObjectType.DOUBLE;
+    if (typeof value === 'boolean') return ObjectType.BOOL;
+    if (value instanceof Date)      return ObjectType.DATETIME;
     return undefined;
 }
 
@@ -339,7 +339,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
             throw new Error(
                 `${typeName}.${fieldName} is an array property but is decorated with @IversonType(); ` +
                 '@IversonType() is scalar-only. Remove it and declare the element type with ' +
-                '@IversonArray(ClrType.CLR_…).',
+                '@IversonArray(ObjectType.…).',
             );
         }
         if (declaredType !== undefined && guidFields.has(fieldName)) {
@@ -352,14 +352,14 @@ export function describeEntity(cls: Function): TypeDescriptor {
             throw new Error(
                 `${typeName}.${fieldName} is an array property but has no @IversonArray(elementType) ` +
                 'decorator; TypeScript erases the element type, so it cannot be inferred. ' +
-                'Add @IversonArray(ClrType.CLR_…) naming the element type.',
+                'Add @IversonArray(ObjectType.…) naming the element type.',
             );
         }
         if (guidFields.has(fieldName)) {
             if (looksArray) {
                 throw new Error(
                     `${typeName}.${fieldName} is decorated with @IversonGuid() but is an array property; ` +
-                    '@IversonGuid() is scalar-only. Use @IversonArray(ClrType.CLR_GUID) to declare a UUID array column.',
+                    '@IversonGuid() is scalar-only. Use @IversonArray(ObjectType.GUID) to declare a UUID array column.',
                 );
             }
             // design:type is populated whenever the build emits decorator metadata: tsc with
@@ -386,18 +386,18 @@ export function describeEntity(cls: Function): TypeDescriptor {
         }
 
         const isArray = arrayElement !== undefined;
-        const clrType = arrayElement
-            ?? (guidFields.has(fieldName) ? ClrType.CLR_GUID : undefined)
+        const objectType = arrayElement
+            ?? (guidFields.has(fieldName) ? ObjectType.GUID : undefined)
             ?? declaredType
-            ?? (designType !== undefined ? jsTypeToClr(designType.name) : undefined)
-            ?? runtimeValueToClr(instance[fieldName]);
-        if (clrType === undefined) {
+            ?? (designType !== undefined ? jsTypeToObjectType(designType.name) : undefined)
+            ?? runtimeValueToObjectType(instance[fieldName]);
+        if (objectType === undefined) {
             throw new Error(
                 `${typeName}.${fieldName} has no type the SDK can read, so its column type cannot be inferred: ` +
                 'TypeScript erases it (decorator metadata is absent, or a union such as `T | null` reports Object), ' +
                 'and the initializer is missing, null, or not a string, number, boolean or Date. ' +
-                'Give it an initializer, or add @IversonType(ClrType.CLR_…) naming the type ' +
-                '(for an array property, @IversonArray(ClrType.CLR_…) naming the element type).',
+                'Give it an initializer, or add @IversonType(ObjectType.…) naming the type ' +
+                '(for an array property, @IversonArray(ObjectType.…) naming the element type).',
             );
         }
 
@@ -409,7 +409,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
 
         properties.push({
             name: toPascalCase(fieldName),
-            clrType,
+            objectType,
             isKey,
             isNullable: !isKey,
             isArray,
@@ -438,7 +438,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
         if (rel.kind === 'one_to_many') continue;
         properties.push({
             name: inferFk(rel.kind, rel.relatedType, typeName),
-            clrType: ClrType.CLR_GUID,
+            objectType: ObjectType.GUID,
             isKey: false,
             isNullable: true,
             isArray: rel.kind === 'many_to_many',
