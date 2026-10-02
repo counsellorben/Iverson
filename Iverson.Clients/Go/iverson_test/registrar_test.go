@@ -595,8 +595,8 @@ func TestSchemaRegistrar_RegisterAll_ArrayFields(t *testing.T) {
 	if !tags.IsArray {
 		t.Error("expected Tags.IsArray=true")
 	}
-	if tags.ClrType != pb.ClrType_CLR_STRING {
-		t.Errorf("expected Tags.ClrType=CLR_STRING, got %v", tags.ClrType)
+	if tags.ObjectType != pb.ObjectType_STRING {
+		t.Errorf("expected Tags.ObjectType=STRING, got %v", tags.ObjectType)
 	}
 
 	counts, ok := props["Counts"]
@@ -606,8 +606,8 @@ func TestSchemaRegistrar_RegisterAll_ArrayFields(t *testing.T) {
 	if !counts.IsArray {
 		t.Error("expected Counts.IsArray=true")
 	}
-	if counts.ClrType != pb.ClrType_CLR_INT64 {
-		t.Errorf("expected Counts.ClrType=CLR_INT64, got %v", counts.ClrType)
+	if counts.ObjectType != pb.ObjectType_INT64 {
+		t.Errorf("expected Counts.ObjectType=INT64, got %v", counts.ObjectType)
 	}
 
 	blob, ok := props["Blob"]
@@ -617,8 +617,8 @@ func TestSchemaRegistrar_RegisterAll_ArrayFields(t *testing.T) {
 	if blob.IsArray {
 		t.Error("expected Blob.IsArray=false")
 	}
-	if blob.ClrType != pb.ClrType_CLR_BYTES {
-		t.Errorf("expected Blob.ClrType=CLR_BYTES, got %v", blob.ClrType)
+	if blob.ObjectType != pb.ObjectType_BYTES {
+		t.Errorf("expected Blob.ObjectType=BYTES, got %v", blob.ObjectType)
 	}
 }
 
@@ -679,8 +679,8 @@ func TestSchemaRegistrar_RegisterAll_NestedByteArrayAllowed(t *testing.T) {
 	if !blobs.IsArray {
 		t.Error("expected Blobs.IsArray=true")
 	}
-	if blobs.ClrType != pb.ClrType_CLR_BYTES {
-		t.Errorf("expected Blobs.ClrType=CLR_BYTES, got %v", blobs.ClrType)
+	if blobs.ObjectType != pb.ObjectType_BYTES {
+		t.Errorf("expected Blobs.ObjectType=BYTES, got %v", blobs.ObjectType)
 	}
 }
 
@@ -707,13 +707,13 @@ func TestIversonClient_GetSchema_ReturnsTypes(t *testing.T) {
 					Fields: []*pb.SchemaField{
 						{
 							Name:           "Category",
-							ClrType:        pb.ClrType_CLR_STRING,
+							ObjectType:     pb.ObjectType_STRING,
 							IsSearchKey:    true,
 							SearchKeyOrder: 0,
 						},
 						{
 							Name:           "PublishedAt",
-							ClrType:        pb.ClrType_CLR_DATETIME,
+							ObjectType:     pb.ObjectType_DATETIME,
 							IsSearchKey:    true,
 							SearchKeyOrder: 1,
 						},
@@ -742,8 +742,8 @@ func TestIversonClient_GetSchema_ReturnsTypes(t *testing.T) {
 	if category.Name != "Category" {
 		t.Errorf("expected field name Category, got %q", category.Name)
 	}
-	if category.ClrType != pb.ClrType_CLR_STRING {
-		t.Errorf("expected ClrType CLR_STRING, got %v", category.ClrType)
+	if category.ObjectType != pb.ObjectType_STRING {
+		t.Errorf("expected ObjectType STRING, got %v", category.ObjectType)
 	}
 	if !category.IsSearchKey {
 		t.Error("expected Category.IsSearchKey=true")
@@ -756,8 +756,8 @@ func TestIversonClient_GetSchema_ReturnsTypes(t *testing.T) {
 	if publishedAt.Name != "PublishedAt" {
 		t.Errorf("expected field name PublishedAt, got %q", publishedAt.Name)
 	}
-	if publishedAt.ClrType != pb.ClrType_CLR_DATETIME {
-		t.Errorf("expected ClrType CLR_DATETIME, got %v", publishedAt.ClrType)
+	if publishedAt.ObjectType != pb.ObjectType_DATETIME {
+		t.Errorf("expected ObjectType DATETIME, got %v", publishedAt.ObjectType)
 	}
 	if publishedAt.SearchKeyOrder != 1 {
 		t.Errorf("expected PublishedAt.SearchKeyOrder=1, got %d", publishedAt.SearchKeyOrder)
@@ -1094,7 +1094,7 @@ func TestSchemaRegistrar_EmbeddingModel_InheritedViaEmbeddedStruct(t *testing.T)
 // sf.Anonymous skip in InspectType directly. Without it, the model assertion above
 // could pass while the embedded struct ALSO silently registers as a phantom string
 // property named "regModelDeclaringBase" (ParseTag returns a plain field for its empty
-// tag, and goTypeToClr discards the "unsupported" flag on the non-array path) — so this
+// tag, and goTypeToObjectType discards the "unsupported" flag on the non-array path) — so this
 // test must check the property list itself, not just the model fields.
 func TestSchemaRegistrar_EmbeddingModel_EmbeddedStructContributesNoProperty(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
@@ -1167,8 +1167,8 @@ func TestSchemaRegistrar_AnonymouslyEmbeddedNamedPrimitive_IsRegisteredAsAProper
 	if !id.IsKey {
 		t.Errorf("regModelID.IsKey = %v, want true (its iverson_key tag must survive)", id.IsKey)
 	}
-	if id.ClrType != pb.ClrType_CLR_GUID {
-		t.Errorf("regModelID.ClrType = %v, want %v (its iverson_guid tag must survive)", id.ClrType, pb.ClrType_CLR_GUID)
+	if id.ObjectType != pb.ObjectType_GUID {
+		t.Errorf("regModelID.ObjectType = %v, want %v (its iverson_guid tag must survive)", id.ObjectType, pb.ObjectType_GUID)
 	}
 }
 

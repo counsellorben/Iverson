@@ -104,7 +104,7 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string, authByType
 		if !ok {
 			continue
 		}
-		clrType, isArray, err := goTypeToClr(sf.Type)
+		objectType, isArray, err := goTypeToObjectType(sf.Type)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", fm.Name, err)
 		}
@@ -112,7 +112,7 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string, authByType
 			if !isGuidEligibleType(sf.Type) {
 				return nil, fmt.Errorf("field %s carries iverson_guid:\"true\" but its underlying type is %s, not string (or []string); iverson_guid marks a string-typed field as a UUID/UUID[] column, and the server would register that column type against payload data it cannot parse. Remove iverson_guid or change the field's type to string", fm.Name, sf.Type)
 			}
-			clrType = pb.ClrType_CLR_GUID
+			objectType = pb.ObjectType_GUID
 		}
 		searchKeyOrder, err := int32FromInt(fm.SearchKeyOrder)
 		if err != nil {
@@ -128,7 +128,7 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string, authByType
 		}
 		prop := &pb.PropertyDescriptor{
 			Name:               fm.Name,
-			ClrType:            clrType,
+			ObjectType:         objectType,
 			IsArray:            isArray,
 			IsKey:              fm.IsKey,
 			IsNullable:         !fm.IsKey,
@@ -179,7 +179,7 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string, authByType
 		if fm.RelationKind != KindOneToMany {
 			properties = append(properties, &pb.PropertyDescriptor{
 				Name:       fk,
-				ClrType:    pb.ClrType_CLR_GUID,
+				ObjectType: pb.ObjectType_GUID,
 				IsArray:    fm.RelationKind == KindManyToMany,
 				IsNullable: true,
 				IsKey:      false,
@@ -277,11 +277,11 @@ func isGuidEligibleType(t reflect.Type) bool {
 	return t.Kind() == reflect.String
 }
 
-// goTypeToClr maps a reflect.Type to a ClrType proto enum value and whether it is an array.
+// goTypeToObjectType maps a reflect.Type to a ObjectType proto enum value and whether it is an array.
 // An array whose element is itself an array, or is not a supported scalar, is REJECTED rather
 // than silently collapsed: the server would register a 1-D TEXT[] column against a payload that
 // is a nested/complex JSON array, and json_populate_record fails on the first insert.
-func goTypeToClr(t reflect.Type) (pb.ClrType, bool, error) {
+func goTypeToObjectType(t reflect.Type) (pb.ObjectType, bool, error) {
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
@@ -293,55 +293,55 @@ func goTypeToClr(t reflect.Type) (pb.ClrType, bool, error) {
 		// A [][]byte is the one nested shape that is legitimate: its inner slice is
 		// the scalar bytes type, not a nested array, so it maps to BYTEA[].
 		if elem.Kind() == reflect.Slice && elem.Elem().Kind() == reflect.Uint8 {
-			return pb.ClrType_CLR_BYTES, true, nil
+			return pb.ObjectType_BYTES, true, nil
 		}
 		if elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array {
 			return 0, false, fmt.Errorf("nested array type %s is not supported", t)
 		}
-		clr, supported := goScalarToClr(elem)
+		objectType, supported := goScalarToObjectType(elem)
 		if !supported {
 			return 0, false, fmt.Errorf("array element type %s is not a supported scalar", elem)
 		}
-		return clr, true, nil
+		return objectType, true, nil
 	}
-	clr, _ := goScalarToClr(t)
-	return clr, false, nil
+	objectType, _ := goScalarToObjectType(t)
+	return objectType, false, nil
 }
 
-// goScalarToClr maps a non-array reflect.Type to a ClrType and reports whether the type is a
-// SUPPORTED scalar. Unsupported scalars keep their historical CLR_STRING fallback; only the
+// goScalarToObjectType maps a non-array reflect.Type to a ObjectType and reports whether the type is a
+// SUPPORTED scalar. Unsupported scalars keep their historical STRING fallback; only the
 // array path acts on the supported flag.
-func goScalarToClr(t reflect.Type) (pb.ClrType, bool) {
+func goScalarToObjectType(t reflect.Type) (pb.ObjectType, bool) {
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
 	switch t.Kind() {
 	case reflect.String:
-		return pb.ClrType_CLR_STRING, true
+		return pb.ObjectType_STRING, true
 	case reflect.Int32:
-		return pb.ClrType_CLR_INT32, true
+		return pb.ObjectType_INT32, true
 	case reflect.Int, reflect.Int64:
-		return pb.ClrType_CLR_INT64, true
+		return pb.ObjectType_INT64, true
 	case reflect.Float32:
-		return pb.ClrType_CLR_FLOAT, true
+		return pb.ObjectType_FLOAT, true
 	case reflect.Float64:
-		return pb.ClrType_CLR_DOUBLE, true
+		return pb.ObjectType_DOUBLE, true
 	case reflect.Bool:
-		return pb.ClrType_CLR_BOOL, true
+		return pb.ObjectType_BOOL, true
 	case reflect.Slice:
 		// []byte is a primitive scalar.
 		if t.Elem().Kind() == reflect.Uint8 {
-			return pb.ClrType_CLR_BYTES, true
+			return pb.ObjectType_BYTES, true
 		}
-		return pb.ClrType_CLR_STRING, false
+		return pb.ObjectType_STRING, false
 	case reflect.Struct:
-		// time.Time maps to CLR_DATETIME
+		// time.Time maps to DATETIME
 		if t.PkgPath() == "time" && t.Name() == "Time" {
-			return pb.ClrType_CLR_DATETIME, true
+			return pb.ObjectType_DATETIME, true
 		}
-		return pb.ClrType_CLR_STRING, false
+		return pb.ObjectType_STRING, false
 	default:
-		return pb.ClrType_CLR_STRING, false
+		return pb.ObjectType_STRING, false
 	}
 }
 

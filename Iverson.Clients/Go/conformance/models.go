@@ -4,7 +4,7 @@
 // Iverson.Clients/DotNet/Iverson.Client.Conformance.Driver/Models/), adapted to the Go client's
 // declaration style: the relation lives directly on the foreign-key member (GoAuthorId,
 // GoTagIds) per iverson/registrar.go's naming rule, and the key needs iverson_guid:"true" since
-// Go maps a bare string key to CLR_STRING otherwise (see sample/models/article.go for the tag
+// Go maps a bare string key to STRING otherwise (see sample/models/article.go for the tag
 // style this mirrors).
 package main
 
@@ -132,7 +132,7 @@ type VectorDoc struct {
 // run's --id-prefix and is iverson_meta exactly as on VectorDoc; Label is the row's per-language
 // identity and the PARTITION BY column, and its spelling must match MatchPatternScenario.LabelFor;
 // Seq is the ORDER BY column that DEFINE B AS Seq > PREV(Seq) compares — int32, because a Go int
-// maps to CLR_INT64; Title is the embedding source the similarity request's SIMILARITY(Title, ...)
+// maps to INT64; Title is the embedding source the similarity request's SIMILARITY(Title, ...)
 // scores.
 type PatternDoc struct {
 	Id       string `iverson_key:"true" iverson_guid:"true"`
