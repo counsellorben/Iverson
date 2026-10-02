@@ -87,14 +87,15 @@ These were introduced by this plan and verified at plan-write time (2026-10-02, 
 | 9 | Signature | `jsTypeToClr` is at `core.ts:82-92`, with `'Number'` → `CLR_FLOAT` and `default` → `CLR_STRING` | Read |
 | 10 | Command | `npm test` = `npm run typecheck && vitest run`; `typecheck` = `tsc -p tsconfig.test.json`, which includes `tests/`, `sample/` and `conformance/`; `./node_modules/.bin/vitest run <file>` runs one file | `package.json:15-16`; `tsconfig.test.json` `include` |
 | 11 | Code validity | Strict typecheck accepts every test shape (`x?: number`, `x: Date \| null = null`, `x?: string`, `x: string \| number = ''`, `x: string[] \| null = null`, by-hand `e?: Date`) and the `pkg as Record<string, unknown>` cast | Prototype: `npm run typecheck` exit 0 after each task |
-| 12 | Code validity | The `??` chain resolves correctly, including `CLR_STRING`, and error messages match the test regexes | Prototype: all 13 new resolution tests and all 12 export tests pass |
+| 12 | Code validity | The `??` chain resolves correctly, including `CLR_STRING`, and error messages match the test regexes | Prototype: all 15 new resolution tests and all 12 export tests pass |
 | 13 | Code validity | A class with no syntactic decorators gets no `design:type`; `IversonEntity()(K)` / `IversonKey()(K.prototype, 'id')` by hand satisfy `describeEntity`'s `isIversonEntity` check (`core.ts:248`) | Prototype: the no-metadata case passes (`N`/`D`/`B` from step 4, `E` from step 2) |
 | 14 | Ordering | Task 1 has no dependencies. Task 2 imports `getTypeFields`/`IversonType` (Task 1). Task 3 exports Task 1's symbols and does not touch Task 2's code. Tasks 1 and 3 both edit `tests/annotations.test.ts`, so run them in order 1 → 2 → 3 | Diff of each task's hunks on the prototype |
-| 15 | TDD red | Each task's new tests fail before its source change | Prototype: Task 1 needs the symbol for its row. Task 2 is 12 failed, 49 passed: the `string \| number = ''` case already passes and is a regression guard. Task 3 is 12 failed, 79 passed |
-| 16 | Consumer impact | `Number` → `CLR_DOUBLE`, `default` → `undefined` (then error 1), and error 2 placed before the existing missing-`@IversonArray` check break no existing test, sample or conformance model | Prototype after all tasks: `npm test` exit 0, **291/291** (262 baseline + 4 + 13 + 12). `tsc -p tsconfig.conformance.json --noEmit` exit 0, and the build's `tsc --noEmit` exit 0 |
+| 15 | TDD red | Each task's new tests fail before its source change | Prototype: Task 1 needs the symbol for its row. Task 2 is 13 failed, 50 passed: the `string \| number = ''` and design-type-beats-initializer cases already pass and are regression guards. Task 3 is 12 failed, 79 passed |
+| 16 | Consumer impact | `Number` → `CLR_DOUBLE`, `default` → `undefined` (then error 1), and error 2 placed before the existing missing-`@IversonArray` check break no existing test, sample or conformance model | Prototype after all tasks: `npm test` exit 0, **293/293** (262 baseline + 4 + 15 + 12). `tsc -p tsconfig.conformance.json --noEmit` exit 0, and the build's `tsc --noEmit` exit 0 |
 | 17 | Consumer impact | None of the 12 new `index.ts` exports collides with an existing export | `src/index.ts` exports none of them today; its other `export` lines name `core.js`/builder symbols only |
 | 18 | Sibling set | All 12 exported names exist in `annotations.ts` under exactly those names | `grep "export function"`: `IversonEmbeddingModel` `:86`, `getEmbeddingModel` `:92`, `IversonSummary` `:183`, `getSummaryFields` `:192`, `IversonKeywords` `:199`, `getKeywordsFields` `:208`, `IversonExtracted` `:230`, `getExtractedFields` `:246`, `IversonGuid` `:319`, `getGuidFields` `:328`; `IversonType`/`getTypeFields` come from Task 1 |
 | 19 | Convention | Commit messages are lowercase imperative with no prefix | `git log --oneline -- Iverson.Clients/TypeScript`: `add the typescript matchPattern builder and client method`, `add the match-pattern steps to the five conformance drivers` |
+| 20 | Test falsifiability | Task 2's tests kill the two mutants CIR-1 found surviving the original 13 tests | Prototype, one mutant at a time against finished Task 2: `default: return ClrType.CLR_STRING` in `jsTypeToClr` (M1) fails only `resolves a decorated nullable union from its non-null initializer`; running `runtimeValueToClr` before `jsTypeToClr` (M5) fails only `prefers design:type over the initializer when both are known` |
 
 ## Tasks
 
@@ -240,6 +241,32 @@ describe('_buildRequest — scalar type resolution', () => {
         expect(propsOf(StringOrNumber)['X'].clrType).toBe(ClrType.CLR_STRING);
     });
 
+    it('resolves a decorated nullable union from its non-null initializer', () => {
+        @IversonEntity()
+        class InitializedUnion {
+            @IversonKey()
+            id: string = '';
+
+            @IversonDescription('x')
+            x: number | null = 5;
+        }
+
+        expect(propsOf(InitializedUnion)['X'].clrType).toBe(ClrType.CLR_DOUBLE);
+    });
+
+    it('prefers design:type over the initializer when both are known', () => {
+        @IversonEntity()
+        class StringTypedNumberInit {
+            @IversonKey()
+            id: string = '';
+
+            @IversonDescription('x')
+            x: string = 0 as unknown as string;
+        }
+
+        expect(propsOf(StringTypedNumberInit)['X'].clrType).toBe(ClrType.CLR_STRING);
+    });
+
     it('lets @IversonType override the inferred type', () => {
         @IversonEntity()
         class DeclaredInt {
@@ -374,7 +401,7 @@ describe('_buildRequest — scalar type resolution', () => {
 - [ ] **Step 2: Run the tests and confirm they fail**
 
 Run: `./node_modules/.bin/vitest run tests/schema-registrar.test.ts`
-Expected: 12 failed, 49 passed. Today `IversonType` is ignored, `Number` → `CLR_FLOAT`, undecorated scalars → `CLR_STRING`, and nothing throws. The `string | number = ''` case already passes and is a regression guard.
+Expected: 13 failed, 50 passed. Today `IversonType` is ignored, `Number` → `CLR_FLOAT`, undecorated scalars and `Object`-typed unions → `CLR_STRING`, and nothing throws. Two cases already pass and are regression guards: `string | number = ''`, and the design-type-beats-initializer case.
 
 - [ ] **Step 3: Rewrite `jsTypeToClr` and add the step-4 helper**
 
@@ -464,7 +491,7 @@ Leave the `const isArray = arrayElement !== undefined;` line above it unchanged.
 - [ ] **Step 5: Run the full suite and the conformance typecheck**
 
 Run: `npm test && ./node_modules/.bin/tsc -p tsconfig.conformance.json --noEmit`
-Expected: typecheck exit 0; `Tests  279 passed (279)`; conformance typecheck exit 0.
+Expected: typecheck exit 0; `Tests  281 passed (281)`; conformance typecheck exit 0.
 
 - [ ] **Step 6: Commit (the breaking-change note goes in the body; the SDK has no README or CHANGELOG)**
 
@@ -544,7 +571,7 @@ Right after `    getArrayFields,`, add:
 - [ ] **Step 4: Run the full suite, the conformance typecheck and the build typecheck**
 
 Run: `npm test && ./node_modules/.bin/tsc -p tsconfig.conformance.json --noEmit && ./node_modules/.bin/tsc --noEmit`
-Expected: `Tests  291 passed (291)`; both `tsc` runs exit 0.
+Expected: `Tests  293 passed (293)`; both `tsc` runs exit 0.
 
 - [ ] **Step 5: Commit**
 
