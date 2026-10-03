@@ -109,16 +109,25 @@ if (needsTenantAndSchema && clientCredentials is not null)
     try
     {
         var adminToken = await MintClientCredentialsTokenAsync(clientCredentials);
-        await EnsureTenantProvisionedAsync(
+        var adminRecoveryLink = await EnsureTenantProvisionedAsync(
             grpcUrl, adminToken, tenantProvisionId, "Iverson LoadTest (dynamic)",
             tenantAdminUsername, tenantAdminEmail);
 
         var tenantAdminLoggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
+        var tenantAdminIdentity = new AuthentikIdentityConfig(
+            tenantAdminUsername, tenantAdminPassword, actingUserClientId, actingUserRedirectUri,
+            actingUserBaseUrl, actingUserHostHeader, actingUserCacheTarget);
+        if (adminRecoveryLink is not null)
+        {
+            // A separate client, so a separate cookie jar: the recovery flow ends by logging the
+            // user in, and that session must not reach the login client below.
+            using var recoveryClient = new AuthentikFlowExecutorClient(
+                tenantAdminIdentity, tenantAdminLoggerFactory.CreateLogger<AuthentikFlowExecutorClient>());
+            await recoveryClient.SetPasswordFromRecoveryLinkAsync(adminRecoveryLink);
+            Console.WriteLine("Set the tenant admin's password from CreateTenant's recovery link.");
+        }
         tenantAdminTokenProvider = new ActingUserTokenProvider(new AuthentikFlowExecutorClient(
-            new AuthentikIdentityConfig(
-                tenantAdminUsername, tenantAdminPassword, actingUserClientId, actingUserRedirectUri,
-                actingUserBaseUrl, actingUserHostHeader, actingUserCacheTarget),
-            tenantAdminLoggerFactory.CreateLogger<AuthentikFlowExecutorClient>()));
+            tenantAdminIdentity, tenantAdminLoggerFactory.CreateLogger<AuthentikFlowExecutorClient>()));
         Console.WriteLine($"Tenant '{tenantProvisionId}' ready.\n");
     }
     catch (Exception ex)
@@ -348,7 +357,9 @@ static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentia
     return response.AccessToken!;
 }
 
-static async Task EnsureTenantProvisionedAsync(
+// Returns CreateTenant's one-time admin recovery link when this call creates the tenant, or null
+// when the tenant already exists.
+static async Task<string?> EnsureTenantProvisionedAsync(
     string grpcUrl, string adminToken, string tenantId, string displayName,
     string adminUsername, string adminEmail)
 {
@@ -358,20 +369,20 @@ static async Task EnsureTenantProvisionedAsync(
 
     var existing = await client.ListTenantsAsync(new ListTenantsRequest(), headers);
     if (existing.Tenants.Any(t => t.TenantId == tenantId))
-        return;
+        return null;
 
-    // No password param here by design (CSR round-2 finding #4 proto cleanup): CreateTenant
-    // already ignored an incoming admin_initial_password before that field was removed from the
-    // proto entirely, so this was never a live provisioning path — the tenant admin's actual
-    // password/login below (AuthentikFlowExecutorClient) is a separate, pre-existing mechanism
-    // unaffected by this cleanup.
-    await client.CreateTenantAsync(new CreateTenantRequest
+    // No password param (CSR round-2 finding #4): onboarding is passwordless, so CreateTenant
+    // creates the admin with no password and returns a one-time recovery link instead. The caller
+    // sets the admin's password through that link
+    // (AuthentikFlowExecutorClient.SetPasswordFromRecoveryLinkAsync).
+    var tenant = await client.CreateTenantAsync(new CreateTenantRequest
     {
         TenantId      = tenantId,
         DisplayName   = displayName,
         AdminUsername = adminUsername,
         AdminEmail    = adminEmail,
     }, headers);
+    return tenant.AdminRecoveryLink;
 }
 
 static AuthorizationRules BuildAuthorizationRules(string restrictedField) => new()
