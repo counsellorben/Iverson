@@ -55,7 +55,7 @@ All changes are in `Grpc/AuthorizationFieldMasking.cs`.
 - `EnforceWriteAuthorization` (`:160`) is the only production caller of `RejectDisallowedFields`. Its tests are updated to the new signature.
 
 **2b. Carry-forward.**
-- Add `CarryForwardRestrictedFields(Struct payload, Struct existingRow, IReadOnlySet<string>? allowedFields)`, called on the update branch **after** `RejectDisallowedFields` and **before** `payloadSizeValidator.ValidateTextColumnSizes`.
+- Add `CarryForwardRestrictedFields(Struct payload, Struct existingRow, IReadOnlySet<string>? allowedFields)`, called on the update branch **after** `RejectDisallowedFields` and **before** `payloadSizeValidator.ValidateTextColumnSizes`, and returns the canonical keys it inserted (empty when it is a no-op).
 - `allowedFields == null` (the caller has no field restriction) → no-op.
 - Otherwise, for every field of `existingRow` whose canonical name (`StructSerializer.UpperFirst`) is not in `allowedFields`, and which has no case-insensitive match among the payload's keys: copy the stored value into the payload under the stored (canonical) key.
 - The stored row's keys are canonical column names: it is the `Data` JSON of `FetchByKeyAsync`, which holds every column including restricted ones.
@@ -66,6 +66,7 @@ All changes are in `Grpc/AuthorizationFieldMasking.cs`.
 **2c. Mapping Update response masking.**
 - Today `ObjectMappingGrpcService.Update` returns `Data = request.Payload` with only the tenant column stripped. After 2b that payload contains carried-forward restricted values the caller may not be allowed to read.
 - After `SerializePayload` (so the Kafka payload stays complete) and before returning, mask the response the way Mapping Get does: evaluate `AuthorizationAction.Read` for the acting user and call `AuthorizationFieldMasking.MaskDisallowedFields(request.Payload, readDecision.AllowedFields)`, the same call Get makes at `ObjectMappingGrpcService.cs:126`. `MaskDisallowedFields` already removes the tenant column first, so it replaces the existing `RemoveTenantColumn` strip.
+- Then remove from `request.Payload` exactly the keys carry-forward inserted. `EnforceWriteAuthorization` returns `CarryForwardRestrictedFields`' inserted-key collection (empty for create and for callers with no field restriction). Read masking alone is not enough: a caller whose read decision is Denied (a `CanWriteAll`-without-`CanReadAll` role on a type with no `OwnerField`), or ownership-required on a row it does not own, gets a null read `AllowedFields`. `MaskDisallowedFields` would then return the carried values from a row Mapping Get would refuse them (`ObjectMappingGrpcService.cs:109-124`).
 - `PersistResponse` returns only the key, so Persistence Update needs no masking.
 
 ## 3. Join fields are field-authorized (closes Finding #1)
@@ -176,6 +177,8 @@ On that path:
 - **Re-checks.** Phase 2 (`:266-291`) re-validates every other registered type's template against the effective descriptors, with FailedPrecondition. A change to a target's authorization therefore cannot leave an invalid dependent template in place.
 - **Renderer.** `DocumentRenderer` (`Consumers/DocumentRenderer.cs:60-90`) emits only the properties the template names.
 
+**Scope.** `SchemaRegistry.LoadAsync` (`SchemaRegistry.cs:83-155`) reloads persisted descriptors at startup without re-running template validation, and the checks arrived after templates: templates from `e6302d16` (2026-08-20), template validation with the FieldPermission check from `d2c2cad4` (2026-08-21), the row-owned-target check only from `410cb83b` (2026-09-14). The refutation therefore also rests on no deployment holding a template descriptor persisted before `410cb83b`. The user confirmed on 2026-10-03 that no persisted descriptors exist.
+
 The sub-project A record notes the refutation; no code changes.
 
 ## 9. Conformance (forced by §1)
@@ -192,8 +195,20 @@ All five drivers report a gRPC status code as data (`statusCode`, `Ok=true`) on 
   - the predicate becomes `deniedStep is { Ok: true } && !malformedCode && code == 5`;
   - the detail strings are updated;
   - the assertion cites `IVC-IDN-008`.
-- **Tests:** `Iverson.ClientConformance.Tests/IdentityScenarioTests.cs` is re-pinned: code 5 passes; null (accepted), 7 and 0 fail; a malformed code and a broken step still fail. All `DeniedStatusCode`/fixture references are updated (round-9 spec verified assumption 22 lists the inline construction sites).
-- **The standard's deferred-coverage note** that "no client-observable assertion discharges cross-tenant write denial" is closed by IDN-008. Update that note, and the IDN prose that describes the response-shape grading (`iverson-client-standard.md` ~`:411-470`).
+- **Tests:** `Iverson.ClientConformance.Tests/IdentityScenarioTests.cs` is re-pinned:
+  - code 5 passes; null (accepted), 7 and 0 fail; a malformed code and a broken step still fail;
+  - `JudgeHappy`'s default denied step (`:62`) becomes `DeniedStep(5)`;
+  - the other `DeniedStep` sites are re-pinned: `:116, :146, :383, :450` (null), `:374, :642, :680` (7) and `:401` (16), along with the assertions named "answered without a gRPC error status".
+- **Coverage ledger** (`iverson-client-standard.md`, IDN `#### Coverage ledger`):
+  - repoint row `:567` to `| A cross-tenant update is answered with gRPC status NOT_FOUND | Covered | IVC-IDN-008 |`, the single Covered claimant of IDN-008;
+  - delete row `:575` ("Cross-tenant write denial signaled on the wire"), or keep it Deferred with a rewritten reason. It must never be Covered, because a second Covered claimant fails the gate.
+- **Stale statements** describing the swallowed cross-tenant write or IDN-007, all rewritten for NotFound and IDN-008:
+  - the IDN prose describing the response-shape grading (`:411`, `:437-443`, `:466-472`);
+  - Deferred row `:573` (a header-less caller now gets 7, a wrong-tenant caller 5, by design);
+  - the negative-leg prose `:479-516`;
+  - the backstop prose `:580-600` (with no seeded row the answer is now NOT_FOUND and IDN-008 passes);
+  - ERR Deferred row `:1012`;
+  - the `IdentityScenario.cs` class and helper docs at `:12`, `:93-145` (including the crefs at `:122`, `:141` to the removed const) and `:656`.
 - **No driver or SDK change.** No SDK catches gRPC errors on mapped update; Go wraps with `%w`, and `status.FromError` in grpc-go 1.84 unwraps it (verified assumption 6).
 
 ## 10. Testing
@@ -236,7 +251,7 @@ A scratch run with only the NotFound check (placed before authorization) failed 
   - a present restricted field is still rejected;
   - a caller with no field restriction is unchanged;
   - a camelCase payload key matches a canonical stored key, so a case variant is not carried over a present field.
-- **Mapping response:** the Update response omits fields the caller may not read, while the published payload still contains them.
+- **Mapping response:** the Update response omits fields the caller may not read, while the published payload still contains them, including the two row-level cases above. For a `CanWriteAll`-without-`CanReadAll` writer on a type with no `OwnerField`, and for the same role updating a row it does not own on a type with an `OwnerField`, the response omits the carried field while the published payload carries it.
 - **Postgres** (Testcontainers, `Iverson.Sql.Tests` or the existing Api integration fixture): a restricted value carried forward survives the `OutboxWriter` upsert.
 
 **Query path** (`Iverson.StarRocks.Tests`):
@@ -266,6 +281,7 @@ A scratch run with only the NotFound check (placed before authorization) failed 
 **Live check** before merge, on an isolated compose project: a copy of `docker-compose.yml` with the `container_name:` lines stripped, `--project-directory Iverson.Server`, and the user's existing containers, volumes and networks untouched; tear down with `down -v`.
 - A removed user's existing acting-user token is refused within 30 s, and a fresh login after re-activation, if any, is accepted.
 - The identity conformance scenario passes IVC-IDN-008 for at least the .NET driver.
+- A field-restricted caller's Update that omits a write-restricted `DATETIME` property and a write-restricted `BYTES` property leaves both stored values intact in Postgres, in the StarRocks row (read back through Search) and in the Qdrant point payload. This is the check that the consumers accept carried-forward values in `row_to_json` text form (TIMESTAMPTZ with a `±hh:mm` offset, BYTEA as `\x…` hex).
 
 ## Verified assumptions
 
@@ -290,6 +306,10 @@ A scratch run with only the NotFound check (placed before authorization) failed 
 | 17 | Mapping Get masks its response with the Read decision, so Update can do the same | `ObjectMappingGrpcService.cs:126` |
 | 18 | Pipeline-test hosts can substitute the revocation repository | `AuthTestWebApplicationFactory.cs:48-66` substitutes `ITenantRepository`, `IEnrichmentStateRepository` and others with no-ops; every pipeline factory derives from it |
 | 19 | Operators carry no `tenant_id`; tenant status values are `active/suspended/deleted`, null when unknown | `AdminConsoleEndpoints.cs:91-93` ("an operator, having no `tenant_id` claim"); `TenantStatusCache.cs`; `ActingUserInterceptor.cs:44-46` |
+| 20 | No deployment holds a template descriptor persisted before `410cb83b` (the date the row-owned-target template check arrived) | User confirmation, 2026-10-03: no persisted descriptors exist. `SchemaRegistry.LoadAsync` (`SchemaRegistry.cs:83-155`) does not re-validate templates, so §8's refutation depends on this |
+| 21 | Carried-forward values survive the `row_to_json` → payload → `json_populate_record` upsert round trip for every column type | CDR-1's P-RT: PGlite (PostgreSQL 18.3) table with one column per `SchemaBuilder` SQL type, scalar and array (`:389-420`). `OutboxWriter`'s exact upsert, then a `row_to_json` dump, then a JSON hop standing in for Struct/`SerializePayload`, then the upsert again: byte-identical, all 18 columns. Caveats: not `postgres:16`, and the .NET hop was not run. §10's Testcontainers carry-forward test (real `OutboxWriter`, `postgres:16-alpine`) closes both |
+| 22 | Every Authentik provider uses the default subject mode, so VA-1's `sub == uid` holds for the console and acting-user providers too | `grep -rn sub_mode` over yaml/yml/py/json/tpl/sh: 0 hits |
+| 23 | Revocation reaches every caller of the ActingUser scheme, not only `ActingUserInterceptor` | `grep -rn '"ActingUser"'` (non-test): the scheme at `Program.cs:206`; callers `ActingUserInterceptor.cs:40` and `Program.cs:600, 620, 643` (`/admin/reconcile`, `/admin/dlq`, `/admin/dlq/{id}/replay`). All four map `!Succeeded` to Unauthenticated or 401 |
 
 ## Known issues / accepted as out of scope
 
