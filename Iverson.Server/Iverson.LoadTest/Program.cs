@@ -123,7 +123,21 @@ if (needsTenantAndSchema && clientCredentials is not null)
             // user in, and that session must not reach the login client below.
             using var recoveryClient = new AuthentikFlowExecutorClient(
                 tenantAdminIdentity, tenantAdminLoggerFactory.CreateLogger<AuthentikFlowExecutorClient>());
-            await recoveryClient.SetPasswordFromRecoveryLinkAsync(adminRecoveryLink);
+            try
+            {
+                await recoveryClient.SetPasswordFromRecoveryLinkAsync(adminRecoveryLink);
+            }
+            catch (Exception ex)
+            {
+                // CreateTenant already succeeded, so the next run finds the tenant and skips this step.
+                // Say so now, or the operator only learns it from that run's failing logins.
+                throw new InvalidOperationException(
+                    $"{ex.Message} The tenant now exists, so re-running LoadTest will not retry this step. " +
+                    "Set the tenant admin's password by hand, for example in " +
+                    "`docker exec -it iverson-authentik-worker ak shell`: " +
+                    $"u = User.objects.get(username=\"{tenantAdminUsername}\"); u.set_password(\"<password>\"); u.save()",
+                    ex);
+            }
             Console.WriteLine("Set the tenant admin's password from CreateTenant's recovery link.");
         }
         tenantAdminTokenProvider = new ActingUserTokenProvider(new AuthentikFlowExecutorClient(
