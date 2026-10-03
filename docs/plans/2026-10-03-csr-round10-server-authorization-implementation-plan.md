@@ -116,7 +116,7 @@ The following assumptions were verified by `thorough-brainstorming` and the two 
 16. `EngagementQueryTranslationException` maps to InvalidArgument.
 17. Mapping Get masks its response with the Read decision.
 18. Pipeline-test hosts can substitute the revocation repository.
-19. Operators carry no `tenant_id`; tenant status values are `active/suspended/deleted`, null when unknown.
+19. Operators carry no `tenant_id`; tenant status values are `active/suspended/deleted`, null when unknown. An operator's console token carries `tenant_id: null`, which .NET reads as an empty claim (CIR-1 PK, PD); Task 9 treats empty as absent.
 20. No deployment holds a template descriptor persisted before `410cb83b` (user confirmation, 2026-10-03).
 21. Carried-forward values survive the `row_to_json` → payload → `json_populate_record` round trip for every column type. Task 2's Testcontainers test now closes this item's caveats as well.
 22. Every Authentik provider uses the default subject mode.
@@ -128,17 +128,22 @@ Each task's table was produced by applying that task's code on the scratch branc
 
 ### Whole-plan proof
 
-`dotnet test Iverson.Server.slnx` at the scratch branch's final commit (`2bd1caa8`, Tasks 1–9 applied), run by the plan writer rather than taken from the proving subagents: **3673 passed, 0 failed.**
+`dotnet test Iverson.Server.slnx` at the scratch branch's final commit (`2bd1caa8`, Tasks 1–9 applied), run by the plan writer rather than taken from the proving subagents: **3673 passed, 0 failed.** Re-measured after CIR-1's §2.1 and §2.2 fixes: `Iverson.Api.Tests` **1380/0**, in a scratch worktree at `2bd1caa8` with both fixes applied. No other project is touched by them, so the solution total is **3678**.
 
 | Project | Before (`e637bada`, per proving agents' baselines) | After (`2bd1caa8`) |
 |---|---|---|
-| `Iverson.Api.Tests` | 1318 | 1375 |
+| `Iverson.Api.Tests` | 1318 | 1380 |
 | `Iverson.Sql.Tests` | 112 | 116 |
 | `Iverson.StarRocks.Tests` (incl. 56 Testcontainers) | 497 | 525 |
 | `Iverson.ClientConformance.Tests` | 638 | 640 |
 | `Iverson.Patterns.Tests` / `Vector` / `Events` / `Embeddings` / `LoadTest` | 620 / 183 / 41 / 54 / 119 | unchanged |
 
 `RequirementsCoverageGateTests` passes 30/30 after Task 3. The Helm API chart renders `Authentication__ConsoleAudience` from the human-oidc-client secret (Task 8). The five driver edits are comment-only: the diff filter over non-comment changed lines gives 0 lines.
+
+| Category | Assumption | Evidence |
+|---|---|---|
+| code validity | No API write can store a BIGINT above 2^53, so carry-forward's Struct-double hop is exact for every stored integer | Every SDK value reaches the server as a Struct double (`Iverson.Clients/DotNet/Iverson.Client.Core/StructConverter.cs:31-32`); CIR-1 span S7 |
+| code validity | An exception thrown inside `OnTokenValidated` fails the request rather than skipping authentication, so a revocation-cache reload failure fails closed | CIR-1 probe PB (run): `ListAsync` throwing → `/v1/traces` 500 with nothing forwarded, gRPC Unknown; span S8 |
 
 ### Task 1 assumptions: Update is strictly an update
 
@@ -194,15 +199,15 @@ Each mutation was applied, run, and restored from a byte copy. `git status` was 
 | code validity | `AllowedFields` is an ordinal `HashSet<string>` of canonical names; the stored row's keys are canonical column names (`row_to_json`), so `UpperFirst(storedKey)` is an identity for every column and the ordinal `Contains` is right | `RowFieldAuthorizationEvaluator.cs:116` (`.ToHashSet()`); `EntityRepository.cs:7-10` (`SELECT row_to_json(t)::text`) |
 | code validity | On the update branch the tenant column is force-set into the payload before carry-forward runs, so carry-forward never copies it | `AuthorizationFieldMasking.cs` existing-row branch `SetAuthoritativeField(payload, decision.TenantColumn, …)`; test asserts `__TenantId` = `test-tenant` and `carried` = exactly `Secret, SealedAt, Seal` |
 | code validity | Case-insensitive match matters for the owner field: it is exempt from rejection, so an ownership-scoped caller restricted from writing it may still send it, camelCase. `StructSerializer.FoldKeys` throws InvalidArgument on two keys that fold to one | `ProtoPayloadHelper.cs:16-33`; mutation M7 (Ordinal) fails `EnforceWriteAuthorization_CamelCasePayloadKey_MatchesTheCanonicalStoredKey` |
-| code validity | `carriedForward` is a `List<string>` returned as the method's `IReadOnlyCollection<string>`; iterating `existingRow.Fields.Keys` while `CarryForward` writes to a *different* Struct (`payload`) is safe | Compiles with 0 warnings in the touched files; 181/0 |
+| code validity | `carriedForward` is a `List<string>` returned as the method's `IReadOnlyCollection<string>`; iterating `existingRow.Fields.Keys` while `CarryForward` writes to a *different* Struct (`payload`) is safe | Compiles with 0 warnings in the touched files; 182/0 |
 | code validity | The read decision for "test-bypass" with `RowPermission("test-bypass", false, true, false)`: no OwnerField → Denied, `AllowedFields` null; with OwnerField → ownership-required, read `AllowedFields` = all minus `Notes` (still lists `Secret`). Either way read masking alone would return the carried `Secret` | `RowFieldAuthorizationEvaluator.cs:36-64`; mutation M9 (drop the carried-key removal) fails both write-only tests |
 | code validity | Values survive the real round trip on `postgres:16-alpine`: `TIMESTAMPTZ` `row_to_json` text with offset and `BYTEA` `\x…` hex both go back through `json_populate_record` unchanged | `Update_ByAFieldRestrictedCaller_LeavesOmittedRestrictedValuesIntactInPostgres` compares `GetRawText()` of `Secret`, `SealedAt`, `Seal` before and after; closes spec VA-21's two caveats (`postgres:16`, .NET hop) |
 | code validity | RLS in the Postgres test: `ApplySchemaAsync` on a schema with a `TenantColumn` grants `iverson_runtime` and FORCEs RLS; `FetchByKeyAsync(ForTenant)` and `OutboxWriter`'s tenant-scoped upsert run as that role; the outbox insert resets to the superuser | `Iverson.Sql.Tests/TenantScopedAccessIntegrationTests.cs:246-293` (same writer, same role switch); test passes |
-| code validity | The owner carry-forward keys on `schema.Authorization?.OwnerField`, not `decision.OwnerFieldName`: the evaluator leaves `OwnerFieldName` null for bypass callers. `AuthorizationRules.OwnerField` normalizes `""` to null, so a schema with no ownership dimension skips the step | `RowFieldAuthorizationEvaluator.cs:44-60`; `SchemaDescriptor.cs:145-167`; mutation M14 (decision instead of schema) fails only the bypass case |
+| code validity | The owner carry-forward keys on `schema.Authorization?.OwnerField`, not `decision.OwnerFieldName`: the evaluator leaves `OwnerFieldName` null for bypass callers. `AuthorizationRules.OwnerField` normalizes `""` to null, so a schema with no ownership dimension skips the step. The stored owner key is found case-insensitively, because registration admits an `OwnerField` that matches its column only case-insensitively (`SchemaRegistrationOrchestrator.cs:680-686`) | `RowFieldAuthorizationEvaluator.cs:44-60`; `SchemaDescriptor.cs:145-167`; mutation M14 (decision instead of schema) fails only the bypass cases |
 | code validity | The owner step runs AFTER `RejectDisallowedFields`. A bypass caller is not owner-exempt (`OwnerFieldName` null), so an owner carried in before the rejection would be rejected as a field it may not write, whenever the owner column is also field-restricted | `EnforceWriteAuthorization` order; the exemption list is `{OwnerFieldName, TenantColumn}` |
 | code validity | An owner column that is both field-restricted and omitted is copied once: the restricted pass inserts it, then `CarryForward` sees it present and returns false, so the key is not added twice | `CarryForward` checks the payload case-insensitively before writing |
 | code validity | The owner value the payload already carries (any casing) wins and is still checked by `OwnerMismatch`/`OwnerImmutable` before carry-forward. Carry-forward only fills an omitted owner, and only with the stored value, so it cannot change ownership | Existing-row branch order; `CarryForward` returns false on a case-insensitive match |
-| code validity | Mapping Update strips the carried owner from its response because it is in the returned collection. The ownership-scoped writer (`ReservedTenantOwnedDossierSchema`) and the `CanWriteAll` writer (`ReservedTenantWriteOnlyDossierSchema(withOwnerField: true)`) both get a response without `OwnerId` | `Update_OmittingTheOwnerColumn_KeepsTheStoredOwner_AndTheResponseDoesNotEchoIt` (2 cases) |
+| code validity | Mapping Update strips the carried owner from its response because it is in the returned collection. The ownership-scoped writer (`ReservedTenantOwnedDossierSchema`) and the `CanWriteAll` writer (`ReservedTenantWriteOnlyDossierSchema(withOwnerField: true)`) both get a response without `OwnerId` | `Update_OmittingTheOwnerColumn_KeepsTheStoredOwner_AndTheResponseDoesNotEchoIt` (3 cases, including an `OwnerField` spelled `ownerId`) |
 | code validity | The upserted JSON is observable at the fake transaction's `ExecuteAsync` for the `json_populate_record` statement, via the anonymous `Json` property; the same technique is used in `OutboxWriterTests.CaptureUpsertJsonAsync` | `Iverson.Sql.Tests/OutboxWriterTests.cs:166-185` |
 | command | Filter that adds the Postgres class: `FullyQualifiedName~Iverson.Api.Tests.Grpc.UpdateCarryForwardPostgresIntegrationTests` | 177 = 168 + 9 observed |
 | ordering | Step 5 red is a compile error, not a test failure: the new masking-test helper consumes the return value Step 6 adds | Observed with the production files reverted to `4a54dd03`: exactly one error, `AuthorizationFieldMaskingTests.cs(617,9): error CS0029` |
@@ -215,26 +220,27 @@ Each mutation was applied, run, and restored from a byte copy. `git status` was 
 
 #### Mutation checks
 
-Final code, i.e. owner carry-forward included. The four classes, 181 tests, with the Postgres test included.
+Final code, i.e. owner carry-forward included. The four classes, 182 tests, with the Postgres test included. The owner-related rows were re-measured after CIR-1 §2.2 added the third owner-theory case.
 
 | Guard | Mutation | Tests that failed |
 |---|---|---|
-| Tenant exemption | `new[] { decision.OwnerFieldName, decision.TenantColumn }` → `new[] { decision.OwnerFieldName }` | `EnforceWriteAuthorization_FieldRestrictedCreate_OnAReservedTenantSchema_Succeeds`, `…_FieldRestrictedUpdate_CarriesOmittedRestrictedFieldsForward`, `…_CamelCasePayloadKey_MatchesTheCanonicalStoredKey`, `Update_ResponseOmitsFieldsTheCallerMayNotRead_…`, both write-only response tests, both owner-theory cases, the Postgres test (9 failed / 181) |
+| Tenant exemption | `new[] { decision.OwnerFieldName, decision.TenantColumn }` → `new[] { decision.OwnerFieldName }` | `EnforceWriteAuthorization_FieldRestrictedCreate_OnAReservedTenantSchema_Succeeds`, `…_FieldRestrictedUpdate_CarriesOmittedRestrictedFieldsForward`, `…_CamelCasePayloadKey_MatchesTheCanonicalStoredKey`, `Update_ResponseOmitsFieldsTheCallerMayNotRead_…`, both write-only response tests, all three owner-theory cases, the Postgres test (10 failed / 182) |
 | Restricted carry-forward | `CarryForwardRestrictedFields`'s condition forced false (`if (false && !allowedFields.Contains(…) && …)`) | `…_FieldRestrictedUpdate_CarriesOmittedRestrictedFieldsForward`, the three Mapping response tests (published payload loses `Secret`), the Postgres test (5 failed) |
 | Carry-forward case-insensitive match (shared `CarryForward`) | `StringComparison.OrdinalIgnoreCase` → `Ordinal` | `EnforceWriteAuthorization_CamelCasePayloadKey_MatchesTheCanonicalStoredKey` (1 failed) |
 | Carry-forward no-op for unrestricted callers | removed `if (allowedFields is null) return [];` | `EnforceWriteAuthorization_UpdateByACallerWithNoFieldRestriction_CarriesNothing` and 13 existing Update tests (NullReferenceException) (14 failed) |
-| Owner carry-forward | owner step disabled (`if (false && ownerField is not null && CarryForward(…))`) | `Update_OmittingTheOwnerColumn_KeepsTheStoredOwner_AndTheResponseDoesNotEchoIt` both cases (2 failed) |
-| Owner sourced from the schema, not the decision | `schema.Authorization?.OwnerField` → `decision.OwnerFieldName` | the same theory, `bypassWriter: True` case (1 failed) |
-| Carried owner joins the returned collection | owner copied but not added to `carriedForward` | the same theory, both cases (response echoes `OwnerId`) (2 failed) |
+| Owner carry-forward | owner step disabled (`if (false && storedOwnerKey is not null && CarryForward(…))`) | `Update_OmittingTheOwnerColumn_KeepsTheStoredOwner_AndTheResponseDoesNotEchoIt` all three cases (3 failed) |
+| Owner key matched case-insensitively | `StringComparison.OrdinalIgnoreCase` → `Ordinal` in the stored-owner-key lookup | the same theory, `ownerId` case (1 failed) |
+| Owner sourced from the schema, not the decision | `schema.Authorization?.OwnerField` → `decision.OwnerFieldName` | the same theory, both `bypassWriter: True` cases (2 failed) |
+| Carried owner joins the returned collection | owner copied but not added to `carriedForward` | the same theory, all three cases (response echoes `OwnerId`) (3 failed) |
 | Mapping Read masking | `MaskDisallowedFields(request.Payload, readDecision.AllowedFields)` → `RemoveTenantColumn(request.Payload)` | `Update_ResponseOmitsFieldsTheCallerMayNotRead_WhileThePublishedPayloadKeepsThem` (1 failed) |
-| Mapping carried-key removal | deleted the `foreach (var carried in carriedForward) request.Payload.Fields.Remove(carried);` loop | `Update_ResponseOmitsFieldsTheCallerMayNotRead_…`, both write-only response tests, both owner-theory cases (5 failed) |
+| Mapping carried-key removal | deleted the `foreach (var carried in carriedForward) request.Payload.Fields.Remove(carried);` loop | `Update_ResponseOmitsFieldsTheCallerMayNotRead_…`, both write-only response tests, all three owner-theory cases (6 failed) |
 
 Each mutation was applied, run, and restored from a byte copy. `git status` was clean against the commit afterwards.
 
 #### Counts
 
 - Before Task 2 (after Task 1): the three classes **170 / 0**.
-- After Task 2: the four classes **181 passed / 0 failed** (Postgres test included, about 6 s).
+- After Task 2: the four classes **182 passed / 0 failed** (Postgres test included, about 6 s; 181 before CIR-1 §2.2 added the third owner-theory case).
 - Whole `Iverson.Api.Tests` at the Task 2 point: **1329 passed / 0 failed / 1329** (7 m 3 s). Run in a throwaway worktree at `3192d4ef` with `2c19b739` and `9963c672` cherry-picked, then removed. Baseline 1318 → −10 deleted cases + 10 (Task 1) + 11 (Task 2) = 1329. An earlier run at `81448753`, before the amendments, was 1325 / 0.
 - Whole `Iverson.Api.Tests` at scratch HEAD `9963c672` (Tasks 1–9 plus both fixups): **1375 passed / 0 failed / 1375** (7 m 1 s).
 - `dotnet build Iverson.Server.slnx`: Build succeeded, 0 errors (at `3192d4ef`; the fixups touch only `Iverson.Api` and its tests, which built clean).
@@ -584,10 +590,10 @@ $ cd Iverson.Server/deploy/helm/iverson && helm template t . -f values-laptop.ya
 | signature | `ITenantStatusCache.GetStatusAsync(string tenantId) → Task<string?>`; statuses `active` / `suspended` / `deleted`, null when unknown | `Tenancy/ITenantStatusCache.cs`; spec VA-19 |
 | signature | `IEndpointFilter.InvokeAsync(EndpointFilterInvocationContext, EndpointFilterDelegate) → ValueTask<object?>`; `RouteHandlerBuilder.AddEndpointFilter<TFilter>()` constructs the filter with DI | Builds; the filter receives the substituted cache in the tests |
 | code validity | Authorization runs before endpoint filters, so the filter only sees callers that already passed the endpoint's policy; tokens carrying `operators` + the reader group reach the filter on all four endpoints | `ActiveTenant_Returns200` and `NoTenantIdClaim_Returns200` → 200 on all four |
-| code validity | `/schema` and `/data-volume` answer 200 for an operator with or without `tenant_id` (they report withheld/denied counts rather than failing) | `AdminConsoleEndpointsPipelineTests.Operator_Schema_ReportsEveryTypeWithheldRatherThanAnEmptyCatalog`, `Operator_DataVolume_ReportsEveryTypeDeniedRatherThanZeroRows`; the new tests pass |
+| code validity | `/schema` and `/data-volume` answer 200 for an operator with or without `tenant_id`, or with an empty `tenant_id` (CIR-1 PK/PD: real operator tokens carry `tenant_id: null`) (they report withheld/denied counts rather than failing) | `AdminConsoleEndpointsPipelineTests.Operator_Schema_ReportsEveryTypeWithheldRatherThanAnEmptyCatalog`, `Operator_DataVolume_ReportsEveryTypeDeniedRatherThanZeroRows`; the new tests pass |
 | code validity | NSubstitute auto-values an unconfigured `Task<string?>` to `""`, not null, so the "unknown tenant" fake is a hand-rolled class | Agent A's `FetchByKeyAsync` comment in `ObjectMappingGrpcServiceTests` and `ObjectPersistenceGrpcServiceTests` |
 | code validity | `AdminConsoleTestWebApplicationFactory` uses the real `TenantStatusCache` → `AdminConsoleTenantRepository.GetAsync`, which returned null; the filter would therefore 403 `AdminConsoleEndpointsPipelineTests`' `tenant_alpha` reader | Reverting `GetAsync` to `null` after the filter landed: 6 failed (`AuthenticatedNonOperator_AuthenticatedOnlyEndpoint_Returns200` ×2, `Reader_DataVolume_CountsThePermittedTypes`, `Reader_DataVolume_DeniedTypeIsDistinguishableFromAZeroCount`, `Reader_Schema_ProjectsRelationEdges`, `Reader_Schema_ReturnsOnlyThePermittedTypesAsProjections`) |
-| command | `--filter "FullyQualifiedName~AdminConsoleActiveTenantPipelineTests\|FullyQualifiedName~AdminConsoleEndpointsPipelineTests"` → 38 (20 + 18); `--filter "FullyQualifiedName~AdminConsole"` → 74 | Observed |
+| command | `--filter "FullyQualifiedName~AdminConsoleActiveTenantPipelineTests\|FullyQualifiedName~AdminConsoleEndpointsPipelineTests"` → 42 (24 + 18); `--filter "FullyQualifiedName~AdminConsole"` → 78 | Observed (78 re-measured after CIR-1 §2.1) |
 | ordering | The `GetAsync` fixture change must land with (or before) the filter | Same commit `a07599ce` |
 | ordering | Independent of Tasks 6–8 except for sharing `AuthTestWebApplicationFactory` (Task 8's `UseSetting` and Task 6's NoOp are inherited, harmlessly) | Full suite green |
 | consumer impact | `AdminConsoleTenantRepository.GetAsync` now returns rows; its only consumer is `TenantStatusCache` inside `AdminConsoleTestWebApplicationFactory` hosts, used by `AdminConsoleEndpointsPipelineTests`, `AdminConsoleActiveTenantPipelineTests` (which replaces the cache anyway), `AdminConsoleSchemaEndpointTests` and `AdminConsoleDataVolumeEndpointTests` (which use only its constants and `AdminConsoleSchemaRegistryRepository` descriptors, never a host or `AdminConsoleTenantRepository`) | `grep -rln AdminConsoleTestWebApplicationFactory Iverson.Api.Tests`; all pass |
@@ -602,6 +608,7 @@ $ cd Iverson.Server/deploy/helm/iverson && helm template t . -f values-laptop.ya
 | suspended refused | `"suspended" or` dropped | the 4 `tenant_suspended` cases |
 | deleted refused | `or "deleted"` dropped | the 4 `tenant_deleted` cases |
 | no `tenant_id` passes | `if (tenantId is null) return 403;` inserted | all 4 `NoTenantIdClaim_Returns200` cases |
+| empty `tenant_id` passes | `!string.IsNullOrEmpty(tenantId)` → `tenantId is not null` | all 4 `EmptyTenantIdClaim_Returns200` cases (re-measured after CIR-1 §2.1) |
 | filter on `/tenants` | its `.AddEndpointFilter<ActiveTenantEndpointFilter>()` removed | 3 failed (that endpoint's unknown, suspended and deleted cases) |
 | filter on `/schema` | same | 3 failed |
 | filter on `/data-volume` | same | 3 failed |
@@ -611,7 +618,7 @@ $ cd Iverson.Server/deploy/helm/iverson && helm template t . -f values-laptop.ya
 
 - **Before:** `AdminConsoleEndpointsPipelineTests` 18; `AdminConsole*` 54.
 - **Red step:** 12 failed / 26 passed.
-- **After:** `AdminConsole*` 74 / 0.
+- **After:** `AdminConsole*` 78 / 0 (74 before CIR-1 §2.1 added the 4 empty-`tenant_id` cases).
 - **Full `Iverson.Api.Tests` at HEAD `a07599ce`:** 1371 / 0.
 
 ## Tasks
@@ -1275,8 +1282,10 @@ Then append to `SchemaFixtures` (before the class's closing brace) in `Iverson.S
         DossierSchema(ownerField: "OwnerId", []);
 
     // "test-bypass" may write every row but has no CanReadAll: CanWriteAll without CanReadAll.
-    public static SchemaDescriptor ReservedTenantWriteOnlyDossierSchema(bool withOwnerField) =>
-        DossierSchema(withOwnerField ? "OwnerId" : null, [new RowPermission("test-bypass", false, true, false)]);
+    // ownerFieldName lets a test register the OwnerField spelled unlike its column ("ownerId"),
+    // which registration accepts because it matches columns case-insensitively.
+    public static SchemaDescriptor ReservedTenantWriteOnlyDossierSchema(bool withOwnerField, string ownerFieldName = "OwnerId") =>
+        DossierSchema(withOwnerField ? ownerFieldName : null, [new RowPermission("test-bypass", false, true, false)]);
 
     private static SchemaDescriptor DossierSchema(string? ownerField, List<RowPermission> rowPermissions) => new()
     {
@@ -1569,16 +1578,17 @@ Append this section at the end of `ObjectMappingGrpcServiceTests` (after `Get_Om
     }
 
     [Theory]
-    [InlineData(false, "test-user")]    // ownership-scoped: may update only its own row
-    [InlineData(true,  "someone-else")] // CanWriteAll bypass: may update anyone's row
+    [InlineData(false, "test-user",    "OwnerId")] // ownership-scoped: may update only its own row
+    [InlineData(true,  "someone-else", "OwnerId")] // CanWriteAll bypass: may update anyone's row
+    [InlineData(true,  "someone-else", "ownerId")] // OwnerField spelled unlike its stored column
     public async Task Update_OmittingTheOwnerColumn_KeepsTheStoredOwner_AndTheResponseDoesNotEchoIt(
-        bool bypassWriter, string storedOwner)
+        bool bypassWriter, string storedOwner, string ownerField)
     {
         // The owner column is writable, so restricted-field carry-forward never reaches it, and
         // OwnerImmutable only compares an owner that is present. Without the owner carry-forward
         // this full-row upsert would write the row with a NULL owner.
         await _registry.RegisterAsync(bypassWriter
-            ? SchemaFixtures.ReservedTenantWriteOnlyDossierSchema(withOwnerField: true)
+            ? SchemaFixtures.ReservedTenantWriteOnlyDossierSchema(withOwnerField: true, ownerFieldName: ownerField)
             : SchemaFixtures.ReservedTenantOwnedDossierSchema());
         StubStoredDossier(ownerId: storedOwner);
         var upserted = CaptureUpsertedJson();
@@ -1811,8 +1821,10 @@ with:
             // that is present — an Update that omits it would write the row with a NULL owner,
             // orphaning it from its owner.
             var ownerField = schema.Authorization?.OwnerField;
-            if (ownerField is not null && CarryForward(payload, existingStruct, ownerField))
-                carriedForward.Add(ownerField);
+            var storedOwnerKey = ownerField is null ? null : existingStruct.Fields.Keys.FirstOrDefault(
+                k => string.Equals(k, ownerField, StringComparison.OrdinalIgnoreCase));
+            if (storedOwnerKey is not null && CarryForward(payload, existingStruct, storedOwnerKey))
+                carriedForward.Add(storedOwnerKey);
         }
 ```
 
@@ -1981,7 +1993,7 @@ with:
 cd Iverson.Server && dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~Iverson.Api.Tests.Grpc.ObjectPersistenceGrpcServiceTests|FullyQualifiedName~Iverson.Api.Tests.Grpc.ObjectMappingGrpcServiceTests|FullyQualifiedName~Iverson.Api.Tests.Grpc.AuthorizationFieldMaskingTests|FullyQualifiedName~Iverson.Api.Tests.Grpc.UpdateCarryForwardPostgresIntegrationTests"
 ```
 
-Expected: `Passed: 181, Failed: 0, Total: 181` (Task 1's 170, plus 5 field-masking tests, 3 Mapping-response tests, the 2-case owner theory and 1 Postgres test; the Postgres test starts one `postgres:16-alpine` container).
+Expected: `Passed: 182, Failed: 0, Total: 182` (Task 1's 170, plus 5 field-masking tests, 3 Mapping-response tests, the 3-case owner theory and 1 Postgres test; the Postgres test starts one `postgres:16-alpine` container).
 
 Then the whole project once:
 
@@ -1989,7 +2001,7 @@ Then the whole project once:
 cd Iverson.Server && dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj
 ```
 
-Expected: `Passed: 1329, Failed: 0, Total: 1329` (baseline 1318 at `e637bada`; Task 1 net 0, Task 2 +11). About 8 minutes with the container suites.
+Expected: `Passed: 1330, Failed: 0, Total: 1330` (baseline 1318 at `e637bada`; Task 1 net 0, Task 2 +12). About 8 minutes with the container suites.
 
 - [ ] **Step 9: Commit**
 
@@ -5365,6 +5377,18 @@ public class AdminConsoleActiveTenantPipelineTests : IClassFixture<AdminConsoleT
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
+
+    [Theory]
+    [InlineData(Tenants)]
+    [InlineData(Schema)]
+    [InlineData(DataVolume)]
+    [InlineData(Qdrant)]
+    public async Task EmptyTenantIdClaim_Returns200(string path)
+    {
+        var response = await GetAsync(path, Token(""));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
 }
 ```
 
@@ -5374,9 +5398,9 @@ public class AdminConsoleActiveTenantPipelineTests : IClassFixture<AdminConsoleT
 cd Iverson.Server && dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~AdminConsoleActiveTenantPipelineTests|FullyQualifiedName~AdminConsoleEndpointsPipelineTests"
 ```
 
-Expected (observed): 12 failed, 26 passed.
+Expected (observed): 12 failed, 30 passed.
 - The 12 failures are every `TenantNotActive_Returns403(path, tenantId)` case: 4 endpoints × unknown, suspended and deleted, each of which got 200.
-- The 8 active and no-`tenant_id` cases pass, as do all 18 `AdminConsoleEndpointsPipelineTests`.
+- The 12 active, no-`tenant_id` and empty-`tenant_id` cases pass, as do all 18 `AdminConsoleEndpointsPipelineTests`.
 
 - [ ] **Step 4: Implement the filter**
 
@@ -5391,14 +5415,15 @@ namespace Iverson.Api.Console;
 /// CSR round-10 #14: the admin console's endpoints refuse a caller whose tenant is not active,
 /// as the gRPC surfaces already do. The rule is <c>ActingUserInterceptor</c>'s: a caller with a
 /// <c>tenant_id</c> claim whose tenant is unknown, suspended or deleted gets 403. A caller with
-/// no <c>tenant_id</c> claim — an operator — passes.
+/// no <c>tenant_id</c> claim, or an empty one (an operator's console token carries
+/// <c>tenant_id: null</c>), passes.
 /// </summary>
 public sealed class ActiveTenantEndpointFilter(ITenantStatusCache tenantStatusCache) : IEndpointFilter
 {
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
         var tenantId = context.HttpContext.User.FindFirst("tenant_id")?.Value;
-        if (tenantId is not null)
+        if (!string.IsNullOrEmpty(tenantId))
         {
             var status = await tenantStatusCache.GetStatusAsync(tenantId);
             if (status is null or "suspended" or "deleted")
@@ -5500,8 +5525,8 @@ with:
 cd Iverson.Server && dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~AdminConsole"
 ```
 
-Expected (observed): 74 passed, 0 failed. That count includes:
-- `AdminConsoleActiveTenantPipelineTests`, 20;
+Expected (observed): 78 passed, 0 failed. That count includes:
+- `AdminConsoleActiveTenantPipelineTests`, 24;
 - `AdminConsoleEndpointsPipelineTests`, 18;
 - the console CORS, metrics and endpoint-unit suites.
 
@@ -5516,84 +5541,127 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 ### Task 10: Live verification (spec §10 "Live check")
 
-This task makes no commits. It proves the three spec §10 live-check behaviours on the merged branch, before the merge, on an isolated compose project. Any probe program it needs lives in the session scratchpad and is never committed.
+This task makes no commits. Before the merge, it proves the three spec §10 live-check behaviours on the finished branch, using an isolated compose project. Any probe program it needs lives in the session scratchpad and is never committed.
+
+**Names used below:**
+- `SP` is the session scratchpad.
+- `BR` is the branch checkout's root (the SDD worktree holding Tasks 1–9).
+- `MAIN` is `/home/ben/repositories/Iverson`. `.env` is gitignored, so it exists only at `$MAIN/Iverson.Server/.env`.
 
 **Standing constraints for this task:**
-- Copy `Iverson.Server/docker-compose.yml` into the scratchpad with every `container_name:` line stripped.
-- Run it under its own project name with `--project-directory /home/ben/repositories/Iverson/Iverson.Server --env-file Iverson.Server/.env`.
-- Never start, stop, remove or modify the user's existing `iversonserver` containers, volumes or networks. Snapshot `docker ps -a`, `docker volume ls` and `docker network ls` before you start, and diff them after teardown.
-- Read `AUTHENTIK_BOOTSTRAP_TOKEN` from `Iverson.Server/.env` into an environment variable, and never print it.
+- Copy `$BR/Iverson.Server/docker-compose.yml` into `$SP/live` with every `container_name:` line stripped. In that copy, rewrite both `image: iverson-api` lines to `image: csr10live-api`, so the probe build never moves the user's `iverson-api` tag.
+- Run it under its own project name with `--project-directory $BR/Iverson.Server --env-file $MAIN/Iverson.Server/.env`. The build context and every relative mount then resolve inside the branch checkout.
+- Never start, stop, remove or modify the user's existing `iversonserver` containers, volumes, networks or images. Snapshot all four before starting, and diff them after teardown.
+- Read `AUTHENTIK_BOOTSTRAP_TOKEN` and every password from `$MAIN/Iverson.Server/.env` into environment variables. Never print them.
 - Tear down with `down -v`.
 
-- [ ] **Step 1: Stand up the isolated stack from the branch's HEAD**
+- [ ] **Step 1: Stand up the isolated stack from the branch**
 
 ```bash
-SP=<session scratchpad>
-grep -v container_name Iverson.Server/docker-compose.yml > $SP/live/compose.yml
+mkdir -p $SP/live
+grep -v container_name $BR/Iverson.Server/docker-compose.yml \
+  | sed 's/^    image: iverson-api$/    image: csr10live-api/' > $SP/live/compose.yml
 docker ps -a --format '{{.Names}}' | sort > $SP/live/before-containers.txt
 docker volume ls -q | sort > $SP/live/before-volumes.txt
 docker network ls --format '{{.Name}}' | sort > $SP/live/before-networks.txt
-cd Iverson.Server && docker compose -p csr10live -f $SP/live/compose.yml \
-  --project-directory /home/ben/repositories/Iverson/Iverson.Server --env-file .env up -d --build
+docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort > $SP/live/before-images.txt
+DC="docker compose -p csr10live -f $SP/live/compose.yml --project-directory $BR/Iverson.Server --env-file $MAIN/Iverson.Server/.env"
+$DC up -d --build
 ```
 
 Expected:
-- `iverson-api` reaches healthy.
-- The api logs show `EnsureTableAsync` creating `iverson_token_revocations` with no `permission denied`.
+- `iverson-api` reaches healthy. Its healthcheck (`docker-compose.yml:516-524`) only succeeds once Kestrel listens, and that happens after the startup DDL, `EnsureTableAsync` included (`:510-513`).
+- `$DC exec postgres psql -U iverson -d iverson -c '\d iverson_token_revocations'` shows the table with columns `sub` and `revoked_at`.
 - Authentik's blueprints have applied: the `dev-iverson-loadtest-human-client-id` provider exists. Poll `/api/v3/providers/oauth2/?client_id=…` as the spec's VA-1 probe did.
 
-- [ ] **Step 2: Revocation is enforced within 30 s**
+- [ ] **Step 2: Check whether the probe stack's Authentik rewrites cached TOTP secrets**
 
-Using a scratchpad probe program (a copy of the spec probe's `subprobe` project that references `Iverson.LoadTest` for `AuthentikFlowExecutorClient`):
-1. Make tenant `T` exist and be active. Either drive `TenantLifecycle.CreateTenant` as the operator, or run the LoadTest tenant provisioning, which creates the tenant, its admin and a recovery link. Set the tenant admin's password from the recovery link.
-2. Create user `U` in tenant `T` (Authentik user with `attributes.tenant_id = T`), set its password from a recovery link, and mint its acting-user token through `dev-iverson-loadtest-human-client-id`.
-3. Call a data-plane RPC (e.g. `ObjectRetrieval.Get` on any registered type) with the loadtest service token plus `x-acting-user-authorization: Bearer <U token>`. Expected: not Unauthenticated.
-4. As `T`'s tenant admin, call `TenantAdmin.ListUsers` to get `U`'s `UserId`, then `TenantAdmin.RemoveUser(U)`. Expected: success.
-5. Poll the step-3 call once a second for up to 35 s. Expected: it turns `Unauthenticated` ("Acting-user token is invalid.") within 30 s of step 4. Record the elapsed time.
-6. `psql` (through `docker exec` on the probe stack's postgres container) `SELECT sub FROM iverson_token_revocations`. Expected: one row whose `sub` equals the `sub` claim decoded from `U`'s token.
-
-- [ ] **Step 3: The identity conformance scenario passes IVC-IDN-008 for .NET**
-
-Export the compose-stack variables from `docs/runbooks/client-conformance-matrix.md` (`IVERSON_CLIENT_ID`, `IVERSON_CLIENT_SECRET` read from `.env` without printing it, `IVERSON_TOKEN_ENDPOINT`, `IVERSON_CLIENT_SCOPE`), then:
+Build the probe program: a copy of the spec probe's `subprobe` project, with its `ProjectReference` repointed at `$BR/Iverson.Server/Iverson.LoadTest/Iverson.LoadTest.csproj`, and the gRPC calls of Steps 3–5 added. Then mint one token for `iverson-loadtest-bypass-user` against the probe stack with `HOME` pointed at a scratch directory. Run the built dll directly, so no restore runs under the scratch `HOME`. `mint-bypass` is a probe mode that makes one `AuthentikFlowExecutorClient.MintAsync` call for `iverson-loadtest-bypass-user`.
 
 ```bash
-cd Iverson.Server/Iverson.ClientConformance
+mkdir -p $SP/live/home
+HOME=$SP/live/home dotnet <probe>/bin/Debug/net10.0/<probe>.dll mint-bypass
+ls -la $SP/live/home/.cache/iverson/ 2>/dev/null
+```
+
+The probe reads `IVERSON_BYPASS_PASSWORD` from the environment.
+
+- **No cache file appeared:** Steps 3–4 do not touch `~/.cache/iverson`. Continue.
+- **A file appeared:** copy `~/.cache/iverson` to `$SP/live/totp-cache-backup` now. In Step 6, restore it and `diff -r` it against the backup.
+
+- [ ] **Step 3: Revocation is enforced within 30 s**
+
+Use the probe program:
+1. Make tenant `T` exist and be active. Either drive `TenantLifecycle.CreateTenant` as the operator, or run the LoadTest tenant provisioning (which creates the tenant, its admin and a recovery link). Set the tenant admin's password from the recovery link.
+2. Create user `U` in tenant `T` (an Authentik user with `attributes.tenant_id = T`), set its password from a recovery link, and mint its acting-user token through `dev-iverson-loadtest-human-client-id`.
+3. Call a data-plane RPC, e.g. `ObjectRetrieval.Get` on any registered type, with the loadtest service token plus `x-acting-user-authorization: Bearer <U token>`. Expected: not Unauthenticated.
+4. As `T`'s tenant admin, call `TenantAdmin.ListUsers` to get `U`'s `UserId`, then `TenantAdmin.RemoveUser(U)`. Expected: success.
+5. Poll the step-3 call once a second for up to 35 s. Expected: it turns `Unauthenticated` ("Acting-user token is invalid.") within 30 s of step 4. Record the elapsed time.
+6. Run `$DC exec postgres psql -U iverson -d iverson -c 'SELECT sub FROM iverson_token_revocations'`. Expected: one row whose `sub` equals the `sub` claim decoded from `U`'s token.
+
+- [ ] **Step 4: The identity conformance scenario passes IVC-IDN-008 for .NET**
+
+Export the compose-stack variables from `docs/runbooks/client-conformance-matrix.md`: `IVERSON_CLIENT_ID`, `IVERSON_CLIENT_SECRET` (read from `.env` without printing it), `IVERSON_TOKEN_ENDPOINT` and `IVERSON_CLIENT_SCOPE`. Also export the two passwords `TokenBroker` requires, read from `$MAIN/Iverson.Server/.env` without printing them (`TokenBroker.cs:59, :80`; `Iverson.ClientConformance/Program.cs:327-334`):
+- `IVERSON_ACTING_USER_BYPASS_PASSWORD` from `IVERSON_BYPASS_PASSWORD`;
+- `IVERSON_OTHER_TENANT_PASSWORD` from `IVERSON_SMOKE_TEST_PASSWORD`.
+
+Then:
+
+```bash
+cd $BR/Iverson.Server/Iverson.ClientConformance
 dotnet run -- --languages dotnet --scenarios identity
 ```
 
-Expected: the `dotnet` / `identity` cell is `ok`, and the IVC-IDN-008 assertion passes with reported status code 5 (`NotFound`). This is a partial run, so only that cell is evidence. Its untouched-requirement gate is off by design.
+Expected: the `dotnet` / `identity` cell is `ok`, and the IVC-IDN-008 assertion passes with reported status code 5 (`NotFound`). This is a partial run, so only that cell is evidence; its untouched-requirement gate is off by design.
 
-- [ ] **Step 4: Carried-forward DATETIME and BYTES values survive in Postgres, StarRocks and Qdrant**
+- [ ] **Step 5: Carried-forward values survive in Postgres, and DATETIME survives in StarRocks and Qdrant**
 
-Using the probe program and the loadtest service token (scope `schema_admin tenant_id_loadtest`):
+Use the probe program and the loadtest service token (scope `schema_admin tenant_id_loadtest`):
 1. Register a type `LiveDossier` with:
-   - `Title` (STRING), a chunk/vector field so Qdrant projects it;
+   - `Title` (STRING), plus a chunk/vector field so Qdrant projects it;
    - `SealedAt` (DATETIME) and `Seal` (BYTES), both with a FieldPermission whose `WritableRoles` contains only `dossier-sealers`;
-   - row permissions letting `tenant-users` (or whatever group the acting user carries) write.
-2. As an acting user **in** `dossier-sealers`, create a row with `Title`, `SealedAt = 2026-10-03T12:34:56Z` and `Seal = 0x010203`.
-3. As an acting user **not** in `dossier-sealers`, Update that row, changing `Title` and omitting `SealedAt` and `Seal`. Expected: success.
-4. **Postgres:** select the row. `SealedAt` and `Seal` hold the step-2 values.
-5. **StarRocks:** after projection (poll ≤ 60 s), `ObjectSearch.Search` for the row as the sealer user returns the step-3 `Title` and the step-2 `SealedAt`/`Seal`.
-6. **Qdrant:** the object point's payload (read through the API's vector read path, or `docker exec` against the probe stack's Qdrant) carries the step-3 `Title` and the step-2 `SealedAt`/`Seal`.
-7. The api and worker logs show no projection error or DLQ entry for the row (`/admin/dlq` empty for it).
+   - row permissions letting `tenant-users`, or whatever group the acting user carries, write.
+2. As an acting user **in** `dossier-sealers`, create a row with `Title`, `SealedAt = 2026-10-03T12:34:56Z` and some `Seal` bytes through the .NET SDK.
+3. Read the row from Postgres: `$DC exec postgres psql -U iverson -d iverson -c "SELECT \"SealedAt\", encode(\"Seal\", 'hex') FROM <table> WHERE \"Id\" = '<key>'"`. Record both values.
+4. As an acting user **not** in `dossier-sealers`, Update that row, changing `Title` and omitting `SealedAt` and `Seal`. Expected: success.
+5. **Postgres:** read the row again as in sub-step 3. `SealedAt` and the hex of `Seal` equal the values recorded in sub-step 3 byte for byte.
+6. **StarRocks:** after projection (poll for up to 60 s), `ObjectSearch.Search` for the row as the sealer user returns the sub-step 4 `Title`, and a `SealedAt` whose instant equals `2026-10-03T12:34:56Z`. Search renders DATETIME as `ToString("o")` with no offset (`ObjectSearchGrpcService.cs:1260-1272`), so compare instants, not strings. `Seal` is not checked here; see Known issues.
+7. **Qdrant:** the object point's payload (read through the API's vector read path, or `$DC exec` against the probe stack's Qdrant) carries the sub-step 4 `Title` and the same `SealedAt` instant.
+8. The api and worker logs show no projection error, and there is no DLQ entry for the row (`/admin/dlq` has none for it).
 
-If the group/permission model above needs a different but equivalent shape on this stack, use it. Write down the shape actually used.
+If the group and permission model above needs a different but equivalent shape on this stack, use it, and write down the shape actually used.
 
-- [ ] **Step 5: Tear down and confirm nothing else changed**
+- [ ] **Step 6: Tear down and confirm nothing else changed**
 
 ```bash
-cd Iverson.Server && docker compose -p csr10live -f $SP/live/compose.yml \
-  --project-directory /home/ben/repositories/Iverson/Iverson.Server --env-file .env down -v
+$DC down -v
 diff <(docker ps -a --format '{{.Names}}' | sort) $SP/live/before-containers.txt
 diff <(docker volume ls -q | sort) $SP/live/before-volumes.txt
 diff <(docker network ls --format '{{.Name}}' | sort) $SP/live/before-networks.txt
+docker rmi csr10live-api 2>/dev/null
+diff <(docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort) $SP/live/before-images.txt
 ```
 
-Expected: all three diffs are empty.
+If Step 2 made a backup:
 
-- [ ] **Step 6: Record the outcome**
+```bash
+rm -rf ~/.cache/iverson && cp -a $SP/live/totp-cache-backup ~/.cache/iverson
+diff -r ~/.cache/iverson $SP/live/totp-cache-backup
+```
 
-Record each step's result (elapsed time for step 2, the step-3 cell status, the values read back in step 4) in the SDD ledger. A failure in any of steps 2–4 blocks the merge and goes back to the owning task (7, 3 or 2 respectively).
+Expected:
+- The container, volume, network and TOTP-cache diffs are empty.
+- The images diff changes no pre-existing line: `iverson-api:latest` keeps its ID. Any lines it adds are base or intermediate images the build pulled, and those may stay.
+
+- [ ] **Step 7: Record the outcome**
+
+Record each step's result in the SDD ledger:
+- Step 2: whether a cache file appeared.
+- Step 3: the elapsed time.
+- Step 4: the cell status.
+- Step 5: the values read back.
+
+A failure in Step 3, 4 or 5 blocks the merge and goes back to the owning task: 7, 3 or 2 respectively.
 
 ## Known issues inherited from spec
 
@@ -5604,3 +5672,4 @@ Record each step's result (elapsed time for step 2, the step-3 cell status, the 
 - **Revocation clock skew** (§5): a few seconds between Authentik's `iat` and Postgres `now()`.
 - **Console users can still write spans** (§6): any console user's browser can post spans. A collector that stamps the caller and overwrites `service.name` (CSR #13's architectural item) is deferred.
 - **Other round-10 findings** (#3–#6, #9, #12, #15–#24): belong to the other sub-projects.
+- **BYTES encoding split (CIR-1 §3.1, pre-existing; plan-level):** an SDK client sends `byte[]` as base64 text, which Postgres stores as that text's bytes. The text projected to StarRocks differs between a fast-path write (the client's text) and a carried update (`row_to_json`'s `\x…` hex). Search cannot display BYTES (`ObjectSearchGrpcService.cs:1260-1272`). Task 10 therefore checks `Seal` in Postgres only. Qdrant's handling is unverified.
