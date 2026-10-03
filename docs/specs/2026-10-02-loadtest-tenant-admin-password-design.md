@@ -25,10 +25,14 @@ A new public method, `Task SetPasswordFromRecoveryLinkAsync(string recoveryLink)
 
 1. **Parse the link.** It is shaped like `http://authentik-server:9000/if/flow/iverson-recovery/?flow_token=…`. Take the flow slug (the last path segment) and the `flow_token` query value. Ignore the link's scheme, host and port: they are the API server's internal view of Authentik.
 2. **Build the executor URL:** `{identity.BaseUrl}/api/v3/flows/executor/{slug}/?query=` followed by the URL-encoded `flow_token=<token>`.
-3. **Drive the flow through the existing `SendAsync`.** That supplies the Host header, the `Accept: application/json` header, the cookie jar and the CSRF echo.
+3. **Drive the flow through the existing `SendAsync`.** That supplies the Host header, the `Accept: application/json` header, the cookie jar and the CSRF echo. Its handler does not follow redirects (`AllowAutoRedirect = false`). Authentik answers each completed stage with a body-less `302` back to the same executor URL, so this method follows those itself.
    - A GET must return the component `ak-stage-prompt`.
    - Then POST `{ "password": identity.Password, "password_repeat": identity.Password }`.
-   - **The POST's own response** must have the component `xak-flow-redirect`, which means the flow completed (prompt → MFA check skipped → user write → login). Do not GET the executor again afterwards: the completed session is authenticated, and this flow requires an unauthenticated one, so a further GET returns `ak-stage-access-denied`.
+     - A `200` response is a rejection. Report its `response_errors`, or name its component if it has none.
+     - A `302` response has an empty body, so don't parse it. GET the same executor URL again, and keep GETting while the response is `302`, at most the class's existing `MaxFlowStages` (20) times. Don't hard-code the number of redirects: it depends on the flow's stage count.
+   - **The first `200` response after the POST is terminal.**
+     - If its component is `xak-flow-redirect`, the flow completed (prompt → MFA check skipped → user write → login) and the password is set. Stop, and send no further request: the completed session is authenticated, and this flow requires an unauthenticated one, so a further GET returns `ak-stage-access-denied`.
+     - Any other component is a failure, for example `ak-stage-access-denied` for an invalid or already-used token.
 
 A second constructor, `AuthentikFlowExecutorClient(AuthentikIdentityConfig, ILogger<AuthentikFlowExecutorClient>, HttpMessageHandler)`, builds its `HttpClient` over the given handler, so tests can inject a fake. The existing constructor is unchanged.
 
@@ -50,20 +54,22 @@ Each case throws `InvalidOperationException` with a specific message. The bootst
 - **CreateTenant returned an empty `AdminRecoveryLink`.** The server returns an empty link when Authentik gave no `link`. The message says the tenant admin has no password, so the data plane cannot log in.
 - **The link has no `flow_token` query value or no flow slug.** The message names the link as malformed. No request is sent.
 - **The GET's component isn't `ak-stage-prompt`.** The message names the component.
-- **The POST response has `response_errors`.** The message includes Authentik's error strings, for example `Password needs to be 8 characters or longer.`
-- **The POST response's component isn't `xak-flow-redirect`.** The message names the component.
+- **The POST answers `200`, a rejection.** The message includes Authentik's `response_errors` strings, for example `Password needs to be 8 characters or longer.`, or names the component when there are none.
+- **The first non-redirect response after the POST isn't `xak-flow-redirect`.** The message names the component.
+- **The redirects don't end within `MaxFlowStages`.** The message says so.
 
 ### Testing
 
 A new `Iverson.Server/Iverson.LoadTest.Tests/Auth/AuthentikFlowExecutorClientTests.cs` uses a recording fake `HttpMessageHandler`, in the style of `TeiRerankClientTests`. It covers:
 
-1. **Happy path.**
+1. **Happy path.** The fake answers with the real sequence: GET → `200 ak-stage-prompt`; POST → `302` with an empty body and `Location` set to the same path; GET → `302`; GET → `302`; GET → `200 {"component":"xak-flow-redirect","to":"/"}`.
    - The first request is a GET to `{BaseUrl}/api/v3/flows/executor/iverson-recovery/?query=flow_token%3D<token>`, not to the link's host, and carries the configured Host header.
    - The second is a POST whose JSON body has `password` and `password_repeat` equal to the identity's password.
-   - There are exactly two requests.
+   - Every request after the POST is a GET to the same executor URL, and none is sent after the `xak-flow-redirect`.
 2. **The POST response carries a `non_field_errors` policy error.** It throws, and the message contains that error's string.
 3. **The first GET returns `ak-stage-access-denied`.** It throws, naming the component, and sends no POST.
 4. **A link without `flow_token`.** It throws and sends no request.
+5. **A post-redirect GET returns `ak-stage-access-denied`.** It throws, naming the component.
 
 **Live check.** The `Program.cs` wiring is top-level code with no test seam, so it gets a live check instead.
 1. Run `SetPasswordFromRecoveryLinkAsync` once against an isolated Authentik. Start it from `Iverson.Server/docker-compose.yml` with its `container_name:` lines stripped, under its own compose project name, using only `postgres redis authentik-migrate authentik-server authentik-worker`, so it can't collide with the main stack's containers or volumes.
@@ -86,10 +92,12 @@ Accepted by Ben under scope A, 2026-10-02:
 
 Probes P1–P5 ran 2026-10-02 against an isolated Authentik 2026.5.3. It was started from this repo's compose file and blueprints, under its own project name, with `container_name` lines stripped. Each probe followed the server's side through `IdpAdminClient`'s API calls, and LoadTest's side through `127.0.0.1:9000` with `Host: authentik-server:9000`, a cookie jar and the CSRF echo.
 
+P1–P5 used Python urllib, whose default opener follows redirects. Rows 2, 18 and 19 instead rest on probe P6, a C# program that drives LoadTest's real `AuthentikFlowExecutorClient.SendAsync` by reflection (existing constructor, so no redirect following). It was run in CDR round 1 and re-run while applying that review.
+
 | # | Assumption | Evidence |
 |---|---|---|
 | 1 | A recovery link is `/if/flow/<slug>/` with a `flow_token` query value, on the server's internal host | P1: `POST /api/v3/core/users/{pk}/recovery/` returned host `authentik-server:9000`, path `/if/flow/iverson-recovery/`, query keys `['flow_token']` |
-| 2 | For a new user, one POST completes the recovery flow | P2: the GET to `/api/v3/flows/executor/iverson-recovery/?query=flow_token%3D…` returned `ak-stage-prompt` with fields `[password, password_repeat]`. The POST returned `xak-flow-redirect`, because the MFA stage skips for a user with no enrolled device (`recovery-flow.yaml` `not_configured_action: skip`). |
+| 2 | For a new user, one POST followed by GETs past the executor's self-redirects completes the recovery flow | P2: the GET to `/api/v3/flows/executor/iverson-recovery/?query=flow_token%3D…` returned `ak-stage-prompt` with fields `[password, password_repeat]`. P6, through the real `SendAsync`: the POST returned `302` with an empty body, then GET `302`, GET `302`, then GET `200 {"component": "xak-flow-redirect", "to": "/"}`, and a fresh login then reached `ak-stage-authenticator-validate`. Stopping after the POST left the password unset (login `PASSWORD-REJECTED`). The MFA stage skips for a user with no enrolled device (`recovery-flow.yaml` `not_configured_action: skip`). |
 | 3 | The password really is set | P3: a fresh session's `default-authentication-flow` went identification → password → `ak-stage-authenticator-validate` |
 | 4 | Another GET after completion is denied | P2: `ak-stage-access-denied`, "Flow does not apply to current user" |
 | 5 | A policy rejection appears in the POST response, and the password stays unset | P4: with `short1`, the POST returned `ak-stage-prompt` with `response_errors.non_field_errors[0].string` = "Password needs to be 8 characters or longer.", and a later login rejected the password |
@@ -105,3 +113,5 @@ Probes P1–P5 ran 2026-10-02 against an isolated Authentik 2026.5.3. It was sta
 | 15 | The test project can host the new tests | `Iverson.LoadTest.Tests.csproj` references `Iverson.LoadTest` plus xunit 2.9.3 and FluentAssertions 8.11.0. `NullLogger<T>` arrives through `Microsoft.Extensions.Logging.Console` (LoadTest's package) and is already used by the other server test projects. The project is in `Iverson.slnx`. |
 | 16 | kind ships the same recovery flow | `charts/authentik/templates/blueprints-configmap.yaml:6` globs `blueprints/*.yaml`, which includes `recovery-flow.yaml`, mounted at `/blueprints/custom` on the server and worker |
 | 17 | DeleteTenant can't roll back a failed recovery | `TenantLifecycleGrpcService.cs:73-84`: status `deleted` plus `DeactivateAllUsersInTenantAsync`, with no row or user deletion |
+| 18 | `SendAsync` doesn't follow redirects, and Authentik answers each completed recovery stage with a body-less `302` back to the same executor URL | `AuthentikFlowExecutorClient.cs:47` `AllowAutoRedirect = false`; `:25` `MaxFlowStages = 20`. P6: every `302` (after the POST and after the MFA-skip and user-write GETs) had `Content-Type: text/html`, an empty body that throws `JsonReaderException` when parsed, and `Location` equal to the request's executor path and query, so re-GETting the built URL is equivalent to following it |
+| 19 | The terminal check never reports a false success | P6, one member per failure class: a too-short password → POST `200 ak-stage-prompt` with `response_errors`, login rejected; a reused token → GET prompt, POST `302`, GET `302`, GET `200 ak-stage-access-denied`, the second password never set; an invalid token → its first GET still returns the prompt, and its post-POST redirects end `ak-stage-access-denied` (CDR round 1, RP4). None ends in `xak-flow-redirect` |
