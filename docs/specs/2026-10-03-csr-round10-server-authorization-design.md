@@ -29,6 +29,8 @@ Applies identically to `ObjectPersistenceGrpcService.Update` (`Grpc/ObjectPersis
 1. The smuggled-tenant-column check → InvalidArgument (unchanged, `AuthorizationFieldMasking.cs:73-80`).
 2. `authEvaluator.Evaluate`; `decision.Denied` → audit `AccessDenied` + PermissionDenied (unchanged).
 3. **New:** `requireExistingRow && existingRowJson is null` → `RpcException(NotFound, "'{TypeName}:{key}' not found.")`. It writes no audit entry; Mapping Get doesn't audit not-found either.
+
+The audit action label follows the RPC, not the row: `requireExistingRow || existingRowJson is not null ? "Update" : "Create"`. Today it is `existingRowJson is null ? "Create" : "Update"`, which audits a denied Update of a missing key as "Create".
 4. The existing-row branch (tenant match and immutability, force-set the tenant column, owner checks) and then §2.
 
 Why the order matters: a caller who is denied anyway must get PermissionDenied whether or not the key exists. If NotFound came first, such a caller would get NotFound for a missing key and PermissionDenied for an existing one, which reveals existence. Probe evidence: verified assumption 13.
@@ -61,6 +63,7 @@ All changes are in `Grpc/AuthorizationFieldMasking.cs`.
 - The stored row's keys are canonical column names: it is the `Data` JSON of `FetchByKeyAsync`, which holds every column including restricted ones.
 - The tenant column is already in the payload (force-set), so it is never copied again.
 - A restricted field that **is** present in the payload is still rejected by 2a; that behaviour is unchanged.
+- **The owner column is carried forward too.** On the update branch, when the schema declares an `OwnerField` (`schema.Authorization.OwnerField`, so bypass callers are covered as well) and the payload has no case-insensitive match for it, the stored owner value is copied in under its canonical name, and the key joins the returned inserted-key collection (so §2c strips it from the response). Without this, an Update that omits the owner column writes the full row with a NULL owner, orphaning it from its owner. The owner column is writable, so the restricted-field rule above never reaches it. The existing `OwnerImmutable` check only compares a value that is present.
 - **Effect:** the serialized payload sent to Postgres (`OutboxWriter` full-row upsert) and Kafka (the StarRocks full-row replace) carries the stored values of fields the caller may not write, so omitting them no longer clears them.
 
 **2c. Mapping Update response masking.**
@@ -156,7 +159,7 @@ Every other token falls through to the call site's existing column handling.
 - **Policy:** a new `ConsoleClient` policy in `AddAuthorization` (`Program.cs:233-249`), satisfied when any `aud` claim on `context.User` equals that value (ordinal). When the value is null or empty, the policy is never satisfied (fail closed).
 - **Route:** the `/v1/traces` mapping (`Program.cs:771-800`) uses `.RequireAuthorization("ConsoleClient")` instead of `.RequireAuthorization()`. The rate limiter and body limit are unchanged.
 - **Wiring:**
-  - compose: `Authentication__ConsoleAudience=dev-iverson-human-oidc-client-id` on both API services, beside `ValidAudiences__0` (`docker-compose.yml:483, 589`);
+  - compose: `Authentication__ConsoleAudience=dev-iverson-human-oidc-client-id` on the `iverson-api` service, beside `ValidAudiences__0` (`docker-compose.yml:483`). `:589` is `iverson-worker`, which never serves `/v1/traces`;
   - Helm (`charts/api/templates/deployment.yaml`): `Authentication__ConsoleAudience` from `secretKeyRef: { name: {{ .Release.Name }}-authentik-human-oidc-client, key: client-id }`, the same source as `ValidAudiences__0` (`:141-143`).
 - **Effect:** service clients and acting-user tokens are refused, and every console user, administrators and ordinary tenant users alike, keeps browser tracing. Ordinary users are legitimate console users: the console requests `groups tenant_id` (`Iverson.AdminUI/src/auth/AuthProvider.tsx:56`), the landing page is deliberately unguarded (`router.tsx:24`), and `/schema` and `/data-volume` need only authentication.
 
@@ -209,14 +212,16 @@ All five drivers report a gRPC status code as data (`statusCode`, `Ok=true`) on 
   - the backstop prose `:580-600` (with no seeded row the answer is now NOT_FOUND and IDN-008 passes);
   - ERR Deferred row `:1012`;
   - the `IdentityScenario.cs` class and helper docs at `:12`, `:93-145` (including the crefs at `:122`, `:141` to the removed const) and `:656`.
-- **No driver or SDK change.** No SDK catches gRPC errors on mapped update; Go wraps with `%w`, and `status.FromError` in grpc-go 1.84 unwraps it (verified assumption 6).
+- **Driver comments.** The `denied_update_wrong_acting_user` comments in the five conformance drivers (.NET, Python, TypeScript, Go, Java) are rewritten to describe NOT_FOUND. These are comment-only edits.
+- **No driver code or SDK change.** No SDK catches gRPC errors on mapped update; Go wraps with `%w`, and `status.FromError` in grpc-go 1.84 unwraps it (verified assumption 6).
 
 ## 10. Testing
 
 **Mutation testing.** Task reviews must mutation-test the new guards (standing rule): each of the following must have a test that goes red when it is removed or inverted:
 - the NotFound check and its position relative to the denial check;
 - the tenant exemption;
-- carry-forward;
+- carry-forward, including the owner column;
+- the audit action label on a denied Update;
 - the join check;
 - the `(` lookahead;
 - the two new forbidden characters;
@@ -248,6 +253,8 @@ A scratch run with only the NotFound check (placed before authorization) failed 
 - **Field masking**, using new reserved-`__TenantId` fixtures (existing fixtures in `Helpers/SchemaFixtures.cs` use only the legacy column):
   - a field-restricted caller's create and update succeed;
   - an omitted restricted field is carried forward with its stored value;
+  - an Update that omits the owner column keeps the stored owner (bypass and ownership-scoped callers), and the response does not echo it;
+  - a denied Update of a missing key is audited with action "Update";
   - a present restricted field is still rejected;
   - a caller with no field restriction is unchanged;
   - a camelCase payload key matches a canonical stored key, so a case variant is not carried over a present field.
