@@ -50,6 +50,20 @@ public sealed class AuthentikFlowExecutorClient : IDisposable
         });
     }
 
+    // For tests: drives the client over a caller-supplied handler. HttpClient never follows
+    // redirects itself (HttpClientHandler does), so the handler sees each 302 exactly as the
+    // constructor above's AllowAutoRedirect = false handler returns it. The cookie container
+    // stays empty, so SendAsync sends no CSRF header.
+    public AuthentikFlowExecutorClient(
+        AuthentikIdentityConfig identity,
+        ILogger<AuthentikFlowExecutorClient> logger,
+        HttpMessageHandler handler)
+    {
+        this.identity = identity;
+        this.logger = logger;
+        _http = new HttpClient(handler);
+    }
+
     // RFC 6238 TOTP — HMAC-SHA1, 6 digits, 30s period. Mirrors mint_acting_user_token.py's `totp()`.
     private static string Totp(string secretBase32, DateTimeOffset? at = null)
     {
@@ -299,6 +313,73 @@ public sealed class AuthentikFlowExecutorClient : IDisposable
                 ["code_verifier"] = verifier,
             }));
         return await ParseTokenResponseAsync(tokenResp);
+    }
+
+    /// <summary>
+    /// Sets <see cref="AuthentikIdentityConfig.Password"/> as the user's password by driving the
+    /// one-time recovery link CreateTenant returns (Tenant.admin_recovery_link) through Authentik's
+    /// flow executor. Only the link's flow slug and flow_token are used: its host is the API
+    /// server's internal view of Authentik, so requests go to identity.BaseUrl with the configured
+    /// Host header, like MintAsync's. The link is a bearer credential, so no message includes it.
+    /// </summary>
+    public async Task SetPasswordFromRecoveryLinkAsync(string recoveryLink)
+    {
+        if (string.IsNullOrEmpty(recoveryLink))
+            throw new InvalidOperationException(
+                $"CreateTenant returned no admin recovery link, so '{identity.Username}' has no password " +
+                "and the data plane cannot log in.");
+        if (!Uri.TryCreate(recoveryLink, UriKind.Absolute, out var link))
+            throw new InvalidOperationException("The admin recovery link is malformed: it is not an absolute URL.");
+        var slug = link.AbsolutePath.TrimEnd('/').Split('/')[^1];
+        var token = HttpUtility.ParseQueryString(link.Query)["flow_token"];
+        if (string.IsNullOrEmpty(slug) || string.IsNullOrEmpty(token))
+            throw new InvalidOperationException("The admin recovery link is malformed: it has no flow slug or no flow_token.");
+
+        var flowUrl = $"{identity.BaseUrl}/api/v3/flows/executor/{slug}/?query=" +
+                      Uri.EscapeDataString($"flow_token={token}");
+
+        var prompt = await ReadComponentAsync(await SendAsync(HttpMethod.Get, flowUrl));
+        if (prompt != "ak-stage-prompt")
+            throw new InvalidOperationException($"The recovery flow did not offer the password prompt; it answered '{prompt}'.");
+
+        var resp = await SendAsync(HttpMethod.Post, flowUrl,
+            JsonBody(new { password = identity.Password, password_repeat = identity.Password }));
+
+        // A 200 here is a rejection: Authentik re-renders the prompt with response_errors.
+        if (resp.StatusCode == System.Net.HttpStatusCode.OK)
+        {
+            using var rejected = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            var root = rejected.RootElement;
+            var errors = root.TryGetProperty("response_errors", out var re) && re.ValueKind == JsonValueKind.Object
+                ? re.EnumerateObject()
+                    .SelectMany(field => field.Value.ValueKind == JsonValueKind.Array ? field.Value.EnumerateArray() : [])
+                    .Select(e => e.TryGetProperty("string", out var text) ? text.GetString() : null)
+                    .OfType<string>()
+                    .ToList()
+                : [];
+            throw new InvalidOperationException(errors.Count > 0
+                ? $"Authentik rejected the tenant admin's password: {string.Join(" ", errors)}"
+                : $"The recovery flow answered the password with '{(root.TryGetProperty("component", out var c) ? c.GetString() : null)}' and no error; the password was not set.");
+        }
+
+        // Each completed stage (prompt, MFA check, user write) answers a body-less 302 back to the
+        // same executor URL; this client doesn't follow redirects, so follow them here.
+        for (var i = 0; i < MaxFlowStages && resp.StatusCode == System.Net.HttpStatusCode.Redirect; i++)
+            resp = await SendAsync(HttpMethod.Get, flowUrl);
+        if (resp.StatusCode == System.Net.HttpStatusCode.Redirect)
+            throw new InvalidOperationException($"The recovery flow was still redirecting after {MaxFlowStages} requests.");
+
+        var end = await ReadComponentAsync(resp);
+        if (end != "xak-flow-redirect")
+            throw new InvalidOperationException($"The recovery flow ended at '{end}', not 'xak-flow-redirect'; the password was not set.");
+    }
+
+    private static async Task<string?> ReadComponentAsync(HttpResponseMessage resp)
+    {
+        if (resp.StatusCode != System.Net.HttpStatusCode.OK)
+            throw new InvalidOperationException($"The recovery flow answered HTTP {(int)resp.StatusCode}.");
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        return doc.RootElement.TryGetProperty("component", out var c) ? c.GetString() : null;
     }
 
     public async Task<MintedToken> RefreshAsync(string refreshToken, CancellationToken ct = default)
