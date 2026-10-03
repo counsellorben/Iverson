@@ -166,8 +166,8 @@ Every other token falls through to the call site's existing column handling.
 ## 7. Console endpoints check tenant status (closes Finding #14)
 
 - **Filter:** `ActiveTenantEndpointFilter : IEndpointFilter` in `Iverson.Api/Console`, added to all four endpoints in `AdminConsoleEndpoints.MapAdminConsoleEndpoints` (`Console/AdminConsoleEndpoints.cs:49-78`).
-- **Rule:** if `http.User` has a `tenant_id` claim and `ITenantStatusCache.GetStatusAsync(tenantId)` returns `null`, `"suspended"` or `"deleted"`, answer `403`. Otherwise call `next`.
-- **Operators** have no `tenant_id` claim (`AdminConsoleEndpoints.cs:91-93`) and pass.
+- **Rule:** if `http.User` has a non-empty `tenant_id` claim and `ITenantStatusCache.GetStatusAsync(tenantId)` returns `null`, `"suspended"` or `"deleted"`, answer `403`. Otherwise call `next`.
+- **Operators** have no `tenant_id` attribute (`AdminConsoleEndpoints.cs:91-93`). Their console token still carries `tenant_id: null`, because the console requests the `tenant_id` scope, and .NET reads that as an empty claim (CIR-1 of the plan, probes PK/PD). An absent or empty claim passes.
 - The rule is the same one `ActingUserInterceptor.cs:42-48` applies.
 
 ## 8. Finding #2 — refuted, no change
@@ -288,7 +288,7 @@ A scratch run with only the NotFound check (placed before authorization) failed 
 **Live check** before merge, on an isolated compose project: a copy of `docker-compose.yml` with the `container_name:` lines stripped, `--project-directory Iverson.Server`, and the user's existing containers, volumes and networks untouched; tear down with `down -v`.
 - A removed user's existing acting-user token is refused within 30 s, and a fresh login after re-activation, if any, is accepted.
 - The identity conformance scenario passes IVC-IDN-008 for at least the .NET driver.
-- A field-restricted caller's Update that omits a write-restricted `DATETIME` property and a write-restricted `BYTES` property leaves both stored values intact in Postgres, in the StarRocks row (read back through Search) and in the Qdrant point payload. This is the check that the consumers accept carried-forward values in `row_to_json` text form (TIMESTAMPTZ with a `±hh:mm` offset, BYTEA as `\x…` hex).
+- A field-restricted caller's Update that omits a write-restricted `DATETIME` property and a write-restricted `BYTES` property leaves both stored values intact in Postgres, and the `DATETIME` value intact in the StarRocks row (read back through Search) and in the Qdrant point payload. `BYTES` is checked in Postgres only: an SDK client sends bytes as base64 text, the text projected to StarRocks differs between a fast-path write and a carried update, and Search cannot display BYTES. That pre-existing encoding split is recorded as a known issue (plan CIR-1 §3.1, user's pick C).
 
 ## Verified assumptions
 
@@ -312,7 +312,7 @@ A scratch run with only the NotFound check (placed before authorization) failed 
 | 16 | `EngagementQueryTranslationException` maps to InvalidArgument | `ObjectSearchGrpcService.cs:110-113` (and `:784, :832, :910`, `MatchPattern.cs:163`) |
 | 17 | Mapping Get masks its response with the Read decision, so Update can do the same | `ObjectMappingGrpcService.cs:126` |
 | 18 | Pipeline-test hosts can substitute the revocation repository | `AuthTestWebApplicationFactory.cs:48-66` substitutes `ITenantRepository`, `IEnrichmentStateRepository` and others with no-ops; every pipeline factory derives from it |
-| 19 | Operators carry no `tenant_id`; tenant status values are `active/suspended/deleted`, null when unknown | `AdminConsoleEndpoints.cs:91-93` ("an operator, having no `tenant_id` claim"); `TenantStatusCache.cs`; `ActingUserInterceptor.cs:44-46` |
+| 19 | Operators carry no `tenant_id`; tenant status values are `active/suspended/deleted`, null when unknown | `AdminConsoleEndpoints.cs:91-93` ("an operator, having no `tenant_id` claim"); `TenantStatusCache.cs`; `ActingUserInterceptor.cs:44-46`. Their console token carries `tenant_id: null`, read by .NET as an empty claim (plan CIR-1 PK/PD) |
 | 20 | No deployment holds a template descriptor persisted before `410cb83b` (the date the row-owned-target template check arrived) | User confirmation, 2026-10-03: no persisted descriptors exist. `SchemaRegistry.LoadAsync` (`SchemaRegistry.cs:83-155`) does not re-validate templates, so §8's refutation depends on this |
 | 21 | Carried-forward values survive the `row_to_json` → payload → `json_populate_record` upsert round trip for every column type | CDR-1's P-RT: PGlite (PostgreSQL 18.3) table with one column per `SchemaBuilder` SQL type, scalar and array (`:389-420`). `OutboxWriter`'s exact upsert, then a `row_to_json` dump, then a JSON hop standing in for Struct/`SerializePayload`, then the upsert again: byte-identical, all 18 columns. Caveats: not `postgres:16`, and the .NET hop was not run. §10's Testcontainers carry-forward test (real `OutboxWriter`, `postgres:16-alpine`) closes both |
 | 22 | Every Authentik provider uses the default subject mode, so VA-1's `sub == uid` holds for the console and acting-user providers too | `grep -rn sub_mode` over yaml/yml/py/json/tpl/sh: 0 hits |
