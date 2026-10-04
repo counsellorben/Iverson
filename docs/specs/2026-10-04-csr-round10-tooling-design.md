@@ -31,13 +31,14 @@ The other round-10 findings belong to other sub-projects. Sub-project A, server 
   - it must meet Authentik's recovery password policy: at least 8 characters, zxcvbn score ≥ 2 (`README.md:171`).
 
   The other keys keep the existing message, which points at `.env`. This password is in neither `.env` nor `generate-compose-secrets.sh`.
+- Before provisioning, LoadTest also rejects a tenant-admin password shorter than 8 characters (`RecoveryPasswordPolicy.IsTooShort`), the part of Authentik's recovery password policy it can check locally; a password Authentik would refuse would otherwise leave a tenant whose admin has no password.
 - The literal default `dev-only-not-for-production-tenant-admin-password-0123456789` is removed from `Program.cs`. The same string in `Iverson.LoadTest.Tests/Auth/AuthentikFlowExecutorClientTests.cs:16` is a test-local constant and stays.
 - `needsTenantAndSchema` is `seed`, `write-path`, `read-path`, `all`, `benchmark-ingest` and `benchmark-query` (`:34-35`). Those commands fail at startup through `RequireEnv` (`:345`) when the variable is unset. Passwordless commands are unaffected.
 
 **1b. Enrol TOTP immediately after setting the password.**
 - When this run set the password from CreateTenant's recovery link (`adminRecoveryLink is not null`), LoadTest calls `await tenantAdminTokenProvider.GetTokenAsync()` straight after constructing the provider (`:142-143`). `ActingUserTokenProvider.GetTokenAsync` runs `MintAsync` on first use, which completes the TOTP enrolment stage.
 - When the tenant already exists, the token is still minted lazily, as today.
-- If the first login fails, provisioning fails with the same guidance the recovery step gives at `:131-139`: the tenant now exists, so re-running will not retry this step.
+- If the first login fails, provisioning fails with its own message: the tenant exists and its admin's password is set, and re-running LoadTest retries the login when the admin's token is first needed.
 
 **1c. The TOTP cache is created private (#20 part 2).**
 - `AuthentikFlowExecutorClient.SaveCachedTotpSecret` (`Auth/AuthentikFlowExecutorClient.cs:127-134`):
@@ -45,7 +46,8 @@ The other round-10 findings belong to other sub-projects. Sub-project A, server 
   - writes the secret through a `FileStream` with `FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, UnixCreateMode = UserRead | UserWrite }`, so the file never exists at a looser mode.
 - When the file already exists, `File.SetUnixFileMode(0600)` runs **before** the write, and nothing changes the mode after the write. A new file therefore gets 0600 only from `UnixCreateMode`, which a test can observe. A pre-existing looser file is restricted before it receives the new secret.
 - Every Unix-only call sits behind the existing `!OperatingSystem.IsWindows()` check. These APIs raise CA1416 otherwise. On Windows, behaviour is unchanged.
-- This matches the Python sibling `deploy/scripts/mint_acting_user_token.py:143-145` (`os.open(..., 0o600)`).
+- A cache directory that already exists is restricted to 0700 with `File.SetUnixFileMode`; a new one is created at 0700. `CreateDirectory`'s mode applies only to a directory it creates.
+- The Python sibling `deploy/scripts/mint_acting_user_token.py` now does the same: it restricts an existing directory to 0700 and an existing file to 0600, and creates new ones owner-only (`os.open(..., 0o600)`).
 
 **1d. kind host ports bind to loopback.** In `Iverson.Server/deploy/kind/kind-config.yaml`, both `extraPortMappings` entries (`containerPort` 80 → 8080, and 443 → 8443) gain `listenAddress: "127.0.0.1"`.
 
