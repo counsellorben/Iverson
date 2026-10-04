@@ -206,7 +206,7 @@ public sealed class ObjectMappingGrpcService(
         // gets NotFound from EnforceWriteAuthorization (CSR round 10 Finding #10).
         var existingRowJson = await FetchByKeyAsync(schema, key,
             EntityAccess.ForTenant(_actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
-        AuthorizationFieldMasking.EnforceWriteAuthorization(
+        var carriedForward = AuthorizationFieldMasking.EnforceWriteAuthorization(
             _authEvaluator,
             _actingUserAccessor.ActingUser,
             schema,
@@ -245,20 +245,26 @@ public sealed class ObjectMappingGrpcService(
             "Mapping.Update",
             priorPayloadJson: existingRowJson);
 
-        // Strip the server-owned tenant column from the Struct that becomes MappingResponse.Data.
-        // EnforceWriteAuthorization force-set it INTO this very object (SetAuthoritativeField ->
-        // StructFieldAccess.SetField mutates in place), and `Data = request.Payload` below returns
-        // that same object — so without this the column goes back to the caller on every write.
+        // Shape the Struct that becomes MappingResponse.Data. EnforceWriteAuthorization wrote the
+        // server-owned tenant column and any carried-forward values INTO this very object
+        // (StructFieldAccess.SetField and CarryForwardRestrictedFields mutate in place), and
+        // `Data = request.Payload` below returns that same object.
         //
-        // AFTER SerializePayload, deliberately. payloadJson is what OutboxPublisher puts on Kafka,
-        // and it is the only source of the tenant value for the StarRocks projection
+        // AFTER SerializePayload, deliberately. payloadJson is what OutboxPublisher puts on Kafka:
+        // the only source of the tenant value for the StarRocks projection
         // (EngagementRepository.UpsertAsync) and the Qdrant point payload
-        // (IntelligenceStoreConsumer.BuildObjectPointPayload). Stripping before serialization
-        // would leave the StarRocks row's tenant column NULL — StarRocks' Primary Key model
-        // treats a partial INSERT as a full-row replace — and every subsequent StarRocks read for
-        // that tenant would return nothing. OutboxWriter remains the sole *injector* for the
-        // Postgres write; this is only a response-shaping strip.
-        AuthorizationFieldMasking.RemoveTenantColumn(request.Payload);
+        // (IntelligenceStoreConsumer.BuildObjectPointPayload), and the carrier of the restricted
+        // values StarRocks' full-row replace would otherwise clear. Masking before serialization
+        // would empty those columns in the projections.
+        //
+        // First the Read masking Get applies (MaskDisallowedFields also strips the tenant column).
+        // Then the carried-forward keys, unconditionally: read masking alone is not enough, because
+        // a caller whose read is Denied, or ownership-scoped on a row it does not own, gets a null
+        // or permissive read AllowedFields, and Get would refuse it the whole row.
+        var readDecision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
+        AuthorizationFieldMasking.MaskDisallowedFields(request.Payload, readDecision.AllowedFields);
+        foreach (var carried in carriedForward)
+            request.Payload.Fields.Remove(carried);
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }

@@ -2735,4 +2735,137 @@ public class ObjectMappingGrpcServiceTests
         response.Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
         response.Data.Fields["Name"].StringValue.Should().Be("w");
     }
+
+    // ── Update response: masked for Read, carried-forward values removed ──────
+    //
+    // EnforceWriteAuthorization carries the stored values of fields the caller may not write into
+    // request.Payload (CSR round 10 Finding #8), and Update returns that same object as
+    // MappingResponse.Data. The published payload must keep those values — it is the full-row
+    // replace StarRocks applies — but the response must not hand back what Get would not: fields
+    // the caller may not read, and carried values from a row Get would refuse outright.
+
+    private const string DossierKey = "33333333-0000-0000-0000-000000000003";
+
+    private void StubStoredDossier(string ownerId) =>
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns($$"""{"Id":"{{DossierKey}}","Title":"old title","Secret":"classified","SealedAt":"2026-10-03T12:34:56.789+00:00","Seal":"\\x01ff","Notes":"old notes","OwnerId":"{{ownerId}}","__TenantId":"test-tenant"}""");
+
+    private Task<MappingResponse> UpdateDossierAsync(Dictionary<string, Value> fields) =>
+        _sut.Update(new MappingWriteRequest { TypeName = "Dossier", Payload = MakePayload(fields) }, MakeContext());
+
+    [Fact]
+    public async Task Update_ResponseOmitsFieldsTheCallerMayNotRead_WhileThePublishedPayloadKeepsThem()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ReservedTenantDossierSchema());
+        StubStoredDossier(ownerId: "someone-else");
+        var events = CaptureEvents();
+
+        var response = await UpdateDossierAsync(new()
+        {
+            ["Id"]    = Value.ForString(DossierKey),
+            ["Title"] = Value.ForString("new title"),
+            ["Notes"] = Value.ForString("new notes"),
+        });
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields["Title"].StringValue.Should().Be("new title");
+        response.Data.Fields.Should().NotContainKey("Notes");   // writable, not readable
+        response.Data.Fields.Should().NotContainKey("Secret");  // carried forward
+        response.Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        events.Should().ContainSingle();
+        events[0].PayloadJson.Should().Contain("\"Notes\":\"new notes\"")
+            .And.Contain("\"Secret\":\"classified\"");
+    }
+
+    [Fact]
+    public async Task Update_ByAWriterWithoutReadAccess_OnATypeWithNoOwnerField_OmitsCarriedFieldsFromTheResponse()
+    {
+        // CanWriteAll without CanReadAll and no OwnerField: the read decision is Denied, so its
+        // AllowedFields is null and read masking alone would return every carried value.
+        await _registry.RegisterAsync(SchemaFixtures.ReservedTenantWriteOnlyDossierSchema(withOwnerField: false));
+        StubStoredDossier(ownerId: "someone-else");
+        var events = CaptureEvents();
+
+        var response = await UpdateDossierAsync(new()
+        {
+            ["Id"]    = Value.ForString(DossierKey),
+            ["Title"] = Value.ForString("new title"),
+        });
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Keys.Should().NotContain(["Secret", "SealedAt", "Seal"]);
+        events.Should().ContainSingle();
+        events[0].PayloadJson.Should().Contain("\"Secret\":\"classified\"");
+    }
+
+    [Fact]
+    public async Task Update_ByAWriterWithoutReadAccess_OfARowItDoesNotOwn_OmitsCarriedFieldsFromTheResponse()
+    {
+        // Same role, on a type with an OwnerField: the write is a CanWriteAll bypass, but reading is
+        // ownership-scoped and this row is someone else's, so Get would answer not-found. Its read
+        // AllowedFields still lists Secret, so read masking alone would return the carried value.
+        await _registry.RegisterAsync(SchemaFixtures.ReservedTenantWriteOnlyDossierSchema(withOwnerField: true));
+        StubStoredDossier(ownerId: "someone-else");
+        var events = CaptureEvents();
+
+        var response = await UpdateDossierAsync(new()
+        {
+            ["Id"]    = Value.ForString(DossierKey),
+            ["Title"] = Value.ForString("new title"),
+        });
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Keys.Should().NotContain(["Secret", "SealedAt", "Seal"]);
+        events.Should().ContainSingle();
+        events[0].PayloadJson.Should().Contain("\"Secret\":\"classified\"");
+    }
+
+    /// <summary>
+    /// Runs the upsert+outbox transaction against a fake context and returns the JSON the entity
+    /// upsert received — the full row Postgres will hold (the shape of OutboxWriterTests'
+    /// CaptureUpsertJsonAsync).
+    /// </summary>
+    private List<string> CaptureUpsertedJson()
+    {
+        var upserted = new List<string>();
+        var tx = Substitute.For<IDbTransactionContext>();
+        tx.WhenForAnyArgs(t => t.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
+          .Do(call =>
+          {
+              if (!call.ArgAt<string>(0).Contains("json_populate_record")) return;
+              var param = call.ArgAt<object?>(1);
+              upserted.Add((string)param!.GetType().GetProperty("Json")!.GetValue(param)!);
+          });
+        _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+            .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(tx));
+        return upserted;
+    }
+
+    [Theory]
+    [InlineData(false, "test-user",    "OwnerId")] // ownership-scoped: may update only its own row
+    [InlineData(true,  "someone-else", "OwnerId")] // CanWriteAll bypass: may update anyone's row
+    [InlineData(true,  "someone-else", "ownerId")] // OwnerField spelled unlike its stored column
+    public async Task Update_OmittingTheOwnerColumn_KeepsTheStoredOwner_AndTheResponseDoesNotEchoIt(
+        bool bypassWriter, string storedOwner, string ownerField)
+    {
+        // The owner column is writable, so restricted-field carry-forward never reaches it, and
+        // OwnerImmutable only compares an owner that is present. Without the owner carry-forward
+        // this full-row upsert would write the row with a NULL owner.
+        await _registry.RegisterAsync(bypassWriter
+            ? SchemaFixtures.ReservedTenantWriteOnlyDossierSchema(withOwnerField: true, ownerFieldName: ownerField)
+            : SchemaFixtures.ReservedTenantOwnedDossierSchema());
+        StubStoredDossier(ownerId: storedOwner);
+        var upserted = CaptureUpsertedJson();
+
+        var response = await UpdateDossierAsync(new()
+        {
+            ["Id"]    = Value.ForString(DossierKey),
+            ["Title"] = Value.ForString("new title"),
+        });
+
+        response.Success.Should().BeTrue();
+        upserted.Should().ContainSingle().Which.Should().Contain($"\"OwnerId\":\"{storedOwner}\"");
+        response.Data.Fields.Should().NotContainKey("OwnerId");
+    }
 }
