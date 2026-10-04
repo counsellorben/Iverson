@@ -72,6 +72,11 @@ var tenantAdminPassword = needsTenantAndSchema
         "recovery link, so it must meet Authentik's recovery password policy (at least 8 characters, " +
         "zxcvbn score >= 2).")
     : Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD") ?? "";
+if (needsTenantAndSchema && RecoveryPasswordPolicy.IsTooShort(tenantAdminPassword))
+    throw new InvalidOperationException(
+        $"IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD is shorter than {RecoveryPasswordPolicy.MinimumLength} characters. " +
+        "Authentik's recovery flow would refuse it after CreateTenant had already created the tenant, leaving " +
+        "its admin without a password. Choose a longer one; Authentik also requires a zxcvbn score of at least 2.");
 var actingUserCacheTarget = flags.Target == "kind" ? "kind" : "compose"; // maps LoadTest's own "containers"/"kind" to the Python script's "compose"/"kind" cache-path vocabulary
 var actingUserBaseUrl = tokenEndpoint is not null
     ? tokenEndpoint[..tokenEndpoint.IndexOf("/application/o/token/", StringComparison.Ordinal)]
@@ -154,7 +159,7 @@ if (needsTenantAndSchema && clientCredentials is not null)
             }
             catch (Exception ex)
             {
-                throw TenantExistsFailure(ex, tenantAdminUsername);
+                throw TenantAdminLoginFailure(ex);
             }
             Console.WriteLine("Logged the tenant admin in, enrolling its TOTP device.");
         }
@@ -371,6 +376,14 @@ static InvalidOperationException TenantExistsFailure(Exception ex, string tenant
     "Set the tenant admin's password by hand, for example in " +
     "`docker exec -it iverson-authentik-worker ak shell`: " +
     $"u = User.objects.get(username=\"{tenantAdminUsername}\"); u.set_password(\"<password>\"); u.save()",
+    ex);
+
+// The recovery step succeeded, so the tenant exists and its admin's password is set; only the first
+// login failed. The next run finds the tenant and logs the admin in when its token is first needed.
+static InvalidOperationException TenantAdminLoginFailure(Exception ex) => new(
+    $"{ex.Message} The tenant exists and its admin's password is set, but the admin's first login, which " +
+    "enrols its TOTP device, failed. Re-running LoadTest finds the tenant and retries the login when the " +
+    "admin's token is first needed.",
     ex);
 
 static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentials creds)

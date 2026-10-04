@@ -137,8 +137,15 @@ def load_cached_totp_secret(target: str, username: str) -> str | None:
 
 
 def save_cached_totp_secret(target: str, username: str, secret: str) -> None:
-    os.makedirs(CACHE_DIR, exist_ok=True)
+    # A directory or file that an older run created at the umask mode is restricted first, and a new
+    # one is created owner-only, so no other local user can ever read the secret.
+    if os.path.isdir(CACHE_DIR):
+        os.chmod(CACHE_DIR, 0o700)
+    else:
+        os.makedirs(CACHE_DIR, mode=0o700)
     path = totp_cache_path(target, username)
+    if os.path.exists(path):
+        os.chmod(path, 0o600)
     # Create with 0600 from the first syscall (O_CREAT|mode is atomic) rather
     # than open()-then-chmod(), which leaves the secret at the umask-derived
     # (often world/group-readable) mode for a brief window before chmod runs.

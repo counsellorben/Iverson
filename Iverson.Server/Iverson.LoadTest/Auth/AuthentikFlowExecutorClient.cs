@@ -138,7 +138,12 @@ public sealed class AuthentikFlowExecutorClient : IDisposable
         }
         else
         {
-            Directory.CreateDirectory(CacheDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            // As with the file below: a directory that already exists is restricted, and a new one is
+            // created owner-only. A chmod after creating it would mask the create mode from the tests.
+            if (Directory.Exists(CacheDir))
+                File.SetUnixFileMode(CacheDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            else
+                Directory.CreateDirectory(CacheDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             if (File.Exists(CachePath))
                 File.SetUnixFileMode(CachePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             using var stream = new FileStream(CachePath, new FileStreamOptions

@@ -201,4 +201,21 @@ public class AuthentikFlowExecutorClientTests
             File.ReadAllText(CachePath(home)).Should().Be("JBSWY3DPEHPK3PXP\n");
         });
     }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task MintAsync_RestrictsAPreExistingLooserCacheDirectory()
+    {
+        await WithTempHome(async home =>
+        {
+            var dir = Path.Combine(home, ".cache", "iverson");
+            Directory.CreateDirectory(dir);
+            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+
+            await Client(EnrolmentLogin()).MintAsync();
+
+            File.GetUnixFileMode(dir).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        });
+    }
 }
