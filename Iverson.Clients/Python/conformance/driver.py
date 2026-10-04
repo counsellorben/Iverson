@@ -441,6 +441,8 @@ class _DriverSchemaCatalogClient(IversonClient):
         self._channel = channel
         self._mapping_stub = mapping_grpc.ObjectMappingServiceStub(channel)
         self._acting_user_token = None
+        # Never binds a per-call token: the driver's channel carries identity itself.
+        self._refuse_plaintext_token = False
 
 
 def catalogue_to_json(types: List[Any]) -> dict:

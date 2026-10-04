@@ -118,7 +118,10 @@ public static class ServiceCollectionExtensions
         }
 
         services.AddTransient(typeof(EntityCoordinator<>));
-        services.AddSingleton(new ActingUserIdentity(actingUserTokenProvider));
+        services.AddSingleton(new ActingUserIdentity(
+            actingUserTokenProvider,
+            refusesPlaintextTokens: !allowInsecureChannelCallCredentials &&
+                string.Equals(new Uri(grpcEndpoint).Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)));
 
         services.AddSingleton<SchemaRegistrar>();
 

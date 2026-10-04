@@ -122,4 +122,21 @@ public class ServiceCollectionExtensionsTests
 
         act.Should().NotThrow();
     }
+
+    // WithActingUser (EntityCoordinator) refuses a per-call token when this bit is set; it must be
+    // set exactly when the endpoint is plaintext and the caller did not opt in.
+    [Theory]
+    [InlineData("http://localhost:5000", false, true)]
+    [InlineData("http://localhost:5000", true, false)]
+    [InlineData("https://localhost:5000", false, false)]
+    public void AddIversonClient_SetsRefusesPlaintextTokens_ForAPlaintextEndpointWithoutOptIn(
+        string endpoint, bool optIn, bool expected)
+    {
+        var services = new ServiceCollection();
+        services.AddIversonClient(grpcEndpoint: endpoint, allowInsecureChannelCallCredentials: optIn);
+
+        using var provider = services.BuildServiceProvider();
+
+        provider.GetRequiredService<ActingUserIdentity>().RefusesPlaintextTokens.Should().Be(expected);
+    }
 }
