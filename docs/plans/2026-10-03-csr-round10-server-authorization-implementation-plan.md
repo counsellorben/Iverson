@@ -128,11 +128,11 @@ Each task's table was produced by applying that task's code on the scratch branc
 
 ### Whole-plan proof
 
-`dotnet test Iverson.Server.slnx` at the scratch branch's final commit (`2bd1caa8`, Tasks 1–9 applied), run by the plan writer rather than taken from the proving subagents: **3673 passed, 0 failed.** Re-measured after CIR-1's §2.1 and §2.2 fixes: `Iverson.Api.Tests` **1380/0**, in a scratch worktree at `2bd1caa8` with both fixes applied. No other project is touched by them, so the solution total is **3678**.
+`dotnet test Iverson.Server.slnx` at the scratch branch's final commit (`2bd1caa8`, Tasks 1–9 applied), run by the plan writer rather than taken from the proving subagents: **3673 passed, 0 failed.** Re-measured after CIR-1's §2.1 and §2.2 fixes: `Iverson.Api.Tests` **1380/0**, in a scratch worktree at `2bd1caa8` with both fixes applied. Re-measured again after CIR-2 §2.1: **1381/0**. No other project is touched by these fixes, so the solution total is **3679**.
 
 | Project | Before (`e637bada`, per proving agents' baselines) | After (`2bd1caa8`) |
 |---|---|---|
-| `Iverson.Api.Tests` | 1318 | 1380 |
+| `Iverson.Api.Tests` | 1318 | 1381 |
 | `Iverson.Sql.Tests` | 112 | 116 |
 | `Iverson.StarRocks.Tests` (incl. 56 Testcontainers) | 497 | 525 |
 | `Iverson.ClientConformance.Tests` | 638 | 640 |
@@ -142,7 +142,7 @@ Each task's table was produced by applying that task's code on the scratch branc
 
 | Category | Assumption | Evidence |
 |---|---|---|
-| code validity | No API write can store a BIGINT above 2^53, so carry-forward's Struct-double hop is exact for every stored integer | Every SDK value reaches the server as a Struct double (`Iverson.Clients/DotNet/Iverson.Client.Core/StructConverter.cs:31-32`); CIR-1 span S7 |
+| code validity | A restricted integer above 2^53 is carried as its exact JSON text, which `json_populate_record` parses back exactly | CIR-2 §2.1 (the API accepts any Struct, so a string-sent BIGINT above 2^53 is stored exactly); `Update_ByAFieldRestrictedCaller_KeepsARestrictedIntegerAbove2Pow53Exact` 183/0; helper call removed → 1 failed |
 | code validity | An exception thrown inside `OnTokenValidated` fails the request rather than skipping authentication, so a revocation-cache reload failure fails closed | CIR-1 probe PB (run): `ListAsync` throwing → `/v1/traces` 500 with nothing forwarded, gRPC Unknown; span S8 |
 
 ### Task 1 assumptions: Update is strictly an update
@@ -199,9 +199,9 @@ Each mutation was applied, run, and restored from a byte copy. `git status` was 
 | code validity | `AllowedFields` is an ordinal `HashSet<string>` of canonical names; the stored row's keys are canonical column names (`row_to_json`), so `UpperFirst(storedKey)` is an identity for every column and the ordinal `Contains` is right | `RowFieldAuthorizationEvaluator.cs:116` (`.ToHashSet()`); `EntityRepository.cs:7-10` (`SELECT row_to_json(t)::text`) |
 | code validity | On the update branch the tenant column is force-set into the payload before carry-forward runs, so carry-forward never copies it | `AuthorizationFieldMasking.cs` existing-row branch `SetAuthoritativeField(payload, decision.TenantColumn, …)`; test asserts `__TenantId` = `test-tenant` and `carried` = exactly `Secret, SealedAt, Seal` |
 | code validity | Case-insensitive match matters for the owner field: it is exempt from rejection, so an ownership-scoped caller restricted from writing it may still send it, camelCase. `StructSerializer.FoldKeys` throws InvalidArgument on two keys that fold to one | `ProtoPayloadHelper.cs:16-33`; mutation M7 (Ordinal) fails `EnforceWriteAuthorization_CamelCasePayloadKey_MatchesTheCanonicalStoredKey` |
-| code validity | `carriedForward` is a `List<string>` returned as the method's `IReadOnlyCollection<string>`; iterating `existingRow.Fields.Keys` while `CarryForward` writes to a *different* Struct (`payload`) is safe | Compiles with 0 warnings in the touched files; 182/0 |
+| code validity | `carriedForward` is a `List<string>` returned as the method's `IReadOnlyCollection<string>`; iterating `existingRow.Fields.Keys` while `CarryForward` writes to a *different* Struct (`payload`) is safe | Compiles with 0 warnings in the touched files; 183/0 |
 | code validity | The read decision for "test-bypass" with `RowPermission("test-bypass", false, true, false)`: no OwnerField → Denied, `AllowedFields` null; with OwnerField → ownership-required, read `AllowedFields` = all minus `Notes` (still lists `Secret`). Either way read masking alone would return the carried `Secret` | `RowFieldAuthorizationEvaluator.cs:36-64`; mutation M9 (drop the carried-key removal) fails both write-only tests |
-| code validity | Values survive the real round trip on `postgres:16-alpine`: `TIMESTAMPTZ` `row_to_json` text with offset and `BYTEA` `\x…` hex both go back through `json_populate_record` unchanged | `Update_ByAFieldRestrictedCaller_LeavesOmittedRestrictedValuesIntactInPostgres` compares `GetRawText()` of `Secret`, `SealedAt`, `Seal` before and after; closes spec VA-21's two caveats (`postgres:16`, .NET hop) |
+| code validity | Values survive the real round trip on `postgres:16-alpine`: `TIMESTAMPTZ` `row_to_json` text with offset and `BYTEA` `\x…` hex both go back through `json_populate_record` unchanged, and so does a BIGINT/BIGINT[] above 2^53, which `PreserveExactIntegers` carries as exact JSON text (CIR-2 §2.1) | `Update_ByAFieldRestrictedCaller_LeavesOmittedRestrictedValuesIntactInPostgres` compares `GetRawText()` of `Secret`, `SealedAt`, `Seal` before and after; closes spec VA-21's two caveats (`postgres:16`, .NET hop) |
 | code validity | RLS in the Postgres test: `ApplySchemaAsync` on a schema with a `TenantColumn` grants `iverson_runtime` and FORCEs RLS; `FetchByKeyAsync(ForTenant)` and `OutboxWriter`'s tenant-scoped upsert run as that role; the outbox insert resets to the superuser | `Iverson.Sql.Tests/TenantScopedAccessIntegrationTests.cs:246-293` (same writer, same role switch); test passes |
 | code validity | The owner carry-forward keys on `schema.Authorization?.OwnerField`, not `decision.OwnerFieldName`: the evaluator leaves `OwnerFieldName` null for bypass callers. `AuthorizationRules.OwnerField` normalizes `""` to null, so a schema with no ownership dimension skips the step. The stored owner key is found case-insensitively, because registration admits an `OwnerField` that matches its column only case-insensitively (`SchemaRegistrationOrchestrator.cs:680-686`) | `RowFieldAuthorizationEvaluator.cs:44-60`; `SchemaDescriptor.cs:145-167`; mutation M14 (decision instead of schema) fails only the bypass cases |
 | code validity | The owner step runs AFTER `RejectDisallowedFields`. A bypass caller is not owner-exempt (`OwnerFieldName` null), so an owner carried in before the rejection would be rejected as a field it may not write, whenever the owner column is also field-restricted | `EnforceWriteAuthorization` order; the exemption list is `{OwnerFieldName, TenantColumn}` |
@@ -220,7 +220,7 @@ Each mutation was applied, run, and restored from a byte copy. `git status` was 
 
 #### Mutation checks
 
-Final code, i.e. owner carry-forward included. The four classes, 182 tests, with the Postgres test included. The owner-related rows were re-measured after CIR-1 §2.2 added the third owner-theory case.
+Final code, i.e. owner carry-forward included. The four classes, 182 tests, with the Postgres test included. The owner-related rows were re-measured after CIR-1 §2.2 added the third owner-theory case. These rows were measured before CIR-2 §2.1 added the BIGINT Postgres test (183 tests); the last row was measured with it.
 
 | Guard | Mutation | Tests that failed |
 |---|---|---|
@@ -234,13 +234,14 @@ Final code, i.e. owner carry-forward included. The four classes, 182 tests, with
 | Carried owner joins the returned collection | owner copied but not added to `carriedForward` | the same theory, all three cases (response echoes `OwnerId`) (3 failed) |
 | Mapping Read masking | `MaskDisallowedFields(request.Payload, readDecision.AllowedFields)` → `RemoveTenantColumn(request.Payload)` | `Update_ResponseOmitsFieldsTheCallerMayNotRead_WhileThePublishedPayloadKeepsThem` (1 failed) |
 | Mapping carried-key removal | deleted the `foreach (var carried in carriedForward) request.Payload.Fields.Remove(carried);` loop | `Update_ResponseOmitsFieldsTheCallerMayNotRead_…`, both write-only response tests, all three owner-theory cases (6 failed) |
+| Exact large integers carried | `PreserveExactIntegers(existingStruct, existingRowJson);` removed | `Update_ByAFieldRestrictedCaller_KeepsARestrictedIntegerAbove2Pow53Exact` (1 failed / 183) |
 
 Each mutation was applied, run, and restored from a byte copy. `git status` was clean against the commit afterwards.
 
 #### Counts
 
 - Before Task 2 (after Task 1): the three classes **170 / 0**.
-- After Task 2: the four classes **182 passed / 0 failed** (Postgres test included, about 6 s; 181 before CIR-1 §2.2 added the third owner-theory case).
+- After Task 2: the four classes **183 passed / 0 failed** (Postgres tests included, about 6 s; 181 before CIR-1 §2.2 added the third owner-theory case, 182 before CIR-2 §2.1 added the BIGINT test).
 - Whole `Iverson.Api.Tests` at the Task 2 point: **1329 passed / 0 failed / 1329** (7 m 3 s). Run in a throwaway worktree at `3192d4ef` with `2c19b739` and `9963c672` cherry-picked, then removed. Baseline 1318 → −10 deleted cases + 10 (Task 1) + 11 (Task 2) = 1329. An earlier run at `81448753`, before the amendments, was 1325 / 0.
 - Whole `Iverson.Api.Tests` at scratch HEAD `9963c672` (Tasks 1–9 plus both fixups): **1375 passed / 0 failed / 1375** (7 m 1 s).
 - `dotnet build Iverson.Server.slnx`: Build succeeded, 0 errors (at `3192d4ef`; the fixups touch only `Iverson.Api` and its tests, which built clean).
@@ -1701,6 +1702,52 @@ public sealed class UpdateCarryForwardPostgresIntegrationTests(ReconciliationQue
         after.GetProperty(SchemaDescriptor.TenantColumnName).GetString().Should().Be("test-tenant");
     }
 
+    [Fact]
+    public async Task Update_ByAFieldRestrictedCaller_KeepsARestrictedIntegerAbove2Pow53Exact()
+    {
+        // A Struct number is a double; a stored BIGINT above 2^53 must not come back rounded.
+        var baseSchema = SchemaFixtures.ReservedTenantDossierSchema();
+        var schema = baseSchema with
+        {
+            TableName = "dossiers_" + Guid.NewGuid().ToString("N")[..8],
+            ScalarColumns = [.. baseSchema.ScalarColumns,
+                new ColumnDescriptor("Serial", "BIGINT", true), new ColumnDescriptor("Serials", "BIGINT[]", true)],
+            Authorization = baseSchema.Authorization! with
+            {
+                FieldPermissions = [.. baseSchema.Authorization.FieldPermissions,
+                    new Iverson.Api.Schema.FieldPermission("Serial", new List<string>(), new List<string> { "premium" }),
+                    new Iverson.Api.Schema.FieldPermission("Serials", new List<string>(), new List<string> { "premium" })]
+            }
+        };
+        await _schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(schema));
+        await _schemaManager.ApplySchemaAsync(ReconciliationSchema.Table);
+        var key = Guid.CreateVersion7();
+        await _repo.ExecuteAsync(
+            $"""
+            INSERT INTO "{schema.TableName}" ("Id", "Title", "Serial", "Serials", "{SchemaDescriptor.TenantColumnName}")
+            VALUES (@Id, 'old title', 9007199254740993, ARRAY[9007199254740993, 7]::bigint[], 'test-tenant')
+            """,
+            new { Id = key });
+        var registry = new SchemaRegistry(new SchemaRegistryRepository(_repo), NullLogger<SchemaRegistry>.Instance);
+        await registry.RegisterAsync(schema);
+        var sut = new ObjectPersistenceGrpcService(
+            Substitute.For<IOutboxPublisher>(), registry, new RelationValidator(), new PayloadSizeValidator(),
+            new EntityKeyAccessor(), new OutboxWriter(ReconciliationSchema.TableName, _repo, _repo),
+            NullLogger<ObjectPersistenceGrpcService>.Instance, new EntityRepository(_repo),
+            new ActingUserAccessor { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") },
+            new RowFieldAuthorizationEvaluator(), new AuditLog(NullLogger<AuditLog>.Instance));
+
+        await sut.Update(new PersistRequest
+        {
+            TypeName = "Dossier",
+            Payload = new Struct { Fields = { ["Id"] = Value.ForString(key.ToString()), ["Title"] = Value.ForString("new title") } }
+        }, TestServerCallContext.Create());
+
+        var stored = await _repo.QuerySingleOrDefaultAsync<string>(
+            $"""SELECT "Serial"::text || ' ' || "Serials"::text FROM "{schema.TableName}" WHERE "Id" = @Id""", new { Id = key });
+        stored.Should().Be("9007199254740993 {9007199254740993,7}");
+    }
+
     private async Task<JsonElement> ReadRowAsync(string tableName, Guid key)
     {
         var json = await _repo.QuerySingleOrDefaultAsync<string>(
@@ -1789,6 +1836,7 @@ with:
         else
         {
             existingStruct = JsonParser.Default.Parse<Struct>(existingRowJson);
+            PreserveExactIntegers(existingStruct, existingRowJson);
 ```
 
 Replace the `RejectDisallowedFields` call:
@@ -1917,6 +1965,29 @@ and add the two new methods directly after it, as the class's last members:
         payload.Fields[storedKey] = storedValue;
         return true;
     }
+
+    /// <summary>
+    /// A Struct number is a double, so an integer above 2^53 in the stored row would come back
+    /// rounded. Such a value (or array element) is carried as its exact JSON text instead, which
+    /// json_populate_record parses back into BIGINT exactly.
+    /// </summary>
+    private static void PreserveExactIntegers(Struct row, string rowJson)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(rowJson);
+        foreach (var p in doc.RootElement.EnumerateObject())
+        {
+            if (p.Value.ValueKind == System.Text.Json.JsonValueKind.Number && !IsDoubleExact(p.Value))
+                row.Fields[p.Name] = Value.ForString(p.Value.GetRawText());
+            else if (p.Value.ValueKind == System.Text.Json.JsonValueKind.Array &&
+                     p.Value.EnumerateArray().Any(e => e.ValueKind == System.Text.Json.JsonValueKind.Number && !IsDoubleExact(e)))
+                row.Fields[p.Name] = Value.ForList(p.Value.EnumerateArray().Select(e =>
+                    e.ValueKind == System.Text.Json.JsonValueKind.Null ? Value.ForNull()
+                    : IsDoubleExact(e) ? Value.ForNumber(e.GetDouble()) : Value.ForString(e.GetRawText())).ToArray());
+        }
+    }
+
+    private static bool IsDoubleExact(System.Text.Json.JsonElement e) =>
+        !e.TryGetInt64(out var l) || Math.Abs(l) <= (1L << 53);
 ```
 
 The tenant column is never copied by carry-forward: on the update branch it is already force-set into the payload under its canonical name before this runs. An owner column that is also field-restricted is copied once, by the restricted pass; `CarryForward` then sees it present and the owner step adds nothing.
@@ -1993,7 +2064,7 @@ with:
 cd Iverson.Server && dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~Iverson.Api.Tests.Grpc.ObjectPersistenceGrpcServiceTests|FullyQualifiedName~Iverson.Api.Tests.Grpc.ObjectMappingGrpcServiceTests|FullyQualifiedName~Iverson.Api.Tests.Grpc.AuthorizationFieldMaskingTests|FullyQualifiedName~Iverson.Api.Tests.Grpc.UpdateCarryForwardPostgresIntegrationTests"
 ```
 
-Expected: `Passed: 182, Failed: 0, Total: 182` (Task 1's 170, plus 5 field-masking tests, 3 Mapping-response tests, the 3-case owner theory and 1 Postgres test; the Postgres test starts one `postgres:16-alpine` container).
+Expected: `Passed: 183, Failed: 0, Total: 183` (Task 1's 170, plus 5 field-masking tests, 3 Mapping-response tests, the 3-case owner theory and 2 Postgres tests; the Postgres test starts one `postgres:16-alpine` container).
 
 Then the whole project once:
 
@@ -2001,7 +2072,7 @@ Then the whole project once:
 cd Iverson.Server && dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj
 ```
 
-Expected: `Passed: 1330, Failed: 0, Total: 1330` (baseline 1318 at `e637bada`; Task 1 net 0, Task 2 +12). About 8 minutes with the container suites.
+Expected: `Passed: 1331, Failed: 0, Total: 1331` (baseline 1318 at `e637bada`; Task 1 net 0, Task 2 +13). About 8 minutes with the container suites.
 
 - [ ] **Step 9: Commit**
 
@@ -5554,6 +5625,7 @@ This task makes no commits. Before the merge, it proves the three spec §10 live
 - Never start, stop, remove or modify the user's existing `iversonserver` containers, volumes, networks or images. Snapshot all four before starting, and diff them after teardown.
 - Read `AUTHENTIK_BOOTSTRAP_TOKEN` and every password from `$MAIN/Iverson.Server/.env` into environment variables. Never print them.
 - Tear down with `down -v`.
+- Shell variables do not persist between tool calls. Start every command block with the same four assignments: `SP=…; BR=…; MAIN=/home/ben/repositories/Iverson; DC="docker compose -p csr10live -f $SP/live/compose.yml --project-directory $BR/Iverson.Server --env-file $MAIN/Iverson.Server/.env"`.
 
 - [ ] **Step 1: Stand up the isolated stack from the branch**
 
@@ -5579,15 +5651,13 @@ Expected:
 Build the probe program: a copy of the spec probe's `subprobe` project, with its `ProjectReference` repointed at `$BR/Iverson.Server/Iverson.LoadTest/Iverson.LoadTest.csproj`, and the gRPC calls of Steps 3–5 added. Then mint one token for `iverson-loadtest-bypass-user` against the probe stack with `HOME` pointed at a scratch directory. Run the built dll directly, so no restore runs under the scratch `HOME`. `mint-bypass` is a probe mode that makes one `AuthentikFlowExecutorClient.MintAsync` call for `iverson-loadtest-bypass-user`.
 
 ```bash
-mkdir -p $SP/live/home
-HOME=$SP/live/home dotnet <probe>/bin/Debug/net10.0/<probe>.dll mint-bypass
-ls -la $SP/live/home/.cache/iverson/ 2>/dev/null
+mkdir -p "$SP/live/home" && HOME="$SP/live/home" dotnet <probe>/bin/Debug/net10.0/<probe>.dll mint-bypass && { if test -d "$SP/live/home/.cache/iverson"; then ls -la "$SP/live/home/.cache/iverson/"; echo CACHE_FILE_APPEARED; else echo NO_CACHE_FILE; fi; }
 ```
 
-The probe reads `IVERSON_BYPASS_PASSWORD` from the environment.
+The probe reads `IVERSON_BYPASS_PASSWORD` from the environment. `mint-bypass` lets `MintAsync`'s exception propagate, so a failed mint exits non-zero. Take the "A file appeared" branch only on `CACHE_FILE_APPEARED`, and the "No cache file appeared" branch only on `NO_CACHE_FILE`. If neither marker prints, stop.
 
 - **No cache file appeared:** Steps 3–4 do not touch `~/.cache/iverson`. Continue.
-- **A file appeared:** copy `~/.cache/iverson` to `$SP/live/totp-cache-backup` now. In Step 6, restore it and `diff -r` it against the backup.
+- **A file appeared:** copy `~/.cache/iverson` to `$SP/live/totp-cache-backup` now. Then copy the scratch secret over the real one, so Step 4's harness uses the secret the probe stack enrolled: `cp "$SP/live/home/.cache/iverson/acting-user-totp-secret-compose-iverson-loadtest-bypass-user.txt" ~/.cache/iverson/`. In Step 6, restore the backup and `diff -r` it against the backup.
 
 - [ ] **Step 3: Revocation is enforced within 30 s**
 
@@ -5596,7 +5666,7 @@ Use the probe program:
 2. Create user `U` in tenant `T` (an Authentik user with `attributes.tenant_id = T`), set its password from a recovery link, and mint its acting-user token through `dev-iverson-loadtest-human-client-id`.
 3. Call a data-plane RPC, e.g. `ObjectRetrieval.Get` on any registered type, with the loadtest service token plus `x-acting-user-authorization: Bearer <U token>`. Expected: not Unauthenticated.
 4. As `T`'s tenant admin, call `TenantAdmin.ListUsers` to get `U`'s `UserId`, then `TenantAdmin.RemoveUser(U)`. Expected: success.
-5. Poll the step-3 call once a second for up to 35 s. Expected: it turns `Unauthenticated` ("Acting-user token is invalid.") within 30 s of step 4. Record the elapsed time.
+5. Poll the step-3 call once a second for up to 35 s. Expected: every poll that starts more than 30 s after step 4 began answers `Unauthenticated` ("Acting-user token is invalid."). Earlier polls may still succeed. Record the elapsed time of the first refused poll; up to 30 s plus one poll interval is the specified behaviour.
 6. Run `$DC exec postgres psql -U iverson -d iverson -c 'SELECT sub FROM iverson_token_revocations'`. Expected: one row whose `sub` equals the `sub` claim decoded from `U`'s token.
 
 - [ ] **Step 4: The identity conformance scenario passes IVC-IDN-008 for .NET**
@@ -5645,7 +5715,7 @@ diff <(docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort) $SP/liv
 If Step 2 made a backup:
 
 ```bash
-rm -rf ~/.cache/iverson && cp -a $SP/live/totp-cache-backup ~/.cache/iverson
+test -d "$SP/live/totp-cache-backup" && rm -rf ~/.cache/iverson && cp -a "$SP/live/totp-cache-backup" ~/.cache/iverson
 diff -r ~/.cache/iverson $SP/live/totp-cache-backup
 ```
 
