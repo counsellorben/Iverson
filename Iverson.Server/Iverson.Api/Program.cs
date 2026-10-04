@@ -373,6 +373,13 @@ builder.Services.AddSingleton<ITenantRepository>(sp => new TenantRepository(
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITenantStatusCache, Iverson.Api.Tenancy.TenantStatusCache>();
+// CSR round-10 #11: the subs of removed and demoted users, and the 30 s snapshot of them that
+// the JwtBearer schemes check every token against.
+builder.Services.AddSingleton<ITokenRevocationRepository>(sp =>
+    new TokenRevocationRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+builder.Services.AddSingleton<Iverson.Api.Tenancy.ITokenRevocationCache>(sp =>
+    new Iverson.Api.Tenancy.TokenRevocationCache(
+        sp.GetRequiredService<ITokenRevocationRepository>(), TimeProvider.System));
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
 // CSR finding #4: IdpAdminClient used to post a cleartext user password to Authentik's
@@ -710,6 +717,10 @@ await app.Services.GetRequiredService<IEnrichmentStateRepository>().EnsureTableA
 // loop breaker above; raw DDL because it needs the two partial unique indexes ApplySchemaAsync
 // cannot express.
 await app.Services.GetRequiredService<IDocumentRerenderQueueRepository>().EnsureTableAsync();
+
+// Token revocations (CSR round-10 #11) — same bootstrap shape: raw DDL, run as the owner role
+// through the plain executor, so no grants are needed.
+await app.Services.GetRequiredService<ITokenRevocationRepository>().EnsureTableAsync();
 
 // EnsureRolesAsync must run before ANY ApplySchemaAsync call, since that DDL now GRANTs to
 // iverson_maintenance on every table (and to iverson_runtime on the tenant-scoped ones) — both

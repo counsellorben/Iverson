@@ -3,7 +3,7 @@ using Xunit;
 namespace Iverson.Sql.Tests;
 
 /// <summary>
-/// The collection every container-backed test class in this assembly joins, so its three
+/// The collection every container-backed test class in this assembly joins, so its four
 /// Postgres-backed classes start their containers one at a time rather than all at once. See
 /// <c>Iverson.Api.Tests/ContainerCollection.cs</c> for the full rationale; the short version is
 /// that xunit runs collections in parallel and an unmarked class is its own collection.

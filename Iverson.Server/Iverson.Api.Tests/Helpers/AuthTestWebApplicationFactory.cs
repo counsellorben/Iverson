@@ -63,6 +63,9 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
             services.RemoveAll<ITenantRepository>();
             services.AddSingleton<ITenantRepository, NoOpTenantRepository>();
 
+            services.RemoveAll<ITokenRevocationRepository>();
+            services.AddSingleton<ITokenRevocationRepository, NoOpTokenRevocationRepository>();
+
             services.RemoveAll<IDlqRepository>();
             services.AddSingleton<IDlqRepository, NoOpDlqRepository>();
 
