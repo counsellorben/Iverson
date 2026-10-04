@@ -21,6 +21,16 @@ public class StarRocksQueryBuilderTests
     private static EngagementQuerySchema TagSchema() => new(
         "Tag", "tags", "Id", ["Label"]);
 
+    // A column named after a whitelisted function, restricted from the caller: the expression
+    // validator must treat a bare "Sum" as this column, not as the SUM function.
+    private static EngagementQuerySchema LedgerSchema() => new(
+        "Ledger", "ledgers", "Id", ["Sum", "Amount", "Region"]);
+
+    private static Dictionary<string, AuthorizationConstraint> LedgerAuthzWithoutSum() => new()
+    {
+        ["Ledger"] = new(AllowedFields: new HashSet<string> { "Id", "Amount", "Region" }, OwnerColumn: null, OwnerValue: null)
+    };
+
     // ── BuildAggregate — Terms ─────────────────────────────────────────────────
 
     [Fact]
@@ -901,6 +911,48 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
         act.Should().NotThrow();
+    }
+
+    // ── BuildAggregate — Expression function names vs. columns ─────────────────
+
+    [Fact]
+    public void BuildAggregate_ExpressionUsesRestrictedColumnNamedLikeFunction_ThrowsTranslationException()
+    {
+        var spec = new AggregationDescriptor(
+            "total", AggregationKind.Avg, "Amount", Expression: "Sum * 2");
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "ledgers", LedgerSchema(), null, spec, authz: LedgerAuthzWithoutSum());
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("Aggregation field 'Sum' on 'Ledger' is not authorized for this caller.");
+    }
+
+    [Theory]
+    [InlineData("SUM(Amount)")]
+    [InlineData("SUM (Amount)")]
+    [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
+    public void BuildAggregate_ExpressionCallsFunction_DoesNotThrow(string expr)
+    {
+        var spec = new AggregationDescriptor("total", AggregationKind.Avg, "Amount", Expression: expr);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "ledgers", LedgerSchema(), null, spec, authz: LedgerAuthzWithoutSum());
+
+        act.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("COALESCE(Amount, \"a\")")]
+    [InlineData("Amount \\ 2")]
+    public void BuildAggregate_ExpressionWithDoubleQuoteOrBackslash_ThrowsTranslationException(string expr)
+    {
+        var spec = new AggregationDescriptor("total", AggregationKind.Avg, "Amount", Expression: expr);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("ledgers", LedgerSchema(), null, spec);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .Where(e => e.Message.Contains("forbidden character"));
     }
 
     // ── BuildSearch — Equals clause (parameterization) ─────────────────────────
@@ -2054,7 +2106,7 @@ public class StarRocksQueryBuilderTests
         request.Metrics.Add(new MetricSpec { Name = "count_star",   Type = AggregationType.Count });
         request.Metrics.Add(new MetricSpec { Name = "net_rating",   Type = AggregationType.Sum,   Expression = "Rating * (1 - 0)" });
         request.Metrics.Add(new MetricSpec { Name = "charge",       Type = AggregationType.Sum,   Expression = "Rating * (1 - 0) * (1 + 0)" });
-        // COALESCE is a DeriveWhitelist-recognized function (unlike LENGTH, which the new
+        // COALESCE is a DeriveFunctions-recognized function (unlike LENGTH, which the new
         // authz-driven expression-token check below would now reject as an unresolvable,
         // non-whitelisted identifier) — swapped in here so this pre-existing structural test
         // keeps passing under Task 4's stricter Expression validation.
@@ -2747,6 +2799,49 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
         act.Should().NotThrow();
+    }
+
+    // ── BuildGroupBy — metric expression function names vs. columns ────────────
+
+    private static GroupByRequest LedgerRequest(string expression)
+    {
+        var request = new GroupByRequest { TypeName = "Ledger", Keys = { "Region" } };
+        request.Metrics.Add(new MetricSpec { Name = "m", Type = AggregationType.Avg, Expression = expression });
+        return request;
+    }
+
+    [Fact]
+    public void BuildGroupBy_MetricExpressionUsesRestrictedColumnNamedLikeFunction_ThrowsTranslationException()
+    {
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "ledgers", LedgerSchema(), LedgerRequest("Sum * 2"), BuildRegistry(LedgerSchema()), authz: LedgerAuthzWithoutSum());
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("Field 'Sum' on 'Ledger' referenced by metric 'm' expression is not authorized for this caller.");
+    }
+
+    [Theory]
+    [InlineData("SUM(Amount)")]
+    [InlineData("SUM (Amount)")]
+    [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
+    public void BuildGroupBy_MetricExpressionCallsFunction_DoesNotThrow(string expr)
+    {
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "ledgers", LedgerSchema(), LedgerRequest(expr), BuildRegistry(LedgerSchema()), authz: LedgerAuthzWithoutSum());
+
+        act.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("COALESCE(Amount, \"a\")")]
+    [InlineData("Amount \\ 2")]
+    public void BuildGroupBy_MetricExpressionWithDoubleQuoteOrBackslash_ThrowsTranslationException(string expr)
+    {
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "ledgers", LedgerSchema(), LedgerRequest(expr), BuildRegistry(LedgerSchema()));
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .Where(e => e.Message.Contains("forbidden character"));
     }
 
     // ── BuildGroupBy — ORDER BY field reject-on-reference ──────────────────────

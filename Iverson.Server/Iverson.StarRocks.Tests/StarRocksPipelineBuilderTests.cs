@@ -962,6 +962,99 @@ public class StarRocksPipelineBuilderTests
         act.Should().NotThrow();
     }
 
+    // ── Expressions — function names vs. columns ───────────────────────────────
+    // "Sum" is both a column and a whitelisted function name. Field restriction drops it from
+    // the step's visible columns (ColumnsFor), so a bare reference must be rejected rather than
+    // skipped as the SUM function.
+
+    private static EngagementQuerySchema LedgerSchema() => new(
+        "Ledger", "ledgers", "Id", ["Sum", "Amount", "Region"]);
+
+    private static Dictionary<string, AuthorizationConstraint> LedgerAuthzWithoutSum() => new()
+    {
+        ["Ledger"] = new(AllowedFields: new HashSet<string> { "Id", "Amount", "Region" }, OwnerColumn: null, OwnerValue: null)
+    };
+
+    private static PipelineRequest LedgerRequest(PipelineStep step)
+    {
+        var r = new PipelineRequest { TypeName = "Ledger" };
+        r.Steps.Add(step);
+        return r;
+    }
+
+    private static PipelineStep MetricStep(string expression)
+    {
+        var step = new PipelineStep { Name = "agg" };
+        step.GroupBy.Add(new GroupKey { Field = "Region" });
+        step.Metrics.Add(new MetricSpec { Name = "m", Type = AggregationType.Avg, Expression = expression });
+        return step;
+    }
+
+    private static PipelineStep DeriveStep(string expression)
+    {
+        var step = new PipelineStep { Name = "d" };
+        step.Derive.Add(new DeriveColumn { Alias = "x", Expr = expression });
+        return step;
+    }
+
+    [Fact]
+    public void Validate_MetricExpressionUsesRestrictedColumnNamedLikeFunction_Throws()
+    {
+        var act = () => StarRocksPipelineBuilder.TrackAndValidate(
+            LedgerSchema(), LedgerRequest(MetricStep("Sum * 2")), EmptyRegistry(), LedgerAuthzWithoutSum());
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("Step 'agg': metric 'm' expression references 'Sum', which is neither an input column nor a whitelisted function.");
+    }
+
+    [Theory]
+    [InlineData("SUM(Amount)")]
+    [InlineData("SUM (Amount)")]
+    [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
+    public void Validate_MetricExpressionCallsFunction_DoesNotThrow(string expr)
+    {
+        var act = () => StarRocksPipelineBuilder.TrackAndValidate(
+            LedgerSchema(), LedgerRequest(MetricStep(expr)), EmptyRegistry(), LedgerAuthzWithoutSum());
+
+        act.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("COALESCE(Amount, \"a\")")]
+    [InlineData("Amount \\ 2")]
+    public void Validate_MetricExpressionWithDoubleQuoteOrBackslash_Throws(string expr) =>
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            LedgerSchema(), LedgerRequest(MetricStep(expr)), EmptyRegistry()), "forbidden character");
+
+    [Fact]
+    public void Validate_DeriveUsesRestrictedColumnNamedLikeFunction_Throws()
+    {
+        var act = () => StarRocksPipelineBuilder.TrackAndValidate(
+            LedgerSchema(), LedgerRequest(DeriveStep("Sum * 2")), EmptyRegistry(), LedgerAuthzWithoutSum());
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("Step 'd': derive 'x' references 'Sum', which is neither an input column nor a whitelisted function.");
+    }
+
+    [Theory]
+    [InlineData("SUM(Amount)")]
+    [InlineData("SUM (Amount)")]
+    [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
+    public void Validate_DeriveCallsFunction_DoesNotThrow(string expr)
+    {
+        var act = () => StarRocksPipelineBuilder.TrackAndValidate(
+            LedgerSchema(), LedgerRequest(DeriveStep(expr)), EmptyRegistry(), LedgerAuthzWithoutSum());
+
+        act.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("COALESCE(Amount, \"a\")")]
+    [InlineData("Amount \\ 2")]
+    public void Validate_DeriveWithDoubleQuoteOrBackslash_Throws(string expr) =>
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            LedgerSchema(), LedgerRequest(DeriveStep(expr)), EmptyRegistry()), "forbidden character");
+
     // ── Authorization — "all: true" scoping (Step 2) ────────────────────────────
 
     [Fact]

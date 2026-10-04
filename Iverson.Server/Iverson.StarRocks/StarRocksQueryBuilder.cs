@@ -250,7 +250,7 @@ internal static class StarRocksQueryBuilder
             StarRocksPipelineBuilder.RejectForbiddenCharacters(spec.Expression, $"Aggregation '{spec.Name}' expression");
             foreach (Match m in StarRocksPipelineBuilder.TokenRx.Matches(spec.Expression))
             {
-                if (StarRocksPipelineBuilder.DeriveWhitelist.Contains(m.Value)) continue;
+                if (StarRocksPipelineBuilder.IsNonColumnToken(spec.Expression, m)) continue;
                 CheckFieldAllowed(m.Value);
             }
         }
@@ -333,7 +333,7 @@ internal static class StarRocksQueryBuilder
             // spec.Expression is a client-settable field on the public AggregateRequest proto
             // contract (object_search.proto's AggregationSpec.expression) — it IS reachable by
             // any caller with read access to this type via the Aggregate RPC. Validated above via
-            // RejectForbiddenCharacters + the TokenRx/DeriveWhitelist identifier allow-list before
+            // RejectForbiddenCharacters + the TokenRx/IsNonColumnToken identifier allow-list before
             // being spliced into the aggregate function; do not weaken either check based on an
             // assumption that this field is trusted or server-only.
             AggregationKind.Avg   => $"SELECT AVG({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
@@ -472,7 +472,7 @@ internal static class StarRocksQueryBuilder
     // metric.expression is a client-settable field on the public GroupByRequest proto contract
     // (object_search.proto's MetricSpec.expression) — it IS reachable by any caller with read
     // access to this type via the GroupBy RPC. Validated below via RejectForbiddenCharacters +
-    // the TokenRx/DeriveWhitelist identifier allow-list, and subject to the same field
+    // the TokenRx/IsNonColumnToken identifier allow-list, and subject to the same field
     // reject-on-reference check as metric.Field (see remarks ahead of that check for why the
     // two are validated independently); do not weaken any of these based on an assumption that
     // this field is trusted or server-only.
@@ -528,7 +528,7 @@ internal static class StarRocksQueryBuilder
             StarRocksPipelineBuilder.RejectForbiddenCharacters(metric.Expression, $"Metric '{metric.Name}' expression");
             foreach (Match m in StarRocksPipelineBuilder.TokenRx.Matches(metric.Expression))
             {
-                if (StarRocksPipelineBuilder.DeriveWhitelist.Contains(m.Value)) continue;
+                if (StarRocksPipelineBuilder.IsNonColumnToken(metric.Expression, m)) continue;
                 var resolvedToken = ResolveColumn(tableMap, m.Value)
                     ?? throw new EngagementQueryTranslationException(
                         $"Metric '{metric.Name}' expression references unknown field '{m.Value}'.");

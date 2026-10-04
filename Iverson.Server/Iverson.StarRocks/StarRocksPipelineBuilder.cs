@@ -23,13 +23,34 @@ internal static class StarRocksPipelineBuilder
     private static readonly Regex IdentifierRx = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
     internal static readonly Regex TokenRx      = new("[A-Za-z_][A-Za-z0-9_]*", RegexOptions.Compiled);
 
-    // Identifiers a Derive expression may use besides input columns. Anything else —
-    // including SELECT/FROM/WHERE, which blocks subqueries — fails validation.
-    internal static readonly HashSet<string> DeriveWhitelist = new(StringComparer.OrdinalIgnoreCase)
+    // Identifiers a raw expression may use besides input columns. Anything else — including
+    // SELECT/FROM/WHERE, which blocks subqueries — fails validation. A function name counts
+    // only when called (see IsNonColumnToken): a column can share a function's name, and a bare
+    // reference to it must be checked as a column. Keywords can't be unquoted column names.
+    private static readonly HashSet<string> DeriveFunctions = new(StringComparer.OrdinalIgnoreCase)
     {
-        "SUM", "AVG", "MIN", "MAX", "COUNT", "OVER", "PARTITION", "BY", "ORDER",
-        "ASC", "DESC", "COALESCE", "NULLIF", "ROUND", "ABS", "AND", "OR", "NOT", "NULL"
+        "SUM", "AVG", "MIN", "MAX", "COUNT", "COALESCE", "NULLIF", "ROUND", "ABS"
     };
+
+    private static readonly HashSet<string> DeriveKeywords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "OVER", "PARTITION", "BY", "ORDER", "ASC", "DESC", "AND", "OR", "NOT", "NULL"
+    };
+
+    /// <summary>
+    /// True when <paramref name="token"/> (a <see cref="TokenRx"/> match in <paramref name="expr"/>)
+    /// is a whitelisted keyword, or a whitelisted function name whose next non-whitespace
+    /// character is <c>(</c>. Every other token is the caller's to resolve as a column.
+    /// </summary>
+    internal static bool IsNonColumnToken(string expr, Match token)
+    {
+        if (DeriveKeywords.Contains(token.Value)) return true;
+        if (!DeriveFunctions.Contains(token.Value)) return false;
+
+        var i = token.Index + token.Length;
+        while (i < expr.Length && char.IsWhiteSpace(expr[i])) i++;
+        return i < expr.Length && expr[i] == '(';
+    }
 
     // Column-introduction filtering (authorization Task 5, Step 1): when constraint carries a
     // non-null AllowedFields, any column name not in it is omitted from the returned dictionary
@@ -220,7 +241,7 @@ internal static class StarRocksPipelineBuilder
                     RejectForbiddenCharacters(m.Expression, $"Step '{step.Name}': metric '{m.Name}' expression");
                     foreach (Match tok in TokenRx.Matches(m.Expression))
                     {
-                        if (DeriveWhitelist.Contains(tok.Value)) continue;
+                        if (IsNonColumnToken(m.Expression, tok)) continue;
                         if (!input.Columns.ContainsKey(tok.Value))
                             throw Invalid($"Step '{step.Name}': metric '{m.Name}' expression references " +
                                           $"'{tok.Value}', which is neither an input column nor a whitelisted function.");
@@ -362,12 +383,12 @@ internal static class StarRocksPipelineBuilder
     }
 
     /// <summary>
-    /// Rejects a raw SQL fragment that contains a semicolon, quote, backtick, or SQL comment
-    /// sequence — characters that a token-shaped identifier allow-list (<see cref="TokenRx"/>/
-    /// <see cref="DeriveWhitelist"/>) alone would never inspect, since none of them ever match
-    /// an identifier pattern in the first place. Shared by every raw-expression field spliced
-    /// into generated SQL (<see cref="ValidateDeriveExpr"/> below, and
-    /// <c>StarRocksQueryBuilder.BuildAggregate</c>/<c>BuildMetricExpr</c>) so all such fields
+    /// Rejects a raw SQL fragment that contains a semicolon, quote (single or double), backtick,
+    /// backslash, or SQL comment sequence — characters that a token-shaped identifier allow-list
+    /// (<see cref="TokenRx"/>/<see cref="IsNonColumnToken"/>) alone would never inspect, since
+    /// none of them ever match an identifier pattern in the first place. Shared by every
+    /// raw-expression field spliced into generated SQL (<see cref="ValidateDeriveExpr"/> below,
+    /// and <c>StarRocksQueryBuilder.BuildAggregate</c>/<c>BuildMetricExpr</c>) so all such fields
     /// get the same defense-in-depth denylist, not just whichever one a reviewer happened to
     /// look at most recently.
     /// </summary>
@@ -380,11 +401,11 @@ internal static class StarRocksPipelineBuilder
         // CSR finding #9: '#' is a third SQL line-comment introducer alongside "--" and "/* */"
         // in StarRocks' MySQL-derived dialect — omitting it left the same comment-injection class
         // this denylist otherwise closes reachable via a single character.
-        if (expr.Contains(';') || expr.Contains('\'') || expr.Contains('`') ||
-            expr.Contains('#') ||
+        if (expr.Contains(';') || expr.Contains('\'') || expr.Contains('"') || expr.Contains('`') ||
+            expr.Contains('\\') || expr.Contains('#') ||
             expr.Contains("--") || expr.Contains("/*") || expr.Contains("*/"))
             throw Invalid($"{errorContext} contains a forbidden character " +
-                          "(no semicolons, quotes, backticks, or SQL comment sequences, including '#').");
+                          "(no semicolons, quotes (single or double), backticks, backslashes, or SQL comment sequences, including '#').");
     }
 
     private static void ValidateDeriveExpr(
@@ -393,7 +414,7 @@ internal static class StarRocksPipelineBuilder
         RejectForbiddenCharacters(d.Expr, $"Step '{stepName}': derive '{d.Alias}'");
         foreach (Match m in TokenRx.Matches(d.Expr))
         {
-            if (DeriveWhitelist.Contains(m.Value)) continue;
+            if (IsNonColumnToken(d.Expr, m)) continue;
             if (available.ContainsKey(m.Value)) continue;
             throw Invalid($"Step '{stepName}': derive '{d.Alias}' references '{m.Value}', which is " +
                           "neither an input column nor a whitelisted function.");
@@ -680,7 +701,7 @@ internal static class StarRocksPipelineBuilder
         // caller with read access to this type via the Pipeline RPC. Validated during step
         // processing (ValidateStepAndComputeOutput, called from TrackAndValidate — always run
         // before Build reaches this method) via RejectForbiddenCharacters + the
-        // TokenRx/DeriveWhitelist identifier allow-list; do not weaken either check based on an
+        // TokenRx/IsNonColumnToken identifier allow-list; do not weaken either check based on an
         // assumption that this field is trusted or server-only.
         var arg = !string.IsNullOrEmpty(m.Expression) ? m.Expression : $"`{input[m.Field]}`";
         return $"{fn}({arg}) AS {quotedName}";
