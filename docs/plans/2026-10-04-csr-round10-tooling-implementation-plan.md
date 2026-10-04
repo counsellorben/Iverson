@@ -39,7 +39,7 @@ Plan-wide:
 
   Local `main` is ahead of `origin`, so the base must be named explicitly.
 - **One `dotnet` process at a time.** Use absolute paths, because the shell's working directory resets between tool calls.
-- **Never touch `~/.cache/iverson`.** The only tests that write a TOTP cache (Task 1) point `HOME` at a temp directory, and assert that before writing.
+- **Never read or write `~/.cache/iverson`.** The only tests that write a TOTP cache (Task 1) point `HOME` at a temp directory, and assert that before writing. The one exception to never listing it is Task 7 Step 6's `find -newer`, which lists its entries' metadata (allowed by the user, 2026-10-04).
 - **Never start, stop, remove or modify the user's `iversonserver` containers, volumes, networks or images.** Never print a value from `Iverson.Server/.env`.
 - **Commit messages:** lowercase, imperative, no prefix, as in `git log --oneline`. End each with `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`. Stage specific paths only, never `-A`, and never anything under `.superpowers/`.
 - **TypeScript:** a fresh worktree has no `node_modules`. Run `npm ci` in `Iverson.Clients/TypeScript` once, before Task 3.
@@ -138,7 +138,7 @@ Verified at plan-write time against `main` at `f7bd7609`.
 | 9 | Signature | The `optional` helpers and their absent values: .NET `string?` (`Program.cs:1443`), Python `Optional[str]` (`driver.py:127`), TS `string \| undefined` (`driver.ts:124`), Go `string` (`main.go:201`), Java `String`/`null` (`Driver.java:1164`). `os` is imported in Python (`:14`) and Go (`:19`), and Java's `Map` is imported (`:48`) | The cited lines; all five builds and the Python and Go tests passed |
 | 10 | Signature | `ActingUserIdentity` is a primary-constructor class, the Python `EntityCoordinator.__init__` takes `(entity_class, channel, acting_user_token=None)`, and the TS `IversonClient` constructor takes `(host, port, useTls, callCredentials, actingUserToken, allowInsecureCredentials)` | `ActingUserIdentity.cs:7`; `core.py:625-630`; `core.ts:866-873` |
 | 11 | Signature | `main` in the agent has `tls` and `creds` in scope before both `IversonClient(...)` constructions | `__main__.py:67-68, 75, 79` |
-| 12 | Command | `dotnet test <project>.csproj [--filter …]` for LoadTest.Tests, ClientConformance.Tests and Client.Core.Tests | Run in the proof: 121/121, 648/648, 79/79 |
+| 12 | Command | `dotnet test <project>.csproj [--filter …]` for LoadTest.Tests, ClientConformance.Tests and Client.Core.Tests | Run in the proof: 121/121, 648/648, 79/79. Those were on pre-A `main`; after A's merge ClientConformance.Tests is 650/650, since A adds two tests there and none to the other suites |
 | 13 | Command | The Python SDK suite is `python3 -m pytest`, run from `Iverson.Clients/Python`. That directory has no `.venv`, and the cwd's `iverson_client` is the one imported | Run: 241 passed; `iverson_client.__file__` resolved to the worktree |
 | 14 | Command | The agent suite runs from the worktree's `Iverson.Agents/Python` with `/home/ben/repositories/Iverson/Iverson.Agents/Python/.venv/bin/python -m pytest`. That venv exists only in the main checkout; `iverson_agent` resolves from the cwd, and the venv's `iverson_client` is main's, which Task 5's tests don't exercise because they patch `IversonClient` | Run: 68 passed; `iverson_agent.__file__` resolved to the worktree |
 | 15 | Command | TS: `npm test` (`tsc -p tsconfig.test.json`, then `vitest run`), after `npm ci`. Go: `go test ./conformance/` and `go test ./...`. Driver builds use `DriverRunner`'s own commands (`DriverRunner.cs:124-147`) | Run: TS 287 passed with type-checking clean; Go ok; all five drivers built |
@@ -151,10 +151,14 @@ Verified at plan-write time against `main` at `f7bd7609`.
 | 22 | Consumer | The `RequireEnv` change: both existing callers (`Program.cs:57, :61`) still compile, and `TokenBroker.RequireEnv` is a separate function | `git grep -n "RequireEnv("` |
 | 23 | Consumer | Every caller of the per-call binding outside tests: `Iverson.Agents/Python/iverson_agent/session.py`; LoadTest's `DirectSeeder`, `WritePathRunner`, `ReadPathScenario`, `BenchmarkIngestScenario` and `BenchmarkQueryScenario`; the TS driver (`driver.ts:376, 724`, opt-in `true`); the Python driver (hand-built coordinators); .NET `SchemaCatalogClient` (its own `WithActingUser`, out of scope). None binds on a plaintext, un-opted client except where the constructor already raises: LoadTest's client opts in (`Program.cs:166`). The agent's computed opt-in is false for a plaintext connection only when that connection is non-loopback, and then the constructor raises first, because credentials are always present | `git grep -l -e with_acting_user -e "WithActingUser(" -e "withActingUser("`; every affected suite passed |
 | 24 | Consumer | No tracked file other than the spec uses an `IVERSON_DRIVER_*` name | `git grep -l IVERSON_DRIVER_` → the spec only |
-| 25 | Consumer | `DriverRunnerTests.Context()` gains `ServiceToken: "service-token"`, and every other test that uses `Context()` still passes | ClientConformance.Tests 648/648 |
+| 25 | Consumer | `DriverRunnerTests.Context()` gains `ServiceToken: "service-token"`, and every other test that uses `Context()` still passes | ClientConformance.Tests 650/650 after A's merge (648/648 before) |
 | 26 | Live | LoadTest's tenant provisioning needs the `admin` scope (`TenantLifecycleGrpcService` → `RequireAuthorization("Operator")`, `Iverson.Api/Program.cs:742`; the admin scope arm of `OperatorAuthorizationPolicy`). Only `iverson-admin-automation` carries it (`compose-only/service-clients.yaml:122-136`). Its secret is `.env`'s `IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET` | The cited lines; the `.env` key names (values never read) |
 | 27 | Live | The compose file has exactly two `    image: iverson-api` lines (`:449`, `:561`) and 19 `container_name:` lines, and publishes host ports on 127.0.0.1 (5432, 8080, 9000, …), so the isolated stack cannot run while the user's stack is up | `grep -n` of `docker-compose.yml`; `docker ps` was empty at plan-write time |
 | 28 | Live | The `/proc` watcher flags secret flags, JWT-shaped arguments and the client-secret value on driver command lines (those carrying `--scenario`), prints only the PID and the pattern name, and records the languages it saw | Proof run against dummy processes: `HIT … pattern=secret-flag`, `jwt`, `client-secret-value`; `languages seen` listed each marker |
+| 29 | Live | Task 7 reproduces as written, apart from the two corrections it now carries (the Step 2 health poll and the Step 6 control) | 2026-10-04 run of Steps 1–6 on `planproof-csr10e` merged with A, as the user chose (CIR-1 §3.2 B). Step 1 `grep -c` → `2`. Step 2 `READY` (3rd poll); the API was `healthy` via `docker inspect`, and `$DC ps` showed no health. Check 2: exit 134, counts `0` and `1`. Check 1: exit 134 (Postgres refused on port 1); the four lines in order; only `acting-user-totp-secret-compose-iverson-loadtest-tenant-admin.txt`; modes `700` and `600`. Check 3: `harness exit=0`, identity `ok` in all five languages, `hits: 0`, `languages seen` all five. Step 6 control: 17 containers, 9 volumes, `csr10tool_default`. After `down -v`, the container, volume and network diffs are empty; `iverson-api` kept its IDs; one `<none>` image added; `find` printed nothing |
+| 30 | Code | Task 1's Windows branch behaves as `main`'s Windows path did. It was accepted on forced-branch equivalence and not run on a Windows host, by the user's decision (CIR-1 §3.3 A, 2026-10-04) | CIR-1 P28: forcing the Windows condition in both the plan's code and `main`'s gave identical directory, file, modes, content and file list |
+| 31 | Ordering | Task 4's 2 s `ProcessTimeout` cannot time out another test's process | CIR-1 G2: `NamingRejectedScenarioTests.cs:280, :304, :328` spawn a fake Python driver through `fixture.RepoRoot`; P17: those drivers finished in 23, 36 and 85 ms |
+| 32 | Live | `env.sh`'s `val` reads the gitignored `.env` through this shell's `grep` wrapper | CIR-1 P14; the 2026-10-04 live run authenticated checks 1–3 with values read through `val` |
 
 ## Tasks
 
@@ -487,7 +491,7 @@ python3 -c "import yaml; print(yaml.safe_load(open('deploy/kind/kind-config.yaml
 
 Expected:
 - The build succeeds.
-- The `grep` finds only the test-local constant, `Iverson.LoadTest.Tests/Auth/AuthentikFlowExecutorClientTests.cs:16`.
+- The `grep` finds only the test-local constant, `Iverson.LoadTest.Tests/Auth/AuthentikFlowExecutorClientTests.cs:17` (`:16` before Task 1 added its `using`).
 - The YAML prints both mappings with `'listenAddress': '127.0.0.1'`.
 
 - [ ] **Step 7: Commit**
@@ -853,7 +857,7 @@ kill $REC
 
 Expected:
 - Each run exits 0.
-- **Flag and variable both set** (the first three runs): every recorded line reads `auth='Bearer FLAG'`. The .NET and TypeScript runs record `RegisterSchema`; Java records `RegisterSchema` and `ObjectPersistenceService/Post`.
+- **Flag and variable both set** (the first three runs): every recorded line reads `auth='Bearer FLAG'`. The .NET and TypeScript runs record `RegisterSchema`. Java records only `ObjectPersistenceService/Post`, because its identity `write` phase registers no schema.
 - **Variable only** (the last run): `auth='Bearer ENV'`.
 
 **Mutant check, for the task reviewer:** make the variable outrank a present flag in any one of the three helpers and rebuild it. That driver's first run then records `Bearer ENV`.
@@ -1004,7 +1008,7 @@ In `DriverRunnerTests.cs`:
     }
 ```
 
-`ProcessTimeout` is static. No other test in `Iverson.ClientConformance.Tests` spawns a process, and this class's tests run serially, so changing it for one test is safe.
+`ProcessTimeout` is static. Three `NamingRejectedScenarioTests` also spawn a fake Python driver, and test classes run in parallel. Their drivers finish in under 100 ms, far inside the 2 s this test sets, and the value is restored in `finally`, so changing it for one test is safe.
 
 The suite does not compile yet, because `BuildEnvironment` does not exist. That is the expected red.
 
@@ -1139,7 +1143,7 @@ cd /home/ben/repositories/Iverson/.worktrees/csr10-tooling/Iverson.Server
 dotnet test Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 ```
 
-Expected: `Passed: 648`.
+Expected: `Passed: 650` on a branch cut after A's merge (A adds two `IdentityScenarioTests`). In general, 10 more than the suite reported before this task (`648` on a pre-A `main`).
 
 Mutants (restore each afterwards; filter `--filter "FullyQualifiedName~DriverRunnerTests"`):
 1. **`RunProcessAsync` ignores the dictionary** (replace `psi.Environment[name] = value;` with `_ = value;`). `RunPhaseAsync_StartsTheDriverWithEachSecretInItsEnvironment` fails.
@@ -1693,7 +1697,7 @@ This task makes no commits. It proves the spec's three live checks on the finish
 **Standing constraints for this task:**
 - Never start, stop, remove or modify the user's `iversonserver` containers, volumes, networks or images. Snapshot all four before starting, and diff them after teardown.
 - Never print a value from `.env`. Values reach programs only through exported variables, never through a command line.
-- Every LoadTest and harness run uses the scratch `HOME`, `$LIVE/home`, with the toolchain caches pinned to the real home. `~/.cache/iverson` is never read or written. Step 1 records a marker, and Step 7 proves nothing under `~/.cache/iverson` changed after it.
+- Every LoadTest and harness run uses the scratch `HOME`, `$LIVE/home`, with the toolchain caches pinned to the real home. `~/.cache/iverson` is never read or written. Step 1 records a marker, and Step 6 proves nothing under `~/.cache/iverson` changed after it. Step 6's `find -newer` lists that directory's entries' metadata; that is the one exception to never listing it, allowed by the user (2026-10-04).
 - Shell variables do not persist between tool calls, so every block starts with `source $LIVE/env.sh`.
 
 - [ ] **Step 1: Prepare, and check that the user's stack is down**
@@ -1752,7 +1756,7 @@ source <session scratchpad>/live/env.sh
 $DC up -d --build > $LIVE/up.log 2>&1; echo "up exit=$?" >> $LIVE/up.log
 ```
 
-Once it reports, wait for readiness. Poll until `$DC ps` shows `iverson-api` as healthy (up to 10 minutes). Then wait until Authentik issues the admin-automation token, which proves its blueprints applied. The `printf` builtin keeps the secret off every command line:
+Once it reports, wait for readiness. Poll until `docker inspect -f '{{.State.Health.Status}}' csr10tool-iverson-api-1` prints `healthy` (up to 10 minutes). `$DC ps` does not show health on this machine's engine. Then wait until Authentik issues the admin-automation token, which proves its blueprints applied. The `printf` builtin keeps the secret off every command line:
 
 ```bash
 source <session scratchpad>/live/env.sh
@@ -1891,6 +1895,19 @@ Expected:
 If the matrix shows a failing cell, read that cell's stderr in `check3.out`. Then decide whether the failure is E's before blaming E: re-run the same cell from a `main`-built harness, built in a scratch worktree of `main`, against the same stack. A cell that also fails on `main` is not E's; record it, and say so in the outcome.
 
 - [ ] **Step 6: Tear down, and confirm nothing else changed**
+
+First, the control: before teardown, the same diffs must list the isolated stack, which proves they can fail.
+
+```bash
+source <session scratchpad>/live/env.sh
+diff <(docker ps -a --format '{{.Names}}' | sort) $LIVE/before-containers.txt | grep -c '^< csr10tool-'
+diff <(docker volume ls -q | sort) $LIVE/before-volumes.txt | grep -c '^< csr10tool_'
+diff <(docker network ls --format '{{.Name}}' | sort) $LIVE/before-networks.txt
+```
+
+Expected: non-zero container and volume counts (17 and 9 in the 2026-10-04 run), and a network diff of `< csr10tool_default`.
+
+Then tear down:
 
 ```bash
 source <session scratchpad>/live/env.sh
