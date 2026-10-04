@@ -68,7 +68,7 @@ Plan-wide:
 **Test:**
 - `Iverson.Server/Iverson.LoadTest.Tests/Auth/AuthentikFlowExecutorClientTests.cs` (Task 1)
 - `Iverson.Clients/Python/tests/test_conformance_driver.py` and `Iverson.Clients/Go/conformance/main_test.go` (Task 3)
-- `Iverson.Server/Iverson.ClientConformance.Tests/DriverRunnerTests.cs` (Task 4)
+- `Iverson.Server/Iverson.ClientConformance.Tests/DriverRunnerTests.cs` and `NamingRejectedScenarioTests.cs` (Task 4; the latter gains only a `[Collection]` attribute)
 - `Iverson.Agents/Python/tests/test_main.py` (Task 5)
 - Task 6:
   - `Iverson.Clients/DotNet/Iverson.Client.Core.Tests/ServiceCollectionExtensionsTests.cs`
@@ -157,8 +157,9 @@ Verified at plan-write time against `main` at `f7bd7609`.
 | 28 | Live | The `/proc` watcher flags secret flags, JWT-shaped arguments and the client-secret value on driver command lines (those carrying `--scenario`), prints only the PID and the pattern name, and records the languages it saw | Proof run against dummy processes: `HIT … pattern=secret-flag`, `jwt`, `client-secret-value`; `languages seen` listed each marker |
 | 29 | Live | Task 7 reproduces as written, apart from the two corrections it now carries (the Step 2 health poll and the Step 6 control) | 2026-10-04 run of Steps 1–6 on `planproof-csr10e` merged with A, as the user chose (CIR-1 §3.2 B). Step 1 `grep -c` → `2`. Step 2 `READY` (3rd poll); the API was `healthy` via `docker inspect`, and `$DC ps` showed no health. Check 2: exit 134, counts `0` and `1`. Check 1: exit 134 (Postgres refused on port 1); the four lines in order; only `acting-user-totp-secret-compose-iverson-loadtest-tenant-admin.txt`; modes `700` and `600`. Check 3: `harness exit=0`, identity `ok` in all five languages, `hits: 0`, `languages seen` all five. Step 6 control: 17 containers, 9 volumes, `csr10tool_default`. After `down -v`, the container, volume and network diffs are empty; `iverson-api` kept its IDs; one `<none>` image added; `find` printed nothing |
 | 30 | Code | Task 1's Windows branch behaves as `main`'s Windows path did. It was accepted on forced-branch equivalence and not run on a Windows host, by the user's decision (CIR-1 §3.3 A, 2026-10-04) | CIR-1 P28: forcing the Windows condition in both the plan's code and `main`'s gave identical directory, file, modes, content and file list |
-| 31 | Ordering | Task 4's 2 s `ProcessTimeout` cannot time out another test's process | CIR-1 G2: `NamingRejectedScenarioTests.cs:280, :304, :328` spawn a fake Python driver through `fixture.RepoRoot`; P17: those drivers finished in 23, 36 and 85 ms |
+| 31 | Ordering | No test whose result depends on its process finishing runs under Task 4's 2 s `ProcessTimeout` | CIR-2 P10/P11: 13 processes start per suite run (8 `dotnet build`, 3 NamingRejected fixtures, 2 `DriverRunnerTests` fakes); only NamingRejected NR2 and `DriverRunnerTests`' own end-to-end test fail when their driver is cut off, and the `dotnet build` members' tests pass even when timed out. With `DriverRunnerTests` and `NamingRejectedScenarioTests` in one `[Collection]`, no NamingRejected driver runs under the deadline: CIR-2 P12 (650 ×3, A merged), and a re-run on `planproof-csr10e` on 2026-10-04 (648 ×2, pre-A) |
 | 32 | Live | `env.sh`'s `val` reads the gitignored `.env` through this shell's `grep` wrapper | CIR-1 P14; the 2026-10-04 live run authenticated checks 1–3 with values read through `val` |
+| 33 | Live | Task 7's health poll and control counts rest on the compose file, and the counts were measured against A's tip | `iverson-api` has a `healthcheck:` at `docker-compose.yml:516` (inside its `:445-556` block). Only `reranker` (`:163`) and `tgi` (`:209`) are profiled, so 17 services and 9 volumes start (CIR-2 G4 lists all 19 and 11). `git rev-parse csr10-server-authz` → `85cb030e`, the tip rows 12, 25 and 29 were measured against |
 
 ## Tasks
 
@@ -877,6 +878,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Modify: `Iverson.Server/Iverson.ClientConformance/DriverRunner.cs`, at `:25-26` (the `DriverContext` comment), `:206` (the exec call), `:319-335` (`BuildFlags`), before `:349` (the new `BuildEnvironment`) and `:378-390` (`RunProcessAsync`)
 - Test: `Iverson.Server/Iverson.ClientConformance.Tests/DriverRunnerTests.cs`
+- Test: `Iverson.Server/Iverson.ClientConformance.Tests/NamingRejectedScenarioTests.cs:9` (a `[Collection]` attribute only)
 - Modify: `docs/runbooks/client-conformance-matrix.md:39-40`
 
 **Interfaces:**
@@ -885,7 +887,9 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the tests**
 
-In `DriverRunnerTests.cs`:
+First, put the timeout test's class and `NamingRejectedScenarioTests` in one xUnit collection, so no test whose driver must finish runs while the timeout test holds `ProcessTimeout` at 2 s (row 31). Add `[Collection("driver-process-timeout")]` on the line above `public class DriverRunnerTests` (`DriverRunnerTests.cs:7`), and above `public class NamingRejectedScenarioTests` (`NamingRejectedScenarioTests.cs:9`). Both files already have `using Xunit;`.
+
+Then, in `DriverRunnerTests.cs`:
 
 1. In `Context()` (`:9-20`), add `ServiceToken: "service-token",` between `IdPrefix: "s1-",` and `WrongActingToken: "wrong-acting-token");`.
 2. Replace `BuildFlags_IncludesAllRequiredBaseFlags`'s assertion, and the two tests after it (`:98-133`, from `flags.Should().Contain([` up to the end of `BuildFlags_WithNoWrongActingTokenConfigured_StillEmitsTheFlagWithAnEmptyValue`), with:
@@ -1008,7 +1012,7 @@ In `DriverRunnerTests.cs`:
     }
 ```
 
-`ProcessTimeout` is static. Three `NamingRejectedScenarioTests` also spawn a fake Python driver, and test classes run in parallel. Their drivers finish in under 100 ms, far inside the 2 s this test sets, and the value is restored in `finally`, so changing it for one test is safe.
+`ProcessTimeout` is static. The only other test class whose driver must finish, `NamingRejectedScenarioTests`, shares this class's xUnit collection (above), so it never runs while the timeout is 2 s. Other processes that can start inside the window are `dotnet build` runs, and their tests pass even when timed out. The value is restored in `finally`.
 
 The suite does not compile yet, because `BuildEnvironment` does not exist. That is the expected red.
 
@@ -1185,7 +1189,7 @@ flag wins over the variable.
 
 ```bash
 cd /home/ben/repositories/Iverson/.worktrees/csr10-tooling
-git add Iverson.Server/Iverson.ClientConformance/DriverRunner.cs Iverson.Server/Iverson.ClientConformance.Tests/DriverRunnerTests.cs
+git add Iverson.Server/Iverson.ClientConformance/DriverRunner.cs Iverson.Server/Iverson.ClientConformance.Tests/DriverRunnerTests.cs Iverson.Server/Iverson.ClientConformance.Tests/NamingRejectedScenarioTests.cs
 git add -f docs/runbooks/client-conformance-matrix.md
 git commit -m "pass conformance driver secrets in the environment instead of on the command line
 
