@@ -862,6 +862,16 @@ internal static class StarRocksQueryBuilder
             return sb.ToString();
         }
 
+        // Same rule as IsFieldAllowed: no authz, no entry for the type, or a null AllowedFields
+        // means unrestricted.
+        void RequireJoinFieldAllowed(string typeName, string field, string resolvedColumn)
+        {
+            if (authz is not null && authz.TryGetValue(typeName, out var constraint)
+                && constraint.AllowedFields is not null && !constraint.AllowedFields.Contains(resolvedColumn))
+                throw new EngagementQueryTranslationException(
+                    $"Field '{field}' on '{typeName}' referenced in join is not authorized for this caller.");
+        }
+
         foreach (var join in joins)
         {
             if (!map.TryGetValue(join.LeftType, out var leftCtx))
@@ -884,6 +894,12 @@ internal static class StarRocksQueryBuilder
             var rightCol = ResolveColumn(rightCtx.Schema, join.RightField)
                 ?? throw new EngagementQueryTranslationException(
                     $"Unknown field '{join.RightField}' on type '{join.RightType}' referenced in join.");
+
+            // Join columns are field-authorized like any other reference: a join condition over a
+            // restricted column would disclose its values through which rows match. Each side is
+            // checked against its own type's constraint.
+            RequireJoinFieldAllowed(join.LeftType, join.LeftField, leftCol);
+            RequireJoinFieldAllowed(join.RightType, join.RightField, rightCol);
 
             var kind = join.Kind switch
             {

@@ -1960,6 +1960,82 @@ public class StarRocksQueryBuilderTests
         lookup["__tenant2"].Should().Be("tenant-tag");
     }
 
+    // ── BuildFromWithJoins — join-field authorization ──────────────────────────
+    // Search, Aggregate and GroupBy all build their joins here, so these cover all three.
+
+    [Fact]
+    public void BuildFromWithJoins_RestrictedLeftJoinField_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Bio", RightField = "Title", Kind = JoinKind.Inner }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out _, authz);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("Field 'Bio' on 'Author' referenced in join is not authorized for this caller.");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_RestrictedRightJoinField_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Name", RightField = "Body", Kind = JoinKind.Left }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: new HashSet<string> { "Id", "Title" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out _, authz);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("Field 'Body' on 'Article' referenced in join is not authorized for this caller.");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_AllowedJoinFieldsUnderRestriction_ProducesJoinClause()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "name", RightField = "title", Kind = JoinKind.Inner }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"]  = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null),
+            ["Article"] = new(AllowedFields: new HashSet<string> { "Id", "Title" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out _, authz);
+
+        // The check runs on the resolved (canonical) column, so a case variant of an allowed
+        // field is allowed.
+        from.Should().Be("FROM `authors` INNER JOIN `articles` ON `authors`.`Name` = `articles`.`Title`");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_NoAuthz_JoinOnAnyField_ProducesJoinClause()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Bio", RightField = "Body", Kind = JoinKind.Inner }
+        };
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out _);
+
+        from.Should().Be("FROM `authors` INNER JOIN `articles` ON `authors`.`Bio` = `articles`.`Body`");
+    }
+
     // ── BuildGroupBy ───────────────────────────────────────────────────────────
 
     private static GroupByRequest Q1StyleRequest()
