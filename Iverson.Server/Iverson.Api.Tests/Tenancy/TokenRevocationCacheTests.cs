@@ -234,9 +234,12 @@ public class TokenRevocationCacheTests
         {
             var reload = AbandonEveryWaiterThenFault(marker);
             var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (!HasFaulted(reload) && DateTime.UtcNow < deadline)
+            // Other tests' GCs may collect the reload before this loop sees it; a pending
+            // Task.Run task stays reachable until it completes, and this one can only fault.
+            while (!HasFaultedOrIsCollected(reload) && DateTime.UtcNow < deadline)
                 await Task.Delay(10);
-            HasFaulted(reload).Should().BeTrue("the repository call was failed");
+            HasFaultedOrIsCollected(reload).Should().BeTrue(
+                "the repository call was failed, and a collected reload must have completed");
 
             for (var i = 0; i < 3; i++)
             {
@@ -275,7 +278,8 @@ public class TokenRevocationCacheTests
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool HasFaulted(WeakReference<Task> reload) => reload.TryGetTarget(out var t) && t.IsFaulted;
+    private static bool HasFaultedOrIsCollected(WeakReference<Task> reload) =>
+        !reload.TryGetTarget(out var t) || t.IsFaulted;
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static bool IsCollected(WeakReference<Task> reload) => !reload.TryGetTarget(out _);
