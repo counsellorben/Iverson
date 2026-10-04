@@ -74,6 +74,18 @@ public class TokenRevocationCacheTests
         await _repository.Received(1).ListAsync();
     }
 
+    // The rule is "more than 30 s": a snapshot exactly 30 s old is still served.
+    [Fact]
+    public async Task IsRevokedAsync_AtExactlyThirtySeconds_ServesTheSnapshotWithoutReloading()
+    {
+        await _sut.IsRevokedAsync("revoked-sub", null);
+        _time.Advance(TimeSpan.FromSeconds(30));
+
+        await _sut.IsRevokedAsync("revoked-sub", null);
+
+        await _repository.Received(1).ListAsync();
+    }
+
     [Fact]
     public async Task IsRevokedAsync_AfterThirtySeconds_ReloadsAndSeesANewRevocation()
     {
@@ -99,6 +111,80 @@ public class TokenRevocationCacheTests
 
         results.Should().AllSatisfy(revoked => revoked.Should().BeTrue());
         await _repository.Received(1).ListAsync();
+    }
+
+    // A shared reload that fails fails every caller waiting on it, and is not replayed: the next
+    // call queries Postgres again.
+    [Fact]
+    public async Task IsRevokedAsync_SharedReloadFails_FailsEveryWaiterAndTheNextCallReloads()
+    {
+        var pending = new TaskCompletionSource<IEnumerable<(string Sub, DateTimeOffset RevokedAt)>>();
+        _repository.ListAsync().Returns(pending.Task);
+
+        var callers = Enumerable.Range(0, 4)
+            .Select(_ => _sut.IsRevokedAsync("revoked-sub", null))
+            .ToList();
+        pending.SetException(new InvalidOperationException("postgres is down"));
+
+        foreach (var caller in callers)
+            await caller.Invoking(async c => await c)
+                .Should().ThrowAsync<InvalidOperationException>().WithMessage("postgres is down");
+        await _repository.Received(1).ListAsync();
+
+        _repository.ListAsync().Returns(Rows(("revoked-sub", RevokedAt)));
+        (await _sut.IsRevokedAsync("revoked-sub", null)).Should().BeTrue();
+        await _repository.Received(2).ListAsync();
+    }
+
+    // A cancelled request stops waiting; the reload it joined still completes for everyone else.
+    [Fact]
+    public async Task IsRevokedAsync_CancelledWaiter_ThrowsWhileTheSharedReloadCompletesForOthers()
+    {
+        var pending = new TaskCompletionSource<IEnumerable<(string Sub, DateTimeOffset RevokedAt)>>();
+        _repository.ListAsync().Returns(pending.Task);
+        using var cts = new CancellationTokenSource();
+
+        var cancelled = _sut.IsRevokedAsync("revoked-sub", null, cts.Token);
+        var other = _sut.IsRevokedAsync("revoked-sub", null);
+        cts.Cancel();
+
+        // Bounded so a waiter that ignores its token fails here (TimeoutException) rather than hangs.
+        await cancelled.Invoking(async c => await c.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Should().ThrowAsync<OperationCanceledException>();
+        other.IsCompleted.Should().BeFalse();
+        pending.SetResult(Rows(("revoked-sub", RevokedAt)));
+        (await other).Should().BeTrue();
+        await _repository.Received(1).ListAsync();
+    }
+
+    // The constructor's ListAsync stub completes synchronously. A reload that completed before
+    // it was recorded as in flight must not stay cached and block every later reload.
+    [Fact]
+    public async Task IsRevokedAsync_SynchronousRepository_ReloadsOncePerExpiry()
+    {
+        await _sut.IsRevokedAsync("revoked-sub", null);
+
+        for (var expiry = 1; expiry <= 3; expiry++)
+        {
+            _time.Advance(TimeSpan.FromSeconds(31));
+            await _sut.IsRevokedAsync("revoked-sub", null);
+            await _sut.IsRevokedAsync("revoked-sub", null);
+
+            await _repository.Received(1 + expiry).ListAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Invalidate_WithinThirtySeconds_ReloadsOnTheNextCall()
+    {
+        (await _sut.IsRevokedAsync("newly-revoked-sub", null)).Should().BeFalse();
+        _repository.ListAsync().Returns(Rows(("revoked-sub", RevokedAt), ("newly-revoked-sub", RevokedAt.AddMinutes(1))));
+        _time.Advance(TimeSpan.FromSeconds(1));
+
+        _sut.Invalidate();
+
+        (await _sut.IsRevokedAsync("newly-revoked-sub", null)).Should().BeTrue();
+        await _repository.Received(2).ListAsync();
     }
 
     [Fact]

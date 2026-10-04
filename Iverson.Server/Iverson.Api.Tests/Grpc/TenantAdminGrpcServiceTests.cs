@@ -25,6 +25,7 @@ public class TenantAdminGrpcServiceTests
     private readonly IIdpAdminClient _authentikAdminClient = Substitute.For<IIdpAdminClient>();
     private readonly ITenantStatusCache _tenantStatusCache = Substitute.For<ITenantStatusCache>();
     private readonly ITokenRevocationRepository _tokenRevocations = Substitute.For<ITokenRevocationRepository>();
+    private readonly ITokenRevocationCache _tokenRevocationCache = Substitute.For<ITokenRevocationCache>();
     private readonly ILogger<AuditLog> _auditLogger = Substitute.For<ILogger<AuditLog>>();
     private readonly AuditLog _auditLog;
     private readonly Iverson.Api.Grpc.TenantAdminGrpcService _sut;
@@ -41,6 +42,7 @@ public class TenantAdminGrpcServiceTests
             _authentikAdminClient,
             _tenantStatusCache,
             _tokenRevocations,
+            _tokenRevocationCache,
             _auditLog);
         _tenantStatusCache.GetStatusAsync("acme").Returns(Task.FromResult<string?>("active"));
     }
@@ -193,6 +195,22 @@ public class TenantAdminGrpcServiceTests
         });
     }
 
+    // This process's revocation cache is invalidated so the revocation takes effect here at once.
+    [Fact]
+    public async Task RemoveUser_InvalidatesTheRevocationCacheAfterRevoking()
+    {
+        _authentikAdminClient.ListUsersByTenantAsync("acme")
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
+
+        await _sut.RemoveUser(new RemoveUserRequest { UserId = "user-1" }, ContextForCallerTenant());
+
+        Received.InOrder(() =>
+        {
+            _tokenRevocations.RevokeAsync("uid-alice");
+            _tokenRevocationCache.Invalidate();
+        });
+    }
+
     [Fact]
     public async Task RemoveUser_RevocationFails_ThrowsAndDoesNotDeactivate()
     {
@@ -267,9 +285,10 @@ public class TenantAdminGrpcServiceTests
     }
 
     // A demoted admin's existing tokens still carry the tenant-admins group, and the TenantAdmin
-    // policy reads groups from the caller's own token — so demotion revokes them, first.
+    // policy reads groups from the caller's own token — so demotion revokes them, first. It
+    // revokes again after removing the group, for a token refreshed in between.
     [Fact]
-    public async Task SetTenantAdmin_Revoke_RevokesTheUsersTokensBeforeRemovingTheGroup()
+    public async Task SetTenantAdmin_Revoke_RevokesTheUsersTokensBeforeAndAfterRemovingTheGroup()
     {
         _authentikAdminClient.ListUsersByTenantAsync("acme")
             .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
@@ -280,6 +299,25 @@ public class TenantAdminGrpcServiceTests
         {
             _tokenRevocations.RevokeAsync("uid-alice");
             _authentikAdminClient.RemoveGroupAsync("user-1", "tenant-admins");
+            _tokenRevocations.RevokeAsync("uid-alice");
+        });
+    }
+
+    [Fact]
+    public async Task SetTenantAdmin_Revoke_InvalidatesTheRevocationCacheAfterEachRevoke()
+    {
+        _authentikAdminClient.ListUsersByTenantAsync("acme")
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
+
+        await _sut.SetTenantAdmin(new SetTenantAdminRequest { UserId = "user-1", Grant = false }, ContextForCallerTenant());
+
+        Received.InOrder(() =>
+        {
+            _tokenRevocations.RevokeAsync("uid-alice");
+            _tokenRevocationCache.Invalidate();
+            _authentikAdminClient.RemoveGroupAsync("user-1", "tenant-admins");
+            _tokenRevocations.RevokeAsync("uid-alice");
+            _tokenRevocationCache.Invalidate();
         });
     }
 

@@ -58,17 +58,24 @@ public class TokenRevocationPipelineTests : IClassFixture<AuthTestWebApplication
     private static string ServiceToken(string subject) =>
         TestJwtFactory.CreateToken("test-service-audience", subject, extraClaims: [IssuedBeforeRevocation()]);
 
+    // A login after the revocation, e.g. by a re-activated user.
+    private static Claim IssuedAfterRevocation() =>
+        new("iat", RevokedAt.AddSeconds(30).ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64);
+
     private static string ServiceTokenIssuedAfterRevocation(string subject) =>
-        TestJwtFactory.CreateToken(
-            "test-service-audience",
-            subject,
-            extraClaims: [new Claim("iat", RevokedAt.AddSeconds(30).ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64)]);
+        TestJwtFactory.CreateToken("test-service-audience", subject, extraClaims: [IssuedAfterRevocation()]);
 
     private static string ActingUserToken(string subject) =>
         TestJwtFactory.CreateToken(
             "test-actinguser-audience",
             subject,
             extraClaims: [IssuedBeforeRevocation(), new Claim("tenant_id", "active-tenant")]);
+
+    private static string ActingUserTokenIssuedAfterRevocation(string subject) =>
+        TestJwtFactory.CreateToken(
+            "test-actinguser-audience",
+            subject,
+            extraClaims: [IssuedAfterRevocation(), new Claim("tenant_id", "active-tenant")]);
 
     private static async Task<RpcException?> TryAggregateAsync(
         ObjectSearchService.ObjectSearchServiceClient client, Metadata headers)
@@ -133,6 +140,23 @@ public class TokenRevocationPipelineTests : IClassFixture<AuthTestWebApplication
         ex.Should().NotBeNull();
         ex!.StatusCode.Should().Be(StatusCode.Unauthenticated);
         ex.Status.Detail.Should().Be("Acting-user token is invalid.");
+    }
+
+    // The ActingUser-scheme counterpart of PrimaryScheme_RevokedSub_TokenIssuedAfterRevocation_IsAuthenticated.
+    [Fact]
+    public async Task ActingUser_RevokedSub_TokenIssuedAfterRevocation_IsAuthenticated()
+    {
+        var headers = new Metadata
+        {
+            { "authorization", $"Bearer {ServiceToken("ak-test-service")}" },
+            { ActingUserInterceptor.MetadataKey, $"Bearer {ActingUserTokenIssuedAfterRevocation(RevokedSub)}" }
+        };
+
+        var ex = await TryAggregateAsync(CreateClient(), headers);
+
+        ex.Should().NotBeNull(); // FailedPrecondition from RequireSchema — business logic, not auth
+        ex!.StatusCode.Should().NotBe(StatusCode.Unauthenticated);
+        ex.StatusCode.Should().NotBe(StatusCode.PermissionDenied);
     }
 
     [Fact]

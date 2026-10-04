@@ -859,7 +859,7 @@ public partial class Program
             : null;
 
         var revocations = context.HttpContext.RequestServices.GetRequiredService<Iverson.Api.Tenancy.ITokenRevocationCache>();
-        if (await revocations.IsRevokedAsync(sub, issuedAt))
+        if (await revocations.IsRevokedAsync(sub, issuedAt, context.HttpContext.RequestAborted))
             context.Fail("Token has been revoked.");
     }
 

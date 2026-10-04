@@ -21,6 +21,7 @@ public sealed class TenantAdminGrpcService(
     IIdpAdminClient authentikAdminClient,
     ITenantStatusCache tenantStatusCache,
     ITokenRevocationRepository tokenRevocations,
+    ITokenRevocationCache tokenRevocationCache,
     AuditLog auditLog) : Iverson.Client.Contracts.TenantAdminGrpcService.TenantAdminGrpcServiceBase
 {
     public override async Task<TenantUser> InviteUser(InviteUserRequest request, ServerCallContext context)
@@ -63,6 +64,7 @@ public sealed class TenantAdminGrpcService(
         // fails, the user only has to log in again; the reverse order could leave a deactivated
         // user's tokens valid until they expire.
         await tokenRevocations.RevokeAsync(user.Uid);
+        tokenRevocationCache.Invalidate();
         await authentikAdminClient.DeactivateUserAsync(request.UserId);
         auditLog.AdminOperation(context.GetHttpContext().User, "RemoveUser", request.UserId);
         return new Empty();
@@ -80,7 +82,12 @@ public sealed class TenantAdminGrpcService(
             // TenantAdmin policy reads from the token itself — so revoke them first, as RemoveUser
             // does. Granting needs no revocation.
             await tokenRevocations.RevokeAsync(user.Uid);
+            tokenRevocationCache.Invalidate();
             await authentikAdminClient.RemoveGroupAsync(request.UserId, "tenant-admins");
+            // Revoke again: a token refreshed between the first revoke and the group removal
+            // still carries tenant-admins, and its iat is after the first revocation.
+            await tokenRevocations.RevokeAsync(user.Uid);
+            tokenRevocationCache.Invalidate();
         }
         auditLog.AdminOperation(context.GetHttpContext().User, "SetTenantAdmin", request.UserId);
         return new TenantUser { UserId = user.Id, Username = user.Username, Email = user.Email };
