@@ -2143,7 +2143,6 @@ public class ObjectMappingGrpcServiceTests
         AssertAuditLogged("OwnerImmutable");
     }
 
-
     // ── Update is strictly an update ─────────────────────────────────────────
     //
     // Update never creates a row. A key with no row in the caller's tenant — one that exists

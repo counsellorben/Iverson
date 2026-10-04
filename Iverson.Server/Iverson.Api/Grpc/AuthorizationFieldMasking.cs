@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -125,7 +126,10 @@ internal static class AuthorizationFieldMasking
         else
         {
             existingStruct = JsonParser.Default.Parse<Struct>(existingRowJson);
-            PreserveExactIntegers(existingStruct, existingRowJson);
+            // Only a field the caller may not write is ever carried (the owner column is TEXT,
+            // never an integer), so an unrestricted caller needs no re-parse of the stored row.
+            if (decision.AllowedFields is not null)
+                PreserveExactIntegers(existingStruct, existingRowJson);
 
             // Tenant match + immutability are unconditional — they apply even to bypass
             // callers, unlike the ownership check below.
@@ -361,19 +365,19 @@ internal static class AuthorizationFieldMasking
     /// </summary>
     private static void PreserveExactIntegers(Struct row, string rowJson)
     {
-        using var doc = System.Text.Json.JsonDocument.Parse(rowJson);
+        using var doc = JsonDocument.Parse(rowJson);
         foreach (var p in doc.RootElement.EnumerateObject())
         {
-            if (p.Value.ValueKind == System.Text.Json.JsonValueKind.Number && !IsDoubleExact(p.Value))
+            if (p.Value.ValueKind == JsonValueKind.Number && !IsDoubleExact(p.Value))
                 row.Fields[p.Name] = Value.ForString(p.Value.GetRawText());
-            else if (p.Value.ValueKind == System.Text.Json.JsonValueKind.Array &&
-                     p.Value.EnumerateArray().Any(e => e.ValueKind == System.Text.Json.JsonValueKind.Number && !IsDoubleExact(e)))
+            else if (p.Value.ValueKind == JsonValueKind.Array &&
+                     p.Value.EnumerateArray().Any(e => e.ValueKind == JsonValueKind.Number && !IsDoubleExact(e)))
                 row.Fields[p.Name] = Value.ForList(p.Value.EnumerateArray().Select(e =>
-                    e.ValueKind == System.Text.Json.JsonValueKind.Null ? Value.ForNull()
+                    e.ValueKind == JsonValueKind.Null ? Value.ForNull()
                     : IsDoubleExact(e) ? Value.ForNumber(e.GetDouble()) : Value.ForString(e.GetRawText())).ToArray());
         }
     }
 
-    private static bool IsDoubleExact(System.Text.Json.JsonElement e) =>
+    private static bool IsDoubleExact(JsonElement e) =>
         !e.TryGetInt64(out var l) || (l >= -(1L << 53) && l <= (1L << 53));
 }

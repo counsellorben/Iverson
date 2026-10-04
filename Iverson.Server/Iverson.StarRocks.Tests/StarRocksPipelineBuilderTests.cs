@@ -1010,6 +1010,9 @@ public class StarRocksPipelineBuilderTests
     [Theory]
     [InlineData("SUM(Amount)")]
     [InlineData("SUM (Amount)")]
+    [InlineData("SUM\t(Amount)")]
+    [InlineData("SUM\n(Amount)")]
+    [InlineData("sum(Amount)")]
     [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
     public void Validate_MetricExpressionCallsFunction_DoesNotThrow(string expr)
     {
@@ -1039,6 +1042,9 @@ public class StarRocksPipelineBuilderTests
     [Theory]
     [InlineData("SUM(Amount)")]
     [InlineData("SUM (Amount)")]
+    [InlineData("SUM\t(Amount)")]
+    [InlineData("SUM\n(Amount)")]
+    [InlineData("sum(Amount)")]
     [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
     public void Validate_DeriveCallsFunction_DoesNotThrow(string expr)
     {

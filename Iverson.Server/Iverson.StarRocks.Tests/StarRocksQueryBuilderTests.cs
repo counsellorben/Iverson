@@ -931,6 +931,9 @@ public class StarRocksQueryBuilderTests
     [Theory]
     [InlineData("SUM(Amount)")]
     [InlineData("SUM (Amount)")]
+    [InlineData("SUM\t(Amount)")]
+    [InlineData("SUM\n(Amount)")]
+    [InlineData("sum(Amount)")]
     [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
     public void BuildAggregate_ExpressionCallsFunction_DoesNotThrow(string expr)
     {
@@ -2075,6 +2078,62 @@ public class StarRocksQueryBuilderTests
     }
 
     [Fact]
+    public void BuildFromWithJoins_LeftTypeWithNullAllowedFields_JoinOnAnyLeftField_ProducesJoinClause()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Bio", RightField = "Title", Kind = JoinKind.Inner }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out _, authz);
+
+        from.Should().Be("FROM `authors` INNER JOIN `articles` ON `authors`.`Bio` = `articles`.`Title`");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_AuthzWithNoEntryForRightType_JoinOnAnyRightField_ProducesJoinClause()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Name", RightField = "Body", Kind = JoinKind.Inner }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out _, authz);
+
+        from.Should().Be("FROM `authors` INNER JOIN `articles` ON `authors`.`Name` = `articles`.`Body`");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_OnlySecondJoinRightFieldRestricted_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema(), TagSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner },
+            new() { LeftType = "Article", RightType = "Tag", LeftField = "Id", RightField = "Label", Kind = JoinKind.Inner }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Tag"] = new(AllowedFields: new HashSet<string> { "Id" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out _, authz);
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .WithMessage("Field 'Label' on 'Tag' referenced in join is not authorized for this caller.");
+    }
+
+    [Fact]
     public void BuildFromWithJoins_NoAuthz_JoinOnAnyField_ProducesJoinClause()
     {
         var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
@@ -2823,6 +2882,9 @@ public class StarRocksQueryBuilderTests
     [Theory]
     [InlineData("SUM(Amount)")]
     [InlineData("SUM (Amount)")]
+    [InlineData("SUM\t(Amount)")]
+    [InlineData("SUM\n(Amount)")]
+    [InlineData("sum(Amount)")]
     [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
     public void BuildGroupBy_MetricExpressionCallsFunction_DoesNotThrow(string expr)
     {

@@ -703,6 +703,56 @@ public sealed class AuthorizationFieldMaskingTests
     }
 
     [Fact]
+    public void EnforceWriteAuthorization_UpdateByACallerWithNoFieldRestriction_OnARowHoldingInt64Min_Succeeds()
+    {
+        // Nothing is carried for an unrestricted caller, so the stored row's integers need no
+        // exact-text preservation; the update must succeed regardless, and carry nothing.
+        var storedJson = StoredDossierJson().Replace("\"Notes\"", "\"Counter\":-9223372036854775808,\"Notes\"");
+        var payload = new Struct
+        {
+            Fields = { ["Id"] = Value.ForString(DossierId), ["Title"] = Value.ForString("new title") }
+        };
+
+        var act = () => EnforceWithRealEvaluator(
+            SchemaFixtures.ReservedTenantDossierSchema(), payload, storedJson,
+            ActingUserFixtures.Principal("test-user", "test-bypass", "premium"));
+
+        act.Should().NotThrow().Which.Should().BeEmpty();
+        payload.Fields.Should().NotContainKey("Counter");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_FieldRestrictedUpdate_CarriesForwardBeforeTheSizeGuardRuns()
+    {
+        // The size guard must see the payload as it will be written, carried-forward restricted
+        // field included. The payload is mutated in place, so snapshot the keys at call time.
+        IReadOnlyCollection<string>? keysSeenByGuard = null;
+        var validator = Substitute.For<IPayloadSizeValidator>();
+        validator
+            .When(v => v.ValidateTextColumnSizes(Arg.Any<Struct>(), Arg.Any<SchemaDescriptor>()))
+            .Do(ci => keysSeenByGuard = ci.Arg<Struct>().Fields.Keys.ToList());
+        var payload = new Struct
+        {
+            Fields = { ["Id"] = Value.ForString(DossierId), ["Title"] = Value.ForString("new title") }
+        };
+
+        AuthorizationFieldMasking.EnforceWriteAuthorization(
+            new RowFieldAuthorizationEvaluator(),
+            ActingUserFixtures.Principal("test-user", "test-bypass"),
+            SchemaFixtures.ReservedTenantDossierSchema(),
+            payload,
+            AuthorizationAction.Write,
+            "Not authorized to write this entity.",
+            StoredDossierJson(),
+            requireExistingRow: true,
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            validator);
+
+        keysSeenByGuard.Should().NotBeNull();
+        keysSeenByGuard.Should().Contain("Secret");
+    }
+
+    [Fact]
     public void EnforceWriteAuthorization_CamelCasePayloadKey_MatchesTheCanonicalStoredKey()
     {
         // The owner field is exempt from rejection, so an ownership-scoped caller restricted from

@@ -886,6 +886,7 @@ public class ObjectPersistenceGrpcServiceTests
         await act.Should().ThrowAsync<RpcException>();
         AssertAuditLogged("OwnerImmutable");
     }
+
     // ── Update is strictly an update ─────────────────────────────────────────
     //
     // Update never creates a row. A key with no row in the caller's tenant — one that exists

@@ -18,8 +18,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// the register phase — <c>SchemaRegistry.RegisterAsync</c> replaces the stored descriptor
 /// wholesale, so five registrations of the same type name would leave four silent overwrites — and
 /// the orchestrator re-registers the reported descriptor once with an authorization block before
-/// any write, without which every seeded write is denied for a reason that has nothing to do with
-/// identity and the two legs become indistinguishable
+/// any write, without which every seeded write is answered PERMISSION_DENIED (7) for a reason that
+/// has nothing to do with identity, so neither leg observes what it is meant to
 /// (<c>RowFieldAuthorizationEvaluator.cs:10-12</c>).
 ///
 /// <para><b>The positive leg.</b> Each driver creates one row through its own mapped write path
