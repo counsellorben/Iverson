@@ -80,7 +80,7 @@ The CI overrides (`values-*.ci-override.yaml`) layer on top of their profiles an
   - an IPv4-mapped peer;
   - a null peer, which returns `"anon"`.
 - **Configuration validation tests:** a bad CIDR, `Hops = 0`, and an empty list, which is accepted.
-- **A pipeline test** (the existing `AuthTestWebApplicationFactory` pattern): with `TrustedProxies` set, two requests from the same trusted peer carrying different `X-Forwarded-For` values reach different pre-auth partitions.
+- **A pipeline test** (the existing `AuthTestWebApplicationFactory` pattern): with `TrustedProxies` set, two requests from the same trusted peer carrying different `X-Forwarded-For` values reach different pre-auth partitions. TestServer supplies no peer address, so the test sets `Connection.RemoteIpAddress` itself.
 - **A Helm render check:** an empty `api.trustedProxies.cidrs` fails the render with the guard's message.
 
 ---
@@ -89,7 +89,7 @@ The CI overrides (`values-*.ci-override.yaml`) layer on top of their profiles an
 
 ### 2a. Certificates
 
-**Helm.** A new Secret, `<release>-authentik-tls`, in the authentik subchart, holding `tls.crt`, `tls.key` and `ca.crt`.
+**Helm.** A new Secret, `<release>-authentik-internal-tls`, in the authentik subchart, holding `tls.crt`, `tls.key` and `ca.crt`.
 - It follows the chart's lookup-or-generate idiom (`charts/redis/templates/secret.yaml:9-13`, `charts/authentik/templates/secret-postgres.yaml:9-15`). If the Secret exists, its data is reused unchanged.
 - Otherwise:
   - `genCA "iverson-authentik-ca" 3650` creates the CA;
@@ -113,7 +113,7 @@ The CI overrides (`values-*.ci-override.yaml`) layer on top of their profiles an
   - Image: `nginxinc/nginx-unprivileged:1.27-alpine`, pinned by the digest `Iverson.AdminUI/Dockerfile:24` uses.
   - It runs as the pod's uid and gid 1000, not the image default of 101. With the pod's `fsGroup: 1000`, that lets it read the Secret's key.
   - `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities: { drop: ["ALL"] }`, and an `emptyDir` mounted at `/tmp`.
-  - It mounts the `<release>-authentik-tls` Secret (`tls.crt`, `tls.key`) and a new ConfigMap holding `default.conf`:
+  - It mounts the `<release>-authentik-internal-tls` Secret (`tls.crt`, `tls.key`) and a new ConfigMap holding `default.conf`:
 
     ```nginx
     server {
@@ -189,7 +189,7 @@ When `Authentik:CaCertificatePath` is unset (Development and the test suites), t
 The Helm worker (`charts/worker`) has no Authentik settings and no Authentik egress, and is untouched. JwtBearer creates no metadata manager when both `Authority` and `MetadataAddress` are empty (`JwtBearerPostConfigureOptions.cs`). The guard does not run for the worker role.
 
 **Deployment wiring:**
-- **Helm**, `charts/api/templates/deployment.yaml`: the new environment variables, the 8443 URLs, and a volume that mounts only the `ca.crt` key of `<release>-authentik-tls` at `/etc/iverson/authentik-ca`.
+- **Helm**, `charts/api/templates/deployment.yaml`: the new environment variables, the 8443 URLs, and a volume that mounts only the `ca.crt` key of `<release>-authentik-internal-tls` at `/etc/iverson/authentik-ca`.
 - **Compose:**
   - `iverson-api` and `iverson-worker` get the same settings and a read-only mount of `deploy/compose-tls/ca.crt`.
   - The compose worker needs them because it mirrors the API's Authentik settings. JwtBearer with `RequireHttpsMetadata = true` throws on an http address, so the worker can't keep the old ones.
@@ -204,6 +204,7 @@ The Helm worker (`charts/worker`) has no Authentik settings and no Authentik egr
 - **Startup guard:** one case for each refusal condition. Also: Development skips the guard, the worker role skips it, and a fully configured api role starts.
 - **JwtBearer wiring:** for both schemes, with the settings present, the resolved options have `RequireHttpsMetadata = true`, the configured `MetadataAddress`, `InternalIssuer` in `ValidIssuers`, and the CA-trusting backchannel handler.
 - **The existing pipeline suites stay green.** `AuthTestWebApplicationFactory` runs in Development and post-configures `Authority = null` with no `MetadataAddress`.
+- **Secret-name render check:** for every profile, the internal Secret's name differs from `authentik.ingress.tlsSecretName`.
 
 ---
 
@@ -215,6 +216,8 @@ The Helm worker (`charts/worker`) has no Authentik settings and no Authentik egr
   - on a 128 KB unterminated input, 0 ms against 6,558 ms (32 KB: 2 ms against 436 ms).
 - **Response cap.**
   - The request is sent with `HttpCompletionOption.ResponseHeadersRead`.
+  - The send and the bounded body read share one `CancellationTokenSource`, linked to the caller's token, with `CancelAfter(EnrichmentServiceOptions.Timeout)`. That keeps the body under the same bound `HttpClient.Timeout` gives the whole response today.
+  - If the linked source fires while the caller's token has not, the service rethrows `new TaskCanceledException(…, new TimeoutException())`. That is the shape `HttpClient` itself produces on timeout, and the one `EnrichmentConsumer.cs:233-234` skips. Without the translation the cancellation surfaces with an inner `IOException`, which that filter does not match.
   - The body is read through a bounded loop with a cap of 1 MiB, an internal constant. A completion capped at 256 tokens is a few KB.
   - A body over the cap throws `InvalidOperationException` ("Enrichment backend response exceeded N bytes").
   - It deliberately does not use `MaxResponseContentBufferSize`. That raises an `HttpRequestException` with a null status, which `TransientFailures.cs:57` classifies as a connection failure and retries. `InvalidOperationException` is non-transient, the same class as an unparseable reply.
@@ -222,6 +225,7 @@ The Helm worker (`charts/worker`) has no Authentik settings and no Authentik egr
   - The existing `ExtractJson` and `EnrichmentService` tests stay green unchanged.
   - New: a 128 KB unterminated-fence input completes under 500 ms.
   - New: an oversize body throws `InvalidOperationException`, and a body just under the cap parses.
+  - New: a handler whose body stalls past a short `Timeout` raises `TaskCanceledException` with an inner `TimeoutException`, and `EnrichmentConsumer` takes its timeout-skip path.
 
 ---
 
@@ -282,6 +286,13 @@ The Helm worker (`charts/worker`) has no Authentik settings and no Authentik egr
 | 34 | An `HttpRequestException` with a null status is classified transient | `Iverson.Api/Consumers/TransientFailures.cs:56-59` |
 | 35 | The enrichment HttpClient is registered in `AddEnrichment` | `Iverson.Embeddings/ServiceCollectionExtensions.cs:31-39` |
 | 36 | `System.Net.IPNetwork` is available | Used in the .NET 10 probe (`IPNetwork.Parse`) |
+| 37 | On kind, the API's peer is the ingress-nginx pod IP, not a node IP | `deploy/kind/setup.sh:114-115`: `controller.hostPort.enabled=true`, `controller.service.type=ClusterIP`. The invocation at `:110-118` sets no `hostNetwork`. (CDR-1 span check) |
+| 38 | Kestrel peers arrive as IPv4-mapped IPv6, which the §1a normalisation handles | `Iverson.Api/appsettings.json:12`: `"Url": "http://*:8080"`, a dual-stack bind. (CDR-1 span check) |
+| 39 | .NET custom-root chain building accepts the Helm `genCA`/`genSignedCert` output, and rejects a foreign CA and a wrong host | CDR-1 probe P2 used the spec's exact template, Helm v3.16.4, and `X509Chain` with `CustomRootTrust` on .NET 10. It gave `chain=True` with an empty status, `otherCA=False` and `hostMatch(wrong)=False`. |
+| 40 | Moving `Authentik:BaseUrl` to 8443 doesn't break the recovery-link consumer | `LoadTest/Auth/AuthentikFlowExecutorClient.cs:350-364` takes only the link's slug and `flow_token`, and rebuilds the URL from its own `BaseUrl`. (CDR-1 A8 grep) |
+| 41 | TestServer supplies no peer address, so the §1e pipeline test must set `Connection.RemoteIpAddress` itself | CDR-1 span check D3 |
+| 42 | `ResponseHeadersRead` takes the body out of `HttpClient.Timeout`. A linked CTS bounds it, but surfaces with an inner `IOException` | Probed on .NET 10 with the real `SocketsHttpHandler` against a server that sends headers, then trickles 100 bytes. A buffered read with `Timeout=1s` gave `TaskCanceledException` wrapping `TimeoutException` at 1,024 ms. `ResponseHeadersRead` with `Timeout=1s` completed at 10,051 ms, never timing out. `ResponseHeadersRead` with a linked CTS at 1 s gave `TaskCanceledException` wrapping `IOException` at 1,004 ms. |
+| 43 | The internal Secret name `<release>-authentik-internal-tls` is used by no profile; `<release>-authentik-tls` is already the Azure and GCP public ingress certificate | `values-azure.yaml:158`, `values-gcp.yaml:166` (`tlsSecretName: "iverson-authentik-tls"`); `git grep "internal-tls"` outside `docs/` has 0 hits (CDR-1 §2.2) |
 
 ---
 
