@@ -59,7 +59,7 @@ public class IdentityScenarioTests
         Guid? seeded = null,
         IdentityScenario.TenantObservation? observation = null) =>
         IdentityScenario.Judge("dotnet", Tenant, Owner, seeded ?? Key,
-            ReadDocument(read ?? ReadStep(Key, Tenant, Owner), denied ?? DeniedStep(null)),
+            ReadDocument(read ?? ReadStep(Key, Tenant, Owner), denied ?? DeniedStep(5)),
             observation ?? Derived());
 
     private static IReadOnlyList<Assertion> Cited(IReadOnlyList<Assertion> assertions, string requirementId) =>
@@ -113,7 +113,7 @@ public class IdentityScenarioTests
     {
         var assertions = IdentityScenario.Judge(
             "dotnet", Tenant, Owner, seededKey: null,
-            ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(null)),
+            ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(5)),
             IdentityScenario.TenantObservation.NotAttempted);
 
         var backstop = Named(assertions, "reported a row key");
@@ -143,7 +143,7 @@ public class IdentityScenarioTests
     public void Judge_NoReadStepAtAll_Idn002FailsRatherThanBeingSkipped()
     {
         var assertions = IdentityScenario.Judge("dotnet", Tenant, Owner, Key,
-            ReadDocument(DeniedStep(null)), Derived());
+            ReadDocument(DeniedStep(5)), Derived());
 
         Cited(assertions, "IVC-IDN-002").Should().OnlyContain(a => !a.Passed);
     }
@@ -173,7 +173,7 @@ public class IdentityScenarioTests
         Named(JudgeHappy(read: read), "owner identity").Passed.Should().BeFalse();
     }
 
-    // ── IVC-IDN-006/007: tenancy derivation, and the response shape of a cross-tenant write ───
+    // ── IVC-IDN-006/008: tenancy derivation, and the answer to a cross-tenant update ──────────
 
     /// <summary>
     /// RE-POINTED, not deleted. This test used to drive the driver-side read-back — the assertion
@@ -235,7 +235,8 @@ public class IdentityScenarioTests
         // nothing. WHAT GUARANTEES THEY HOLD DIFFERENT VALUES, stated correctly at the third
         // attempt and verified by running both mutants (measured when the derivation Statement was
         // still IVC-IDN-003; the analysis carries over UNCHANGED to each of its two successors,
-        // IVC-IDN-006 and IVC-IDN-007, independently):
+        // IVC-IDN-006 and IVC-IDN-007, independently, and to IVC-IDN-007's own successor,
+        // IVC-IDN-008):
         //   - REPOINTING this const at the derivation Statement's value is caught, and caught
         //     FIRST by Check1. `ToHashSet()` collapses the duplicate on the REGISTRY side only; the
         //     standard still declares the orphaned IVC-IDN-005 row, so `registryIds` loses a member
@@ -263,9 +264,9 @@ public class IdentityScenarioTests
         JudgeHappy().Count(a => a.RequirementId == Requirements.IdnTenancyDerivedFromActingUser)
             .Should().Be(2, "IVC-IDN-006 is graded by exactly two assertions: the stored tenant being " +
                 "the acting user's own, and the client's value not having become it");
-        JudgeHappy().Count(a => a.RequirementId == Requirements.IdnCrossTenantUpdateAnsweredWithoutError)
-            .Should().Be(1, "IVC-IDN-007 is graded by exactly one assertion: the wrong acting user's " +
-                "update being answered without a gRPC error status");
+        JudgeHappy().Count(a => a.RequirementId == Requirements.IdnCrossTenantUpdateAnsweredNotFound)
+            .Should().Be(1, "IVC-IDN-008 is graded by exactly one assertion: the wrong acting user's " +
+                "update being answered with gRPC status NOT_FOUND");
     }
 
     /// <summary>
@@ -369,85 +370,106 @@ public class IdentityScenarioTests
     }
 
     [Fact]
-    public void Judge_WrongActingUsersUpdateWasRefused_Idn007Fails()
+    public void Judge_WrongActingUsersUpdateWasAnsweredNotFound_Idn008Passes()
     {
-        var assertions = JudgeHappy(denied: DeniedStep(7));
+        var assertions = JudgeHappy(denied: DeniedStep(5));
 
-        Named(assertions, "answered without a gRPC error status").Passed.Should().BeFalse();
-        Named(assertions, "answered without a gRPC error status").RequirementId.Should().Be("IVC-IDN-007");
+        Named(assertions, "answered with gRPC status NOT_FOUND").Passed.Should().BeTrue(
+            "a key the caller's tenant holds no row under is answered NOT_FOUND, whoever else holds it");
+        Named(assertions, "answered with gRPC status NOT_FOUND").RequirementId.Should().Be("IVC-IDN-008");
     }
 
     [Fact]
-    public void Judge_WrongActingUsersUpdateWasAccepted_Idn007Passes()
+    public void Judge_WrongActingUsersUpdateWasAccepted_Idn008Fails()
     {
-        Named(JudgeHappy(denied: DeniedStep(null)), "answered without a gRPC error status").Passed.Should().BeTrue(
-            "a wrong-tenant acting user whose write was silently accepted is exactly the new post-mitigation shape");
+        Named(JudgeHappy(denied: DeniedStep(null)), "answered with gRPC status NOT_FOUND").Passed.Should().BeFalse(
+            "a wrong-tenant acting user's update that succeeded is the acceptance-shaped answer IVC-IDN-007 " +
+            "graded and IVC-IDN-008 exists to refuse");
     }
 
     [Fact]
-    public void Judge_DeniedStepReportsAMalformedStatusCode_Idn007FailsRatherThanPassingVacuously()
+    public void Judge_WrongActingUsersUpdateWasPermissionDenied_Idn008Fails()
+    {
+        Named(JudgeHappy(denied: DeniedStep(7)), "answered with gRPC status NOT_FOUND").Passed.Should().BeFalse(
+            "PermissionDenied (7) is what a caller refused before the row is read gets — a client that " +
+            "dropped the acting-user identity, not one that carried another tenant's");
+    }
+
+    [Fact]
+    public void Judge_WrongActingUsersUpdateReportedStatusOk_Idn008Fails()
+    {
+        Named(JudgeHappy(denied: DeniedStep(0)), "answered with gRPC status NOT_FOUND").Passed.Should().BeFalse(
+            "OK (0) reported as a code is still an accepted update");
+    }
+
+    [Fact]
+    public void Judge_DeniedStepReportsAMalformedStatusCode_Idn008FailsNamingTheMalformedReport()
     {
         var denied = new StepResult(IdentityScenario.DeniedStepName, true,
             Entity: JsonSerializer.SerializeToElement(new { statusCode = "not-a-number" }));
 
-        Named(JudgeHappy(denied: denied), "answered without a gRPC error status").Passed.Should().BeFalse(
-            "a status code that is present but unparseable is a malformed report, not the no-code " +
-            "acceptance shape this assertion is meant to recognize");
+        var assertion = Named(JudgeHappy(denied: denied), "answered with gRPC status NOT_FOUND");
+
+        assertion.Passed.Should().BeFalse(
+            "a status code that is present but unparseable is a malformed report, not a NOT_FOUND");
+        assertion.Detail.Should().Contain("could not be parsed",
+            "a malformed report must be diagnosed as one, never as an accepted update");
     }
 
     [Fact]
-    public void Judge_WrongActingUsersUpdateFailedWithSomeOtherCode_Idn003EnforcementFails()
+    public void Judge_WrongActingUsersUpdateFailedWithSomeOtherCode_Idn008Fails()
     {
-        Named(JudgeHappy(denied: DeniedStep(16)), "answered without a gRPC error status").Passed.Should().BeFalse(
-            "Unauthenticated (16) is a token problem, not the tenancy denial this requirement names");
+        Named(JudgeHappy(denied: DeniedStep(16)), "answered with gRPC status NOT_FOUND").Passed.Should().BeFalse(
+            "Unauthenticated (16) is a token problem, not the NOT_FOUND answer this requirement names");
     }
 
     [Fact]
-    public void Judge_NoDeniedStepAtAll_Idn003EnforcementFailsRatherThanBeingSkipped()
+    public void Judge_NoDeniedStepAtAll_Idn008FailsRatherThanBeingSkipped()
     {
         var assertions = IdentityScenario.Judge("dotnet", Tenant, Owner, Key,
             ReadDocument(ReadStep(Key, Tenant, Owner)), Derived());
 
-        Named(assertions, "answered without a gRPC error status").Passed.Should().BeFalse();
+        Named(assertions, "answered with gRPC status NOT_FOUND").Passed.Should().BeFalse();
     }
 
     [Fact]
-    public void Judge_DeniedStepItselfBroke_Idn003EnforcementFails()
+    public void Judge_DeniedStepItselfBroke_Idn008Fails()
     {
         var denied = new StepResult(IdentityScenario.DeniedStepName, false, Error: "channel closed");
 
-        Named(JudgeHappy(denied: denied), "answered without a gRPC error status").Passed.Should().BeFalse(
-            "a driver whose attempt never reached the server observed no denial");
+        Named(JudgeHappy(denied: denied), "answered with gRPC status NOT_FOUND").Passed.Should().BeFalse(
+            "a driver whose attempt never reached the server observed no answer");
     }
 
     /// <summary>
     /// The status NAME and MESSAGE ride in the assertion's detail as diagnostics, and nothing
-    /// grades them — the server answers several distinct refusals on this path with the identical
-    /// code AND message, which is exactly why they are reported rather than asserted on. This test
-    /// exists so that carrying them cannot be dropped silently: they are the evidence that
-    /// established the indistinguishability empirically, from what the driver itself received.
+    /// grades them — the server answers a key held by another tenant and a key held by no tenant
+    /// with the identical code AND message, which is exactly why they are reported rather than
+    /// asserted on. This test exists so that carrying them cannot be dropped silently: they are the
+    /// evidence that establishes the indistinguishability empirically, from what the driver itself
+    /// received.
     /// </summary>
     [Fact]
-    public void Judge_Idn003EnforcementDetail_CarriesTheReportedStatusNameAndMessage()
+    public void Judge_Idn008Detail_CarriesTheReportedStatusNameAndMessage()
     {
         var denied = new StepResult(IdentityScenario.DeniedStepName, true,
             Entity: JsonSerializer.SerializeToElement(new
             {
-                statusCode = 7,
-                status = "PermissionDenied",
-                detail = "Not authorized to update this entity.",
+                statusCode = 5,
+                status = "NotFound",
+                detail = $"'{IdentityScenario.TypeName}:{Key}' not found.",
             }));
 
-        var detail = Named(JudgeHappy(denied: denied), "answered without a gRPC error status").Detail;
+        var detail = Named(JudgeHappy(denied: denied), "answered with gRPC status NOT_FOUND").Detail;
 
-        detail.Should().Contain("PermissionDenied");
-        detail.Should().Contain("Not authorized to update this entity.");
+        detail.Should().Contain("NotFound");
+        detail.Should().Contain($"'{IdentityScenario.TypeName}:{Key}' not found.");
     }
 
     [Fact]
     public void Judge_DriverReportedNoStatusNameOrMessage_DetailSaysSoRatherThanThrowing()
     {
-        var detail = Named(JudgeHappy(denied: DeniedStep(null)), "answered without a gRPC error status").Detail;
+        var detail = Named(JudgeHappy(denied: DeniedStep(5)), "answered with gRPC status NOT_FOUND").Detail;
 
         detail.Should().Contain("<none>");
     }
@@ -463,7 +485,7 @@ public class IdentityScenarioTests
         assertions.Should().OnlyContain(a => !a.Passed);
         Cited(assertions, "IVC-IDN-002").Should().NotBeEmpty();
         Cited(assertions, "IVC-IDN-006").Should().NotBeEmpty();
-        Cited(assertions, "IVC-IDN-007").Should().NotBeEmpty();
+        Cited(assertions, "IVC-IDN-008").Should().NotBeEmpty();
         assertions.Should().OnlyContain(a => a.Name.StartsWith("go: ", StringComparison.Ordinal));
     }
 
@@ -639,7 +661,7 @@ public class IdentityScenarioTests
         ]));
 
         var cells = await BuildScenario(runner: runner).GradeReadsAsync(States("dotnet"),
-            [("dotnet", ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(7)))],
+            [("dotnet", ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(5)))],
             Tenant, Owner, "acting-token");
 
         var cell = cells.Should().ContainSingle().Subject;
@@ -677,7 +699,7 @@ public class IdentityScenarioTests
     public async Task GradeReads_ALanguageWhoseDriverReportedNoReadDocument_IsNotGreen()
     {
         var cells = await BuildScenario().GradeReadsAsync(States("dotnet", "go"),
-            [("dotnet", ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(7)))],
+            [("dotnet", ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(5)))],
             Tenant, Owner, "acting-token");
 
         cells.Single(c => c.Language == "go").Status.Should().NotBe(CellStatus.Ok);

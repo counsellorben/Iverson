@@ -9,8 +9,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// service identity in <c>authorization</c> and the acting-user identity in
 /// <c>x-acting-user-authorization</c> — that the server resolves a row's tenant and owner from the
 /// acting user rather than from the payload, and that an acting user belonging to a different
-/// tenant is answered without a gRPC error status when attempting a write to that row — the same
-/// as an accepted one, per CSR round 9's Finding #5 mitigation.
+/// tenant who attempts an update of that row is answered with gRPC status NOT_FOUND — the same
+/// answer an update of a key that exists nowhere receives.
 ///
 /// The shape follows S6 query's and S7 vector-search's, for the same reasons: the subject is one
 /// shared type (<c>IdentityDoc</c>) that every language writes into and every language then reads
@@ -90,40 +90,41 @@ namespace Iverson.ClientConformance.Scenarios;
 /// harness's negative leg exercises, and for a broader reason than the harness registering its
 /// types fresh: CSR round 9's Finding #5 mitigation narrows the existing-row read to the acting
 /// tenant unconditionally, for every schema, legacy or fresh. A wrong-tenant caller's update
-/// therefore finds no visible row and takes the no-existing-row branch whatever the target schema's
-/// registration history — so neither the tenant MISMATCH nor the immutability refusal fires on this
-/// leg any more, and the refusal it used to observe is gone (see below). The drivers still send the
-/// acting user's own tenant in their user column, so this leg keeps sending a payload a conforming
-/// client would send.</para>
+/// therefore finds no visible row whatever the target schema's registration history — so neither the
+/// tenant MISMATCH nor the immutability refusal fires on this leg any more, and what it observes
+/// instead is the NOT_FOUND answer described below. The drivers still send the acting user's own
+/// tenant in their user column, so this leg keeps sending a payload a conforming client would
+/// send.</para>
 ///
-/// <para><b>What used to be indistinguishable no longer is, by accident.</b> A caller with no
-/// acting-user token at all is still denied before this row is ever read
+/// <para><b>A header-less caller and a wrong-tenant caller get different answers, by design.</b> A
+/// caller with no acting-user token at all is denied before this row is ever read
 /// (<c>RowFieldAuthorizationEvaluator.Evaluate</c> returns <c>Denied</c> on a null acting user,
-/// <c>reason=AccessDenied</c>) — unchanged by this fix. A wrong-tenant caller's write, by contrast,
-/// now reaches the narrowed read, finds no visible row, and is silently swallowed as a success. The
-/// two cases used to grade identically (both <c>PermissionDenied</c>, indistinguishable to a
-/// client); they now grade oppositely, but not by any designed signal — see the standard's IDN
-/// Deferred ledger.</para>
+/// <c>reason=AccessDenied</c>) and is answered <c>PermissionDenied</c> (7). A wrong-tenant caller
+/// passes that check, reaches the tenant-scoped read, finds no visible row, and is answered
+/// <c>NotFound</c> (5). The order is deliberate: the denial check runs before the existence check,
+/// so a caller who is refused anyway is refused the same way whether or not the key exists. Only
+/// the wrong-tenant answer is graded; the header-less one is a Deferred area in the standard's IDN
+/// coverage ledger.</para>
 ///
-/// <para><b>Why every cross-tenant update now takes the create branch.</b> With the read narrowed
-/// to the caller's own tenant, a foreign-tenant row is never visible to
-/// <c>EnforceWriteAuthorization</c> — so every wrong-tenant update takes the same no-existing-row
-/// branch a genuine create does, and the actual collision is caught later, at the database layer,
-/// per CSR round 9's Finding #5 mitigation. This is what makes the backstop below load-bearing
-/// rather than decorative.</para>
+/// <para><b>Why every cross-tenant update is answered NOT_FOUND.</b> With the read narrowed to the
+/// caller's own tenant, a foreign-tenant row is never visible to
+/// <c>EnforceWriteAuthorization</c>, so a wrong-tenant update finds no existing row, exactly as an
+/// update of a key that exists nowhere does. Update never creates a row, so both are answered
+/// <c>NotFound</c> with the same message, and neither reaches the database. This is what makes the
+/// backstop below load-bearing rather than decorative.</para>
 ///
 /// <para><b>Backstop assertion.</b> <see cref="Judge"/>'s "the write phase reported a row key for
 /// this language" assertion is this axis's backstop, in the sense
-/// <c>docs/standards/iverson-client-standard.md</c>'s REL authoring notes require. Since CSR
-/// round 9's Finding #5 mitigation, EVERY cross-tenant update takes the create branch described
-/// above and SUCCEEDS, so there is no denial left for a missing row to defeat — and with no seeded
-/// row, every driver still derives a well-formed key for a row that was never created, that update
-/// is accepted as an ordinary create, and the driver reports NO gRPC status code. So
-/// <see cref="Requirements.IdnCrossTenantUpdateAnsweredWithoutError"/>'s "answered without a gRPC
-/// error status" assertion PASSES in the no-seeded-row state exactly as it does for a genuine
-/// swallowed cross-tenant write: it cannot tell the two apart. That is signal this leg has LOST —
-/// before the mitigation the same assertion demanded status 7 and therefore reddened when there was
-/// nothing to deny.</para>
+/// <c>docs/standards/iverson-client-standard.md</c>'s REL authoring notes require. EVERY
+/// cross-tenant update is answered NOT_FOUND because the caller's tenant holds no row under that
+/// key, and with no seeded row the caller's tenant holds no row under that key either: every driver
+/// still derives a well-formed key for a row that was never created, that update is answered
+/// NOT_FOUND for the same reason, and <see cref="Requirements.IdnCrossTenantUpdateAnsweredNotFound"/>'s
+/// assertion PASSES in the no-seeded-row state exactly as it does for a genuine cross-tenant update:
+/// it cannot tell the two apart, by design, because the server answers them identically. That is
+/// signal this leg lost with CSR round 9's Finding #5 mitigation and has not regained — before the
+/// mitigation the same assertion demanded status 7 and therefore reddened when there was nothing to
+/// deny.</para>
 ///
 /// <para>What the backstop is worth, stated no higher than it is. It is NOT the only assertion that
 /// reddens in that state: with no seeded row,
@@ -138,7 +139,7 @@ namespace Iverson.ClientConformance.Scenarios;
 /// language seeded a row" as such — that is a property of the harness's fixture, not of a client —
 /// and it stays strictly weaker than <see cref="Requirements.IdnActingUserPropagatedToRow"/>
 /// (wherever the backstop fails, the read-back fails too). It is NOT weaker than
-/// <see cref="Requirements.IdnCrossTenantUpdateAnsweredWithoutError"/>, and the relation does not
+/// <see cref="Requirements.IdnCrossTenantUpdateAnsweredNotFound"/>, and the relation does not
 /// merely fail to hold — it inverts: in the no-seeded-row state the backstop fails while that
 /// assertion passes.</para>
 /// </summary>
@@ -456,7 +457,7 @@ public sealed class IdentityScenario(
         // graded an ECHO, not a derivation.
         assertions.AddRange(JudgeTenantDerivation(language, expectedTenant, observation));
 
-        // ── IVC-IDN-007, response shape: a cross-tenant update is answered without an error ────
+        // ── IVC-IDN-008: a cross-tenant update is answered NOT_FOUND ───────────────────────────
         var deniedStep = document.Steps.FirstOrDefault(s => s.Name == DeniedStepName);
         var code = deniedStep is { Ok: true } ? ReadStatusCode(deniedStep.Entity) : null;
 
@@ -469,19 +470,22 @@ public sealed class IdentityScenario(
         var malformedCode = deniedStep is { Ok: true } && IsStatusCodeMalformed(deniedStep.Entity);
 
         assertions.Add(Assertion.From(
-            $"{language}: an acting user of another tenant is answered without a gRPC error status",
-            deniedStep is { Ok: true } && code is null && !malformedCode,
+            $"{language}: an update by an acting user of another tenant is answered with gRPC status NOT_FOUND",
+            deniedStep is { Ok: true } && !malformedCode && code == 5,
             deniedStep is null
                 ? $"the driver reported no '{DeniedStepName}' step"
                 : !deniedStep.Ok
                     ? $"the attempt itself broke, so no answer was observed: {deniedStep.Error ?? "no error text"}"
-                    : code is null
-                        ? malformedCode
-                            ? "the driver reported a 'statusCode' that could not be parsed as a number, " +
-                              "which is a malformed report rather than evidence of an accepted write"
-                            : "the driver reported no gRPC status code, as expected for an accepted write"
-                        : $"the driver reported gRPC status {code}, expected no gRPC error status",
-            Requirements.IdnCrossTenantUpdateAnsweredWithoutError));
+                    : malformedCode
+                        ? "the driver reported a 'statusCode' that could not be parsed as a number, " +
+                          "which is a malformed report rather than an answer"
+                        : code is null
+                            ? "the driver reported no gRPC status code, so the update was accepted; " +
+                              "expected NOT_FOUND (5)"
+                            : code == 5
+                                ? "the driver reported gRPC status 5 (NOT_FOUND), as expected"
+                                : $"the driver reported gRPC status {code}, expected NOT_FOUND (5)",
+            Requirements.IdnCrossTenantUpdateAnsweredNotFound));
 
         assertions[^1] = assertions[^1] with
         {
@@ -653,8 +657,9 @@ public sealed class IdentityScenario(
     /// True when a driver's step entity carries a "statusCode" property that IS present and is not
     /// JSON null, but cannot be read as a number — a malformed report. <see cref="ReadStatusCode"/>
     /// collapses this case and genuine absence (no property, or a JSON null) to the same null, which
-    /// is correct for most callers; the IVC-IDN-007 assertion needs to tell them apart, because a
-    /// malformed report must still fail rather than being graded as an accepted write.
+    /// is correct for most callers; the IVC-IDN-008 assertion needs to tell them apart in its detail,
+    /// because both fail it and a malformed report must be diagnosed as one rather than as an
+    /// accepted write.
     /// </summary>
     internal static bool IsStatusCodeMalformed(JsonElement? entity) =>
         entity is { ValueKind: JsonValueKind.Object } document
