@@ -34,6 +34,37 @@ def test_entity_resolves_a_module_class_spec_and_explains_a_bad_one():
         cli._entity("tests.test_session:make_session")
 
 
+@pytest.mark.parametrize("host,expected", [
+    ("localhost", True), ("127.0.0.1", True), ("127.1.2.3", True), ("::1", True),
+    ("example.com", False), ("10.0.0.5", False), (None, False),
+])
+def test_is_loopback(host, expected):
+    assert cli._is_loopback(host) is expected
+
+
+@pytest.mark.parametrize("grpc_url,token_endpoint,expected", [
+    # The compose defaults: both legs plaintext, both on this machine.
+    ("http://localhost:8080", "http://localhost:9000/application/o/token/", True),
+    # A plaintext leg to another host keeps the SDK's refusal.
+    ("http://iverson.example.com:8080", "http://localhost:9000/application/o/token/", False),
+    ("http://localhost:8080", "http://idp.example.com/application/o/token/", False),
+    ("https://iverson.example.com", "http://idp.example.com/application/o/token/", False),
+    # A TLS leg's host does not matter.
+    ("http://localhost:8080", "https://idp.example.com/application/o/token/", True),
+    ("https://iverson.example.com", "http://127.0.0.1:9000/application/o/token/", True),
+])
+def test_insecure_opt_in_only_when_every_plaintext_leg_is_loopback(monkeypatch, grpc_url, token_endpoint, expected):
+    client_cls, session_cls = _env(monkeypatch)
+    monkeypatch.setenv("IVERSON_GRPC_URL", grpc_url)
+    monkeypatch.setenv("IVERSON_TOKEN_ENDPOINT", token_endpoint)
+    session_cls.return_value.run.return_value = AgentAnswer(
+        text="x", citations=[], tool_calls=0, context_tokens=0)
+    cli.main(["ask", "--entity", "tests.test_session:PolicyDoc", "--question", "q"])
+    assert client_cls.call_args_list[0].kwargs["allow_insecure_credentials"] is expected
+    session_cls.call_args.kwargs["schema_client_factory"]("other-jwt")
+    assert client_cls.call_args.kwargs["allow_insecure_credentials"] is expected
+
+
 def _env(monkeypatch):
     monkeypatch.setenv("IVERSON_CLIENT_ID", "id")
     monkeypatch.setenv("IVERSON_CLIENT_SECRET", "secret")

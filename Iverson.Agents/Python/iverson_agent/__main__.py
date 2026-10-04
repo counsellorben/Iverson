@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import ipaddress
 import json
 import os
 import sys
@@ -34,6 +35,16 @@ def _endpoint() -> tuple[str, int, bool]:
     if url.scheme not in ("http", "https"):
         raise ValueError(f"IVERSON_GRPC_URL must start with http:// or https://, got {url.geturl()!r}")
     return url.hostname or "localhost", url.port or (443 if url.scheme == "https" else 8080), url.scheme == "https"
+
+
+def _is_loopback(host: str | None) -> bool:
+    """True for `localhost` and any loopback address (127.0.0.0/8, ::1); false for anything else."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _entity(spec: str) -> type:
@@ -69,14 +80,20 @@ def main(argv: list[str] | None = None) -> int:
     token = os.environ["IVERSON_ACTING_USER_TOKEN"]
     cfg = AgentConfig()
     client = anthropic.Anthropic()
-    # IVERSON_GRPC_URL defaults to http://localhost:8080 — the compose stack's plaintext h2c
-    # listener — so this CLI must explicitly defeat IversonClient's default guard against
-    # attaching credentials to a plaintext channel. Inert (but harmless) when tls=True.
-    with IversonClient(host, port, use_tls=tls, credentials=creds, allow_insecure_credentials=True) as iverson:
+    # IversonClient refuses to send credentials over plaintext without an opt-in, which covers two
+    # legs: the gRPC channel (plaintext unless https://) and the token endpoint (plaintext unless
+    # https). Opt in only when every plaintext leg stays on this machine — the compose stack's
+    # defaults, http://localhost:8080 and a localhost token endpoint. A plaintext leg to any other
+    # host keeps the SDK's refusal.
+    token_url = urlsplit(creds.token_endpoint)
+    allow_insecure = (tls or _is_loopback(host)) and (
+        token_url.scheme == "https" or _is_loopback(token_url.hostname))
+    with IversonClient(host, port, use_tls=tls, credentials=creds, allow_insecure_credentials=allow_insecure) as iverson:
         session = AgentSession(
             client, iverson, _entity(args.entity), cfg,
             schema_client_factory=lambda t: IversonClient(host, port, use_tls=tls, credentials=creds,
-                                                          acting_user_token=t, allow_insecure_credentials=True),
+                                                          acting_user_token=t,
+                                                          allow_insecure_credentials=allow_insecure),
             title_field=args.title_field)
         if args.cmd == "ask":
             answer = session.run(args.question, token, trace_id=args.trace_id)
