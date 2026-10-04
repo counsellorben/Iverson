@@ -313,7 +313,7 @@ class _DriverStaticBearerAuthPlugin(grpc.AuthMetadataPlugin):
     request asks for them; neither is expressible through `IversonClientCredentials`, so a token
     this driver minted for itself is rejected by the API on issuer validation (401) and carries
     no `schema_admin` scope (403 on RegisterSchema). The orchestrator mints one correctly and
-    passes it via --service-token.
+    passes it in IVERSON_DRIVER_SERVICE_TOKEN (or --service-token when run by hand).
     """
 
     def __init__(self, token: str) -> None:

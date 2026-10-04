@@ -372,7 +372,8 @@ async function main(argv: string[]): Promise<number> {
     // JWT's `iss` from the request's Host header and grants scopes only when the token request
     // asks for them, so a token this driver minted for itself would be rejected by the API on
     // issuer validation (401) and would carry no `schema_admin` scope (403 on RegisterSchema).
-    // The orchestrator mints one correctly and passes it via --service-token.
+    // The orchestrator mints one correctly and passes it in IVERSON_DRIVER_SERVICE_TOKEN
+    // (or --service-token when run by hand).
     const callCredentials = serviceToken
         ? grpc.credentials.createFromMetadataGenerator((_options, callback) => {
               const metadata = new grpc.Metadata();

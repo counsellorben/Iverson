@@ -118,7 +118,8 @@ public sealed class TokenBroker : IDisposable
     /// <summary>
     /// An acting-user token for a DIFFERENT tenant than <see cref="GetActingTokenAsync"/>'s, and
     /// the only deliberately "wrong" identity the harness mints. S8 identity hands it to every
-    /// driver as <c>--wrong-acting-token</c>; the driver sends it in place of its own on one
+    /// driver in <c>IVERSON_DRIVER_WRONG_ACTING_TOKEN</c> (the <c>--wrong-acting-token</c> flag when run by
+    /// hand); the driver sends it in place of its own on one
     /// update and reports the status code the server answered with.
     /// </summary>
     public Task<string> GetOtherTenantActingTokenAsync(CancellationToken ct = default) =>

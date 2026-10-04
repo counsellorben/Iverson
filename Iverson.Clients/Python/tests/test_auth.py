@@ -462,7 +462,6 @@ def test_get_token_does_not_follow_a_redirect():
         server.shutdown()
 
 
-
 # A per-call acting-user token (with_acting_user) gets the same plaintext guard as the ambient
 # one the constructor checks above.
 def test_with_acting_user_raises_on_plaintext_without_opt_in():

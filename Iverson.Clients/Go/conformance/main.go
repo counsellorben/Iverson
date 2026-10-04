@@ -510,7 +510,7 @@ func run(argv []string) int {
 	// asks for them, so a token this driver minted for itself would be rejected by the API on
 	// issuer validation (401) and would carry no schema_admin scope (403 on RegisterSchema) —
 	// OAuth2ClientCredentials can set neither. The orchestrator mints one correctly and passes
-	// it via --service-token.
+	// it in IVERSON_DRIVER_SERVICE_TOKEN (or --service-token when run by hand).
 	if serviceToken != "" {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(
 			staticServiceToken{token: serviceToken, actingToken: actingToken, allowInsecureCredentials: true}))

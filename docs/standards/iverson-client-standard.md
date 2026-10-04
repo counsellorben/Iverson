@@ -467,7 +467,8 @@ from a payload the client controls:
   user at all each fail here rather than agreeing by construction with what the driver sent.
 - **Cross-tenant update, graded as `IVC-IDN-008`.** The orchestrator mints a SECOND acting-user
   token, for a different, active tenant (`TokenBroker.GetOtherTenantActingTokenAsync`), and passes
-  it to every driver as `--wrong-acting-token`. Each driver attempts a mapped update of the row it
+  it to every driver in `IVERSON_DRIVER_WRONG_ACTING_TOKEN` (the `--wrong-acting-token` flag when a
+  driver is run by hand). Each driver attempts a mapped update of the row it
   just created while carrying that token in place of its own, and reports the gRPC status code it
   received as data — it judges nothing. The orchestrator asserts the driver reported `NotFound` (5):
   Update never creates a row, and the server's existing-row read is scoped to the caller's own
@@ -581,7 +582,7 @@ role are deliberately not authored here; see the Coverage table below.
 | Tenancy derived from the acting user | Covered | IVC-IDN-006 |
 | A cross-tenant update is answered with gRPC status NOT_FOUND | Covered | IVC-IDN-008 |
 | A mapped point read never carrying the server-owned tenant column | Covered | IVC-IDN-005 |
-| Token acquisition | Deferred | Every client can mint a service token from a client-credentials trio, but the harness passes a pre-minted `--service-token` to all five drivers on purpose (Authentik stamps the JWT's `iss` from the request's Host header and grants scopes only when asked, neither of which a driver's own minting expresses), so no assertion observes a client's token acquisition and no requirement constrains it. |
+| Token acquisition | Deferred | Every client can mint a service token from a client-credentials trio, but the harness passes a pre-minted service token to all five drivers (in `IVERSON_DRIVER_SERVICE_TOKEN`, or the `--service-token` flag when a driver is run by hand) on purpose (Authentik stamps the JWT's `iss` from the request's Host header and grants scopes only when asked, neither of which a driver's own minting expresses), so no assertion observes a client's token acquisition and no requirement constrains it. |
 | Suspended and deleted tenants | Deferred | `ActingUserInterceptor` rejects an acting user whose tenant is absent, `suspended` or `deleted` with `PermissionDenied`, but the harness runs entirely inside two active tenants and provisions none, so no assertion observes a suspended or deleted tenant and no requirement constrains that path. |
 | Field-permission narrowing by acting-user role | Deferred | `RowFieldAuthorizationEvaluator` narrows writable and readable fields by the acting user's `groups` claim, but the harness registers no `FieldPermission` (the `Reregistrar` sets row permissions only), so no assertion observes field narrowing and no requirement constrains it. |
 | Owner column derived from the acting user | Deferred | `IVC-IDN-002`'s owner clause observes a round trip, not a derivation: the harness's acting user holds `iverson-loadtest-bypass` (granted `CanWriteAll` by the orchestrator's re-registration), so `RowFieldAuthorizationEvaluator` reports `ownershipRequired: false` and the server never force-sets the owner column — a driver stamping a made-up owner reads it straight back. No assertion observes owner derivation and no requirement constrains it. Closing it needs an acting user without a bypass role on this type, which is a stack-provisioning change, not a wording change. |
