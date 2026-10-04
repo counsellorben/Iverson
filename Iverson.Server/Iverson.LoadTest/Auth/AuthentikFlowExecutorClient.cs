@@ -124,12 +124,32 @@ public sealed class AuthentikFlowExecutorClient : IDisposable
         Environment.GetEnvironmentVariable("IVERSON_TOTP_SECRET") is { Length: > 0 } env ? env :
         File.Exists(CachePath) ? File.ReadAllText(CachePath).Trim() is { Length: > 0 } s ? s : null : null;
 
+    // The secret is a long-lived second factor, so neither the directory nor the file may ever
+    // exist at a mode another local user can read. A create mode applies only to a file this call
+    // creates, so a file left at a looser mode by an older build is restricted BEFORE the new
+    // secret goes into it. Nothing changes the mode after the write: a test can then see the
+    // create mode itself, which a chmod after the write would mask.
     private void SaveCachedTotpSecret(string secret)
     {
-        Directory.CreateDirectory(CacheDir);
-        File.WriteAllText(CachePath, secret + "\n");
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(CachePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(CacheDir);
+            File.WriteAllText(CachePath, secret + "\n");
+        }
+        else
+        {
+            Directory.CreateDirectory(CacheDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            if (File.Exists(CachePath))
+                File.SetUnixFileMode(CachePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            using var stream = new FileStream(CachePath, new FileStreamOptions
+            {
+                Mode = FileMode.Create,
+                Access = FileAccess.Write,
+                UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            });
+            using var writer = new StreamWriter(stream);
+            writer.Write(secret + "\n");
+        }
         logger.LogInformation("Cached new TOTP secret for future runs at {Path}", CachePath);
     }
 
