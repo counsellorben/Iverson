@@ -202,6 +202,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         // direct-claim-read code (OperatorAuthorizationPolicy) reads "groups"/"scope", neither
         // of which is in that remapping table, which is why this was never hit before.
         options.MapInboundClaims = false;
+        options.Events = new JwtBearerEvents { OnTokenValidated = RejectRevokedTokenAsync };
     })
     .AddJwtBearer("ActingUser", options =>
     {
@@ -226,7 +227,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 else
                     context.NoResult();
                 return Task.CompletedTask;
-            }
+            },
+            OnTokenValidated = RejectRevokedTokenAsync
         };
     });
 
@@ -830,6 +832,29 @@ app.Run();
 // fails accessibility consistency checking (verified empirically) unless Program is public.
 public partial class Program
 {
+    /// <summary>
+    /// CSR round-10 #11: both JwtBearer schemes' <c>OnTokenValidated</c>. Refuses a token whose
+    /// <c>sub</c> was revoked (a removed user, or a demoted tenant admin) at or after its
+    /// <c>iat</c>; a token with no <c>iat</c> cannot show it came later, so it is refused too.
+    /// The default scheme then answers 401 / Unauthenticated, and the ActingUser scheme's callers
+    /// treat the failed result as an invalid acting-user token. Service clients' subs are never
+    /// revoked, so they always pass.
+    /// </summary>
+    internal static async Task RejectRevokedTokenAsync(TokenValidatedContext context)
+    {
+        var sub = context.Principal?.FindFirst("sub")?.Value;
+        if (sub is null)
+            return;
+
+        DateTimeOffset? issuedAt = long.TryParse(context.Principal!.FindFirst("iat")?.Value, out var iat)
+            ? DateTimeOffset.FromUnixTimeSeconds(iat)
+            : null;
+
+        var revocations = context.HttpContext.RequestServices.GetRequiredService<Iverson.Api.Tenancy.ITokenRevocationCache>();
+        if (await revocations.IsRevokedAsync(sub, issuedAt))
+            context.Fail("Token has been revoked.");
+    }
+
     internal sealed class RequireListenerPort(int port) { public int Port => port; }
 
     internal static Task ListenerPortGateAsync(HttpContext context, Func<Task> next)

@@ -163,7 +163,8 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
                 matches.Add(new IdpUser(
                     ReadPk(user),
                     user.GetProperty("username").GetString()!,
-                    user.GetProperty("email").GetString()!));
+                    user.GetProperty("email").GetString()!,
+                    user.GetProperty("uid").GetString()!));
             }
 
             // Authentik's pagination envelope nests page metadata under "pagination"; a "next"

@@ -219,8 +219,8 @@ public sealed class AuthentikAdminClientTests
             {
               "pagination": {"next": 0},
               "results": [
-                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}},
-                {"pk": 2, "username": "bob", "email": "bob@example.invalid", "attributes": {"tenant_id": "tenant-b"}}
+                {"pk": 1, "uid": "uid-alice", "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}},
+                {"pk": 2, "uid": "uid-bob", "username": "bob", "email": "bob@example.invalid", "attributes": {"tenant_id": "tenant-b"}}
               ]
             }
             """);
@@ -230,7 +230,7 @@ public sealed class AuthentikAdminClientTests
         var users = (await sut.ListUsersByTenantAsync("tenant-a")).ToList();
 
         users.Should().ContainSingle();
-        users[0].Should().BeEquivalentTo(new IdpUser("1", "alice", "alice@example.invalid"));
+        users[0].Should().BeEquivalentTo(new IdpUser("1", "alice", "alice@example.invalid", "uid-alice"));
         handler.Requests.Should().ContainSingle();
         handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v3/core/users/");
     }
@@ -242,7 +242,7 @@ public sealed class AuthentikAdminClientTests
             {
               "pagination": {"next": 2},
               "results": [
-                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+                {"pk": 1, "uid": "uid-alice", "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
               ]
             }
             """);
@@ -250,7 +250,7 @@ public sealed class AuthentikAdminClientTests
             {
               "pagination": {"next": 0},
               "results": [
-                {"pk": 3, "username": "carol", "email": "carol@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+                {"pk": 3, "uid": "uid-carol", "username": "carol", "email": "carol@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
               ]
             }
             """);
@@ -277,7 +277,7 @@ public sealed class AuthentikAdminClientTests
         var page = JsonResponse(HttpStatusCode.OK, """
             {
               "results": [
-                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+                {"pk": 1, "uid": "uid-alice", "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
               ]
             }
             """);
@@ -295,7 +295,7 @@ public sealed class AuthentikAdminClientTests
             {
               "pagination": {"previous": 0, "count": 1},
               "results": [
-                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+                {"pk": 1, "uid": "uid-alice", "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
               ]
             }
             """);
@@ -313,7 +313,7 @@ public sealed class AuthentikAdminClientTests
             {
               "pagination": {"next": null, "previous": 0, "count": 1},
               "results": [
-                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+                {"pk": 1, "uid": "uid-alice", "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
               ]
             }
             """);
@@ -331,7 +331,7 @@ public sealed class AuthentikAdminClientTests
             {
               "pagination": {"next": -1, "previous": 0, "count": 1},
               "results": [
-                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+                {"pk": 1, "uid": "uid-alice", "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
               ]
             }
             """);
@@ -353,7 +353,7 @@ public sealed class AuthentikAdminClientTests
         var page = JsonResponse(HttpStatusCode.OK, """
             {
               "results": [
-                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+                {"pk": 1, "uid": "uid-alice", "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
               ]
             }
             """);
@@ -390,8 +390,8 @@ public sealed class AuthentikAdminClientTests
             {
               "pagination": {"next": 0},
               "results": [
-                {"pk": 1, "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}},
-                {"pk": 2, "username": "bob", "email": "bob@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
+                {"pk": 1, "uid": "uid-alice", "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}},
+                {"pk": 2, "uid": "uid-bob", "username": "bob", "email": "bob@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
               ]
             }
             """);

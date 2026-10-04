@@ -2,6 +2,7 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Tenancy;
 using Iverson.Client.Contracts;
+using Iverson.Sql;
 
 namespace Iverson.Api.Grpc;
 
@@ -19,6 +20,7 @@ namespace Iverson.Api.Grpc;
 public sealed class TenantAdminGrpcService(
     IIdpAdminClient authentikAdminClient,
     ITenantStatusCache tenantStatusCache,
+    ITokenRevocationRepository tokenRevocations,
     AuditLog auditLog) : Iverson.Client.Contracts.TenantAdminGrpcService.TenantAdminGrpcServiceBase
 {
     public override async Task<TenantUser> InviteUser(InviteUserRequest request, ServerCallContext context)
@@ -56,7 +58,11 @@ public sealed class TenantAdminGrpcService(
     public override async Task<Empty> RemoveUser(RemoveUserRequest request, ServerCallContext context)
     {
         var tenantId = await RequireActiveTenantAsync(context);
-        await RequireUserInTenantAsync(request.UserId, tenantId);
+        var user = await RequireUserInTenantAsync(request.UserId, tenantId);
+        // CSR round-10 #11: revoke the user's tokens BEFORE touching Authentik. If Authentik then
+        // fails, the user only has to log in again; the reverse order could leave a deactivated
+        // user's tokens valid until they expire.
+        await tokenRevocations.RevokeAsync(user.Uid);
         await authentikAdminClient.DeactivateUserAsync(request.UserId);
         auditLog.AdminOperation(context.GetHttpContext().User, "RemoveUser", request.UserId);
         return new Empty();
@@ -69,7 +75,13 @@ public sealed class TenantAdminGrpcService(
         if (request.Grant)
             await authentikAdminClient.AddGroupAsync(request.UserId, "tenant-admins");
         else
+        {
+            // A demoted admin's existing tokens still carry the tenant-admins group, which the
+            // TenantAdmin policy reads from the token itself — so revoke them first, as RemoveUser
+            // does. Granting needs no revocation.
+            await tokenRevocations.RevokeAsync(user.Uid);
             await authentikAdminClient.RemoveGroupAsync(request.UserId, "tenant-admins");
+        }
         auditLog.AdminOperation(context.GetHttpContext().User, "SetTenantAdmin", request.UserId);
         return new TenantUser { UserId = user.Id, Username = user.Username, Email = user.Email };
     }
