@@ -2,10 +2,13 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Claims;
 using FluentAssertions;
+using Iverson.Api.Grpc;
 using Iverson.Api.Tenancy;
 using Iverson.Api.Tests.Helpers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using NSubstitute;
 using Xunit;
 
 namespace Iverson.Api.Tests;
@@ -24,6 +27,7 @@ public class AdminConsoleActiveTenantPipelineTests : IClassFixture<AdminConsoleT
     private const string Qdrant     = "/admin/console/qdrant";
 
     private readonly HttpClient _client;
+    private readonly ILogger<AuditLog> _auditLogger = Substitute.For<ILogger<AuditLog>>();
 
     public AdminConsoleActiveTenantPipelineTests(AdminConsoleTestWebApplicationFactory factory)
     {
@@ -32,6 +36,8 @@ public class AdminConsoleActiveTenantPipelineTests : IClassFixture<AdminConsoleT
             {
                 services.RemoveAll<ITenantStatusCache>();
                 services.AddSingleton<ITenantStatusCache, FixedTenantStatusCache>();
+                services.RemoveAll<AuditLog>();
+                services.AddSingleton(new AuditLog(_auditLogger));
             })).CreateClient();
     }
 
@@ -118,5 +124,38 @@ public class AdminConsoleActiveTenantPipelineTests : IClassFixture<AdminConsoleT
         var response = await GetAsync(path, Token(""));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    private void AssertDenied(int count) =>
+        _auditLogger.Received(count).Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains("[Audit.Denied]")
+                              && v.ToString()!.Contains("reason=TenantNotActive")),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+
+    [Theory]
+    [InlineData(Tenants,    "tenant_unknown")]
+    [InlineData(Schema,     "tenant_suspended")]
+    [InlineData(DataVolume, "tenant_deleted")]
+    [InlineData(Qdrant,     "tenant_unknown")]
+    public async Task TenantNotActive_WritesOneAuditDeniedEntry(string path, string tenantId)
+    {
+        var response = await GetAsync(path, Token(tenantId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        AssertDenied(1);
+    }
+
+    [Theory]
+    [InlineData(Tenants)]
+    [InlineData(Schema)]
+    public async Task ActiveTenant_WritesNoAuditDeniedEntry(string path)
+    {
+        var response = await GetAsync(path, Token("tenant_active"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        AssertDenied(0);
     }
 }

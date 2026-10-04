@@ -1,3 +1,4 @@
+using Iverson.Api.Grpc;
 using Iverson.Api.Tenancy;
 
 namespace Iverson.Api.Console;
@@ -9,7 +10,7 @@ namespace Iverson.Api.Console;
 /// no <c>tenant_id</c> claim, or an empty one (an operator's console token carries
 /// <c>tenant_id: null</c>), passes.
 /// </summary>
-public sealed class ActiveTenantEndpointFilter(ITenantStatusCache tenantStatusCache) : IEndpointFilter
+public sealed class ActiveTenantEndpointFilter(ITenantStatusCache tenantStatusCache, AuditLog auditLog) : IEndpointFilter
 {
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
@@ -18,7 +19,16 @@ public sealed class ActiveTenantEndpointFilter(ITenantStatusCache tenantStatusCa
         {
             var status = await tenantStatusCache.GetStatusAsync(tenantId);
             if (status is null or "suspended" or "deleted")
+            {
+                // Same action/resource convention as AuditingAuthorizationMiddlewareResultHandler.
+                auditLog.Denied(
+                    context.HttpContext.User,
+                    "Unauthorized",
+                    context.HttpContext.GetEndpoint()?.DisplayName ?? "unknown",
+                    null,
+                    "TenantNotActive");
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
         }
 
         return await next(context);
