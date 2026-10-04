@@ -46,12 +46,15 @@ public static class AdminConsoleEndpoints
     /// <summary>
     /// Maps the four endpoints. Registered from <c>Program.cs</c> alongside the other
     /// <c>/admin</c> routes, and — like them — after <c>UseAuthentication</c>/<c>UseAuthorization</c>.
+    /// Every one carries <see cref="ActiveTenantEndpointFilter"/>: a caller whose tenant is not
+    /// active is refused here as it is on the gRPC surfaces.
     /// </summary>
     public static IEndpointRouteBuilder MapAdminConsoleEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet($"{RoutePrefix}/tenants", GetTenantsAsync)
             .WithName("AdminConsoleTenants")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("Operator")
+            .AddEndpointFilter<ActiveTenantEndpointFilter>();
 
         // RequireAuthorization() with no policy name applies the DefaultPolicy
         // (RequireAuthenticatedUser). Stated explicitly rather than relying on the
@@ -66,15 +69,18 @@ public static class AdminConsoleEndpoints
         // are defence-in-depth against a future change to that fallback, and nothing more.
         app.MapGet($"{RoutePrefix}/schema", GetSchema)
             .WithName("AdminConsoleSchema")
-            .RequireAuthorization();
+            .RequireAuthorization()
+            .AddEndpointFilter<ActiveTenantEndpointFilter>();
 
         app.MapGet($"{RoutePrefix}/data-volume", GetDataVolumeAsync)
             .WithName("AdminConsoleDataVolume")
-            .RequireAuthorization();
+            .RequireAuthorization()
+            .AddEndpointFilter<ActiveTenantEndpointFilter>();
 
         app.MapGet($"{RoutePrefix}/qdrant", GetQdrantAsync)
             .WithName("AdminConsoleQdrant")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("Operator")
+            .AddEndpointFilter<ActiveTenantEndpointFilter>();
 
         return app;
     }

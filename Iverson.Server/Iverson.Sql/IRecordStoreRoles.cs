@@ -182,6 +182,13 @@ public interface IEnrichmentStateRepository
     Task DeleteAsync(string tenantId, string typeName, string entityKey);
 }
 
+public interface ITokenRevocationRepository
+{
+    Task EnsureTableAsync();
+    Task RevokeAsync(string sub);
+    Task<IEnumerable<(string Sub, DateTimeOffset RevokedAt)>> ListAsync();
+}
+
 public interface ISchemaRegistryRepository
 {
     Task EnsureTableAsync();

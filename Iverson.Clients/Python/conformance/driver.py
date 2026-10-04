@@ -969,19 +969,19 @@ def main(argv: List[str]) -> int:
             # earlier), so against a freshly registered type the branch cannot fire. It is NOT dead code:
             # SchemaRegistry.LoadAsync rehydrates pre-cutover _iverson_schema rows verbatim, so on an upgraded
             # deployment TenantColumn can still be a client-declared name such as "TenantId" — which the
-            # InvalidArgument guard does not match — and the immutability branch fires there today. The
-            # conformance harness registers its types fresh, which is the ONLY reason this leg is insensitive
-            # to the payload tenant. The refusal this step observes is the tenant MISMATCH between the
-            # existing row's __TenantId and this wrong acting user's own claim. The acting user's real tenant
-            # is still sent here so this leg keeps sending a payload a conforming client would send.
+            # InvalidArgument guard does not match — and the immutability branch fires there today. Even there
+            # this leg never reaches it: the server reads the existing row only within the caller's own tenant,
+            # so this wrong acting user finds no row, and the update is answered NotFound (5), the same answer
+            # an update of a key that exists nowhere receives. The acting user's real tenant is still sent here
+            # so this leg keeps sending a payload a conforming client would send.
             entity = IdentityDoc()
             entity.id = uuid.UUID(row_key)
             entity.tenant_id = tenant
             entity.owner_id = owner_id
             entity.label = f"identity-{LANGUAGE}-{id_prefix}-updated-by-the-wrong-user"
             EntityCoordinator(IdentityDoc, wrong_channel).update_mapped(entity)
-            # No error: the server accepted the wrong acting user's write. Reported as a missing
-            # status code rather than judged here.
+            # No error: the server accepted the wrong acting user's write, where a conforming server
+            # answers NotFound (5). Reported as a missing status code rather than judged here.
             steps.append(StepResult("denied_update_wrong_acting_user", True, entity={
                 "statusCode": None, "status": "succeeded",
             }))

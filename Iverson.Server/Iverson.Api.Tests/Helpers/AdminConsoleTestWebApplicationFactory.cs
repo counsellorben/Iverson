@@ -26,7 +26,8 @@ namespace Iverson.Api.Tests.Helpers;
 /// <c>SchemaRegistry.RegisterAsync</c>: <c>SchemaRefreshWorker</c> polls every 30 s and
 /// <c>LoadAsync</c>'s reconcile loop EVICTS any cached type the repository does not return, so a
 /// registry seeded in memory only would empty itself mid-run.</item>
-/// <item><see cref="ITenantRepository"/> — two rows, replacing the base factory's empty NoOp.</item>
+/// <item><see cref="ITenantRepository"/> — two rows, listed and looked up by id, replacing the base
+/// factory's empty NoOp.</item>
 /// <item><see cref="IEngagementStoreSearchService"/> — fixed counts per type name.</item>
 /// <item><see cref="IVectorCollectionReader"/> — two collections.</item>
 /// </list>
@@ -170,7 +171,10 @@ internal sealed class AdminConsoleTenantRepository : ITenantRepository
 {
     public Task InsertAsync(string id, string displayName, string status) => Task.CompletedTask;
     public Task SeedIfMissingAsync(string id, string displayName, string status) => Task.CompletedTask;
-    public Task<TenantRow?> GetAsync(string id) => Task.FromResult<TenantRow?>(null);
+    // Answers from the same two rows, so the real TenantStatusCache that the console endpoints'
+    // ActiveTenantEndpointFilter consults finds the reader token's tenant_alpha active.
+    public Task<TenantRow?> GetAsync(string id) =>
+        Task.FromResult(AdminConsoleTestWebApplicationFactory.Tenants.FirstOrDefault(t => t.Id == id));
     public Task<IEnumerable<TenantRow>> ListAsync() =>
         Task.FromResult<IEnumerable<TenantRow>>(AdminConsoleTestWebApplicationFactory.Tenants);
     public Task UpdateStatusAsync(string id, string status) => Task.CompletedTask;

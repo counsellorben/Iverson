@@ -78,6 +78,16 @@ internal sealed class NoOpTenantRepository : ITenantRepository
     public Task DeleteAsync(string id) => Task.CompletedTask;
 }
 
+// Program.cs calls ITokenRevocationRepository.EnsureTableAsync() during hydration, and every
+// authenticated request reads ListAsync() through TokenRevocationCache: nothing is revoked here.
+internal sealed class NoOpTokenRevocationRepository : ITokenRevocationRepository
+{
+    public Task EnsureTableAsync() => Task.CompletedTask;
+    public Task RevokeAsync(string sub) => Task.CompletedTask;
+    public Task<IEnumerable<(string Sub, DateTimeOffset RevokedAt)>> ListAsync() =>
+        Task.FromResult(Enumerable.Empty<(string Sub, DateTimeOffset RevokedAt)>());
+}
+
 // /admin/dlq now authenticates the acting user before calling IDlqRepository.ListUnreplayedAsync,
 // a request-time dependency the startup-hydration stubs above never anticipated. Without this
 // fake, that call resolves to the real DlqRepository and fails against an unreachable Postgres.

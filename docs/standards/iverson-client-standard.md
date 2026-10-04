@@ -396,7 +396,8 @@ implemented requirement.
 | IVC-IDN-004 | Retired | Behaviour | A row read back through any mapped path carries no server-owned tenant column |
 | IVC-IDN-005 | Active | Behaviour | A mapped point read of a row returns no field whose name matches the server-owned tenant column, compared case-insensitively |
 | IVC-IDN-006 | Active | Behaviour | The server derives a row's tenant from the acting-user identity rather than from the write payload |
-| IVC-IDN-007 | Active | Behaviour | A mapped update attempted by an acting user of another tenant is answered without a gRPC error status, the same as an accepted one |
+| IVC-IDN-007 | Retired | Behaviour | A mapped update attempted by an acting user of another tenant is answered without a gRPC error status, the same as an accepted one |
+| IVC-IDN-008 | Active | Behaviour | A mapped update attempted by an acting user of another tenant is answered with gRPC status NOT_FOUND (5), the status an update of a key that exists nowhere receives |
 
 `IVC-IDN-001` is the two-credential claim every other axis silently rests on. The service identity
 rides in `authorization` and carries the scopes (`admin`, `schema_admin`) the server evaluates
@@ -408,11 +409,11 @@ write with `actor=unknown`, a failure that surfaces phases away from its cause. 
 graded on the write actually being accepted, which is the only observation that requires both
 halves to have arrived and been read as different identities.
 
-`IVC-IDN-002`, `IVC-IDN-006` and `IVC-IDN-007` are the propagation, derivation and response-shape
+`IVC-IDN-002`, `IVC-IDN-006` and `IVC-IDN-008` are the propagation, derivation and enforcement
 thirds of what the acting-user identity is FOR: a client that propagates an acting user the server
 can read, but under which the server's tenancy scoping does not actually hold, or whose cross-tenant
-write the server does not visibly refuse, is non-conformant in a way a single conflated requirement
-would report only as one undifferentiated red cell.
+update is not answered as an update of a key that does not exist, is non-conformant in a way a
+single conflated requirement would report only as one undifferentiated red cell.
 
 **`IVC-IDN-002`'s owner clause is a round-trip claim, not a server-derivation claim**, and its
 Statement is worded that way — "the owner identity that acting user PROPAGATED". The distinction
@@ -431,16 +432,17 @@ this document's immutable-Statement convention (see `REL`'s authoring notes): th
 written is true of what is observed, and the correction belongs in this prose rather than in the
 Statement cell.
 
-**A header-less caller and a wrong-tenant caller are no longer indistinguishable — but not because
-either is now more observable.** `RowFieldAuthorizationEvaluator.Evaluate` denies a caller with no
-acting-user token at all (`PermissionDenied`, `reason=AccessDenied`) before the row this axis
-targets is ever read — unchanged by the narrowed-read fix `IVC-IDN-007` grades. A wrong-tenant
-caller's write, by contrast, now reaches the narrowed read, finds no visible row, and is silently
-swallowed as a success — so the two cases now grade oppositely (red versus green) where they used to
-grade identically. Neither distinction is a designed signal a client can rely on: see the Coverage
-table below.
+**A header-less caller and a wrong-tenant caller get different answers, by design.**
+`RowFieldAuthorizationEvaluator.Evaluate` denies a caller with no acting-user token at all
+(`PermissionDenied` (7), `reason=AccessDenied`) before the row this axis targets is ever read. A
+wrong-tenant caller passes that check, reaches the existing-row read, which is scoped to the
+caller's own tenant, finds no row, and is answered `NotFound` (5) — the answer an update of a key
+that exists nowhere receives, which is what `IVC-IDN-008` grades. The order is deliberate: the
+denial check runs before the existence check, so a caller who would be refused anyway is refused
+the same way whether or not the key exists. Only the wrong-tenant answer is graded; see the Coverage
+table below for the header-less one.
 
-`IVC-IDN-006` and `IVC-IDN-007` are each verified from what they observe, and neither is gradeable
+`IVC-IDN-006` and `IVC-IDN-008` are each verified from what they observe, and neither is gradeable
 from a payload the client controls:
 
 - **Derivation, observed where no client can see it.** The row's real tenant lives in the
@@ -463,14 +465,16 @@ from a payload the client controls:
   quietly widen this requirement to cover a rule it does not state. A server that took the client's
   word for it, a server that stopped injecting the column, or a client that propagated no acting
   user at all each fail here rather than agreeing by construction with what the driver sent.
-- **Response shape, graded as `IVC-IDN-007`.** The orchestrator mints a SECOND acting-user token,
-  for a different, active tenant (`TokenBroker.GetOtherTenantActingTokenAsync`), and passes it to
-  every driver as `--wrong-acting-token`. Each driver attempts a mapped update of the row it just
-  created while carrying that token in place of its own, and reports the gRPC status code it
-  received as data — it judges nothing. The orchestrator asserts the driver reported no gRPC error
-  status, the same shape a genuinely accepted write produces: the server no longer denies this write
-  at all (CSR round 9's Finding #5 mitigation swallows it as a success at the database layer), so
-  the assertion observes the response envelope rather than a denial. All five drivers attempt the
+- **Cross-tenant update, graded as `IVC-IDN-008`.** The orchestrator mints a SECOND acting-user
+  token, for a different, active tenant (`TokenBroker.GetOtherTenantActingTokenAsync`), and passes
+  it to every driver as `--wrong-acting-token`. Each driver attempts a mapped update of the row it
+  just created while carrying that token in place of its own, and reports the gRPC status code it
+  received as data — it judges nothing. The orchestrator asserts the driver reported `NotFound` (5):
+  Update never creates a row, and the server's existing-row read is scoped to the caller's own
+  tenant, so a key held by another tenant is answered exactly as a key held by no tenant. Any other
+  answer fails: no status at all (the update was accepted), `PermissionDenied` (7) (the caller was
+  refused before the row was read, as a call carrying no acting-user identity is), or any other
+  code. All five drivers attempt the
   same operation against the same server and are graded against the same expectation, so the
   requirement is simultaneously a per-client correctness claim and a cross-client agreement claim: a
   language that propagates the wrong-user token incorrectly (or not at all) disagrees with the other
@@ -510,14 +514,25 @@ That branch still exists and still matters for the deployment just described. Wh
 is the thing THIS harness's negative leg exercises, and for a broader reason than the harness
 registering its types fresh: CSR round 9's Finding #5 mitigation narrows the existing-row read to
 the acting tenant unconditionally, for every schema, legacy or fresh. A wrong-tenant caller's update
-therefore finds no visible row and takes the no-existing-row branch whatever the target schema's
-registration history — so neither the tenant MISMATCH nor the immutability refusal fires on this leg
-any more, and the refusal it used to observe is gone. See the IDN coverage ledger's "Cross-tenant
-write denial signaled on the wire" row.
+therefore finds no visible row whatever the target schema's registration history — so neither the
+tenant MISMATCH nor the immutability refusal fires on this leg any more. What the leg observes
+instead is the `NotFound` (5) answer `IVC-IDN-008` grades: Update never creates a row, so a key the
+caller's tenant cannot see is answered as missing.
 
 The status code is reported and compared as the numeric gRPC code, never as a name: the five
 languages spell the same code five ways (`PermissionDenied`, `PERMISSION_DENIED`, `7`), so a
 name-based comparison would report a cross-language spelling difference as a conformance failure.
+
+`IVC-IDN-007` is retired and re-authored as `IVC-IDN-008`. Its Statement — that a cross-tenant
+mapped update is answered without a gRPC error status, the same as an accepted one — described the
+server as CSR round 9's Finding #5 mitigation left it, when Update created a row for any key the
+caller's tenant could not see. Update no longer answers a cross-tenant write with an
+acceptance-shaped response: it is strictly an update, and a key with no row in the caller's tenant
+is answered `NotFound` (5) whether another tenant holds the key or none does, so `IVC-IDN-007`'s
+assertion would fail on every driver against a current server. The retirement is for that change
+alone. The Statement cell is unchanged, per this document's immutable-Statement convention, and
+the negative leg, the drivers and the step they report are unchanged too; only the code the
+orchestrator expects moved.
 
 `IVC-IDN-004` is retired and re-authored as `IVC-IDN-005`. Its Statement said "any mapped path",
 which is wider than the single observation that grades it. One assertion is involved — the third in
@@ -564,27 +579,27 @@ role are deliberately not authored here; see the Coverage table below.
 | Service and acting-user identities carried as two credentials on one call | Covered | IVC-IDN-001 |
 | Acting-user propagation observable in the stored row | Covered | IVC-IDN-002 |
 | Tenancy derived from the acting user | Covered | IVC-IDN-006 |
-| A cross-tenant update is answered without a gRPC error status | Covered | IVC-IDN-007 |
+| A cross-tenant update is answered with gRPC status NOT_FOUND | Covered | IVC-IDN-008 |
 | A mapped point read never carrying the server-owned tenant column | Covered | IVC-IDN-005 |
 | Token acquisition | Deferred | Every client can mint a service token from a client-credentials trio, but the harness passes a pre-minted `--service-token` to all five drivers on purpose (Authentik stamps the JWT's `iss` from the request's Host header and grants scopes only when asked, neither of which a driver's own minting expresses), so no assertion observes a client's token acquisition and no requirement constrains it. |
 | Suspended and deleted tenants | Deferred | `ActingUserInterceptor` rejects an acting user whose tenant is absent, `suspended` or `deleted` with `PermissionDenied`, but the harness runs entirely inside two active tenants and provisions none, so no assertion observes a suspended or deleted tenant and no requirement constrains that path. |
 | Field-permission narrowing by acting-user role | Deferred | `RowFieldAuthorizationEvaluator` narrows writable and readable fields by the acting user's `groups` claim, but the harness registers no `FieldPermission` (the `Reregistrar` sets row permissions only), so no assertion observes field narrowing and no requirement constrains it. |
 | Owner column derived from the acting user | Deferred | `IVC-IDN-002`'s owner clause observes a round trip, not a derivation: the harness's acting user holds `iverson-loadtest-bypass` (granted `CanWriteAll` by the orchestrator's re-registration), so `RowFieldAuthorizationEvaluator` reports `ownershipRequired: false` and the server never force-sets the owner column — a driver stamping a made-up owner reads it straight back. No assertion observes owner derivation and no requirement constrains it. Closing it needs an acting user without a bypass role on this type, which is a stack-provisioning change, not a wording change. |
-| A header-less caller is now distinguishable from a wrong-tenant caller, but only by accident | Deferred | `IVC-IDN-007`'s assertion grades whether an attempted cross-tenant update is answered without a gRPC error status. A caller with no acting-user token at all is still denied at `RowFieldAuthorizationEvaluator.Evaluate`'s earlier `actingUser is null` check (`AccessDenied`, `PermissionDenied`) — unchanged by CSR round 9's Finding #5 mitigation, since that check runs before the row read this fix narrows — so a header-less caller is graded red by `IVC-IDN-007`, while a genuine wrong-tenant caller's write is now silently swallowed and graded green. This distinguishes the two cases, but not by a designed signal: no requirement asserts on it, and a future change to either check could re-merge or re-invert the two outcomes with nothing here to catch it. |
+| A header-less caller's answer, as distinct from a wrong-tenant caller's | Deferred | `IVC-IDN-008`'s assertion grades the wrong-tenant answer only: an update by an acting user of another tenant must be answered `NotFound` (5). A caller with no acting-user token at all is refused earlier, at `RowFieldAuthorizationEvaluator.Evaluate`'s `actingUser is null` check (`AccessDenied`, `PermissionDenied` (7)), before any row is read. The two answers differ by design — the denial check runs before the existence check, so a caller who is refused anyway is refused the same way whether or not the key exists — but the harness never sends an update without an acting-user identity, so no assertion observes the header-less answer and no requirement constrains it. |
 | Ownership enforcement between two acting users of the SAME tenant | Deferred | `AuthorizationFieldMasking` denies an owner mismatch on an existing row exactly as it denies a tenant mismatch, but the only second acting-user identity the dev stack provisions belongs to a different tenant, so the tenant check fires first and no assertion can observe the owner check in isolation. Authoring it needs a second identity inside the acting user's own tenant, which is a stack-provisioning change, not a wording change. |
-| Cross-tenant write denial signaled on the wire | Deferred | The server no longer distinguishes a cross-tenant write from an accepted one on the wire at all, by design (CSR round 9's Finding #5 mitigation) — the only evidence is the server's own audit entry (`reason=BlockedCrossTenantWrite`), which no conformance run reads. No assertion can discharge this without a server-side change to signal the denial differently, which this axis does not make. |
 
 #### Backstop assertion (non-normative)
 
-`IDN`'s negative leg used to be a denial only while the row it targets existed; since CSR round 9's
-Finding #5 mitigation, EVERY cross-tenant update takes `EnforceWriteAuthorization`'s
-no-existing-row branch and succeeds, so there is no denial left for a missing row to defeat. With no
-seeded row, every driver still derives a well-formed key for a row that was never created, that
-update is accepted as an ordinary create, and the driver reports no gRPC status code — so
-`IVC-IDN-007`'s "answered without a gRPC error status" assertion PASSES in that state exactly as it
-does for a genuine swallowed cross-tenant write, and cannot tell the two apart. That is signal this
-leg has LOST: before the mitigation the same assertion demanded `PermissionDenied` (7) and therefore
-reddened when there was nothing to deny.
+`IDN`'s negative leg used to be a denial only while the row it targets existed. It no longer is one:
+EVERY cross-tenant update is answered `NotFound` (5) because the caller's tenant holds no row under
+that key, and with no seeded row the caller's tenant holds no row under that key either. Every
+driver still derives a well-formed key for a row that was never created, that update is answered
+`NotFound` for the same reason, and `IVC-IDN-008`'s assertion PASSES in that state exactly as it
+does for a genuine cross-tenant update. It cannot tell the two apart, by design: the server answers
+them identically, so the answer reveals nothing about a key another tenant holds. That is signal
+this leg lost with CSR round 9's Finding #5 mitigation and has not regained: before the mitigation
+the same assertion demanded `PermissionDenied` (7) and therefore reddened when there was nothing to
+deny.
 
 `IdentityScenario.Judge`'s "the write phase reported a row key for this language" assertion is
 `IDN`'s backstop, and it is worth exactly this much, no more. It is NOT the only assertion that
@@ -596,8 +611,8 @@ broken at once. It fires unconditionally, on every language, before and outside 
 and the enforcement assertions. Like `REL`'s, `QRY`'s, `SCH`'s and `VEC`'s it carries no requirement
 ID: no `IVC-IDN-*` statement owns "this language seeded a row" as such — it is a property of the
 harness's own fixture, not of a client — and it stays strictly weaker than `IVC-IDN-002` (wherever
-the backstop fails, the read-back fails too). Against `IVC-IDN-007` the relation does not merely
-fail to hold, it inverts: in the no-seeded-row state the backstop fails while `IVC-IDN-007` passes.
+the backstop fails, the read-back fails too). Against `IVC-IDN-008` the relation does not merely
+fail to hold, it inverts: in the no-seeded-row state the backstop fails while `IVC-IDN-008` passes.
 
 
 ### LIFE — Lifecycle
@@ -1009,7 +1024,7 @@ deliberately not authored here; see the Coverage table below.
 | Absent-row read reported as absence | Covered | IVC-ERR-004 |
 | Write against a type with no registered schema | Covered | IVC-ERR-005 |
 | Telling an absent row from a denied one | Deferred | `ObjectMappingGrpcService.Get` answers a row that does not exist and a row the caller is denied with the byte-identical envelope — `Success = false`, `Error = "'{type}:{key}' not found."` — and audits the denial only in the server's own log. A client therefore cannot distinguish the two, and `IVC-ERR-004` does not claim it can. This is a deliberate server-side non-enumeration (a distinguishable answer would confirm the row's existence to a caller not allowed to read it), so closing it is not a client change and may not be desirable at all. |
-| The refusal reason behind `PermissionDenied` | Deferred | `PermissionDenied` (7) is the server's answer to several distinct refusals on the mapped write path, and `AuthorizationFieldMasking.EnforceWriteAuthorization` sets no trailers on any of them: `AccessDenied`, `TenantMismatch` and `OwnerMismatch` share one literal `deniedMessage`, while `TenantImmutable` and `OwnerImmutable` carry their own fixed literals (`"Tenant field is immutable."`, `"Owner field is immutable after creation."`) and `RejectDisallowedFields` throws `InvalidArgument` rather than `PermissionDenied`. A cross-tenant `Update`'s `TenantMismatch` branch specifically is now unreachable (CSR round 9's Finding #5 mitigation narrows the read so `existingRowJson` is always null for a foreign key, so the create branch fires instead and the actual denial, when it happens, is caught and swallowed at the database layer rather than thrown here), leaving `AccessDenied`, `TenantImmutable`, `OwnerMismatch` and `OwnerImmutable` as the reachable `PermissionDenied` branches. No `ERR` assertion observes the distinction either, and closing it needs the server to distinguish refusals on the wire. |
+| The refusal reason behind `PermissionDenied` | Deferred | `PermissionDenied` (7) is the server's answer to several distinct refusals on the mapped write path, and `AuthorizationFieldMasking.EnforceWriteAuthorization` sets no trailers on any of them: `AccessDenied`, `TenantMismatch` and `OwnerMismatch` share one literal `deniedMessage`, while `TenantImmutable` and `OwnerImmutable` carry their own fixed literals (`"Tenant field is immutable."`, `"Owner field is immutable after creation."`) and `RejectDisallowedFields` throws `InvalidArgument` rather than `PermissionDenied`. A cross-tenant `Update`'s `TenantMismatch` branch specifically is unreachable (CSR round 9's Finding #5 mitigation narrows the read so `existingRowJson` is always null for a foreign key, and Update answers a null existing row with `NotFound` (5), as it does a key held by no tenant — see `IVC-IDN-008` — before the tenant comparison is reached), leaving `AccessDenied`, `TenantImmutable`, `OwnerMismatch` and `OwnerImmutable` as the reachable `PermissionDenied` branches. No `ERR` assertion observes the distinction either, and closing it needs the server to distinguish refusals on the wire. |
 | Structured error details and trailers | Deferred | No server path on the mapped CRUD or registration RPCs attaches `google.rpc.Status` details or response trailers — every rejection carries a status code and a human-readable detail string and nothing else — so no assertion observes a structured error payload and no requirement constrains one. Authoring one is a server change, not a wording change. |
 | Streaming-RPC error propagation | Deferred | `Search` and `SearchSimilar` are server-streaming RPCs, whose failures can arrive mid-stream rather than on the initial call, and the five languages surface a mid-stream status very differently. The `error-contract` scenario exercises only unary RPCs, so no assertion observes a mid-stream failure and no requirement constrains one. Authoring one needs a fixture that fails after the first message, which is a scenario change. |
 | Transport-level and retryable statuses | Deferred | `Unavailable`, `DeadlineExceeded` and `Unauthenticated` are produced by the transport, the interceptors and the identity provider rather than by Iverson's own request handling, and the harness's preflight refuses to run at all unless every one of them is healthy. No assertion observes them and no requirement constrains how a client classifies a status as retryable. |

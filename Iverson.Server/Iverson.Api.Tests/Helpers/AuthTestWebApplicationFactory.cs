@@ -17,6 +17,12 @@ namespace Iverson.Api.Tests.Helpers;
 // against those stores.
 public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// The admin console's client id in this test host: a valid audience for the default scheme,
+    /// and Authentication:ConsoleAudience, the only audience /v1/traces accepts.
+    /// </summary>
+    public const string ConsoleAudience = "test-console-audience";
+
     static AuthTestWebApplicationFactory()
     {
         // Program.cs's `WebApplication.CreateBuilder(args)` runs before ConfigureWebHost below
@@ -43,6 +49,10 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        // The ConsoleClient policy's audience (/v1/traces). A test overrides it the same way, via
+        // WithWebHostBuilder; TracesRelayEndpointTests' unset case does.
+        builder.UseSetting("Authentication:ConsoleAudience", ConsoleAudience);
+
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<IEmbeddingService>();
@@ -63,6 +73,9 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
             services.RemoveAll<ITenantRepository>();
             services.AddSingleton<ITenantRepository, NoOpTenantRepository>();
 
+            services.RemoveAll<ITokenRevocationRepository>();
+            services.AddSingleton<ITokenRevocationRepository, NoOpTokenRevocationRepository>();
+
             services.RemoveAll<IDlqRepository>();
             services.AddSingleton<IDlqRepository, NoOpDlqRepository>();
 
@@ -70,7 +83,7 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
             {
                 options.Authority = null;
                 options.TokenValidationParameters.ValidateIssuer = false;
-                options.TokenValidationParameters.ValidAudiences = ["test-service-audience"];
+                options.TokenValidationParameters.ValidAudiences = ["test-service-audience", ConsoleAudience];
                 options.TokenValidationParameters.IssuerSigningKey = TestJwtFactory.SigningKey;
             });
             services.PostConfigure<JwtBearerOptions>("ActingUser", options =>

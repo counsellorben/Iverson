@@ -4,10 +4,10 @@ namespace Iverson.Api.Tests.Helpers;
 
 /// <summary>
 /// THE FIXTURE-SHAPE INVERSION, recorded rather than fixed (final whole-branch review, minor m1).
-/// Every descriptor in this file — and 45 sites across Iverson.Api.Tests — sets
-/// <c>TenantColumn = "TenantId"</c>, the CLIENT-DECLARED legacy shape, against 18 sites using
-/// <c>SchemaDescriptor.TenantColumnName</c>. So this assembly's DEFAULT descriptor is one
-/// <c>SchemaBuilder.BuildDescriptor</c> can no longer produce.
+/// Every descriptor in this file except the reserved-tenant Dossier fixtures at the end — and 45
+/// sites across Iverson.Api.Tests — sets <c>TenantColumn = "TenantId"</c>, the CLIENT-DECLARED
+/// legacy shape, against 18 sites using <c>SchemaDescriptor.TenantColumnName</c>. So this
+/// assembly's DEFAULT descriptor is one <c>SchemaBuilder.BuildDescriptor</c> can no longer produce.
 /// <para>
 /// This is not wrong in itself — the legacy shape is live and deliberately still admitted by
 /// <c>SchemaRegistry.LoadAsync</c>, so exercising it is valuable — but it is WHY two findings hid:
@@ -246,5 +246,65 @@ public static class SchemaFixtures
         LargeFieldColumns = ["Body"],
         Authorization = BypassAuthorization(),
         TenantColumn  = "TenantId"
+    };
+
+    // ── Reserved-tenant fixtures ──────────────────────────────────────────────
+    //
+    // Everything above uses the legacy client-declared TenantColumn = "TenantId". These use the
+    // reserved SchemaDescriptor.TenantColumnName, the shape SchemaBuilder.BuildDescriptor produces,
+    // because the field-restricted write path depends on which shape it gets:
+    // RowFieldAuthorizationEvaluator never lists the reserved column in AllowedFields.
+    //
+    // Dossier's field permissions are the same in every variant:
+    //   Secret, SealedAt, Seal: anyone may read, only "premium" may write;
+    //   Notes:                  anyone may write, only "premium" may read.
+    // The default acting user (ActingUserFixtures.Principal("test-user", "test-bypass")) holds
+    // neither "premium" grant, so it is field-restricted on both actions.
+
+    // "test-bypass" may read and write every row. No OwnerField.
+    public static SchemaDescriptor ReservedTenantDossierSchema() =>
+        DossierSchema(ownerField: null, [new RowPermission("test-bypass", true, true, true)]);
+
+    // No row permission, so every caller is ownership-scoped through OwnerId.
+    public static SchemaDescriptor ReservedTenantOwnedDossierSchema() =>
+        DossierSchema(ownerField: "OwnerId", []);
+
+    // "test-bypass" may write every row but has no CanReadAll: CanWriteAll without CanReadAll.
+    // ownerFieldName lets a test register the OwnerField spelled unlike its column ("ownerId"),
+    // which registration accepts because it matches columns case-insensitively.
+    public static SchemaDescriptor ReservedTenantWriteOnlyDossierSchema(bool withOwnerField, string ownerFieldName = "OwnerId") =>
+        DossierSchema(withOwnerField ? ownerFieldName : null, [new RowPermission("test-bypass", false, true, false)]);
+
+    private static SchemaDescriptor DossierSchema(string? ownerField, List<RowPermission> rowPermissions) => new()
+    {
+        TypeName       = "Dossier",
+        TableName      = "dossiers",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "UUID", false),
+        ScalarColumns  =
+        [
+            new ColumnDescriptor("Title",    "TEXT",        true),
+            new ColumnDescriptor("Secret",   "TEXT",        true),
+            new ColumnDescriptor("SealedAt", "TIMESTAMPTZ", true),
+            new ColumnDescriptor("Seal",     "BYTEA",       true),
+            new ColumnDescriptor("Notes",    "TEXT",        true),
+            new ColumnDescriptor("OwnerId",  "TEXT",        true),
+            new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false),
+        ],
+        FkColumns      = [],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      = [],
+        Authorization  = new AuthorizationRules(
+            ownerField,
+            rowPermissions,
+            new List<FieldPermission>
+            {
+                new("Secret",   new List<string>(), new List<string> { "premium" }),
+                new("SealedAt", new List<string>(), new List<string> { "premium" }),
+                new("Seal",     new List<string>(), new List<string> { "premium" }),
+                new("Notes",    new List<string> { "premium" }, new List<string>()),
+            }),
+        TenantColumn   = SchemaDescriptor.TenantColumnName
     };
 }

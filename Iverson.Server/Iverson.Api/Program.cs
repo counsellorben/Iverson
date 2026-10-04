@@ -202,6 +202,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         // direct-claim-read code (OperatorAuthorizationPolicy) reads "groups"/"scope", neither
         // of which is in that remapping table, which is why this was never hit before.
         options.MapInboundClaims = false;
+        options.Events = new JwtBearerEvents { OnTokenValidated = RejectRevokedTokenAsync };
     })
     .AddJwtBearer("ActingUser", options =>
     {
@@ -226,7 +227,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 else
                     context.NoResult();
                 return Task.CompletedTask;
-            }
+            },
+            OnTokenValidated = RejectRevokedTokenAsync
         };
     });
 
@@ -246,6 +248,12 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("TenantAdmin", policy => policy.RequireAssertion(context =>
         TenantAdminAuthorizationPolicy.IsSatisfiedBy(
             context.User.FindAll("groups").Select(c => c.Value))));
+    // CSR round-10 #13: /v1/traces accepts console-issued tokens only; see
+    // ConsoleClientAuthorizationPolicy.
+    options.AddPolicy("ConsoleClient", policy => policy.RequireAssertion(context =>
+        ConsoleClientAuthorizationPolicy.IsSatisfiedBy(
+            context.User.FindAll("aud").Select(c => c.Value),
+            cfg["Authentication:ConsoleAudience"])));
 });
 
 builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, AuditingAuthorizationMiddlewareResultHandler>();
@@ -373,6 +381,13 @@ builder.Services.AddSingleton<ITenantRepository>(sp => new TenantRepository(
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITenantStatusCache, Iverson.Api.Tenancy.TenantStatusCache>();
+// CSR round-10 #11: the subs of removed and demoted users, and the 30 s snapshot of them that
+// the JwtBearer schemes check every token against.
+builder.Services.AddSingleton<ITokenRevocationRepository>(sp =>
+    new TokenRevocationRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+builder.Services.AddSingleton<Iverson.Api.Tenancy.ITokenRevocationCache>(sp =>
+    new Iverson.Api.Tenancy.TokenRevocationCache(
+        sp.GetRequiredService<ITokenRevocationRepository>(), TimeProvider.System));
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
 // CSR finding #4: IdpAdminClient used to post a cleartext user password to Authentik's
@@ -711,6 +726,10 @@ await app.Services.GetRequiredService<IEnrichmentStateRepository>().EnsureTableA
 // cannot express.
 await app.Services.GetRequiredService<IDocumentRerenderQueueRepository>().EnsureTableAsync();
 
+// Token revocations (CSR round-10 #11) — same bootstrap shape: raw DDL, run as the owner role
+// through the plain executor, so no grants are needed.
+await app.Services.GetRequiredService<ITokenRevocationRepository>().EnsureTableAsync();
+
 // EnsureRolesAsync must run before ANY ApplySchemaAsync call, since that DDL now GRANTs to
 // iverson_maintenance on every table (and to iverson_runtime on the tenant-scoped ones) — both
 // roles have to exist first.
@@ -743,8 +762,10 @@ if (workloadRole == "api")
     app.MapGrpcService<TenantAdminGrpcService>().RequireAuthorization("TenantAdmin").EnableGrpcWeb().WithMetadata(new RequireListenerPort(8080));
 
     // Relays the admin-ui browser's OTel Web SDK spans to Jaeger's OTLP/HTTP endpoint.
-    // Served by the API so the browser never needs Jaeger's own network address, and
-    // authenticated so only signed-in admin-ui sessions can write traces through it.
+    // Served by the API so the browser never needs Jaeger's own network address, and limited to
+    // tokens the console's own OIDC client issued (the ConsoleClient policy, CSR round-10 #13),
+    // so only signed-in admin-ui sessions can write traces through it — not service clients or
+    // acting-user tokens.
     // Body is relayed byte-for-byte (StreamContent straight from the request body), so this
     // must not attempt to parse or re-serialize it. The endpoint's only consumer is the
     // admin UI's browser OTel SDK, whose JsonTraceSerializer hardcodes
@@ -796,7 +817,7 @@ if (workloadRole == "api")
         using var response = await client.PostAsync("/v1/traces", content);
         ctx.Response.StatusCode = (int)response.StatusCode;
         await response.Content.CopyToAsync(ctx.Response.Body);
-    }).RequireAuthorization().RequireRateLimiting("traces")
+    }).RequireAuthorization("ConsoleClient").RequireRateLimiting("traces")
         .WithMetadata(new HttpMethodMetadata(new[] { "POST" }, acceptCorsPreflight: true));
 }
 
@@ -819,6 +840,29 @@ app.Run();
 // fails accessibility consistency checking (verified empirically) unless Program is public.
 public partial class Program
 {
+    /// <summary>
+    /// CSR round-10 #11: both JwtBearer schemes' <c>OnTokenValidated</c>. Refuses a token whose
+    /// <c>sub</c> was revoked (a removed user, or a demoted tenant admin) at or after its
+    /// <c>iat</c>; a token with no <c>iat</c> cannot show it came later, so it is refused too.
+    /// The default scheme then answers 401 / Unauthenticated, and the ActingUser scheme's callers
+    /// treat the failed result as an invalid acting-user token. Service clients' subs are never
+    /// revoked, so they always pass.
+    /// </summary>
+    internal static async Task RejectRevokedTokenAsync(TokenValidatedContext context)
+    {
+        var sub = context.Principal?.FindFirst("sub")?.Value;
+        if (sub is null)
+            return;
+
+        DateTimeOffset? issuedAt = long.TryParse(context.Principal!.FindFirst("iat")?.Value, out var iat)
+            ? DateTimeOffset.FromUnixTimeSeconds(iat)
+            : null;
+
+        var revocations = context.HttpContext.RequestServices.GetRequiredService<Iverson.Api.Tenancy.ITokenRevocationCache>();
+        if (await revocations.IsRevokedAsync(sub, issuedAt, context.HttpContext.RequestAborted))
+            context.Fail("Token has been revoked.");
+    }
+
     internal sealed class RequireListenerPort(int port) { public int Port => port; }
 
     internal static Task ListenerPortGateAsync(HttpContext context, Func<Task> next)

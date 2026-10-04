@@ -4,8 +4,10 @@ using Iverson.Api.Grpc;
 using Iverson.Api.Tenancy;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
+using Iverson.Sql;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 using Xunit;
 
 namespace Iverson.Api.Tests.Grpc;
@@ -22,12 +24,16 @@ public class TenantAdminGrpcServiceTests
 {
     private readonly IIdpAdminClient _authentikAdminClient = Substitute.For<IIdpAdminClient>();
     private readonly ITenantStatusCache _tenantStatusCache = Substitute.For<ITenantStatusCache>();
+    private readonly ITokenRevocationRepository _tokenRevocations = Substitute.For<ITokenRevocationRepository>();
+    private readonly ITokenRevocationCache _tokenRevocationCache = Substitute.For<ITokenRevocationCache>();
     private readonly ILogger<AuditLog> _auditLogger = Substitute.For<ILogger<AuditLog>>();
     private readonly AuditLog _auditLog;
     private readonly Iverson.Api.Grpc.TenantAdminGrpcService _sut;
 
-    private static readonly IdpUser CallerTenantUser = new("user-1", "alice", "alice@acme.example");
-    private static readonly IdpUser OtherTenantUser = new("user-99", "mallory", "mallory@globex.example");
+    // Uid deliberately differs from Id: tokens carry the uid as their sub, so revocation must be
+    // keyed by it, not by the Authentik pk the RPCs take as user_id.
+    private static readonly IdpUser CallerTenantUser = new("user-1", "alice", "alice@acme.example", "uid-alice");
+    private static readonly IdpUser OtherTenantUser = new("user-99", "mallory", "mallory@globex.example", "uid-mallory");
 
     public TenantAdminGrpcServiceTests()
     {
@@ -35,6 +41,8 @@ public class TenantAdminGrpcServiceTests
         _sut = new Iverson.Api.Grpc.TenantAdminGrpcService(
             _authentikAdminClient,
             _tenantStatusCache,
+            _tokenRevocations,
+            _tokenRevocationCache,
             _auditLog);
         _tenantStatusCache.GetStatusAsync("acme").Returns(Task.FromResult<string?>("active"));
     }
@@ -170,6 +178,52 @@ public class TenantAdminGrpcServiceTests
         await _authentikAdminClient.Received(1).DeactivateUserAsync("user-1");
     }
 
+    // CSR round-10 #11: revoke first. If Authentik then fails, the user only has to log in again;
+    // the reverse order could leave a deactivated user's tokens valid.
+    [Fact]
+    public async Task RemoveUser_RevokesTheUsersTokensBeforeDeactivatingInAuthentik()
+    {
+        _authentikAdminClient.ListUsersByTenantAsync("acme")
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
+
+        await _sut.RemoveUser(new RemoveUserRequest { UserId = "user-1" }, ContextForCallerTenant());
+
+        Received.InOrder(() =>
+        {
+            _tokenRevocations.RevokeAsync("uid-alice");
+            _authentikAdminClient.DeactivateUserAsync("user-1");
+        });
+    }
+
+    // This process's revocation cache is invalidated so the revocation takes effect here at once.
+    [Fact]
+    public async Task RemoveUser_InvalidatesTheRevocationCacheAfterRevoking()
+    {
+        _authentikAdminClient.ListUsersByTenantAsync("acme")
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
+
+        await _sut.RemoveUser(new RemoveUserRequest { UserId = "user-1" }, ContextForCallerTenant());
+
+        Received.InOrder(() =>
+        {
+            _tokenRevocations.RevokeAsync("uid-alice");
+            _tokenRevocationCache.Invalidate();
+        });
+    }
+
+    [Fact]
+    public async Task RemoveUser_RevocationFails_ThrowsAndDoesNotDeactivate()
+    {
+        _authentikAdminClient.ListUsersByTenantAsync("acme")
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
+        _tokenRevocations.RevokeAsync(Arg.Any<string>()).ThrowsAsync(new InvalidOperationException("postgres is down"));
+
+        var act = () => _sut.RemoveUser(new RemoveUserRequest { UserId = "user-1" }, ContextForCallerTenant());
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        await _authentikAdminClient.DidNotReceive().DeactivateUserAsync(Arg.Any<string>());
+    }
+
     // Cross-tenant escalation guard: this is the single most important test in this task. A
     // tenant-admin of "acme" must not be able to deactivate a user who belongs to a different
     // tenant, even though user_id (unlike tenant_id) is entirely caller-supplied. The target
@@ -228,6 +282,68 @@ public class TenantAdminGrpcServiceTests
 
         await _authentikAdminClient.Received(1).RemoveGroupAsync("user-1", "tenant-admins");
         await _authentikAdminClient.DidNotReceive().AddGroupAsync(Arg.Any<string>(), Arg.Any<string>());
+    }
+
+    // A demoted admin's existing tokens still carry the tenant-admins group, and the TenantAdmin
+    // policy reads groups from the caller's own token — so demotion revokes them, first. It
+    // revokes again after removing the group, for a token refreshed in between.
+    [Fact]
+    public async Task SetTenantAdmin_Revoke_RevokesTheUsersTokensBeforeAndAfterRemovingTheGroup()
+    {
+        _authentikAdminClient.ListUsersByTenantAsync("acme")
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
+
+        await _sut.SetTenantAdmin(new SetTenantAdminRequest { UserId = "user-1", Grant = false }, ContextForCallerTenant());
+
+        Received.InOrder(() =>
+        {
+            _tokenRevocations.RevokeAsync("uid-alice");
+            _authentikAdminClient.RemoveGroupAsync("user-1", "tenant-admins");
+            _tokenRevocations.RevokeAsync("uid-alice");
+        });
+    }
+
+    [Fact]
+    public async Task SetTenantAdmin_Revoke_InvalidatesTheRevocationCacheAfterEachRevoke()
+    {
+        _authentikAdminClient.ListUsersByTenantAsync("acme")
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
+
+        await _sut.SetTenantAdmin(new SetTenantAdminRequest { UserId = "user-1", Grant = false }, ContextForCallerTenant());
+
+        Received.InOrder(() =>
+        {
+            _tokenRevocations.RevokeAsync("uid-alice");
+            _tokenRevocationCache.Invalidate();
+            _authentikAdminClient.RemoveGroupAsync("user-1", "tenant-admins");
+            _tokenRevocations.RevokeAsync("uid-alice");
+            _tokenRevocationCache.Invalidate();
+        });
+    }
+
+    [Fact]
+    public async Task SetTenantAdmin_Revoke_RevocationFails_ThrowsAndDoesNotRemoveTheGroup()
+    {
+        _authentikAdminClient.ListUsersByTenantAsync("acme")
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
+        _tokenRevocations.RevokeAsync(Arg.Any<string>()).ThrowsAsync(new InvalidOperationException("postgres is down"));
+
+        var act = () => _sut.SetTenantAdmin(
+            new SetTenantAdminRequest { UserId = "user-1", Grant = false }, ContextForCallerTenant());
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        await _authentikAdminClient.DidNotReceive().RemoveGroupAsync(Arg.Any<string>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task SetTenantAdmin_Grant_DoesNotRevoke()
+    {
+        _authentikAdminClient.ListUsersByTenantAsync("acme")
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
+
+        await _sut.SetTenantAdmin(new SetTenantAdminRequest { UserId = "user-1", Grant = true }, ContextForCallerTenant());
+
+        await _tokenRevocations.DidNotReceive().RevokeAsync(Arg.Any<string>());
     }
 
     // Same cross-tenant escalation guard as RemoveUser, for the promote/demote path: a

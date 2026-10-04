@@ -489,9 +489,12 @@ Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
 Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id
 Authentication__ValidAudiences__2=dev-iverson-webtest-client-id
 Authentication__ValidAudiences__3=dev-iverson-admin-automation-client-id
+Authentication__ConsoleAudience=dev-iverson-human-oidc-client-id
 Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
 Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
 ```
+`/v1/traces` accepts only tokens whose `aud` equals `Authentication:ConsoleAudience`, it fails closed when the setting is unset, and Helm fills it from the same `human-oidc-client` secret as `ValidAudiences__0`.
+
 (The `ActingUser__*` lines are Part 4, unmerged.)
 
 ---

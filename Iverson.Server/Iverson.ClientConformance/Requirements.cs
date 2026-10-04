@@ -558,29 +558,41 @@ public static class Requirements
     /// <para><b>Supersedes the retired IVC-IDN-003.</b> That Statement conjoined this derivation
     /// claim with an ENFORCEMENT claim ("...and denies an acting user of another tenant who attempts
     /// to write that row") that a later fix (mitigating CSR round 9's Finding #5) made false: the
-    /// server no longer denies a cross-tenant write on the wire at all, by design, so no assertion
-    /// discharges the enforcement half any more. Global Constraint 3 makes Statement cells immutable,
+    /// server stopped denying a cross-tenant write on the wire, by design, so no assertion
+    /// discharged the enforcement half any more. Global Constraint 3 makes Statement cells immutable,
     /// so the correction is a retirement plus two successors, not an edit — this one restates only
-    /// the still-true derivation half.</para>
+    /// the still-true derivation half. The other successor, IVC-IDN-007, is itself retired; what a
+    /// cross-tenant update is answered with today is <see cref="IdnCrossTenantUpdateAnsweredNotFound"/>.</para>
     /// </summary>
     public const string IdnTenancyDerivedFromActingUser = "IVC-IDN-006";
 
     /// <summary>
-    /// A mapped update attempted by an acting user of another tenant is answered without a gRPC
-    /// error status, the same as an accepted one. Discharged by <c>IdentityScenario.Judge</c>'s
-    /// enforcement assertion, over the numeric gRPC status code the driver reported from its
-    /// <c>denied_update_wrong_acting_user</c> step — the harness observes only the numeric status
-    /// code, never the response body, so this Statement is written at exactly that altitude and no
-    /// wider.
+    /// A mapped update attempted by an acting user of another tenant is answered with gRPC status
+    /// NOT_FOUND (5), the status an update of a key that exists nowhere receives. Discharged by
+    /// <c>IdentityScenario.Judge</c>'s enforcement assertion, over the numeric gRPC status code the
+    /// driver reported from its <c>denied_update_wrong_acting_user</c> step — the harness observes
+    /// only the numeric status code, never the response body, so this Statement is written at
+    /// exactly that altitude and no wider.
     ///
-    /// <para><b>Supersedes the retired IVC-IDN-003.</b> After CSR round 9's Finding #5 mitigation,
-    /// the cross-tenant write is silently swallowed as a success rather than denied — this
-    /// requirement states what the assertion that used to grade a DENIAL now actually observes: an
-    /// acceptance-shaped response. The genuine enforcement gap this leaves (no client-observable
-    /// assertion discharges cross-tenant write denial any more) is recorded as a Deferred area in the
-    /// standard's IDN coverage ledger, not claimed here.</para>
+    /// <para><b>Supersedes the retired IVC-IDN-007.</b> That Statement said such an update is
+    /// answered without a gRPC error status, the same as an accepted one — true for as long as
+    /// Update created a row for any key the caller's tenant could not see. Update is now strictly an
+    /// update: a key with no row in the caller's tenant is answered NOT_FOUND, so a cross-tenant
+    /// write no longer receives an acceptance-shaped response and IVC-IDN-007's assertion would fail
+    /// on every driver. Global Constraint 3 makes Statement cells immutable, so the correction is a
+    /// retirement plus this successor, not an edit.</para>
+    ///
+    /// <para><b>Why NOT_FOUND, and why the Statement names the equivalence.</b> The server's
+    /// existing-row read is scoped to the caller's own tenant, so a key held by another tenant and a
+    /// key held by no tenant are the same observation to it, and it answers both the same way; a
+    /// distinct answer would tell the caller the key exists elsewhere. That sameness, not the code
+    /// alone, is the property, which is why the Statement says "the status an update of a key that
+    /// exists nowhere receives". The assertion accepts code 5 and nothing else: no status at all is
+    /// an accepted update, and PERMISSION_DENIED (7) is the answer to a caller refused before any
+    /// row is read, such as a call that arrived carrying no acting-user identity rather than
+    /// another tenant's.</para>
     /// </summary>
-    public const string IdnCrossTenantUpdateAnsweredWithoutError = "IVC-IDN-007";
+    public const string IdnCrossTenantUpdateAnsweredNotFound = "IVC-IDN-008";
 
     /// <summary>
     /// A mapped point read of a row returns no field whose name matches the server-owned tenant

@@ -4,7 +4,6 @@ using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Events;
 using Iverson.Sql;
-using Npgsql;
 
 namespace Iverson.Api.Grpc;
 
@@ -41,6 +40,7 @@ public sealed class ObjectPersistenceGrpcService(
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
+            requireExistingRow: false,
             auditLog,
             payloadSizeValidator);
 
@@ -106,9 +106,8 @@ public sealed class ObjectPersistenceGrpcService(
         // EnforceWriteAuthorization observe a foreign-tenant row and deny on tenant mismatch,
         // which made "key exists under another tenant" and "key doesn't exist" distinguishable
         // to the caller — an information-disclosure oracle. Scoping to ForTenant makes a foreign
-        // row genuinely invisible; a write against its key now falls through to the create path
-        // below and collides with the real row at the database layer under RLS, which is caught
-        // there and swallowed as a fake success.
+        // row genuinely invisible, so both cases come back null and EnforceWriteAuthorization
+        // answers both with the same NotFound (CSR round 10 Finding #10): Update never creates.
         var existingRowJson = await entities.FetchByKeyAsync(
             SchemaBuilder.ToTableSchema(schema), key,
             EntityAccess.ForTenant(actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
@@ -120,6 +119,7 @@ public sealed class ObjectPersistenceGrpcService(
             AuthorizationAction.Write,
             "Not authorized to update this entity.",
             existingRowJson,
+            requireExistingRow: true,
             auditLog,
             payloadSizeValidator);
 
@@ -134,24 +134,12 @@ public sealed class ObjectPersistenceGrpcService(
                 request.TypeName.SanitizeForLog(), key.SanitizeForLog(), targetStores);
 
         var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Write);
-        Guid outboxRowId;
-        try
-        {
-            outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(
-                SchemaBuilder.ToTableSchema(schema),
-                request.TypeName,
-                key,
-                payloadJson,
-                tenantId: decision.TenantValue);
-        }
-        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText.Contains("row-level security policy"))
-        {
-            logger.LogWarning(
-                "[Persistence.Update] RLS collision swallowed as success: type={Type} key={Key} traceId={TraceId} message={Message}",
-                schema.TypeName.SanitizeForLog(), key.SanitizeForLog(), request.TraceId.SanitizeForLog(), ex.MessageText.SanitizeForLog());
-            auditLog.Denied(actingUserAccessor.ActingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
-            return new PersistResponse { Success = true, Key = key, TraceId = request.TraceId };
-        }
+        var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(
+            SchemaBuilder.ToTableSchema(schema),
+            request.TypeName,
+            key,
+            payloadJson,
+            tenantId: decision.TenantValue);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
         // outbox row committed above, in the same transaction as the entity write), so a

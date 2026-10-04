@@ -835,7 +835,7 @@ async Task RunIdentityAsync()
             // Only the .NET driver ever runs this phase for identity (register-once rule; see
             // Scenarios/IdentityScenario.cs). Registered WITHOUT an authorization block — the
             // orchestrator re-registers it with one before any driver's write phase, without which
-            // the positive leg would be denied for the same reason the negative leg is.
+            // every write, the positive leg's included, would be denied for want of row permissions.
             capture.OnlySendTypeName = nameof(IdentityDoc);
             var registerOutcome = await Run(async () =>
             {
@@ -935,11 +935,11 @@ async Task RunIdentityAsync()
                 // earlier), so against a freshly registered type the branch cannot fire. It is NOT dead code:
                 // SchemaRegistry.LoadAsync rehydrates pre-cutover _iverson_schema rows verbatim, so on an upgraded
                 // deployment TenantColumn can still be a client-declared name such as "TenantId" — which the
-                // InvalidArgument guard does not match — and the immutability branch fires there today. The
-                // conformance harness registers its types fresh, which is the ONLY reason this leg is insensitive
-                // to the payload tenant. The refusal this step observes is the tenant MISMATCH between the
-                // existing row's __TenantId and this wrong acting user's own claim. The acting user's real tenant
-                // is still sent here so this leg keeps sending a payload a conforming client would send.
+                // InvalidArgument guard does not match — and the immutability branch fires there today. Even there
+                // this leg never reaches it: the server reads the existing row only within the caller's own tenant,
+                // so this wrong acting user finds no row, and the update is answered NotFound (5), the same answer
+                // an update of a key that exists nowhere receives. The acting user's real tenant is still sent here
+                // so this leg keeps sending a payload a conforming client would send.
                 await wrongCoordinator.UpdateMappedAsync(new IdentityDoc
                 {
                     Id = rowKey,
@@ -948,8 +948,8 @@ async Task RunIdentityAsync()
                     Label = $"identity-{Language}-{idPrefix}-updated-by-the-wrong-user",
                 });
 
-                // No exception: the server accepted the wrong acting user's write. Reported as a
-                // missing status code rather than judged here.
+                // No exception: the server accepted the wrong acting user's write, where a conforming
+                // server answers NotFound (5). Reported as a missing status code rather than judged here.
                 deniedResult = deniedResult with
                 {
                     Entity = Json.Element(new { statusCode = (int?)null, status = "succeeded" }),

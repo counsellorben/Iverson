@@ -5,6 +5,7 @@ using Google.Protobuf.WellKnownTypes;
 using Iverson.Api.Authorization;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
+using Iverson.Api.Tests.Helpers;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -69,6 +70,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
+            requireExistingRow: false,
             new AuditLog(NullLogger<AuditLog>.Instance),
             Substitute.For<IPayloadSizeValidator>());
 
@@ -200,6 +202,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
+            requireExistingRow: false,
             new AuditLog(NullLogger<AuditLog>.Instance),
             Substitute.For<IPayloadSizeValidator>());
 
@@ -318,6 +321,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to update this entity.",
             existingRowJson: """{"Id":"tag-1","Name":"old","TenantId":"tenant-from-token"}""",
+            requireExistingRow: true,
             new AuditLog(NullLogger<AuditLog>.Instance),
             Substitute.For<IPayloadSizeValidator>());
 
@@ -357,6 +361,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson,
+            requireExistingRow: existingRowJson is not null,
             new AuditLog(NullLogger<AuditLog>.Instance),
             payloadSizeValidator ?? Substitute.For<IPayloadSizeValidator>());
 
@@ -480,6 +485,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
+            requireExistingRow: false,
             new AuditLog(NullLogger<AuditLog>.Instance),
             Substitute.For<IPayloadSizeValidator>());
 
@@ -517,6 +523,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
+            requireExistingRow: false,
             new AuditLog(NullLogger<AuditLog>.Instance),
             new PayloadSizeValidator());
 
@@ -583,11 +590,201 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to update this entity.",
             existingRowJson: """{"Id":"tag-1","Name":"old","TenantId":"someone-elses-tenant"}""",
+            requireExistingRow: true,
             new AuditLog(NullLogger<AuditLog>.Instance),
             new PayloadSizeValidator());
 
         var ex = act.Should().Throw<RpcException>().Which;
         ex.StatusCode.Should().Be(StatusCode.PermissionDenied);
         ex.StatusCode.Should().NotBe(StatusCode.InvalidArgument);
+    }
+
+    // ── Restricted fields carried forward; the forced tenant column exempt (CSR round 10 #8) ──
+    //
+    // An update is a full-row replace in Postgres and StarRocks, so a field the caller may not
+    // write, omitted from its payload, used to be cleared. The stored value is now carried into the
+    // payload instead. Real evaluator and reserved-tenant fixtures throughout: the defect lived in
+    // how the evaluator's AllowedFields (which never lists the reserved tenant column) met the
+    // force-set column.
+
+    private const string DossierId = "33333333-0000-0000-0000-000000000003";
+
+    private static string StoredDossierJson(string ownerId = "test-user") =>
+        $$"""{"Id":"{{DossierId}}","Title":"old title","Secret":"classified","SealedAt":"2026-10-03T12:34:56.789+00:00","Seal":"\\x01ff","Notes":"old notes","OwnerId":"{{ownerId}}","__TenantId":"test-tenant"}""";
+
+    private static IReadOnlyCollection<string> EnforceWithRealEvaluator(
+        SchemaDescriptor schema, Struct payload, string? existingRowJson, ClaimsPrincipal? actingUser = null) =>
+        AuthorizationFieldMasking.EnforceWriteAuthorization(
+            new RowFieldAuthorizationEvaluator(),
+            actingUser ?? ActingUserFixtures.Principal("test-user", "test-bypass"),
+            schema,
+            payload,
+            AuthorizationAction.Write,
+            "Not authorized to write this entity.",
+            existingRowJson,
+            requireExistingRow: existingRowJson is not null,
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            Substitute.For<IPayloadSizeValidator>());
+
+    [Fact]
+    public void EnforceWriteAuthorization_FieldRestrictedCreate_OnAReservedTenantSchema_Succeeds()
+    {
+        // The coupled defect: AllowedFields never lists the reserved tenant column, so the column
+        // the server had just force-set was itself rejected as a field the caller may not write.
+        var payload = new Struct { Fields = { ["Title"] = Value.ForString("new title") } };
+
+        var carried = EnforceWithRealEvaluator(
+            SchemaFixtures.ReservedTenantDossierSchema(), payload, existingRowJson: null);
+
+        carried.Should().BeEmpty();
+        payload.Fields[SchemaDescriptor.TenantColumnName].StringValue.Should().Be("test-tenant");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_FieldRestrictedUpdate_CarriesOmittedRestrictedFieldsForward()
+    {
+        var payload = new Struct
+        {
+            Fields = { ["Id"] = Value.ForString(DossierId), ["Title"] = Value.ForString("new title") }
+        };
+
+        var carried = EnforceWithRealEvaluator(
+            SchemaFixtures.ReservedTenantDossierSchema(), payload, StoredDossierJson());
+
+        carried.Should().BeEquivalentTo("Secret", "SealedAt", "Seal");
+        payload.Fields["Secret"].StringValue.Should().Be("classified");
+        payload.Fields["SealedAt"].StringValue.Should().Be("2026-10-03T12:34:56.789+00:00");
+        payload.Fields["Seal"].StringValue.Should().Be("\\x01ff");
+        payload.Fields[SchemaDescriptor.TenantColumnName].StringValue.Should().Be("test-tenant");
+        // Only fields the caller may NOT write are carried. Title it sent; Notes and OwnerId it may
+        // write and left out, so the full-row replace clears them, as it always has.
+        payload.Fields["Title"].StringValue.Should().Be("new title");
+        payload.Fields.Should().NotContainKey("Notes");
+        payload.Fields.Should().NotContainKey("OwnerId");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_FieldRestrictedUpdate_WithTheRestrictedFieldPresent_IsStillRejected()
+    {
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["Id"]     = Value.ForString(DossierId),
+                ["Title"]  = Value.ForString("new title"),
+                ["Secret"] = Value.ForString("overwritten"),
+            }
+        };
+
+        var act = () => EnforceWithRealEvaluator(
+            SchemaFixtures.ReservedTenantDossierSchema(), payload, StoredDossierJson());
+
+        var ex = act.Should().Throw<RpcException>().Which;
+        ex.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Status.Detail.Should().Contain("not permitted").And.Contain("Secret");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_UpdateByACallerWithNoFieldRestriction_CarriesNothing()
+    {
+        // "premium" may write every field, so the write decision's AllowedFields is null: the
+        // caller owns the whole row and an omitted field is cleared, exactly as before.
+        var payload = new Struct
+        {
+            Fields = { ["Id"] = Value.ForString(DossierId), ["Title"] = Value.ForString("new title") }
+        };
+
+        var carried = EnforceWithRealEvaluator(
+            SchemaFixtures.ReservedTenantDossierSchema(), payload, StoredDossierJson(),
+            ActingUserFixtures.Principal("test-user", "test-bypass", "premium"));
+
+        carried.Should().BeEmpty();
+        payload.Fields.Keys.Should().BeEquivalentTo("Id", "Title", SchemaDescriptor.TenantColumnName);
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_UpdateByACallerWithNoFieldRestriction_OnARowHoldingInt64Min_Succeeds()
+    {
+        // Nothing is carried for an unrestricted caller, so the stored row's integers need no
+        // exact-text preservation; the update must succeed regardless, and carry nothing.
+        var storedJson = StoredDossierJson().Replace("\"Notes\"", "\"Counter\":-9223372036854775808,\"Notes\"");
+        var payload = new Struct
+        {
+            Fields = { ["Id"] = Value.ForString(DossierId), ["Title"] = Value.ForString("new title") }
+        };
+
+        var act = () => EnforceWithRealEvaluator(
+            SchemaFixtures.ReservedTenantDossierSchema(), payload, storedJson,
+            ActingUserFixtures.Principal("test-user", "test-bypass", "premium"));
+
+        act.Should().NotThrow().Which.Should().BeEmpty();
+        payload.Fields.Should().NotContainKey("Counter");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_FieldRestrictedUpdate_CarriesForwardBeforeTheSizeGuardRuns()
+    {
+        // The size guard must see the payload as it will be written, carried-forward restricted
+        // field included. The payload is mutated in place, so snapshot the keys at call time.
+        IReadOnlyCollection<string>? keysSeenByGuard = null;
+        var validator = Substitute.For<IPayloadSizeValidator>();
+        validator
+            .When(v => v.ValidateTextColumnSizes(Arg.Any<Struct>(), Arg.Any<SchemaDescriptor>()))
+            .Do(ci => keysSeenByGuard = ci.Arg<Struct>().Fields.Keys.ToList());
+        var payload = new Struct
+        {
+            Fields = { ["Id"] = Value.ForString(DossierId), ["Title"] = Value.ForString("new title") }
+        };
+
+        AuthorizationFieldMasking.EnforceWriteAuthorization(
+            new RowFieldAuthorizationEvaluator(),
+            ActingUserFixtures.Principal("test-user", "test-bypass"),
+            SchemaFixtures.ReservedTenantDossierSchema(),
+            payload,
+            AuthorizationAction.Write,
+            "Not authorized to write this entity.",
+            StoredDossierJson(),
+            requireExistingRow: true,
+            new AuditLog(NullLogger<AuditLog>.Instance),
+            validator);
+
+        keysSeenByGuard.Should().NotBeNull();
+        keysSeenByGuard.Should().Contain("Secret");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_CamelCasePayloadKey_MatchesTheCanonicalStoredKey()
+    {
+        // The owner field is exempt from rejection, so an ownership-scoped caller restricted from
+        // writing it may still send it — and the .NET client sends it camelCase. Carrying the
+        // stored "OwnerId" over the payload's "ownerId" would leave both keys, and SerializePayload
+        // rejects two keys that fold to one.
+        var schema = SchemaFixtures.ReservedTenantOwnedDossierSchema();
+        schema = schema with
+        {
+            Authorization = schema.Authorization! with
+            {
+                FieldPermissions = schema.Authorization.FieldPermissions
+                    .Append(new FieldPermission("OwnerId", new List<string>(), new List<string> { "premium" }))
+                    .ToList()
+            }
+        };
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["id"]      = Value.ForString(DossierId),
+                ["title"]   = Value.ForString("new title"),
+                ["ownerId"] = Value.ForString("test-user"),
+            }
+        };
+
+        var carried = EnforceWithRealEvaluator(schema, payload, StoredDossierJson(ownerId: "test-user"));
+
+        carried.Should().NotContain("OwnerId");
+        payload.Fields.Should().NotContainKey("OwnerId");
+        payload.Fields["ownerId"].StringValue.Should().Be("test-user");
+        var act = () => StructSerializer.SerializePayload(payload);
+        act.Should().NotThrow();
     }
 }

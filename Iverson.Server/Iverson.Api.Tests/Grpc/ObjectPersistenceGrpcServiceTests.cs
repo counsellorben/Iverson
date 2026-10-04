@@ -13,7 +13,6 @@ using Iverson.Sql;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
-using Npgsql;
 using Xunit;
 
 namespace Iverson.Api.Tests.Grpc;
@@ -32,6 +31,11 @@ public class ObjectPersistenceGrpcServiceTests
     private readonly AuditLog _auditLog;
     private readonly ObjectPersistenceGrpcService _sut;
 
+    // A stored AuthorSchema row in the acting user's tenant, for Update tests that need the key to
+    // exist: Update answers NotFound when the tenant-scoped pre-fetch finds nothing.
+    private const string ExistingAuthorJson =
+        """{"Id":"11111111-0000-0000-0000-000000000001","Name":"Alice","TenantId":"test-tenant"}""";
+
     public ObjectPersistenceGrpcServiceTests()
     {
         _events = Substitute.For<IEventProducer>();
@@ -40,10 +44,10 @@ public class ObjectPersistenceGrpcServiceTests
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
 
         // NSubstitute's auto-value for an unconfigured Task<string?> member is Task.FromResult(""),
-        // not null — default every FetchByKeyAsync call to "row not found" so Update's new
-        // pre-fetch (Task 6) doesn't try to JSON-parse an empty string in tests that don't care
-        // about the pre-existing-row branch. Individual tests override this with .Returns(...)
-        // for the specific TableSchema/key they need.
+        // not null — default every FetchByKeyAsync call to "row not found" so Update's pre-fetch
+        // doesn't try to JSON-parse an empty string. Update answers a missing row with NotFound,
+        // so every Update test that expects a write overrides this with .Returns(...) for the
+        // specific TableSchema/key it needs.
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns((string?)null);
 
@@ -486,6 +490,9 @@ public class ObjectPersistenceGrpcServiceTests
     public async Task Update_ExecutesSqlUpsert_WithPayloadJson()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns(ExistingAuthorJson);
         var executedSql = CaptureTransactionalSql();
         var payload = MakePayload(new()
         {
@@ -517,6 +524,9 @@ public class ObjectPersistenceGrpcServiceTests
         // CSR finding #12: Update's `key` (extracted straight from the caller's payload, unlike
         // Post's server-generated key) was logged unsanitized alongside a sanitized TypeName.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns(ExistingAuthorJson);
 
         var capturedLogger = Substitute.For<ILogger<ObjectPersistenceGrpcService>>();
         capturedLogger.IsEnabled(LogLevel.Information).Returns(true);
@@ -703,61 +713,6 @@ public class ObjectPersistenceGrpcServiceTests
             .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
     }
 
-    [Theory]
-    [InlineData(null)]
-    [InlineData("someone-else")]
-    public async Task Update_ForOrdinaryCaller_WhenRowDoesNotExistYet_ForceSetsOwnerFieldToActingUserSub(string? clientSuppliedOwnerId)
-    {
-        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
-        _entities
-            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
-            .Returns((string?)null);
-
-        var fields = new Dictionary<string, Value>
-        {
-            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
-            ["Name"] = Value.ForString("Alice")
-        };
-        if (clientSuppliedOwnerId is not null)
-            fields["OwnerId"] = Value.ForString(clientSuppliedOwnerId);
-        var payload = MakePayload(fields);
-        var request = new PersistRequest { TypeName = "Author", Payload = payload };
-
-        var response = await _sut.Update(request, TestServerCallContext.Create());
-
-        response.Success.Should().BeTrue();
-        payload.Fields["OwnerId"].StringValue.Should().Be("test-user");
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData("someone-else")]
-    public async Task Update_WithBypassRole_WhenRowDoesNotExistYet_LeavesOwnerFieldUntouched(string? clientSuppliedOwnerId)
-    {
-        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
-        _entities
-            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
-            .Returns((string?)null);
-
-        var fields = new Dictionary<string, Value>
-        {
-            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
-            ["Name"] = Value.ForString("Alice")
-        };
-        if (clientSuppliedOwnerId is not null)
-            fields["OwnerId"] = Value.ForString(clientSuppliedOwnerId);
-        var payload = MakePayload(fields);
-        var request = new PersistRequest { TypeName = "Author", Payload = payload };
-
-        var response = await _sut.Update(request, TestServerCallContext.Create());
-
-        response.Success.Should().BeTrue();
-        if (clientSuppliedOwnerId is null)
-            payload.Fields.Should().NotContainKey("OwnerId");
-        else
-            payload.Fields["OwnerId"].StringValue.Should().Be(clientSuppliedOwnerId);
-    }
-
     [Fact]
     public async Task Update_WithNonBypassCaller_AttemptingToChangeOwnerField_ThrowsPermissionDenied()
     {
@@ -860,34 +815,6 @@ public class ObjectPersistenceGrpcServiceTests
     }
 
     [Fact]
-    public async Task Update_CrossTenantKeyCollidesOnUpsert_SwallowsAsSuccessAndLogsBlockedCrossTenantWrite()
-    {
-        await _registry.RegisterAsync(OwnedAuthorSchema());
-        var authorId = Guid.NewGuid().ToString();
-        _txRunner
-            .ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
-            .Returns<Task>(_ => throw new PostgresException(
-                "new row violates row-level security policy for table \"authors\"",
-                "ERROR", "ERROR", "42501"));
-
-        var payload = MakePayload(new()
-        {
-            ["Id"]      = Value.ForString(authorId),
-            ["Name"]    = Value.ForString("Alice Updated"),
-            ["OwnerId"] = Value.ForString("test-user")
-        });
-        var request = new PersistRequest { TypeName = "Author", Payload = payload };
-
-        var response = await _sut.Update(request, TestServerCallContext.Create());
-
-        response.Success.Should().BeTrue();
-        response.Key.Should().Be(authorId);
-        AssertAuditLogged("BlockedCrossTenantWrite");
-        await _entities.Received(1).FetchByKeyAsync(
-            Arg.Any<TableSchema>(), Arg.Any<string>(), EntityAccess.ForTenant("test-tenant"));
-    }
-
-    [Fact]
     public async Task Update_TenantImmutable_LogsAuditDeniedWithTenantImmutable()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
@@ -958,5 +885,110 @@ public class ObjectPersistenceGrpcServiceTests
 
         await act.Should().ThrowAsync<RpcException>();
         AssertAuditLogged("OwnerImmutable");
+    }
+
+    // ── Update is strictly an update ─────────────────────────────────────────
+    //
+    // Update never creates a row. A key with no row in the caller's tenant — one that exists
+    // nowhere, or one owned by another tenant, which the tenant-scoped pre-fetch cannot see —
+    // answers NotFound. The check sits AFTER the denial check, so a caller who is denied anyway
+    // gets PermissionDenied whether or not the key exists.
+
+    [Fact]
+    public async Task Update_WhenNoRowExistsInTheCallersTenant_ThrowsNotFound()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var authorId = Guid.NewGuid().ToString();
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(authorId),
+            ["Name"] = Value.ForString("Alice Updated")
+        });
+        var act = () => _sut.Update(
+            new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.NotFound);
+        ex.Which.Status.Detail.Should().Be($"'Author:{authorId}' not found.");
+        await _entities.Received(1).FetchByKeyAsync(
+            Arg.Any<TableSchema>(), authorId, EntityAccess.ForTenant("test-tenant"));
+    }
+
+    [Fact]
+    public async Task Update_WhenNotFound_WritesNothingPublishesNothingAndAuditsNothing()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"] = Value.ForString("Alice Updated")
+        });
+        var act = () => _sut.Update(
+            new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>().Where(e => e.StatusCode == StatusCode.NotFound);
+        await _txRunner.DidNotReceive().ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>());
+        await _events.DidNotReceive().ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>());
+        _auditLogger.DidNotReceive().Log(
+            LogLevel.Warning, Arg.Any<EventId>(), Arg.Any<object>(), Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task Update_DeniedCallerWithNoExistingRow_GetsPermissionDeniedNotNotFound()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema() with { Authorization = null });
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"] = Value.ForString("Alice Updated")
+        });
+        var act = () => _sut.Update(
+            new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+        AssertAuditLogged("AccessDenied");
+    }
+
+    [Fact]
+    public async Task Update_DeniedCallerWithNoExistingRow_IsAuditedAsAnUpdate()
+    {
+        // The audit action follows the RPC, not the row: with no stored row, deriving it from the
+        // row would label this denied Update a "Create".
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema() with { Authorization = null });
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"] = Value.ForString("Alice Updated")
+        });
+        var act = () => _sut.Update(
+            new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>().Where(e => e.StatusCode == StatusCode.PermissionDenied);
+        AssertAuditLogged("action=Update resourceType=Author");
+    }
+
+    [Fact]
+    public async Task Update_SmuggledTenantColumnWithNoExistingRow_GetsInvalidArgumentNotNotFound()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]                              = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"]                            = Value.ForString("Alice Updated"),
+            [SchemaDescriptor.TenantColumnName] = Value.ForString("test-tenant")
+        });
+        var act = () => _sut.Update(
+            new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("reserved server-owned column");
     }
 }

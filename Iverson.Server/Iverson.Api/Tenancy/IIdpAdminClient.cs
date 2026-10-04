@@ -1,6 +1,11 @@
 namespace Iverson.Api.Tenancy;
 
-public sealed record IdpUser(string Id, string Username, string Email);
+/// <param name="Uid">
+/// Authentik's <c>uid</c>, which every token Authentik issues for this user carries as its
+/// <c>sub</c> — the key token revocation is recorded under. <see cref="Id"/> is Authentik's pk,
+/// the id its user API and this service's RPCs take.
+/// </param>
+public sealed record IdpUser(string Id, string Username, string Email, string Uid);
 
 /// <summary>
 /// Result of creating a new IdP user via the recovery-link onboarding flow (CSR round-2 finding
