@@ -87,6 +87,16 @@ const PATTERN_DOC_LABEL = `pat-${LANGUAGE}`;
 
 // ── Argument parsing ────────────────────────────────────────────────────────────
 
+/** The secret flags the harness passes in the environment instead of on the command line, which
+ *  every local user can read. A flag given on the command line still wins, so a driver run by hand
+ *  keeps working. */
+const SECRET_FLAG_VARIABLES = new Map<string, string>([
+    ['--client-secret', 'IVERSON_DRIVER_CLIENT_SECRET'],
+    ['--service-token', 'IVERSON_DRIVER_SERVICE_TOKEN'],
+    ['--acting-token', 'IVERSON_DRIVER_ACTING_TOKEN'],
+    ['--wrong-acting-token', 'IVERSON_DRIVER_WRONG_ACTING_TOKEN'],
+]);
+
 /** Minimal `--flag value` parser, mirroring the .NET/Python drivers' `Args`. */
 class Args {
     private readonly values = new Map<string, string>();
@@ -122,7 +132,10 @@ class Args {
     }
 
     optional(flag: string): string | undefined {
-        const value = this.values.get(flag);
+        const variable = SECRET_FLAG_VARIABLES.get(flag);
+        const value = this.values.has(flag)
+            ? this.values.get(flag)
+            : variable !== undefined ? process.env[variable] : undefined;
         return value ? value : undefined;
     }
 }

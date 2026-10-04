@@ -13,8 +13,9 @@ that gap reopens, rather than relying on the live matrix (which is not run per-c
 from __future__ import annotations
 
 import grpc
+import pytest
 
-from conformance.driver import _DriverSchemaCatalogClient, entity_to_dict
+from conformance.driver import Args, _DriverSchemaCatalogClient, entity_to_dict
 from conformance.models import PyArticle, PyAuthor, PyTag
 from iverson_client.core import IversonClient
 
@@ -133,3 +134,38 @@ def test_driver_schema_catalog_client_reproduces_every_attribute_the_base_constr
     finally:
         driver_channel.close()
         base.close()
+
+
+# ── Args.optional's environment fallback for the secret flags ──────────────────────────────────
+
+_SECRET_FLAGS = [
+    ("--client-secret", "IVERSON_DRIVER_CLIENT_SECRET"),
+    ("--service-token", "IVERSON_DRIVER_SERVICE_TOKEN"),
+    ("--acting-token", "IVERSON_DRIVER_ACTING_TOKEN"),
+    ("--wrong-acting-token", "IVERSON_DRIVER_WRONG_ACTING_TOKEN"),
+]
+
+
+@pytest.mark.parametrize("flag,variable", _SECRET_FLAGS)
+def test_optional_reads_a_secret_flags_variable_when_the_flag_is_absent(monkeypatch, flag, variable):
+    monkeypatch.setenv(variable, "ENV")
+    assert Args([]).optional(flag) == "ENV"
+
+
+@pytest.mark.parametrize("flag,variable", _SECRET_FLAGS)
+def test_optional_prefers_a_secret_flag_given_on_the_command_line(monkeypatch, flag, variable):
+    monkeypatch.setenv(variable, "ENV")
+    assert Args([flag, "FLAG"]).optional(flag) == "FLAG"
+
+
+@pytest.mark.parametrize("flag,variable", _SECRET_FLAGS)
+def test_optional_treats_an_unset_or_empty_secret_variable_as_absent(monkeypatch, flag, variable):
+    monkeypatch.delenv(variable, raising=False)
+    assert Args([]).optional(flag) is None
+    monkeypatch.setenv(variable, "")
+    assert Args([]).optional(flag) is None
+
+
+def test_optional_never_reads_the_environment_for_a_non_secret_flag(monkeypatch):
+    monkeypatch.setenv("IVERSON_DRIVER_CLIENT_ID", "ENV")
+    assert Args([]).optional("--client-id") is None

@@ -96,6 +96,17 @@ PATTERN_DOC_LABEL = f"pat-{LANGUAGE}"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
+# The secret flags the harness passes in the environment instead of on the command line, which
+# every local user can read. A flag given on the command line still wins, so a driver run by hand
+# keeps working.
+_SECRET_FLAG_VARIABLES = {
+    "--client-secret": "IVERSON_DRIVER_CLIENT_SECRET",
+    "--service-token": "IVERSON_DRIVER_SERVICE_TOKEN",
+    "--acting-token": "IVERSON_DRIVER_ACTING_TOKEN",
+    "--wrong-acting-token": "IVERSON_DRIVER_WRONG_ACTING_TOKEN",
+}
+
+
 class Args:
     """Minimal ``--flag value`` parser, mirroring the .NET driver's ``Args``."""
 
@@ -125,7 +136,10 @@ class Args:
         return value
 
     def optional(self, flag: str) -> Optional[str]:
-        value = self._values.get(flag, "")
+        if flag in self._values:
+            value = self._values[flag]
+        else:
+            value = os.environ.get(_SECRET_FLAG_VARIABLES[flag], "") if flag in _SECRET_FLAG_VARIABLES else ""
         return value if value else None
 
 
