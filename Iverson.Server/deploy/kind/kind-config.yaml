@@ -10,9 +10,13 @@ networking:
 nodes:
   - role: control-plane
     extraPortMappings:
+      # Bound to loopback, so the dev cluster's ingress is reachable only from this machine
+      # (the default publishes it on every host interface).
       - containerPort: 80
         hostPort: 8080
+        listenAddress: "127.0.0.1"
         protocol: TCP
       - containerPort: 443
         hostPort: 8443
+        listenAddress: "127.0.0.1"
         protocol: TCP
