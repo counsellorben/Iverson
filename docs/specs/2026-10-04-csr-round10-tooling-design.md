@@ -24,7 +24,13 @@ The other round-10 findings belong to other sub-projects. Sub-project A, server 
 ## 1. LoadTest (closes #9; #20 part 2)
 
 **1a. The tenant-admin password comes from the environment.**
-- In `Iverson.Server/Iverson.LoadTest/Program.cs:66`, `tenantAdminPassword` becomes `needsTenantAndSchema ? RequireEnv("IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD") : Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD") ?? ""`. That is the shape of the two acting-user passwords at `:56-62`.
+- In `Iverson.Server/Iverson.LoadTest/Program.cs:66`, `tenantAdminPassword` becomes `needsTenantAndSchema ? RequireEnv("IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD", <message>) : Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD") ?? ""`. That is the shape of the two acting-user passwords at `:56-62`.
+- `RequireEnv` (`:345-349`) takes an optional message. This key's message says three things:
+  - the operator chooses this password;
+  - LoadTest sets it on a tenant it creates;
+  - it must meet Authentik's recovery password policy: at least 8 characters, zxcvbn score ≥ 2 (`README.md:171`).
+
+  The other keys keep the existing message, which points at `.env`. This password is in neither `.env` nor `generate-compose-secrets.sh`.
 - The literal default `dev-only-not-for-production-tenant-admin-password-0123456789` is removed from `Program.cs`. The same string in `Iverson.LoadTest.Tests/Auth/AuthentikFlowExecutorClientTests.cs:16` is a test-local constant and stays.
 - `needsTenantAndSchema` is `seed`, `write-path`, `read-path`, `all`, `benchmark-ingest` and `benchmark-query` (`:34-35`). Those commands fail at startup through `RequireEnv` (`:345`) when the variable is unset. Passwordless commands are unaffected.
 
@@ -89,9 +95,12 @@ The other round-10 findings belong to other sub-projects. Sub-project A, server 
 
 In `Iverson.Agents/Python/iverson_agent/__main__.py`:
 - Add `_is_loopback(host: str | None) -> bool`. It is true for `localhost` and for any address that `ipaddress.ip_address` parses as loopback (`127.0.0.0/8`, `::1`). It is false otherwise, including `None` and unparseable names.
-- `main` computes `allow_insecure = _is_loopback(host) and _is_loopback(urlsplit(creds.token_endpoint).hostname)`. It passes that to both `IversonClient(...)` constructions (`:75`, `:79`) in place of the literal `True`. The CLI always builds credentials (`_credentials()`, `:21-24`), so the token endpoint is always part of the decision.
+- `main` opts in exactly when every plaintext leg is loopback. It computes `allow_insecure = (tls or _is_loopback(host)) and (token_url.scheme == "https" or _is_loopback(token_url.hostname))`, where `token_url = urlsplit(creds.token_endpoint)` and `tls` comes from `_endpoint()`. It passes that to both `IversonClient(...)` constructions (`:75`, `:79`) in place of the literal `True`. The CLI always builds credentials (`_credentials()`, `:21-24`), so the token endpoint is always part of the decision.
 - The comment at `:71-73` is rewritten to describe the loopback rule.
-- **Effect:** the compose default (`http://localhost:8080`, token endpoint on `localhost`) keeps working. Any non-loopback plaintext gRPC URL or token endpoint now gets the SDK's existing `ValueError` (`iverson_client/core.py:877-901`).
+- **Effect:**
+  - The compose default (`http://localhost:8080`, token endpoint on `localhost`) keeps working.
+  - A plaintext gRPC URL or an `http` token endpoint on a non-loopback host now gets the SDK's existing `ValueError` (`iverson_client/core.py:877-901`).
+  - A TLS leg's host does not matter.
 - The review's "split the SDK flag" suggestion is out of scope.
 
 ## 4. SDK per-call acting-user guard (closes #24)
@@ -101,11 +110,14 @@ Each client's constructor already refuses an acting-user token on a plaintext ch
 | SDK | Where the bit lives | Who sets it | What checks it |
 |---|---|---|---|
 | .NET (`Iverson.Client.Core`) | `ActingUserIdentity` gains `bool refusesPlaintextTokens = false` and a `RefusesPlaintextTokens` property | `AddIversonClient` (`ServiceCollectionExtensions.cs:121`): plaintext endpoint (the `Uri.Scheme == http` test at `:59-61`) && `!allowInsecureChannelCallCredentials` | `EntityCoordinator.WithActingUser` (`EntityCoordinator.cs:41-45`) throws `InvalidOperationException` when `identity?.RefusesPlaintextTokens` is true |
-| Python (`iverson_client/core.py`) | `IversonClient` stores `not use_tls and not allow_insecure_credentials` | `coordinator()` (`:951-953`) passes it to `EntityCoordinator` as a new keyword-only argument, `refuse_plaintext_token: bool = False` | `with_acting_user` (`:645-649`) raises `ValueError` when it is true |
+| Python (`iverson_client/core.py`) | `IversonClient` stores `_refuse_plaintext_token = not use_tls and not allow_insecure_credentials` | `coordinator()` (`:951-953`) passes it to `EntityCoordinator` as a new keyword-only argument, `refuse_plaintext_token: bool = False` | `with_acting_user` (`:645-649`) raises `ValueError` when it is true |
 | TypeScript (`src/core.ts`) | `IversonClient` stores a read-only `_refusesPlaintextTokens = !useTls && !allowInsecureCredentials` | its constructor (`:869-908`) | `withActingUser` (`:671-675`) throws an `Error` when `this._client._refusesPlaintextTokens` is true |
 
 - **Messages:** each mirrors that SDK's existing constructor message: .NET `:63-68`, Python `:883-889`, TS `:890-894`.
 - **Hand-built coordinators:** a .NET or Python coordinator built without the flag defaults to not refusing. That covers the conformance drivers and existing tests, whose builders own their channels.
+- **Python driver catalog client:**
+  - `_DriverSchemaCatalogClient.__init__` (`conformance/driver.py:426-429`) hand-reproduces the attributes `IversonClient.__init__` sets, and `test_driver_schema_catalog_client_reproduces_every_attribute_the_base_constructor_sets` (`tests/test_conformance_driver.py:101`) pins that.
+  - It therefore also sets `_refuse_plaintext_token = False`. Its channel carries identity itself, and the driver uses it only for `get_schema` (`driver.py:556`).
 - **TS test fakes:** fake clients built with `makeClientLike` lack the field, so they read as not refusing.
 - **Unaffected callers:**
   - LoadTest's `WithActingUser` callers (`DirectSeeder.cs:121, 180, 258`; `WritePathRunner.cs:103, 113, 129`) run on a client built with `allowInsecureChannelCallCredentials: true` (`Program.cs:~168`).
@@ -127,12 +139,19 @@ Each client's constructor already refuses an acting-user token on a plaintext ch
   - the TOTP cache file is created 0600 in a 0700 directory, using a temp `HOME` (`UserProfile`);
   - the password gating and the immediate mint live in `Program.cs`'s top-level statements, which no test in `Iverson.LoadTest.Tests` invokes. Live check 1 covers the mint, and live check 2 covers the gating.
 - **ClientConformance** (`Iverson.ClientConformance.Tests/DriverRunnerTests.cs`):
-  - `BuildFlags_IncludesAllRequiredBaseFlags` is re-pinned;
+  - three tests are re-pinned:
+    - `BuildFlags_IncludesAllRequiredBaseFlags`;
+    - `BuildFlags_CarriesTheWrongActingTokenForTheIdentityScenariosNegativeLeg` (`:111-119`) moves to the driver start environment, where `IVERSON_DRIVER_WRONG_ACTING_TOKEN` carries the token;
+    - `BuildFlags_WithNoWrongActingTokenConfigured_StillEmitsTheFlagWithAnEmptyValue` (`:121-133`) moves there too: the variable is present and empty when `WrongActingToken` is empty;
   - new tests: none of the four flags is emitted, the environment carries the four variables, and the timeout message contains no secret value.
-- **Drivers:** each helper reads the variable when the flag is missing, and the flag wins when present. Use each driver's existing test setup where it has one; otherwise rely on a driver build plus the live check.
+- **Drivers:** each helper reads the variable when the flag is missing, and the flag wins when present. Use each driver's existing test setup where it has one (Python and Go). TypeScript and Java have no driver test project, so live check 3 covers them. Without the fallback, their drivers send no service credential (`driver.ts:363-371`; `DualHeaderCredentials.java:76-80`), and the identity scenario fails.
 - **Agent** (`Iverson.Agents/Python/tests/test_main.py`):
   - `_is_loopback` over `localhost`, `127.0.0.1`, `127.1.2.3`, `::1`, `example.com`, `10.0.0.5` and `None`;
-  - the opt-in passed to the patched `IversonClient` is true for the compose defaults and false when either endpoint is remote.
+  - the opt-in passed to the patched `IversonClient`:
+    - true for the compose defaults;
+    - false whenever a plaintext leg is remote;
+    - true for a loopback h2c gRPC URL with a remote `https` token endpoint;
+    - true for a remote TLS gRPC URL with a loopback `http` token endpoint.
 - **SDKs:**
   - .NET `Iverson.Client.Core.Tests/ServiceCollectionExtensionsTests.cs` (or the `EntityCoordinator` identity tests): binding throws on plaintext without the opt-in, and binds with the opt-in and on TLS.
   - Python `tests/test_auth.py` / `tests/test_entity_coordinator.py`: the same three cases.
@@ -148,12 +167,27 @@ Each client's constructor already refuses an acting-user token on a plaintext ch
 - its own project name, and an image tag other than `iverson-api`;
 - snapshots of containers, volumes, networks and images before, and diffs after;
 - secrets read from `.env` without printing them;
-- teardown with `down -v`.
+- teardown with `down -v`;
+- one scratch `HOME` for every LoadTest and harness run (checks 1–3), so no run writes the real `~/.cache/iverson`:
+  - On a fresh stack, the first login of each Authentik user overwrites that user's cached TOTP secret.
+  - The harness's `TokenBroker` logs in the bypass user and the other-tenant user through the same cache.
+
+  Toolchain caches stay pinned to the real home:
+  - `NUGET_PACKAGES=<real-home>/.nuget/packages`;
+  - `PYTHONUSERBASE=<real-home>/.local`;
+  - `GOMODCACHE=<real-home>/go/pkg/mod`;
+  - `MAVEN_OPTS=-Dmaven.repo.local=<real-home>/.m2/repository`;
+  - `npm_config_cache=<real-home>/.npm`.
 
 Checks:
-1. With `IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD` set and a scratch `HOME`, `seed` provisions the tenant and the tenant admin's first login enrols TOTP during provisioning. A cache file appears under the scratch `HOME`.
-2. With the variable unset, `seed` fails at startup with `RequireEnv`'s message.
-3. `dotnet run -- --languages dotnet,python --scenarios identity` passes. While a driver runs, `/proc/<driver pid>/cmdline` shows none of the four secrets.
+1. Set `IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD`, and point `IVERSON_POSTGRES_CS` at a closed port. `seed` then:
+   1. provisions the tenant;
+   2. registers schemas;
+   3. fails at `DirectSeeder.RunAsync`'s first `pg.OpenAsync` (`Seeding/DirectSeeder.cs:37`), before any data-plane call.
+
+   The scratch `HOME` must then hold `acting-user-totp-secret-compose-iverson-loadtest-tenant-admin.txt`, and no regular or bypass user's file. Schema registration authenticates with client credentials, so only the immediate mint can create that file.
+2. Set both acting-user passwords, and leave `IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD` unset. `seed` exits non-zero before printing "Ensuring LoadTest tenant is provisioned..." (`Program.cs:108`), with §1a's message for this key.
+3. `dotnet run -- --scenarios identity` passes. This covers all five languages, since `--languages` is omitted. While a driver runs, `/proc/<driver pid>/cmdline` shows none of the four secrets.
 
 ## Verified assumptions
 
@@ -175,6 +209,15 @@ Checks:
 | 14 | Each SDK has a test file covering its constructor guard | .NET `ServiceCollectionExtensionsTests.cs`; Python `tests/test_auth.py`; TS `tests/core.test.ts:170-180` |
 | 15 | E's files overlap sub-project A's branch only in comment hunks of the five driver files | `git diff --name-only 3cb035f4 csr10-server-authz` intersected with E's files gives the five driver files only; A's hunks there are comment-only |
 | 16 | Doc sites exist as stated | `Iverson.LoadTest/README.md:171`; `docs/runbooks/client-conformance-matrix.md:39-40` |
+| 17 | The Python driver's catalog client mirrors `IversonClient`'s attribute set, and a parity test pins it | `conformance/driver.py:426-429` sets `_channel`, `_mapping_stub` and `_acting_user_token`. The test is at `tests/test_conformance_driver.py:101`. The client's only use is `get_schema` (`driver.py:556`). CDR-1 P1: adding the attribute to the base alone fails the test |
+| 18 | Exactly three harness tests pin the secret flags on argv | `grep` of `Iverson.ClientConformance.Tests` for the four flags: `DriverRunnerTests.cs:100, 118, 129` assert argv; the other hits are `DriverContext` values. CDR-1 P2: `Failed: 3`, exactly these |
+| 19 | LoadTest and the harness cache TOTP secrets under `UserProfile`, and enrolment overwrites the file | `AuthentikFlowExecutorClient.cs:117-121` (`CacheDir`), `:127-130` (`File.WriteAllText`), `:223-227` (enrolment). The harness uses it at `TokenBroker.cs:59-89`, with target `compose` and the default usernames. Toolchain caches on this machine: Python `grpc` in `~/.local`, `GOMODCACHE` `~/go/pkg/mod`, `~/.m2/repository`, `~/.nuget/packages` |
+| 20 | Before `DirectSeeder`'s first Postgres open, only the immediate mint logs the tenant admin in, and the new `RequireEnv` runs before provisioning | `SchemaRegistrar` uses only the mapping client, which carries client credentials (`ServiceCollectionExtensions.cs:96`). The tenant-admin provider is attached only to persistence, retrieval and search. `DirectSeeder.cs:37` opens Postgres first, and the regular and bypass providers are first used at `:121`. The default username is `iverson-loadtest-tenant-admin` (`Program.cs:64`) with target `compose` (`:67`). `:56-66` run before `:108`. CDR-1 P14 and P15 |
+| 21 | Only Python and Go have driver test homes, and omitting `--languages` runs all five | `Go/conformance/main_test.go` and `Python/tests/test_conformance_driver.py`. `flags.Languages ?? allLanguages` (`ClientConformance/Program.cs:61`). Without the fallback, TS attaches no service credential (`driver.ts:363-371`) and Java's `hasServiceCredentials()` is false (`DualHeaderCredentials.java:76-80`) |
+| 22 | No stack file holds a tenant-admin password | The 11 `.env` key names and `scripts/generate-compose-secrets.sh` have no tenant-admin key (0 matches) |
+| 23 | The Python SDK's two guards each test only their own leg | `core.py:877-901`: the channel guard fires only when `not use_tls`, the token guard only when the endpoint's scheme is not `https`. CDR-1 P11: across 16 combinations, the §3 rule refuses exactly the 7 with a non-loopback plaintext leg |
+| 24 | The immediate mint is compatible with the provider's later use | `ActingUserTokenProvider.cs:10-40`: it returns the cached token until expiry, then refreshes, or re-mints using the cached TOTP secret. CDR-1 P16: the first data-plane use was served from the cache |
+| 25 | Every driver helper treats an empty value as absent | .NET `Program.cs:1443-1444`, Python `driver.py:127-129`, TS `driver.ts:124-126` and Java `Driver.java:1164-1167` return null, `None` or `undefined` for `""`. Go `main.go:201-203` returns `""`, and its callers test `!= ""` |
 
 ## Known issues / accepted as out of scope
 
