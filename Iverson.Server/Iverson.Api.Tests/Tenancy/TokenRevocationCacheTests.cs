@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using FluentAssertions;
 using Iverson.Api.Tenancy;
 using Iverson.Sql;
@@ -186,6 +188,97 @@ public class TokenRevocationCacheTests
         (await _sut.IsRevokedAsync("newly-revoked-sub", null)).Should().BeTrue();
         await _repository.Received(2).ListAsync();
     }
+
+    // A reload that started before the revocation committed reads the old rows. Invalidate must
+    // not let a later caller join it, nor let it publish its snapshot over the cleared one.
+    [Fact]
+    public async Task Invalidate_DuringAReload_StartsAFreshReloadAndTheStaleOneIsNotPublished()
+    {
+        var stale = new TaskCompletionSource<IEnumerable<(string Sub, DateTimeOffset RevokedAt)>>();
+        var staleListStarted = new TaskCompletionSource();
+        _repository.ListAsync().Returns(
+            _ => { staleListStarted.SetResult(); return stale.Task; },
+            _ => Task.FromResult(Rows(("revoked-sub", RevokedAt), ("newly-revoked-sub", RevokedAt.AddMinutes(1)))));
+
+        var beforeInvalidate = _sut.IsRevokedAsync("newly-revoked-sub", null);
+        await staleListStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        _sut.Invalidate();
+
+        // Bounded so a caller that joins the stale reload fails here rather than hangs.
+        (await _sut.IsRevokedAsync("newly-revoked-sub", null).WaitAsync(TimeSpan.FromSeconds(5)))
+            .Should().BeTrue();
+        await _repository.Received(2).ListAsync();
+
+        stale.SetResult(Rows(("revoked-sub", RevokedAt)));
+        (await beforeInvalidate).Should().BeFalse("its awaiter arrived before the invalidation");
+
+        (await _sut.IsRevokedAsync("newly-revoked-sub", null)).Should().BeTrue();
+        await _repository.Received(2).ListAsync();
+    }
+
+    // Every waiter can cancel before the shared reload fails, leaving no one to await it. Its
+    // failure must not surface as an UnobservedTaskException once the task is collected.
+    [Fact]
+    public async Task IsRevokedAsync_ReloadFailsAfterEveryWaiterCancelled_IsStillObserved()
+    {
+        var marker = "revocation-" + Guid.NewGuid().ToString("N");
+        var unobserved = 0;
+        EventHandler<UnobservedTaskExceptionEventArgs> handler = (_, e) =>
+        {
+            if (e.Exception.InnerExceptions.Any(x => x is InvalidOperationException { Message: var m } && m == marker))
+                Interlocked.Increment(ref unobserved);
+        };
+        TaskScheduler.UnobservedTaskException += handler;
+        try
+        {
+            var reload = AbandonEveryWaiterThenFault(marker);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!HasFaulted(reload) && DateTime.UtcNow < deadline)
+                await Task.Delay(10);
+            HasFaulted(reload).Should().BeTrue("the repository call was failed");
+
+            for (var i = 0; i < 3; i++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+            IsCollected(reload).Should().BeTrue("otherwise this test proves nothing about observation");
+
+            unobserved.Should().Be(0);
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= handler;
+        }
+    }
+
+    // Separate, non-inlined frames, so no local of the test method keeps the cache or its reload
+    // reachable. The reload is private, so it is read by reflection.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<Task> AbandonEveryWaiterThenFault(string marker)
+    {
+        var repository = Substitute.For<ITokenRevocationRepository>();
+        var pending = new TaskCompletionSource<IEnumerable<(string Sub, DateTimeOffset RevokedAt)>>();
+        repository.ListAsync().Returns(pending.Task);
+        var cache = new TokenRevocationCache(repository, TimeProvider.System);
+
+        using var cts = new CancellationTokenSource();
+        _ = cache.IsRevokedAsync("revoked-sub", null, cts.Token);
+        _ = cache.IsRevokedAsync("revoked-sub", null, cts.Token);
+        var reload = (Task)typeof(TokenRevocationCache)
+            .GetField("_reload", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(cache)!;
+        cts.Cancel();                                                   // every waiter stops waiting
+        pending.SetException(new InvalidOperationException(marker));
+        return new WeakReference<Task>(reload);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool HasFaulted(WeakReference<Task> reload) => reload.TryGetTarget(out var t) && t.IsFaulted;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool IsCollected(WeakReference<Task> reload) => !reload.TryGetTarget(out _);
 
     [Fact]
     public async Task IsRevokedAsync_ReloadFailure_Propagates()

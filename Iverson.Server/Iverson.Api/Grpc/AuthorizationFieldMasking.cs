@@ -126,8 +126,9 @@ internal static class AuthorizationFieldMasking
         else
         {
             existingStruct = JsonParser.Default.Parse<Struct>(existingRowJson);
-            // Only a field the caller may not write is ever carried (the owner column is TEXT,
-            // never an integer), so an unrestricted caller needs no re-parse of the stored row.
+            // Only a field the caller may not write is ever carried (the owner column is
+            // string-valued (TEXT/UUID/BYTEA/TIMESTAMPTZ), never an integer), so an unrestricted
+            // caller needs no re-parse of the stored row.
             if (decision.AllowedFields is not null)
                 PreserveExactIntegers(existingStruct, existingRowJson);
 

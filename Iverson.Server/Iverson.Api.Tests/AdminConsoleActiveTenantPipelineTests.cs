@@ -131,6 +131,7 @@ public class AdminConsoleActiveTenantPipelineTests : IClassFixture<AdminConsoleT
             LogLevel.Warning,
             Arg.Any<EventId>(),
             Arg.Is<object>(v => v.ToString()!.Contains("[Audit.Denied]")
+                              && v.ToString()!.Contains("action=Unauthorized")
                               && v.ToString()!.Contains("reason=TenantNotActive")),
             Arg.Any<Exception>(),
             Arg.Any<Func<object, Exception?, string>>());

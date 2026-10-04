@@ -6,7 +6,9 @@ namespace Iverson.Api.Tenancy;
 /// CSR round-10 #11: answers "has this token been revoked?" for every authenticated request
 /// (both JwtBearer schemes' <c>OnTokenValidated</c>) from an in-memory snapshot of
 /// <see cref="ITokenRevocationRepository"/>, reloaded at most every 30 s — the same staleness
-/// <see cref="TenantStatusCache"/> accepts — or at once after <see cref="Invalidate"/>. One
+/// <see cref="TenantStatusCache"/> accepts — or at once after <see cref="Invalidate"/>, which
+/// also supersedes a reload already in flight: that reload may have read the table before the
+/// revocation committed, so it does not publish its snapshot and later callers start afresh. One
 /// reload runs at a time; concurrent callers wait for it rather than each querying Postgres, and
 /// a caller whose request is cancelled stops waiting without cancelling the reload for the rest.
 /// A reload failure propagates to every caller waiting on it, so the request fails rather than
@@ -23,6 +25,7 @@ public sealed class TokenRevocationCache(
     private readonly object _reloadGate = new();
     private volatile Snapshot? _snapshot;
     private Task<Snapshot>? _reload; // guarded by _reloadGate
+    private int _generation;         // guarded by _reloadGate; bumped by Invalidate
 
     private sealed record Snapshot(IReadOnlyDictionary<string, DateTimeOffset> RevokedAt, DateTimeOffset LoadedAt);
 
@@ -35,7 +38,17 @@ public sealed class TokenRevocationCache(
             && (issuedAt is null || issuedAt <= revokedAt);
     }
 
-    public void Invalidate() => _snapshot = null;
+    public void Invalidate()
+    {
+        lock (_reloadGate)
+        {
+            // A reload in flight is abandoned rather than joined: its awaiters still get its
+            // result, but it no longer publishes, and the next caller starts a fresh reload.
+            _generation++;
+            _snapshot = null;
+            _reload = null;
+        }
+    }
 
     private Task<Snapshot> CurrentSnapshotAsync(CancellationToken cancellationToken)
     {
@@ -54,10 +67,13 @@ public sealed class TokenRevocationCache(
 
             // Join the reload in flight, if any. A completed one is never reused: a success has
             // already published its snapshot (checked above), and a failure must not be replayed
-            // to later callers. This also covers a ListAsync that completes synchronously, which
-            // hands back an already-completed task here.
+            // to later callers. Task.Run keeps the repository call off this lock even when
+            // ListAsync completes synchronously.
             if (_reload is null || _reload.IsCompleted)
-                _reload = ReloadAsync();
+            {
+                var generation = _generation;
+                _reload = Observe(Task.Run(() => ReloadAsync(generation)));
+            }
             reload = _reload;
         }
 
@@ -65,13 +81,30 @@ public sealed class TokenRevocationCache(
         return reload.WaitAsync(cancellationToken);
     }
 
-    private async Task<Snapshot> ReloadAsync()
+    // Every waiter may have cancelled before the reload fails; its failure is then observed here
+    // instead of surfacing as an UnobservedTaskException when the task is collected. The original
+    // task is returned, so every waiter still sees the same outcome.
+    private static Task<Snapshot> Observe(Task<Snapshot> reload)
+    {
+        reload.ContinueWith(t => _ = t.Exception,
+            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return reload;
+    }
+
+    private async Task<Snapshot> ReloadAsync(int generation)
     {
         var rows = await repository.ListAsync();
         var snapshot = new Snapshot(
             rows.ToDictionary(r => r.Sub, r => r.RevokedAt, StringComparer.Ordinal),
             timeProvider.GetUtcNow());
-        _snapshot = snapshot;
+        lock (_reloadGate)
+        {
+            // Superseded by Invalidate: the rows may predate the revocation, so only this
+            // reload's own awaiters, who arrived before the invalidation, see them.
+            if (_generation == generation)
+                _snapshot = snapshot;
+        }
         return snapshot;
     }
 
