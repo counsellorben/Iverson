@@ -43,7 +43,7 @@ The other round-10 findings belong to other sub-projects. Sub-project A, server 
 - `AuthentikFlowExecutorClient.SaveCachedTotpSecret` (`Auth/AuthentikFlowExecutorClient.cs:127-134`):
   - creates `CacheDir` with `Directory.CreateDirectory(CacheDir, UserRead | UserWrite | UserExecute)`;
   - writes the secret through a `FileStream` with `FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, UnixCreateMode = UserRead | UserWrite }`, so the file never exists at a looser mode.
-- The existing `File.SetUnixFileMode(0600)` after the write stays. A create mode applies only to new files, so this covers a pre-existing looser file.
+- When the file already exists, `File.SetUnixFileMode(0600)` runs **before** the write, and nothing changes the mode after the write. A new file therefore gets 0600 only from `UnixCreateMode`, which a test can observe. A pre-existing looser file is restricted before it receives the new secret.
 - Every Unix-only call sits behind the existing `!OperatingSystem.IsWindows()` check. These APIs raise CA1416 otherwise. On Windows, behaviour is unchanged.
 - This matches the Python sibling `deploy/scripts/mint_acting_user_token.py:143-145` (`os.open(..., 0o600)`).
 
@@ -128,7 +128,7 @@ Each client's constructor already refuses an acting-user token on a plaintext ch
 **Mutation testing.** Task reviews mutation-test each new guard, and each must have a test that fails when the guard is removed or inverted:
 - the `RequireEnv` gating;
 - the immediate-mint call;
-- the 0700 and 0600 create modes;
+- the 0700 and 0600 create modes, and the pre-write chmod of an existing file;
 - `BuildFlags` not emitting the four flags, and the start info carrying the four variables;
 - each driver helper's environment fallback;
 - `_is_loopback` and the computed opt-in;
@@ -137,6 +137,7 @@ Each client's constructor already refuses an acting-user token on a plaintext ch
 **Tests per area:**
 - **LoadTest** (`Iverson.LoadTest.Tests`):
   - the TOTP cache file is created 0600 in a 0700 directory, using a temp `HOME` (`UserProfile`);
+  - a pre-existing 0644 cache file ends at 0600 with the new content;
   - the password gating and the immediate mint live in `Program.cs`'s top-level statements, which no test in `Iverson.LoadTest.Tests` invokes. Live check 1 covers the mint, and live check 2 covers the gating.
 - **ClientConformance** (`Iverson.ClientConformance.Tests/DriverRunnerTests.cs`):
   - three tests are re-pinned:
@@ -144,7 +145,13 @@ Each client's constructor already refuses an acting-user token on a plaintext ch
     - `BuildFlags_CarriesTheWrongActingTokenForTheIdentityScenariosNegativeLeg` (`:111-119`) moves to the driver start environment, where `IVERSON_DRIVER_WRONG_ACTING_TOKEN` carries the token;
     - `BuildFlags_WithNoWrongActingTokenConfigured_StillEmitsTheFlagWithAnEmptyValue` (`:121-133`) moves there too: the variable is present and empty when `WrongActingToken` is empty;
   - new tests: none of the four flags is emitted, the environment carries the four variables, and the timeout message contains no secret value.
-- **Drivers:** each helper reads the variable when the flag is missing, and the flag wins when present. Use each driver's existing test setup where it has one (Python and Go). TypeScript and Java have no driver test project, so live check 3 covers them. Without the fallback, their drivers send no service credential (`driver.ts:363-371`; `DualHeaderCredentials.java:76-80`), and the identity scenario fails.
+- **Drivers:** each helper reads the variable when the flag is missing, and the flag wins when present. Use each driver's existing test setup where it has one (Python and Go). .NET, TypeScript and Java have no driver test project.
+  - **The fallback:** live check 3 covers it. Without the fallback, these drivers send no service credential (`driver.ts:363-371`; `DualHeaderCredentials.java:76-80`; .NET `Auth.cs:44-55`), and the identity scenario fails.
+  - **"The flag wins":** check 3 cannot cover this half, because the harness passes no flag. Instead, run each of the three built drivers once by hand against a local gRPC endpoint that records the `authorization` metadata, with `--service-token` and `IVERSON_DRIVER_SERVICE_TOKEN` set to different values. The recorded header must carry the flag's value.
+    - .NET and TypeScript use `--scenario identity --phase register`.
+    - Java's identity scenario has no register phase, so it uses `--phase write --keys '{}'`.
+
+    This needs no stack.
 - **Agent** (`Iverson.Agents/Python/tests/test_main.py`):
   - `_is_loopback` over `localhost`, `127.0.0.1`, `127.1.2.3`, `::1`, `example.com`, `10.0.0.5` and `None`;
   - the opt-in passed to the patched `IversonClient`:
@@ -213,11 +220,13 @@ Checks:
 | 18 | Exactly three harness tests pin the secret flags on argv | `grep` of `Iverson.ClientConformance.Tests` for the four flags: `DriverRunnerTests.cs:100, 118, 129` assert argv; the other hits are `DriverContext` values. CDR-1 P2: `Failed: 3`, exactly these |
 | 19 | LoadTest and the harness cache TOTP secrets under `UserProfile`, and enrolment overwrites the file | `AuthentikFlowExecutorClient.cs:117-121` (`CacheDir`), `:127-130` (`File.WriteAllText`), `:223-227` (enrolment). The harness uses it at `TokenBroker.cs:59-89`, with target `compose` and the default usernames. Toolchain caches on this machine: Python `grpc` in `~/.local`, `GOMODCACHE` `~/go/pkg/mod`, `~/.m2/repository`, `~/.nuget/packages` |
 | 20 | Before `DirectSeeder`'s first Postgres open, only the immediate mint logs the tenant admin in, and the new `RequireEnv` runs before provisioning | `SchemaRegistrar` uses only the mapping client, which carries client credentials (`ServiceCollectionExtensions.cs:96`). The tenant-admin provider is attached only to persistence, retrieval and search. `DirectSeeder.cs:37` opens Postgres first, and the regular and bypass providers are first used at `:121`. The default username is `iverson-loadtest-tenant-admin` (`Program.cs:64`) with target `compose` (`:67`). `:56-66` run before `:108`. CDR-1 P14 and P15 |
-| 21 | Only Python and Go have driver test homes, and omitting `--languages` runs all five | `Go/conformance/main_test.go` and `Python/tests/test_conformance_driver.py`. `flags.Languages ?? allLanguages` (`ClientConformance/Program.cs:61`). Without the fallback, TS attaches no service credential (`driver.ts:363-371`) and Java's `hasServiceCredentials()` is false (`DualHeaderCredentials.java:76-80`) |
+| 21 | Only Python and Go have driver test homes, and omitting `--languages` runs all five | `Go/conformance/main_test.go` and `Python/tests/test_conformance_driver.py`. `flags.Languages ?? allLanguages` (`ClientConformance/Program.cs:61`). Without the fallback, TS attaches no service credential (`driver.ts:363-371`), Java's `hasServiceCredentials()` is false (`DualHeaderCredentials.java:76-80`), and .NET attaches neither the service token nor the client-id/secret trio (`Auth.cs:44-55`) |
 | 22 | No stack file holds a tenant-admin password | The 11 `.env` key names and `scripts/generate-compose-secrets.sh` have no tenant-admin key (0 matches) |
 | 23 | The Python SDK's two guards each test only their own leg | `core.py:877-901`: the channel guard fires only when `not use_tls`, the token guard only when the endpoint's scheme is not `https`. CDR-1 P11: across 16 combinations, the §3 rule refuses exactly the 7 with a non-loopback plaintext leg |
 | 24 | The immediate mint is compatible with the provider's later use | `ActingUserTokenProvider.cs:10-40`: it returns the cached token until expiry, then refreshes, or re-mints using the cached TOTP secret. CDR-1 P16: the first data-plane use was served from the cache |
 | 25 | Every driver helper treats an empty value as absent | .NET `Program.cs:1443-1444`, Python `driver.py:127-129`, TS `driver.ts:124-126` and Java `Driver.java:1164-1167` return null, `None` or `undefined` for `""`. Go `main.go:201-203` returns `""`, and its callers test `!= ""` |
+| 26 | With the pre-write chmod and no post-write chmod, a missing `UnixCreateMode` is observable | net10.0 probe, umask 0022. The fix gives a new file 0600, and a pre-existing 0644 file ends at 0600 with the new content. Without `UnixCreateMode`, a new file is 0644. CDR-2 P1 shows the same through `MintAsync`: today's spec without the create mode still passes, and the fix without it fails the new-file test |
+| 27 | A hand run with a recording endpoint tests "the flag wins" in the .NET, TS and Java drivers | .NET and TS have an identity `register` phase (`driver.ts:629`). Java's identity scenario has only `write` and `read` (`Driver.java:228-236`); any other phase exits 2. CDR-2 P9: with the flag and the variable set to different values, the correct helper recorded `Bearer FLAG` and a variable-first mutant recorded `Bearer ENV`, in all five drivers |
 
 ## Known issues / accepted as out of scope
 
