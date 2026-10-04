@@ -22,8 +22,8 @@ public sealed record DriverContext(
     string ServiceToken = "",
     // S8 identity's negative leg: an acting-user token for a DIFFERENT, active tenant, which the
     // driver sends in place of its own to prove the server denies that write. Empty for every
-    // other scenario — and emitted as an empty value rather than omitted, so a driver's
-    // positional `--flag value` parser never mis-pairs the flags that follow it.
+    // other scenario — and still set, as an empty variable, so a value the harness itself
+    // inherited can never reach the driver (see DriverRunner.BuildEnvironment).
     string WrongActingToken = "");
 
 /// <summary>
@@ -203,7 +203,8 @@ public sealed class DriverRunner : IDriverRunner
             execArgs.AddRange(BuildFlags(phase, spec.Language, context, outPath));
 
             var cwd = ResolveCwd(spec.Cwd);
-            var execResult = await RunProcessAsync(ResolveCommand(spec.ExecCommand, cwd), execArgs, cwd, ct);
+            var execResult = await RunProcessAsync(
+                ResolveCommand(spec.ExecCommand, cwd), execArgs, cwd, ct, BuildEnvironment(context));
 
             if (execResult is ProcessOutcome.ToolMissing execMissing)
             {
@@ -316,22 +317,10 @@ public sealed class DriverRunner : IDriverRunner
             // Passing the raw value through instead resurrects a harness bug that reads as a
             // per-language client defect.
             "--grpc", NormalizeGrpcUrl(context.GrpcUrl),
+            // The secret half of each credential travels in the environment instead — see
+            // BuildEnvironment.
             "--client-id", context.ClientId ?? string.Empty,
-            "--client-secret", context.ClientSecret ?? string.Empty,
             "--token-endpoint", context.TokenEndpoint ?? string.Empty,
-            // A pre-minted service token, and the only one the drivers should ever use. The
-            // client-credentials trio above is left in the contract for a driver run by hand,
-            // but a driver that mints its own token cannot produce a usable one here: Authentik
-            // stamps the JWT's `iss` from the request's Host header, so a token fetched from
-            // localhost carries an issuer the API rejects outright (401), and none of the five
-            // drivers passes a scope, so even an accepted token would lack `schema_admin` (403
-            // on RegisterSchema). The orchestrator already mints this correctly once, with both
-            // the Host header and the scope, so it hands the result over rather than having
-            // five languages each re-derive Authentik's issuer semantics.
-            "--service-token", context.ServiceToken,
-            "--acting-token", context.ActingToken,
-            // Always emitted, empty included — see DriverContext.WrongActingToken.
-            "--wrong-acting-token", context.WrongActingToken,
             "--owner-id", context.OwnerId,
             "--id-prefix", context.IdPrefix,
             "--out", outPath,
@@ -345,6 +334,30 @@ public sealed class DriverRunner : IDriverRunner
 
         return flags;
     }
+
+    /// <summary>
+    /// The secret values a driver needs, passed in its environment rather than on its command line:
+    /// <c>/proc/&lt;pid&gt;/cmdline</c> is readable by every local user, <c>/proc/&lt;pid&gt;/environ</c>
+    /// only by the owner. Each driver's <c>Args.optional</c> falls back to these variables for the
+    /// matching flags, and a flag given on the command line still wins for a driver run by hand.
+    /// </summary>
+    internal static Dictionary<string, string> BuildEnvironment(DriverContext context) => new(StringComparer.Ordinal)
+    {
+        ["IVERSON_DRIVER_CLIENT_SECRET"] = context.ClientSecret ?? string.Empty,
+        // A pre-minted service token, and the only one the drivers should ever use. The
+        // client-credentials trio (--client-id, --token-endpoint and the secret above) is left in
+        // the contract for a driver run by hand, but a driver that mints its own token cannot
+        // produce a usable one here: Authentik stamps the JWT's `iss` from the request's Host
+        // header, so a token fetched from localhost carries an issuer the API rejects outright
+        // (401), and none of the five drivers passes a scope, so even an accepted token would
+        // lack `schema_admin` (403 on RegisterSchema). The orchestrator already mints this
+        // correctly once, with both the Host header and the scope, so it hands the result over
+        // rather than having five languages each re-derive Authentik's issuer semantics.
+        ["IVERSON_DRIVER_SERVICE_TOKEN"] = context.ServiceToken,
+        ["IVERSON_DRIVER_ACTING_TOKEN"] = context.ActingToken,
+        // Always set, empty included — see DriverContext.WrongActingToken.
+        ["IVERSON_DRIVER_WRONG_ACTING_TOKEN"] = context.WrongActingToken,
+    };
 
     /// <summary>
     /// Turns a driver-relative executable path into an absolute one. <c>ProcessStartInfo</c>
@@ -376,7 +389,8 @@ public sealed class DriverRunner : IDriverRunner
     internal static TimeSpan ProcessTimeout { get; set; } = TimeSpan.FromMinutes(10);
 
     private static async Task<ProcessOutcome> RunProcessAsync(
-        string command, IReadOnlyList<string> args, string cwd, CancellationToken ct)
+        string command, IReadOnlyList<string> args, string cwd, CancellationToken ct,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         var psi = new ProcessStartInfo
         {
@@ -388,6 +402,11 @@ public sealed class DriverRunner : IDriverRunner
         };
         foreach (var arg in args)
             psi.ArgumentList.Add(arg);
+        if (environment is not null)
+        {
+            foreach (var (name, value) in environment)
+                psi.Environment[name] = value;
+        }
 
         using var process = new Process { StartInfo = psi };
 

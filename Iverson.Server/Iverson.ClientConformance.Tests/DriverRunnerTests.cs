@@ -4,6 +4,7 @@ using Xunit;
 
 namespace Iverson.ClientConformance.Tests;
 
+[Collection("driver-process-timeout")]
 public class DriverRunnerTests
 {
     private static DriverContext Context() => new(
@@ -17,6 +18,7 @@ public class DriverRunnerTests
         ActingToken: "acting-token",
         OwnerId: "owner-id",
         IdPrefix: "s1-",
+        ServiceToken: "service-token",
         WrongActingToken: "wrong-acting-token");
 
     [Fact]
@@ -97,38 +99,118 @@ public class DriverRunnerTests
 
         flags.Should().Contain(["--scenario", "s1", "--phase", "read", "--type", "Widget",
             "--tenant", "iverson-loadtest-dynamic", "--grpc", "http://localhost:5000",
-            "--acting-token", "acting-token", "--owner-id", "owner-id", "--id-prefix", "s1-",
-            "--out", "/tmp/out.json"]);
+            "--client-id", "client-id", "--token-endpoint", "http://localhost:9000/application/o/token/",
+            "--owner-id", "owner-id", "--id-prefix", "s1-", "--out", "/tmp/out.json"]);
     }
 
-    /// <summary>
-    /// S8 identity's negative leg is the only thing that reads this flag, but every driver
-    /// invocation carries it: the flag set is built once for all phases and all scenarios, and a
-    /// driver that never needs it ignores it. It must be emitted even when empty (the harness
-    /// always emits `--flag value` pairs) so a driver's positional parser never mis-pairs the
-    /// flags that follow.
-    /// </summary>
-    [Fact]
-    public void BuildFlags_CarriesTheWrongActingTokenForTheIdentityScenariosNegativeLeg()
+    // Every local user can read a process's command line, so no secret may ride on it.
+    [Theory]
+    [InlineData("--client-secret", "client-secret")]
+    [InlineData("--service-token", "service-token")]
+    [InlineData("--acting-token", "acting-token")]
+    [InlineData("--wrong-acting-token", "wrong-acting-token")]
+    public void BuildFlags_CarriesNoSecretFlagOrValue(string flag, string value)
     {
         var runner = new DriverRunner(repoRoot: "/tmp");
 
         var flags = runner.BuildFlags(Phase.Read, "go", Context(), "/tmp/out.json");
 
-        flags.Should().Contain(["--wrong-acting-token", "wrong-acting-token"]);
+        flags.Should().NotContain(flag);
+        flags.Should().NotContain(value);
+    }
+
+    [Theory]
+    [InlineData("IVERSON_DRIVER_CLIENT_SECRET", "client-secret")]
+    [InlineData("IVERSON_DRIVER_SERVICE_TOKEN", "service-token")]
+    [InlineData("IVERSON_DRIVER_ACTING_TOKEN", "acting-token")]
+    [InlineData("IVERSON_DRIVER_WRONG_ACTING_TOKEN", "wrong-acting-token")]
+    public void BuildEnvironment_CarriesEachSecret(string variable, string value) =>
+        DriverRunner.BuildEnvironment(Context()).Should().Contain(variable, value);
+
+    /// <summary>
+    /// S8 identity's negative leg is the only thing that reads this value, but every driver
+    /// invocation carries it: the environment is built once for all phases and all scenarios, and a
+    /// driver that never needs it ignores it. It must be set even when empty, so a value the harness
+    /// itself inherited never reaches the driver in its place.
+    /// </summary>
+    [Fact]
+    public void BuildEnvironment_CarriesTheWrongActingTokenForTheIdentityScenariosNegativeLeg() =>
+        DriverRunner.BuildEnvironment(Context())
+            .Should().Contain("IVERSON_DRIVER_WRONG_ACTING_TOKEN", "wrong-acting-token");
+
+    [Fact]
+    public void BuildEnvironment_WithNoWrongActingTokenConfigured_StillSetsTheVariableEmpty() =>
+        DriverRunner.BuildEnvironment(Context() with { WrongActingToken = string.Empty })
+            .Should().Contain("IVERSON_DRIVER_WRONG_ACTING_TOKEN", string.Empty);
+
+    // A stand-in for the Python driver: the harness runs `python3 conformance/driver.py` from
+    // Iverson.Clients/Python under the repo root, with no build step. Under a temporary repo root
+    // this script is what runs, so RunPhaseAsync is exercised end to end without a stack.
+    private static string FakePythonDriverRepo(string script)
+    {
+        var root = Directory.CreateTempSubdirectory("iverson-conformance-fake-").FullName;
+        var conformance = Path.Combine(root, "Iverson.Clients", "Python", "conformance");
+        Directory.CreateDirectory(conformance);
+        File.WriteAllText(Path.Combine(conformance, "driver.py"), script);
+        return root;
     }
 
     [Fact]
-    public void BuildFlags_WithNoWrongActingTokenConfigured_StillEmitsTheFlagWithAnEmptyValue()
+    public async Task RunPhaseAsync_StartsTheDriverWithEachSecretInItsEnvironment()
     {
-        var runner = new DriverRunner(repoRoot: "/tmp");
+        // Reports each variable back as a step key, "<unset>" when the driver did not receive it.
+        var root = FakePythonDriverRepo("""
+            import json, os, sys
+            out = sys.argv[sys.argv.index("--out") + 1]
+            names = ["IVERSON_DRIVER_CLIENT_SECRET", "IVERSON_DRIVER_SERVICE_TOKEN",
+                     "IVERSON_DRIVER_ACTING_TOKEN", "IVERSON_DRIVER_WRONG_ACTING_TOKEN"]
+            keys = {name: os.environ.get(name, "<unset>") for name in names}
+            with open(out, "w") as f:
+                json.dump({"language": "python", "phase": "register",
+                           "steps": [{"name": "env", "ok": True, "keys": keys}]}, f)
+            """);
+        try
+        {
+            var runner = new DriverRunner(root);
 
-        var flags = runner.BuildFlags(
-            Phase.Read, "go", Context() with { WrongActingToken = string.Empty }, "/tmp/out.json");
+            var outcomes = await runner.RunPhaseAsync(Phase.Register, ["python"], Context());
 
-        var index = flags.IndexOf("--wrong-acting-token");
-        index.Should().BeGreaterThanOrEqualTo(0);
-        flags[index + 1].Should().BeEmpty();
+            outcomes.Should().ContainSingle().Which.Should().BeOfType<DriverPhaseOutcome.Success>();
+            runner.KeysByLanguage["python"].Should().BeEquivalentTo(new Dictionary<string, string>
+            {
+                ["IVERSON_DRIVER_CLIENT_SECRET"] = "client-secret",
+                ["IVERSON_DRIVER_SERVICE_TOKEN"] = "service-token",
+                ["IVERSON_DRIVER_ACTING_TOKEN"] = "acting-token",
+                ["IVERSON_DRIVER_WRONG_ACTING_TOKEN"] = "wrong-acting-token",
+            });
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    // The timeout message prints the driver's command line, so it must not carry a secret either.
+    [Fact]
+    public async Task RunPhaseAsync_TimeoutMessage_CarriesNoSecret()
+    {
+        var root = FakePythonDriverRepo("import time\ntime.sleep(60)\n");
+        var previous = DriverRunner.ProcessTimeout;
+        DriverRunner.ProcessTimeout = TimeSpan.FromSeconds(2);
+        try
+        {
+            var outcomes = await new DriverRunner(root).RunPhaseAsync(Phase.Register, ["python"], Context());
+
+            var broken = outcomes.Should().ContainSingle().Which.Should().BeOfType<DriverPhaseOutcome.Broken>().Subject;
+            broken.Stderr.Should().Contain("timed out");
+            foreach (var secret in new[] { "client-secret", "service-token", "acting-token", "wrong-acting-token" })
+                broken.Stderr.Should().NotContain(secret);
+        }
+        finally
+        {
+            DriverRunner.ProcessTimeout = previous;
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     // The five client libraries disagree on endpoint syntax (.NET/Java need the scheme, Go/
