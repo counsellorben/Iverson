@@ -125,7 +125,7 @@ Each client's constructor already refuses an acting-user token on a plaintext ch
 **Tests per area:**
 - **LoadTest** (`Iverson.LoadTest.Tests`):
   - the TOTP cache file is created 0600 in a 0700 directory, using a temp `HOME` (`UserProfile`);
-  - the password gating, if `Program`'s top-level flow is testable as it stands; otherwise the live check covers it.
+  - the password gating and the immediate mint live in `Program.cs`'s top-level statements, which no test in `Iverson.LoadTest.Tests` invokes. Live check 1 covers the mint, and live check 2 covers the gating.
 - **ClientConformance** (`Iverson.ClientConformance.Tests/DriverRunnerTests.cs`):
   - `BuildFlags_IncludesAllRequiredBaseFlags` is re-pinned;
   - new tests: none of the four flags is emitted, the environment carries the four variables, and the timeout message contains no secret value.
