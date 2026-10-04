@@ -141,6 +141,10 @@ spec:
             - name: Authentication__ValidAudiences__0
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-human-oidc-client, key: client-id }
+            # The admin console's client id, from the same secret: /v1/traces accepts only its tokens.
+            - name: Authentication__ConsoleAudience
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-human-oidc-client, key: client-id }
             {{- if .Values.global.provisionTestIdentities }}
             - name: Authentication__ValidAudiences__1
               valueFrom:

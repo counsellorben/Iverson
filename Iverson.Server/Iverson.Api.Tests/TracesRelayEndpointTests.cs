@@ -36,11 +36,20 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
         }
     }
 
-    private (HttpClient Client, FakeJaegerHandler JaegerHandler) CreateAuthenticatedClient(string subject = "trace-relay-test-user")
+    // The token's audience defaults to the console's, the only one /v1/traces accepts (CSR
+    // round-10 #13). configuredConsoleAudience, when given, replaces the factory's
+    // Authentication:ConsoleAudience.
+    private (HttpClient Client, FakeJaegerHandler JaegerHandler) CreateAuthenticatedClient(
+        string subject = "trace-relay-test-user",
+        string audience = AuthTestWebApplicationFactory.ConsoleAudience,
+        string? configuredConsoleAudience = null)
     {
         var jaegerHandler = new FakeJaegerHandler();
         var factory = _baseFactory.WithWebHostBuilder(builder =>
         {
+            if (configuredConsoleAudience is not null)
+                builder.UseSetting("Authentication:ConsoleAudience", configuredConsoleAudience);
+
             builder.ConfigureServices(services =>
             {
                 // Overrides the primary handler of the "JaegerOtlpHttp" named client
@@ -54,7 +63,7 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
 
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", TestJwtFactory.CreateToken("test-service-audience", subject));
+            new AuthenticationHeaderValue("Bearer", TestJwtFactory.CreateToken(audience, subject));
         return (client, jaegerHandler);
     }
 
@@ -70,6 +79,37 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
 
         response.StatusCode.Should().Be(HttpStatusCode.Accepted, "the fake Jaeger's own status should be relayed back");
         jaegerHandler.CallCount.Should().Be(1, "a JSON body must be forwarded, not rejected");
+    }
+
+    // CSR round-10 #13: a service client's token (or an acting-user token) is authenticated but
+    // was not issued to the console, so it may not write spans.
+    [Fact]
+    public async Task PostTraces_NonConsoleAudience_Returns403_AndIsNeverForwarded()
+    {
+        var (client, jaegerHandler) = CreateAuthenticatedClient(audience: "test-service-audience");
+
+        using var content = new ByteArrayContent(Encoding.UTF8.GetBytes("""{"resourceSpans":[]}"""));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        var response = await client.PostAsync("/v1/traces", content);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        jaegerHandler.CallCount.Should().Be(0);
+    }
+
+    // Fail closed: with no console audience configured, not even a console token is accepted.
+    [Fact]
+    public async Task PostTraces_ConsoleAudienceUnset_Returns403_AndIsNeverForwarded()
+    {
+        var (client, jaegerHandler) = CreateAuthenticatedClient(configuredConsoleAudience: "");
+
+        using var content = new ByteArrayContent(Encoding.UTF8.GetBytes("""{"resourceSpans":[]}"""));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        var response = await client.PostAsync("/v1/traces", content);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        jaegerHandler.CallCount.Should().Be(0);
     }
 
     [Fact]

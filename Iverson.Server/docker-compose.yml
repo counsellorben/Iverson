@@ -481,6 +481,8 @@ services:
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ExternalIssuer=http://authentik.iverson.local/application/o/iverson-api/
       - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
+      # The admin console's client id (ValidAudiences__0): /v1/traces accepts only its tokens.
+      - Authentication__ConsoleAudience=dev-iverson-human-oidc-client-id
       - Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id
       - Authentication__ValidAudiences__2=dev-iverson-webtest-client-id
       - Authentication__ValidAudiences__3=dev-iverson-admin-automation-client-id
