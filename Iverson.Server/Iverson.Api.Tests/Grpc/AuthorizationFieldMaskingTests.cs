@@ -69,6 +69,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
+            requireExistingRow: false,
             new AuditLog(NullLogger<AuditLog>.Instance),
             Substitute.For<IPayloadSizeValidator>());
 
@@ -200,6 +201,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
+            requireExistingRow: false,
             new AuditLog(NullLogger<AuditLog>.Instance),
             Substitute.For<IPayloadSizeValidator>());
 
@@ -318,6 +320,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to update this entity.",
             existingRowJson: """{"Id":"tag-1","Name":"old","TenantId":"tenant-from-token"}""",
+            requireExistingRow: true,
             new AuditLog(NullLogger<AuditLog>.Instance),
             Substitute.For<IPayloadSizeValidator>());
 
@@ -357,6 +360,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson,
+            requireExistingRow: existingRowJson is not null,
             new AuditLog(NullLogger<AuditLog>.Instance),
             payloadSizeValidator ?? Substitute.For<IPayloadSizeValidator>());
 
@@ -480,6 +484,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
+            requireExistingRow: false,
             new AuditLog(NullLogger<AuditLog>.Instance),
             Substitute.For<IPayloadSizeValidator>());
 
@@ -517,6 +522,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to create this entity.",
             existingRowJson: null,
+            requireExistingRow: false,
             new AuditLog(NullLogger<AuditLog>.Instance),
             new PayloadSizeValidator());
 
@@ -583,6 +589,7 @@ public sealed class AuthorizationFieldMaskingTests
             AuthorizationAction.Write,
             "Not authorized to update this entity.",
             existingRowJson: """{"Id":"tag-1","Name":"old","TenantId":"someone-elses-tenant"}""",
+            requireExistingRow: true,
             new AuditLog(NullLogger<AuditLog>.Instance),
             new PayloadSizeValidator());
 

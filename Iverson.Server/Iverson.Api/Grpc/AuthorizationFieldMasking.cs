@@ -30,9 +30,14 @@ internal static class AuthorizationFieldMasking
     /// </para>
     /// </summary>
     /// <param name="existingRowJson">
-    /// JSON of the row being written, or null when there is no pre-existing row — either
-    /// because this is a pure create (Post) or because Update's key doesn't exist yet (the
-    /// upsert will create it). When null, ownership is force-set rather than validated.
+    /// JSON of the row being written, or null when there is no pre-existing row. Null on a create
+    /// (Post), where ownership is force-set rather than validated; on an Update, null means the
+    /// key has no row in the caller's tenant, which <paramref name="requireExistingRow"/> turns
+    /// into NotFound.
+    /// </param>
+    /// <param name="requireExistingRow">
+    /// True for Update, which never creates a row: a null <paramref name="existingRowJson"/>
+    /// answers NotFound. False for Post.
     /// </param>
     /// <param name="deniedMessage">
     /// Exception message used both when the caller has no access at all and — for the
@@ -47,10 +52,12 @@ internal static class AuthorizationFieldMasking
         AuthorizationAction action,
         string deniedMessage,
         string? existingRowJson,
+        bool requireExistingRow,
         AuditLog auditLog,
         IPayloadSizeValidator payloadSizeValidator)
     {
-        var auditAction = existingRowJson is null ? "Create" : "Update";
+        // The RPC, not the row: a denied Update of a key with no stored row is still an Update.
+        var auditAction = requireExistingRow || existingRowJson is not null ? "Update" : "Create";
         var resourceKey = StructFieldAccess.GetFieldString(payload, schema.KeyColumn.Name);
 
         // FIRST — and the required position is BEFORE THE PermissionDenied THROW below, not
@@ -86,13 +93,21 @@ internal static class AuthorizationFieldMasking
             throw new RpcException(new Status(StatusCode.PermissionDenied, deniedMessage));
         }
 
+        // Update never creates a row (CSR round 10 Finding #10). AFTER the denial throw, never
+        // before it: a caller who is denied anyway must get PermissionDenied whether or not the
+        // key exists, or the status would tell them which keys exist. The existing-row read is
+        // tenant-scoped, so a key that exists nowhere and a key owned by another tenant are both
+        // null here and get the same answer. No audit entry, matching Mapping Get's not-found.
+        if (requireExistingRow && existingRowJson is null)
+            throw new RpcException(new Status(StatusCode.NotFound,
+                $"'{schema.TypeName}:{resourceKey}' not found."));
+
         if (existingRowJson is null)
         {
-            // No pre-existing row — either a pure create (Post) or an Update whose key
-            // doesn't exist yet and will be created by the upsert. Force-set the tenant
-            // column unconditionally (tenant is strictly additive — it applies to bypass
-            // callers too, unlike ownership below). Force-set the owner field for
-            // ownership-required callers; leave it untouched for bypass callers.
+            // No pre-existing row: a create (Post). Force-set the tenant column unconditionally
+            // (tenant is strictly additive — it applies to bypass callers too, unlike ownership
+            // below). Force-set the owner field for ownership-required callers; leave it
+            // untouched for bypass callers.
             if (decision.TenantColumn is not null)
                 SetAuthoritativeField(payload, decision.TenantColumn, decision.TenantValue!);
             if (decision.OwnershipRequired)

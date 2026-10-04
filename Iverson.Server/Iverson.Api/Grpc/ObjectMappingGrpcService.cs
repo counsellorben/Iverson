@@ -8,7 +8,6 @@ using Iverson.Events;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Microsoft.AspNetCore.Authorization;
-using Npgsql;
 using ContractsRelationKind = Iverson.Client.Contracts.RelationKind;
 using SchemaRelationKind    = Iverson.Api.Schema.RelationKind;
 
@@ -146,8 +145,8 @@ public sealed class ObjectMappingGrpcService(
 
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
-            AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, _auditLog,
-            _payloadSizeValidator);
+            AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null,
+            requireExistingRow: false, _auditLog, _payloadSizeValidator);
 
         _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
@@ -203,7 +202,8 @@ public sealed class ObjectMappingGrpcService(
 
         // Narrowed to the acting tenant (CSR round 9 Finding #5) — see the identical read in
         // ObjectPersistenceGrpcService.Update for why a cross-tenant read here was an
-        // information-disclosure oracle, and how the RLS collision below replaces it.
+        // information-disclosure oracle. A key with no row in this tenant, foreign or absent,
+        // gets NotFound from EnforceWriteAuthorization (CSR round 10 Finding #10).
         var existingRowJson = await FetchByKeyAsync(schema, key,
             EntityAccess.ForTenant(_actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
         AuthorizationFieldMasking.EnforceWriteAuthorization(
@@ -214,6 +214,7 @@ public sealed class ObjectMappingGrpcService(
             AuthorizationAction.Write,
             "Not authorized to update this entity.",
             existingRowJson,
+            requireExistingRow: true,
             _auditLog,
             _payloadSizeValidator);
 
@@ -222,22 +223,9 @@ public sealed class ObjectMappingGrpcService(
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
-        Guid outboxRowId;
-        try
-        {
-            outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
-                SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
-                tenantId: decision.TenantValue);
-        }
-        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText.Contains("row-level security policy"))
-        {
-            _logger.LogWarning(
-                "[Mapping.Update] RLS collision swallowed as success: type={Type} key={Key} traceId={TraceId} message={Message}",
-                schema.TypeName.SanitizeForLog(), key.SanitizeForLog(), request.TraceId.SanitizeForLog(), ex.MessageText.SanitizeForLog());
-            _auditLog.Denied(_actingUserAccessor.ActingUser, "Update", schema.TypeName, key, "BlockedCrossTenantWrite");
-            AuthorizationFieldMasking.RemoveTenantColumn(request.Payload);
-            return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
-        }
+        var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
+            SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
+            tenantId: decision.TenantValue);
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
