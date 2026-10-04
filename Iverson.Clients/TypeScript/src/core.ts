@@ -669,6 +669,15 @@ export class EntityCoordinator<T extends object> {
      * outranks the client's ambient one; an explicit per-call token still outranks both.
      */
     withActingUser(token: ActingUserToken): EntityCoordinator<T> {
+        // The per-call token travels as per-call metadata, as the ambient one does, so it needs the
+        // same plaintext guard IversonClient's constructor applies to the ambient one.
+        if (this._client._refusesPlaintextTokens) {
+            throw new Error(
+                'Refusing to bind an acting-user token on a plaintext (useTls=false) channel ' +
+                'without an explicit allowInsecureCredentials=true opt-in on IversonClient. Pass ' +
+                'allowInsecureCredentials=true only for a known-local, non-TLS endpoint.',
+            );
+        }
         const bound = new EntityCoordinator(this._cls, this._client);
         bound._boundActingUser = token;
         return bound;
@@ -864,6 +873,8 @@ export class IversonClient {
     readonly _searchClient: ObjectSearchServiceClient;
     readonly _callCredentials?: grpc.CallCredentials;
     readonly _actingUserToken?: ActingUserToken;
+    /** Read by EntityCoordinator.withActingUser: plaintext and not opted in. */
+    readonly _refusesPlaintextTokens: boolean;
 
     constructor(
         host: string = 'localhost',
@@ -906,6 +917,7 @@ export class IversonClient {
         this._searchClient = new ObjectSearchServiceClient(address, credentials);
         this._callCredentials = callCredentials;
         this._actingUserToken = actingUserToken;
+        this._refusesPlaintextTokens = !useTls && !allowInsecureCredentials;
     }
 
     /** Close all underlying gRPC clients. */

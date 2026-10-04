@@ -63,7 +63,20 @@ var actingUserBypassPassword = needsTenantAndSchema
 var tenantProvisionId   = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ID") ?? "iverson-loadtest-dynamic";
 var tenantAdminUsername = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_USERNAME") ?? "iverson-loadtest-tenant-admin";
 var tenantAdminEmail    = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_EMAIL") ?? "iverson-loadtest-tenant-admin@iverson.local";
-var tenantAdminPassword = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD") ?? "dev-only-not-for-production-tenant-admin-password-0123456789";
+// CSR round-10 finding #9: no default. A literal default would be the same public password on every
+// tenant LoadTest creates, set through CreateTenant's recovery link below.
+var tenantAdminPassword = needsTenantAndSchema
+    ? RequireEnv("IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD",
+        "Missing required environment variable 'IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD' -- choose a password " +
+        "for the LoadTest tenant's admin. LoadTest sets it on a tenant it creates, through CreateTenant's " +
+        "recovery link, so it must meet Authentik's recovery password policy (at least 8 characters, " +
+        "zxcvbn score >= 2).")
+    : Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD") ?? "";
+if (needsTenantAndSchema && RecoveryPasswordPolicy.IsTooShort(tenantAdminPassword))
+    throw new InvalidOperationException(
+        $"IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD is shorter than {RecoveryPasswordPolicy.MinimumLength} characters. " +
+        "Authentik's recovery flow would refuse it after CreateTenant had already created the tenant, leaving " +
+        "its admin without a password. Choose a longer one; Authentik also requires a zxcvbn score of at least 2.");
 var actingUserCacheTarget = flags.Target == "kind" ? "kind" : "compose"; // maps LoadTest's own "containers"/"kind" to the Python script's "compose"/"kind" cache-path vocabulary
 var actingUserBaseUrl = tokenEndpoint is not null
     ? tokenEndpoint[..tokenEndpoint.IndexOf("/application/o/token/", StringComparison.Ordinal)]
@@ -129,19 +142,27 @@ if (needsTenantAndSchema && clientCredentials is not null)
             }
             catch (Exception ex)
             {
-                // CreateTenant already succeeded, so the next run finds the tenant and skips this step.
-                // Say so now, or the operator only learns it from that run's failing logins.
-                throw new InvalidOperationException(
-                    $"{ex.Message} The tenant now exists, so re-running LoadTest will not retry this step. " +
-                    "Set the tenant admin's password by hand, for example in " +
-                    "`docker exec -it iverson-authentik-worker ak shell`: " +
-                    $"u = User.objects.get(username=\"{tenantAdminUsername}\"); u.set_password(\"<password>\"); u.save()",
-                    ex);
+                throw TenantExistsFailure(ex, tenantAdminUsername);
             }
             Console.WriteLine("Set the tenant admin's password from CreateTenant's recovery link.");
         }
         tenantAdminTokenProvider = new ActingUserTokenProvider(new AuthentikFlowExecutorClient(
             tenantAdminIdentity, tenantAdminLoggerFactory.CreateLogger<AuthentikFlowExecutorClient>()));
+        if (adminRecoveryLink is not null)
+        {
+            // Log in now, while this run has just set the password: the first login completes the
+            // tenant admin's TOTP enrolment, so the account is never left with a password and an
+            // unclaimed second-factor enrolment until some later data-plane call.
+            try
+            {
+                await tenantAdminTokenProvider.GetTokenAsync();
+            }
+            catch (Exception ex)
+            {
+                throw TenantAdminLoginFailure(ex);
+            }
+            Console.WriteLine("Logged the tenant admin in, enrolling its TOTP device.");
+        }
         Console.WriteLine($"Tenant '{tenantProvisionId}' ready.\n");
     }
     catch (Exception ex)
@@ -342,11 +363,28 @@ static string Env(string key, string def) =>
 // fresh stack. That blueprint value is now randomly generated per stack by
 // scripts/generate-compose-secrets.sh, so a stale literal default here would silently authenticate
 // with the wrong password and fail with a confusing 401 instead of a clear error.
-static string RequireEnv(string key) =>
-    Environment.GetEnvironmentVariable(key) ?? throw new InvalidOperationException(
+static string RequireEnv(string key, string? message = null) =>
+    Environment.GetEnvironmentVariable(key) ?? throw new InvalidOperationException(message ??
         $"Missing required environment variable '{key}' -- the docker-compose stack's Authentik " +
         "dev-only passwords are now randomly generated per stack by scripts/generate-compose-secrets.sh; " +
         "read the value out of Iverson.Server/.env.");
+
+// CreateTenant already succeeded, so the next run finds the tenant and skips the step that just
+// failed. Say so now, or the operator only learns it from that run's failing logins.
+static InvalidOperationException TenantExistsFailure(Exception ex, string tenantAdminUsername) => new(
+    $"{ex.Message} The tenant now exists, so re-running LoadTest will not retry this step. " +
+    "Set the tenant admin's password by hand, for example in " +
+    "`docker exec -it iverson-authentik-worker ak shell`: " +
+    $"u = User.objects.get(username=\"{tenantAdminUsername}\"); u.set_password(\"<password>\"); u.save()",
+    ex);
+
+// The recovery step succeeded, so the tenant exists and its admin's password is set; only the first
+// login failed. The next run finds the tenant and logs the admin in when its token is first needed.
+static InvalidOperationException TenantAdminLoginFailure(Exception ex) => new(
+    $"{ex.Message} The tenant exists and its admin's password is set, but the admin's first login, which " +
+    "enrols its TOTP device, failed. Re-running LoadTest finds the tenant and retries the login when the " +
+    "admin's token is first needed.",
+    ex);
 
 static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentials creds)
 {

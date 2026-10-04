@@ -6,6 +6,7 @@ using Xunit;
 
 namespace Iverson.ClientConformance.Tests;
 
+[Collection("driver-process-timeout")]
 public class NamingRejectedScenarioTests
 {
     private static AsyncUnaryCall<T> CompletedCall<T>(T response) =>

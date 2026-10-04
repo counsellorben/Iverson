@@ -1161,8 +1161,19 @@ public final class Driver {
             return value;
         }
 
+        // The secret flags the harness passes in the environment instead of on the command line,
+        // which every local user can read. A flag given on the command line still wins, so a
+        // driver run by hand keeps working.
+        private static final Map<String, String> SECRET_FLAG_VARIABLES = Map.of(
+            "--client-secret", "IVERSON_DRIVER_CLIENT_SECRET",
+            "--service-token", "IVERSON_DRIVER_SERVICE_TOKEN",
+            "--acting-token", "IVERSON_DRIVER_ACTING_TOKEN",
+            "--wrong-acting-token", "IVERSON_DRIVER_WRONG_ACTING_TOKEN");
+
         String optional(String flag) {
-            String value = values.get(flag);
+            String value = values.containsKey(flag) ? values.get(flag)
+                : SECRET_FLAG_VARIABLES.containsKey(flag) ? System.getenv(SECRET_FLAG_VARIABLES.get(flag))
+                : null;
             return value == null || value.isEmpty() ? null : value;
         }
     }

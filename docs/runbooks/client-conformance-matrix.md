@@ -36,8 +36,22 @@ the provider's `property_mappings` in that blueprint: without `schema_admin` the
 accepted and then refused on `RegisterSchema` (403), which presents as a driver defect rather than
 as a missing export.
 
-Every `IVERSON_ACTING_USER_*` variable already has a working compose default in `TokenBroker.cs`
-and needs no export.
+`IVERSON_ACTING_USER_BYPASS_PASSWORD` and `IVERSON_OTHER_TENANT_PASSWORD` have no default and are
+required: `TokenBroker.cs` throws without them. The compose stack's Authentik passwords are
+generated per stack, so read them out of `Iverson.Server/.env`:
+
+```bash
+export IVERSON_ACTING_USER_BYPASS_PASSWORD="$(grep '^IVERSON_BYPASS_PASSWORD=' Iverson.Server/.env | cut -d= -f2)"
+export IVERSON_OTHER_TENANT_PASSWORD="$(grep '^IVERSON_SMOKE_TEST_PASSWORD=' Iverson.Server/.env | cut -d= -f2)"
+```
+
+Every other `IVERSON_ACTING_USER_*` and `IVERSON_OTHER_TENANT_*` variable has a working compose
+default in `TokenBroker.cs`.
+
+The harness hands each driver its secrets (the client secret, the service token and the two
+acting-user tokens) in the `IVERSON_DRIVER_*` environment variables rather than on its command
+line, which every local user can read. A driver run by hand still accepts them as flags, and a
+flag wins over the variable.
 
 ## Running it
 

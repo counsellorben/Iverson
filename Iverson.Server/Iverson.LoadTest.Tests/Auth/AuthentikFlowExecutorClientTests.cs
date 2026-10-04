@@ -1,4 +1,5 @@
 using System.Net;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
@@ -131,5 +132,90 @@ public class AuthentikFlowExecutorClientTests
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*ak-stage-access-denied*");
         handler.Requests.Should().HaveCount(4);
+    }
+
+    // A first login that enrols TOTP: the enrolment stage, the code POST, completion, then the
+    // authorize redirect and the token exchange. MintAsync caches the enrolment secret on the way.
+    private static FakeHandler EnrolmentLogin() => new(
+        Json("""{"component":"ak-stage-authenticator-totp","config_url":"otpauth://totp/iverson?secret=JBSWY3DPEHPK3PXP"}"""),
+        Json("{}"),
+        Json("""{"component":"xak-flow-redirect","to":"/"}"""),
+        new HttpResponseMessage(HttpStatusCode.Redirect)
+        {
+            Headers = { Location = new Uri("http://localhost/placeholder-callback?code=c1&state=s1") },
+        },
+        Json("""{"access_token":"at","refresh_token":"rt","expires_in":300}"""));
+
+    // Runs the test with HOME pointed at a fresh directory, so the TOTP cache is written there and
+    // never to the real ~/.cache/iverson. Asserted before anything runs: if UserProfile did not
+    // follow HOME, the test would write the developer's own cache.
+    private static async Task WithTempHome(Func<string, Task> test)
+    {
+        var home = Directory.CreateTempSubdirectory("iverson-totp-home-").FullName;
+        var previous = Environment.GetEnvironmentVariable("HOME");
+        Environment.SetEnvironmentVariable("HOME", home);
+        try
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile).Should().Be(home);
+            await test(home);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HOME", previous);
+            Directory.Delete(home, recursive: true);
+        }
+    }
+
+    private static string CachePath(string home) =>
+        Path.Combine(home, ".cache", "iverson", "acting-user-totp-secret-compose-iverson-loadtest-tenant-admin.txt");
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task MintAsync_CreatesTheTotpCacheFileOwnerOnly_InAnOwnerOnlyDirectory()
+    {
+        await WithTempHome(async home =>
+        {
+            await Client(EnrolmentLogin()).MintAsync();
+
+            File.GetUnixFileMode(Path.Combine(home, ".cache", "iverson"))
+                .Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            File.GetUnixFileMode(CachePath(home)).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.ReadAllText(CachePath(home)).Should().Be("JBSWY3DPEHPK3PXP\n");
+        });
+    }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task MintAsync_RestrictsAPreExistingLooserCacheFile_AndReplacesItsContent()
+    {
+        await WithTempHome(async home =>
+        {
+            Directory.CreateDirectory(Path.Combine(home, ".cache", "iverson"));
+            File.WriteAllText(CachePath(home), "OLD\n");
+            File.SetUnixFileMode(CachePath(home),
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+            await Client(EnrolmentLogin()).MintAsync();
+
+            File.GetUnixFileMode(CachePath(home)).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.ReadAllText(CachePath(home)).Should().Be("JBSWY3DPEHPK3PXP\n");
+        });
+    }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task MintAsync_RestrictsAPreExistingLooserCacheDirectory()
+    {
+        await WithTempHome(async home =>
+        {
+            var dir = Path.Combine(home, ".cache", "iverson");
+            Directory.CreateDirectory(dir);
+            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+
+            await Client(EnrolmentLogin()).MintAsync();
+
+            File.GetUnixFileMode(dir).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        });
     }
 }

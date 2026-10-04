@@ -179,4 +179,24 @@ public class EntityCoordinatorIdentityResolutionTests
         headers.Get(MetadataKey).Should().BeNull();
         headers.Get("x-trace-id")!.Value.Should().Be("1");
     }
+
+    [Fact]
+    public void WithActingUser_Throws_WhenTheClientRefusesPlaintextTokens()
+    {
+        var (sut, _) = CreateSut(new ActingUserIdentity(refusesPlaintextTokens: true));
+
+        var act = () => sut.WithActingUser(() => Task.FromResult("bound-token"));
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*allowInsecureChannelCallCredentials*");
+    }
+
+    [Fact]
+    public async Task WithActingUser_Binds_WhenTheClientDoesNotRefusePlaintextTokens()
+    {
+        var (sut, captured) = CreateSut(new ActingUserIdentity(refusesPlaintextTokens: false));
+
+        await sut.WithActingUser(() => Task.FromResult("bound-token")).PostMappedAsync(NewEntity());
+
+        captured()!.Get(MetadataKey)!.Value.Should().Be("Bearer bound-token");
+    }
 }

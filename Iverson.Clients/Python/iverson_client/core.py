@@ -627,6 +627,8 @@ class EntityCoordinator(Generic[T]):
         entity_class: type,
         channel: grpc.Channel,
         acting_user_token: str | None = None,
+        *,
+        refuse_plaintext_token: bool = False,
     ) -> None:
         meta = getattr(entity_class, "_iverson_meta", None)
         if meta is None:
@@ -641,9 +643,19 @@ class EntityCoordinator(Generic[T]):
         self._retrieval = retrieval_grpc.ObjectRetrievalServiceStub(channel)
         self._search = search_grpc.ObjectSearchServiceStub(channel)
         self._acting_user_token = acting_user_token
+        self._refuse_plaintext_token = refuse_plaintext_token
 
     def with_acting_user(self, token: str) -> "EntityCoordinator[T]":
         """Return a coordinator bound to ``token``, leaving this one untouched."""
+        # The per-call token travels as per-call metadata, as the ambient one does, so it needs
+        # the same plaintext guard IversonClient's constructor applies to the ambient one.
+        if self._refuse_plaintext_token:
+            raise ValueError(
+                "Refusing to bind an acting-user token on a plaintext (use_tls=False) channel "
+                "without an explicit allow_insecure_credentials=True opt-in on IversonClient: "
+                "the acting-user token would otherwise be sent in the clear. Pass "
+                "allow_insecure_credentials=True only for a known-local, non-TLS endpoint."
+            )
         bound = copy.copy(self)
         bound._acting_user_token = token
         return bound
@@ -928,6 +940,9 @@ class IversonClient:
 
         self._mapping_stub = mapping_grpc.ObjectMappingServiceStub(self._channel)
         self._acting_user_token = acting_user_token
+        # Read by coordinator(): a per-call acting-user token gets the same plaintext guard as
+        # the ambient one above.
+        self._refuse_plaintext_token = not use_tls and not allow_insecure_credentials
 
     def _acting_user_metadata(self) -> tuple[tuple[str, str], ...]:
         """Per-call metadata carrying the ambient acting-user identity, or empty when none."""
@@ -950,7 +965,10 @@ class IversonClient:
 
     def coordinator(self, entity_class: type) -> EntityCoordinator:
         """Return an ``EntityCoordinator`` for the given entity class."""
-        return EntityCoordinator(entity_class, self._channel, self._acting_user_token)
+        return EntityCoordinator(
+            entity_class, self._channel, self._acting_user_token,
+            refuse_plaintext_token=self._refuse_plaintext_token,
+        )
 
     def get_schema(self, trace_id: str = "") -> list[mapping_pb.SchemaType]:
         """Return the catalog of registered types this identity may read."""

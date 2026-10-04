@@ -198,8 +198,24 @@ func (a args) require(flag string) (string, error) {
 	return v, nil
 }
 
+// secretFlagVariables names the secret flags the harness passes in the environment instead of on
+// the command line, which every local user can read. A flag given on the command line still wins,
+// so a driver run by hand keeps working.
+var secretFlagVariables = map[string]string{
+	"--client-secret":      "IVERSON_DRIVER_CLIENT_SECRET",
+	"--service-token":      "IVERSON_DRIVER_SERVICE_TOKEN",
+	"--acting-token":       "IVERSON_DRIVER_ACTING_TOKEN",
+	"--wrong-acting-token": "IVERSON_DRIVER_WRONG_ACTING_TOKEN",
+}
+
 func (a args) optional(flag string) string {
-	return a.values[flag]
+	if v, ok := a.values[flag]; ok {
+		return v
+	}
+	if variable, ok := secretFlagVariables[flag]; ok {
+		return os.Getenv(variable)
+	}
+	return ""
 }
 
 // grpcDialTarget reduces a gRPC endpoint to the bare `host:port` target grpc.Dial accepts,
@@ -494,7 +510,7 @@ func run(argv []string) int {
 	// asks for them, so a token this driver minted for itself would be rejected by the API on
 	// issuer validation (401) and would carry no schema_admin scope (403 on RegisterSchema) —
 	// OAuth2ClientCredentials can set neither. The orchestrator mints one correctly and passes
-	// it via --service-token.
+	// it in IVERSON_DRIVER_SERVICE_TOKEN (or --service-token when run by hand).
 	if serviceToken != "" {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(
 			staticServiceToken{token: serviceToken, actingToken: actingToken, allowInsecureCredentials: true}))

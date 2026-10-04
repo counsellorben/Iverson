@@ -38,11 +38,26 @@ public sealed class EntityCoordinator<T>(
     /// untouched. The bound identity outranks the client's ambient one. This is the only
     /// per-call override; the Metadata bag passed to individual calls is not an identity channel.
     /// </summary>
-    public EntityCoordinator<T> WithActingUser(Func<Task<string>> tokenProvider) =>
-        new(registry, assembler, mapping, persistence, retrieval, search, logger, identity)
+    public EntityCoordinator<T> WithActingUser(Func<Task<string>> tokenProvider)
+    {
+        // The per-call token travels as raw Metadata, as the ambient one does, so it needs the same
+        // plaintext guard AddIversonClient applies to the ambient one.
+        if (identity?.RefusesPlaintextTokens == true)
+        {
+            throw new InvalidOperationException(
+                "Refusing to bind an acting-user token on a plaintext (h2c) endpoint without an " +
+                "explicit allowInsecureChannelCallCredentials=true opt-in. The acting-user identity " +
+                "travels as raw Metadata, not CallCredentials, so grpc-dotnet's own " +
+                "UnsafeUseInsecureChannelCallCredentials guard cannot see it — the acting-user Bearer " +
+                "token would otherwise be sent in the clear. Pass allowInsecureChannelCallCredentials: " +
+                "true to AddIversonClient only for a known-local, non-TLS endpoint.");
+        }
+
+        return new(registry, assembler, mapping, persistence, retrieval, search, logger, identity)
         {
             _boundActingUser = tokenProvider,
         };
+    }
 
     // The per-call Metadata bag is no longer an identity channel: any acting-user entry the
     // caller supplies in it is stripped, never honored. Identity resolves from bound-then-ambient

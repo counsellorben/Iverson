@@ -59,7 +59,8 @@ namespace Iverson.ClientConformance.Scenarios;
 ///
 /// <para><b>The negative leg.</b> The orchestrator mints a SECOND acting-user token, belonging to a
 /// different active tenant (<c>TokenBroker.GetOtherTenantActingTokenAsync</c>), and passes it to
-/// every driver as <c>--wrong-acting-token</c>. Each driver attempts a mapped UPDATE of the row it
+/// every driver in <c>IVERSON_DRIVER_WRONG_ACTING_TOKEN</c> (the <c>--wrong-acting-token</c> flag when
+/// a driver is run by hand). Each driver attempts a mapped UPDATE of the row it
 /// just created, carrying that token in place of its own, and reports the gRPC status code it
 /// received. Drivers report; they never judge. The code is reported and compared NUMERICALLY,
 /// because the five languages spell the same code five ways (<c>PermissionDenied</c>,

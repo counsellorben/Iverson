@@ -42,3 +42,36 @@ func TestStaticServiceTokenOmitsActingUserWhenUnset(t *testing.T) {
 		t.Errorf("acting-user header present with no acting token: %q", md[iverson.ActingUserMetadataKey])
 	}
 }
+
+// The harness passes the secret flags in the environment rather than on the command line; a flag
+// given on the command line still wins, so a driver run by hand keeps working.
+func TestOptionalSecretFlagEnvironmentFallback(t *testing.T) {
+	secretFlags := map[string]string{
+		"--client-secret":      "IVERSON_DRIVER_CLIENT_SECRET",
+		"--service-token":      "IVERSON_DRIVER_SERVICE_TOKEN",
+		"--acting-token":       "IVERSON_DRIVER_ACTING_TOKEN",
+		"--wrong-acting-token": "IVERSON_DRIVER_WRONG_ACTING_TOKEN",
+	}
+	for flag, variable := range secretFlags {
+		t.Run(flag, func(t *testing.T) {
+			t.Setenv(variable, "ENV")
+			if got := parseArgs(nil).optional(flag); got != "ENV" {
+				t.Errorf("flag absent: got %q, want %q", got, "ENV")
+			}
+			if got := parseArgs([]string{flag, "FLAG"}).optional(flag); got != "FLAG" {
+				t.Errorf("flag present: got %q, want %q", got, "FLAG")
+			}
+			t.Setenv(variable, "")
+			if got := parseArgs(nil).optional(flag); got != "" {
+				t.Errorf("variable empty: got %q, want empty", got)
+			}
+		})
+	}
+}
+
+func TestOptionalNeverReadsTheEnvironmentForANonSecretFlag(t *testing.T) {
+	t.Setenv("IVERSON_DRIVER_CLIENT_ID", "ENV")
+	if got := parseArgs(nil).optional("--client-id"); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}

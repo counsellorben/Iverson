@@ -460,3 +460,32 @@ def test_get_token_does_not_follow_a_redirect():
             provider.get_token()
     finally:
         server.shutdown()
+
+
+# A per-call acting-user token (with_acting_user) gets the same plaintext guard as the ambient
+# one the constructor checks above.
+def test_with_acting_user_raises_on_plaintext_without_opt_in():
+    client = IversonClient(host="localhost", port=5000, use_tls=False)
+    try:
+        with pytest.raises(ValueError, match="allow_insecure_credentials"):
+            client.coordinator(CoordSchemaEntity).with_acting_user("user-token-123")
+    finally:
+        client.close()
+
+
+def test_with_acting_user_binds_on_plaintext_with_opt_in():
+    client = IversonClient(host="localhost", port=5000, use_tls=False, allow_insecure_credentials=True)
+    try:
+        bound = client.coordinator(CoordSchemaEntity).with_acting_user("user-token-123")
+        assert bound._acting_user_metadata()[0][1] == "Bearer user-token-123"
+    finally:
+        client.close()
+
+
+def test_with_acting_user_binds_on_tls():
+    client = IversonClient(host="localhost", port=5000, use_tls=True)
+    try:
+        bound = client.coordinator(CoordSchemaEntity).with_acting_user("user-token-123")
+        assert bound._acting_user_metadata()[0][1] == "Bearer user-token-123"
+    finally:
+        client.close()

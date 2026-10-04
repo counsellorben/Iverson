@@ -180,6 +180,40 @@ describe('IversonClient — construction', () => {
     });
 });
 
+// ── EntityCoordinator.withActingUser — plaintext guard ──────────────────────
+// A per-call acting-user token gets the same plaintext guard as the ambient one the constructor
+// checks above.
+
+describe('EntityCoordinator.withActingUser — plaintext guard', () => {
+    it('throws on a plaintext channel without the opt-in', () => {
+        const client = new IversonClient('localhost', 5000, false);
+        try {
+            expect(() => new EntityCoordinator(TestEntity, client).withActingUser('tok-1'))
+                .toThrow(/allowInsecureCredentials/);
+        } finally {
+            client.close();
+        }
+    });
+
+    it('binds on a plaintext channel with the opt-in', () => {
+        const client = new IversonClient('localhost', 5000, false, undefined, undefined, true);
+        try {
+            expect(new EntityCoordinator(TestEntity, client).withActingUser('tok-1')).toBeInstanceOf(EntityCoordinator);
+        } finally {
+            client.close();
+        }
+    });
+
+    it('binds on a TLS channel', () => {
+        const client = new IversonClient('localhost', 5000, true);
+        try {
+            expect(new EntityCoordinator(TestEntity, client).withActingUser('tok-1')).toBeInstanceOf(EntityCoordinator);
+        } finally {
+            client.close();
+        }
+    });
+});
+
 // ── EntityCoordinator — acting-user token threading ─────────────────────────
 
 describe('EntityCoordinator — acting-user token threading', () => {

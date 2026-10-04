@@ -85,8 +85,8 @@ final class DualHeaderCredentials extends CallCredentials {
      * JWT's {@code iss} from the request's Host header and grants scopes only when the token
      * request asks for them, so a token this driver minted for itself would be rejected by the
      * API on issuer validation (401) and would carry no {@code schema_admin} scope (403 on
-     * RegisterSchema). The orchestrator mints one correctly and passes it via
-     * {@code --service-token}.
+     * RegisterSchema). The orchestrator mints one correctly and passes it in
+     * {@code IVERSON_DRIVER_SERVICE_TOKEN} (or {@code --service-token} when run by hand).
      */
     private String fetchServiceToken() throws Exception {
         if (serviceToken != null && !serviceToken.isEmpty()) return serviceToken;

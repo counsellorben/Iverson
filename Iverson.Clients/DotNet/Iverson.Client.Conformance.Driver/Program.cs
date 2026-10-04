@@ -1440,7 +1440,23 @@ namespace Iverson.Client.Conformance.Driver
                 ? value
                 : throw new ArgumentException($"missing required flag {flag}");
 
-        public string? Optional(string flag) =>
-            _values.TryGetValue(flag, out var value) && value.Length > 0 ? value : null;
+        // The secret flags the harness passes in the environment instead of on the command line,
+        // which every local user can read. A flag given on the command line still wins, so a
+        // driver run by hand keeps working.
+        private static readonly Dictionary<string, string> SecretFlagVariables = new(StringComparer.Ordinal)
+        {
+            ["--client-secret"] = "IVERSON_DRIVER_CLIENT_SECRET",
+            ["--service-token"] = "IVERSON_DRIVER_SERVICE_TOKEN",
+            ["--acting-token"] = "IVERSON_DRIVER_ACTING_TOKEN",
+            ["--wrong-acting-token"] = "IVERSON_DRIVER_WRONG_ACTING_TOKEN",
+        };
+
+        public string? Optional(string flag)
+        {
+            var value = _values.TryGetValue(flag, out var fromFlag) ? fromFlag
+                : SecretFlagVariables.TryGetValue(flag, out var variable) ? Environment.GetEnvironmentVariable(variable) ?? string.Empty
+                : string.Empty;
+            return value.Length > 0 ? value : null;
+        }
     }
 }
