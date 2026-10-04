@@ -142,8 +142,9 @@ Each task's table was produced by applying that task's code on the scratch branc
 
 | Category | Assumption | Evidence |
 |---|---|---|
-| code validity | A restricted integer above 2^53 is carried as its exact JSON text, which `json_populate_record` parses back exactly | CIR-2 §2.1 (the API accepts any Struct, so a string-sent BIGINT above 2^53 is stored exactly); `Update_ByAFieldRestrictedCaller_KeepsARestrictedIntegerAbove2Pow53Exact` 183/0; helper call removed → 1 failed |
+| code validity | A restricted integer outside ±2^53, `-2^63` included, is carried as its exact JSON text, which `json_populate_record` parses back exactly | CIR-2 §2.1 (the API accepts any Struct, so a string-sent BIGINT above 2^53 is stored exactly); `Update_ByAFieldRestrictedCaller_KeepsARestrictedIntegerAbove2Pow53Exact` 183/0; helper call removed → 1 failed |
 | code validity | An exception thrown inside `OnTokenValidated` fails the request rather than skipping authentication, so a revocation-cache reload failure fails closed | CIR-1 probe PB (run): `ListAsync` throwing → `/v1/traces` 500 with nothing forwarded, gRPC Unknown; span S8 |
+| ordering | `RemoveUser` returns only after the revocation row has committed, so a 30 s clock anchored at its return is never early | Task 7 Step 6 awaits `RevokeAsync` (a single awaited `INSERT … ON CONFLICT`, Task 6 Step 5) before `DeactivateUserAsync`; CIR-3 P-ORDER: with the real repository on Postgres the row exists when Authentik is called and when `RemoveUser` returns, and a deferred-write control shows 0 rows |
 
 ### Task 1 assumptions: Update is strictly an update
 
@@ -201,7 +202,7 @@ Each mutation was applied, run, and restored from a byte copy. `git status` was 
 | code validity | Case-insensitive match matters for the owner field: it is exempt from rejection, so an ownership-scoped caller restricted from writing it may still send it, camelCase. `StructSerializer.FoldKeys` throws InvalidArgument on two keys that fold to one | `ProtoPayloadHelper.cs:16-33`; mutation M7 (Ordinal) fails `EnforceWriteAuthorization_CamelCasePayloadKey_MatchesTheCanonicalStoredKey` |
 | code validity | `carriedForward` is a `List<string>` returned as the method's `IReadOnlyCollection<string>`; iterating `existingRow.Fields.Keys` while `CarryForward` writes to a *different* Struct (`payload`) is safe | Compiles with 0 warnings in the touched files; 183/0 |
 | code validity | The read decision for "test-bypass" with `RowPermission("test-bypass", false, true, false)`: no OwnerField → Denied, `AllowedFields` null; with OwnerField → ownership-required, read `AllowedFields` = all minus `Notes` (still lists `Secret`). Either way read masking alone would return the carried `Secret` | `RowFieldAuthorizationEvaluator.cs:36-64`; mutation M9 (drop the carried-key removal) fails both write-only tests |
-| code validity | Values survive the real round trip on `postgres:16-alpine`: `TIMESTAMPTZ` `row_to_json` text with offset and `BYTEA` `\x…` hex both go back through `json_populate_record` unchanged, and so does a BIGINT/BIGINT[] above 2^53, which `PreserveExactIntegers` carries as exact JSON text (CIR-2 §2.1) | `Update_ByAFieldRestrictedCaller_LeavesOmittedRestrictedValuesIntactInPostgres` compares `GetRawText()` of `Secret`, `SealedAt`, `Seal` before and after; closes spec VA-21's two caveats (`postgres:16`, .NET hop) |
+| code validity | Values survive the real round trip on `postgres:16-alpine`: `TIMESTAMPTZ` `row_to_json` text with offset and `BYTEA` `\x…` hex both go back through `json_populate_record` unchanged, and so does a BIGINT/BIGINT[] outside ±2^53, `-2^63` included, which `PreserveExactIntegers` carries as exact JSON text (CIR-2 §2.1, CIR-3 §2.1) | `Update_ByAFieldRestrictedCaller_LeavesOmittedRestrictedValuesIntactInPostgres` compares `GetRawText()` of `Secret`, `SealedAt`, `Seal` before and after; closes spec VA-21's two caveats (`postgres:16`, .NET hop) |
 | code validity | RLS in the Postgres test: `ApplySchemaAsync` on a schema with a `TenantColumn` grants `iverson_runtime` and FORCEs RLS; `FetchByKeyAsync(ForTenant)` and `OutboxWriter`'s tenant-scoped upsert run as that role; the outbox insert resets to the superuser | `Iverson.Sql.Tests/TenantScopedAccessIntegrationTests.cs:246-293` (same writer, same role switch); test passes |
 | code validity | The owner carry-forward keys on `schema.Authorization?.OwnerField`, not `decision.OwnerFieldName`: the evaluator leaves `OwnerFieldName` null for bypass callers. `AuthorizationRules.OwnerField` normalizes `""` to null, so a schema with no ownership dimension skips the step. The stored owner key is found case-insensitively, because registration admits an `OwnerField` that matches its column only case-insensitively (`SchemaRegistrationOrchestrator.cs:680-686`) | `RowFieldAuthorizationEvaluator.cs:44-60`; `SchemaDescriptor.cs:145-167`; mutation M14 (decision instead of schema) fails only the bypass cases |
 | code validity | The owner step runs AFTER `RejectDisallowedFields`. A bypass caller is not owner-exempt (`OwnerFieldName` null), so an owner carried in before the rejection would be rejected as a field it may not write, whenever the owner column is also field-restricted | `EnforceWriteAuthorization` order; the exemption list is `{OwnerFieldName, TenantColumn}` |
@@ -235,6 +236,7 @@ Final code, i.e. owner carry-forward included. The four classes, 182 tests, with
 | Mapping Read masking | `MaskDisallowedFields(request.Payload, readDecision.AllowedFields)` → `RemoveTenantColumn(request.Payload)` | `Update_ResponseOmitsFieldsTheCallerMayNotRead_WhileThePublishedPayloadKeepsThem` (1 failed) |
 | Mapping carried-key removal | deleted the `foreach (var carried in carriedForward) request.Payload.Fields.Remove(carried);` loop | `Update_ResponseOmitsFieldsTheCallerMayNotRead_…`, both write-only response tests, all three owner-theory cases (6 failed) |
 | Exact large integers carried | `PreserveExactIntegers(existingStruct, existingRowJson);` removed | `Update_ByAFieldRestrictedCaller_KeepsARestrictedIntegerAbove2Pow53Exact` (1 failed / 183) |
+| `IsDoubleExact` handles `-2^63` | bound → `Math.Abs(l) <= (1L << 53)` | `Update_ByAFieldRestrictedCaller_KeepsARestrictedIntegerAbove2Pow53Exact` fails with `OverflowException` (1 failed / 183; CIR-3 §2.1) |
 
 Each mutation was applied, run, and restored from a byte copy. `git status` was clean against the commit afterwards.
 
@@ -1705,7 +1707,7 @@ public sealed class UpdateCarryForwardPostgresIntegrationTests(ReconciliationQue
     [Fact]
     public async Task Update_ByAFieldRestrictedCaller_KeepsARestrictedIntegerAbove2Pow53Exact()
     {
-        // A Struct number is a double; a stored BIGINT above 2^53 must not come back rounded.
+        // A Struct number is a double; a stored BIGINT outside ±2^53 (-2^63 included) must not come back rounded.
         var baseSchema = SchemaFixtures.ReservedTenantDossierSchema();
         var schema = baseSchema with
         {
@@ -1725,7 +1727,7 @@ public sealed class UpdateCarryForwardPostgresIntegrationTests(ReconciliationQue
         await _repo.ExecuteAsync(
             $"""
             INSERT INTO "{schema.TableName}" ("Id", "Title", "Serial", "Serials", "{SchemaDescriptor.TenantColumnName}")
-            VALUES (@Id, 'old title', 9007199254740993, ARRAY[9007199254740993, 7]::bigint[], 'test-tenant')
+            VALUES (@Id, 'old title', 9007199254740993, ARRAY[9007199254740993, -9223372036854775808]::bigint[], 'test-tenant')
             """,
             new { Id = key });
         var registry = new SchemaRegistry(new SchemaRegistryRepository(_repo), NullLogger<SchemaRegistry>.Instance);
@@ -1745,7 +1747,7 @@ public sealed class UpdateCarryForwardPostgresIntegrationTests(ReconciliationQue
 
         var stored = await _repo.QuerySingleOrDefaultAsync<string>(
             $"""SELECT "Serial"::text || ' ' || "Serials"::text FROM "{schema.TableName}" WHERE "Id" = @Id""", new { Id = key });
-        stored.Should().Be("9007199254740993 {9007199254740993,7}");
+        stored.Should().Be("9007199254740993 {9007199254740993,-9223372036854775808}");
     }
 
     private async Task<JsonElement> ReadRowAsync(string tableName, Guid key)
@@ -1967,7 +1969,7 @@ and add the two new methods directly after it, as the class's last members:
     }
 
     /// <summary>
-    /// A Struct number is a double, so an integer above 2^53 in the stored row would come back
+    /// A Struct number is a double, so an integer outside ±2^53 in the stored row would come back
     /// rounded. Such a value (or array element) is carried as its exact JSON text instead, which
     /// json_populate_record parses back into BIGINT exactly.
     /// </summary>
@@ -1987,7 +1989,7 @@ and add the two new methods directly after it, as the class's last members:
     }
 
     private static bool IsDoubleExact(System.Text.Json.JsonElement e) =>
-        !e.TryGetInt64(out var l) || Math.Abs(l) <= (1L << 53);
+        !e.TryGetInt64(out var l) || (l >= -(1L << 53) && l <= (1L << 53));
 ```
 
 The tenant column is never copied by carry-forward: on the update branch it is already force-set into the payload under its canonical name before this runs. An owner column that is also field-restricted is copied once, by the restricted pass; `CarryForward` then sees it present and the owner step adds nothing.
@@ -5665,8 +5667,8 @@ Use the probe program:
 1. Make tenant `T` exist and be active. Either drive `TenantLifecycle.CreateTenant` as the operator, or run the LoadTest tenant provisioning (which creates the tenant, its admin and a recovery link). Set the tenant admin's password from the recovery link.
 2. Create user `U` in tenant `T` (an Authentik user with `attributes.tenant_id = T`), set its password from a recovery link, and mint its acting-user token through `dev-iverson-loadtest-human-client-id`.
 3. Call a data-plane RPC, e.g. `ObjectRetrieval.Get` on any registered type, with the loadtest service token plus `x-acting-user-authorization: Bearer <U token>`. Expected: not Unauthenticated.
-4. As `T`'s tenant admin, call `TenantAdmin.ListUsers` to get `U`'s `UserId`, then `TenantAdmin.RemoveUser(U)`. Expected: success.
-5. Poll the step-3 call once a second for up to 35 s. Expected: every poll that starts more than 30 s after step 4 began answers `Unauthenticated` ("Acting-user token is invalid."). Earlier polls may still succeed. Record the elapsed time of the first refused poll; up to 30 s plus one poll interval is the specified behaviour.
+4. As `T`'s tenant admin, call `TenantAdmin.ListUsers` to get `U`'s `UserId`, then `TenantAdmin.RemoveUser(U)`. Expected: success. The probe records `DateTimeOffset.UtcNow` immediately after the awaited `TenantAdmin.RemoveUser` call returns, and records each step-5 poll's start the same way, just before the call is issued.
+5. Poll the step-3 call once a second for up to 35 s. Expected: every poll that starts more than 30 s after `RemoveUser` returned (step 4) answers `Unauthenticated` ("Acting-user token is invalid."). Earlier polls may still succeed. Record the elapsed time from that return to the first refused poll; up to 30 s plus one poll interval is the specified behaviour.
 6. Run `$DC exec postgres psql -U iverson -d iverson -c 'SELECT sub FROM iverson_token_revocations'`. Expected: one row whose `sub` equals the `sub` claim decoded from `U`'s token.
 
 - [ ] **Step 4: The identity conformance scenario passes IVC-IDN-008 for .NET**
