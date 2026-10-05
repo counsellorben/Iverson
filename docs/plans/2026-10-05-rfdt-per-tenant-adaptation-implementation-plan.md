@@ -2539,7 +2539,7 @@ cd /workspace && setsid nohup sh -c "date -u +%FT%TZ; python3 $I/scripts/jev_rer
   --composite 7d3a15092f963723 $PROV; echo exit \$?; date -u +%FT%TZ" > $O/sf-main.log 2>&1 &
 ```
 
-Progress (any shell, after the recovery block): `python3 -c "import json,collections,sys; print(collections.Counter((r['status'], r['reason'] and r['reason'].split(':')[0]) for r in map(json.loads, open(sys.argv[1]))))" $O/sf-main.responses.jsonl`. Done when `$O/sf-main.log` ends with `exit 0` and a date. A rising `rejected` count of HTTP 500: read `judge.log` before anything else.
+Progress (any shell, after the recovery block): `python3 -c "import json,collections,sys; print(collections.Counter((r['status'], r['reason'] and r['reason'].split(': ')[-1].split(':')[0]) for r in map(json.loads, open(sys.argv[1]))))" $O/sf-main.responses.jsonl`. Done when `$O/sf-main.log` ends with `exit 0` and a date. A rising `rejected` count of HTTP 500: read `judge.log` before anything else.
 
 - [ ] **Step 10: SciFact repeat pass** (after Step 9 finishes)
 
@@ -2703,7 +2703,7 @@ done
 tar czf gen-out.tar.gz *-generation.jsonl *-synthetic-queries.jsonl && md5sum gen-out.tar.gz && runpodctl send gen-out.tar.gz
 ```
 
-Required: each `exit 0` with `wrote … (1000 queries; …)`. Fewer than 1,000 usable: rerun with `--sample-size 1300` and a fresh `--ledger` name. Dev box: `cd $A/phase1 && runpodctl receive <code>`, check md5, `tar xzf gen-out.tar.gz`. **Terminate the generation pod**; record its end time and cost in `pods.md`.
+Required: each `exit 0` with `wrote … (1000 queries; …)`. Also run `command grep -c '<think>\|</think>' *-synthetic-queries.jsonl` in `/workspace/gen` and require the printed count `0` for every file (`grep -c` exits 1 when the count is 0; judge the printed count, not the exit code) — `enable_thinking: false` (P17) is the only guard, and a short leaked think block would otherwise become a kept training query. Fewer than 1,000 usable: rerun with `--sample-size 1300` and a fresh `--ledger` name. Dev box: `cd $A/phase1 && runpodctl receive <code>`, check md5, `tar xzf gen-out.tar.gz`. **Terminate the generation pod**; record its end time and cost in `pods.md`.
 
 - [ ] **Step 4: Pools for the synthetic queries (dev box)** — restart Task 4's containers and use the retrieval mode `$A/fidelity.txt` names for the tenant
 
