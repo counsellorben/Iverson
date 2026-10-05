@@ -5,7 +5,7 @@
 **Goal:** fix the identity-plane findings from CSR round 10:
 - **#4 (internet reach and two of its credentials):** Authentik's whole host is published, admin interface and admin API included. The bootstrap superuser token is kept forever. The admin-automation client can mint Operator tokens from anywhere.
 - **#12:** the console's OIDC provider allows 30-day refresh tokens the console never uses.
-- **#16:** recovery (invite) links are MFA-free bearer credentials for 30 minutes.
+- **#16 (partly):** recovery (invite) links are MFA-free bearer credentials for 30 minutes. C1 shortens them and points them at the public host; the invitee's first console session stays MFA-free (see Known issues).
 - **The `ExternalIssuer` defect:** tokens minted through the public Authentik host are rejected by the API.
 - **A latent defect found while designing this:** recovery links carry Authentik's in-cluster host, which an invited user cannot open.
 
@@ -29,12 +29,11 @@ Today the Authentik Ingress sends every path to the server's port 9000 (`charts/
 `charts/authentik/templates/configmap-tls-proxy.yaml` gains a second nginx `server`, on plain `9080`, beside the existing `8443` TLS server. The ingress terminates public TLS, as it does today.
 
 - **Server-level headers**, inherited by every location below (none of them sets its own):
-  - `proxy_pass http://127.0.0.1:9000;`
   - `proxy_set_header Host $http_host;`
   - `proxy_set_header X-Forwarded-Host $http_host;`: overwrites any client-supplied value.
   - `X-Forwarded-Proto` and `X-Forwarded-For` are passed through unchanged, so Authentik sees what it sees today.
   - `proxy_set_header X-Iverson-Public-Ingress 1;`: set on every request through this listener.
-- **Allowlist.** These are the only locations that proxy, and `location / { return 404; }` covers everything else:
+- **Allowlist.** These are the only locations that proxy; each carries `proxy_pass http://127.0.0.1:9000;` (nginx allows `proxy_pass` only in `location` context), and `location / { return 404; }` covers everything else:
 
 | Location | Why a browser needs it |
 |---|---|
@@ -69,6 +68,7 @@ readinessProbe:
 ```
 
 - **Why:** GCE and AGIC infer a backend's health check from the HTTP readiness probe of the container serving that backend port. The tls-proxy container now serves the Ingress backend, and with an exec probe they would fall back to `/`, which Authentik answers with a redirect, so the backend would be marked unhealthy.
+- **Declared port:** the tls-proxy container's `ports` gains `- containerPort: 9080` (`name: http-public`). GKE and AGIC infer from a readiness probe only on a port the container declares; today it declares only `8443` (`deployment-server.yaml:158-160`).
 - **Coverage is unchanged:** both listeners live in one nginx process with one config, so a passing probe on `9080` also proves `8443` is listening.
 - **B's reason for the exec probe no longer applies:** B avoided a kubelet `httpGet` on `8443` so that no NetworkPolicy had to admit it. `9080` is admitted by 1b's rule anyway.
 - The timeout and threshold keep B's final values.
@@ -119,6 +119,7 @@ Nothing in the Helm chart uses `AUTHENTIK_BOOTSTRAP_TOKEN` after first boot. Aut
   ```
 
   This deletes the token on existing deployments and is a no-op on fresh installs.
+- **`docs/runbooks/grpc-admin-auth-cutover.md:57`** reads the `bootstrap-token` key to call the admin API when confirming the blueprint applied. That check becomes an `ak shell` read of the provider's `client_id` inside the worker pod (`kubectl exec`), which needs no API token.
 - **Compose keeps the bootstrap token.** Its dev tooling and the Authentik test fixture (`Iverson.Api.Tests/Tenancy/AuthentikContainerFixture.cs`) use it.
 - **The akadmin password stays** as the break-glass credential. Logging in with it goes through the default authentication flow, which enforces MFA (`blueprints/mfa-enforcement.yaml`), and after 1a the admin interface is reachable only in-cluster.
 
@@ -160,7 +161,7 @@ The console requests no `offline_access` and runs no silent renewal (`Iverson.Ad
 - **Environment:**
   - Helm `deployment-worker.yaml` sets `IVERSON_CONSOLE_URL={{ .Values.global.externalScheme }}://{{ .Values.global.ingressHost }}/admin/`;
   - compose's `authentik-worker` sets `IVERSON_CONSOLE_URL=http://localhost:5173/`.
-- **Effect:** an invited user who sets a password lands on the console's login instead of `/if/user/`, which 1a blocks. The user is then sent through MFA enrolment by the default authentication flow, as today.
+- **Effect:** an invited user who sets a password lands on the console instead of `/if/user/`, which 1a blocks. The recovery flow has already signed the user in, so the console's authorize request issues a code without running the authentication flow: the invitee's first console session carries no second factor. MFA enrolment happens at the first login in a fresh session, when the default authentication flow forces it (user's choice, CDR-1 §3.1 D).
 
 ---
 
@@ -209,6 +210,7 @@ In `IdpAdminClient.TriggerPasswordRecoveryAsync` (`Iverson.Api/Tenancy/IdpAdminC
   - the Service port;
   - the NetworkPolicy rule;
   - the `httpGet` readiness probe;
+  - the tls-proxy container declares `containerPort: 9080`;
   - no `AUTHENTIK_BOOTSTRAP_TOKEN` anywhere;
   - `IVERSON_CONSOLE_URL`, `ExternalIssuer` and `PublicBaseUrl` with their profile values.
 - **`nginx -t`** on the rendered sidecar config in the pinned image.
@@ -230,6 +232,7 @@ Chromium is pointed at `authentik.iverson.local` through the ingress.
 - **Blocked paths:** `/if/admin/`, `/if/user/` and `/api/v3/core/users/` return 404 through the ingress.
 - **Admin-automation:** a mint through the ingress returns `invalid_grant`, and a mint through a port-forward to `9000` succeeds.
 - **Issuer:** tokens minted through the public host pass the API on the default and acting-user schemes.
+- **Sidecar readiness:** the server pod shows `tls-proxy` Ready under the `9080` probe, through the NetworkPolicy.
 - **Bootstrap token:** `authentik-bootstrap-token` no longer exists, checked with `ak shell` in the server pod.
 - **Your state:** containers, volumes, networks and images are snapshotted before the check and diffed after teardown.
 
@@ -254,7 +257,7 @@ Probes ran on an isolated Authentik 2026.5.3 (compose subset, project `csr10cpro
 | 11 | A custom request header reaches policies as `HTTP_X_IVERSON_PUBLIC_INGRESS` | Live: the policy logged `public='1'` with the header and `None` without it. The marker policy refused and allowed accordingly |
 | 12 | Blueprints support policy bindings, `state: absent`, and the redirect stage | `/blueprints/example/flows-login-2fa.yaml:72-80` (`authentik_policies.policybinding`), `/blueprints/example/flows-recovery-email-verification.yaml:158` (`state: absent`), `blueprints/v1/common.py:61` (`ABSENT`), `schema.json:4707` (`authentik_stages_redirect.redirectstage` with `mode`, `target_static`) |
 | 13 | The bootstrap token exists only when `AUTHENTIK_BOOTSTRAP_TOKEN` is set, with identifier `authentik-bootstrap-token` | `/blueprints/system/bootstrap.yaml:15, 36-45` (`conditions: [!If [!Context token]]`) |
-| 14 | Only the server and worker deployments and `secret.yaml` use the bootstrap token in Helm | `grep` for `bootstrap-token`/`BOOTSTRAP_TOKEN` outside docs: `deployment-server.yaml:117`, `deployment-worker.yaml:63`, `secret.yaml`. Plus compose, `generate-compose-secrets.sh`, `AuthentikContainerFixture.cs` and the AdminUI README, all compose-side |
+| 14 | Only the server and worker deployments and `secret.yaml` use the bootstrap token in Helm, plus one runbook | `grep` for `bootstrap-token`/`BOOTSTRAP_TOKEN` outside docs: `deployment-server.yaml:117`, `deployment-worker.yaml:63`, `secret.yaml`. Plus compose, `generate-compose-secrets.sh`, `AuthentikContainerFixture.cs` and the AdminUI README, all compose-side. In docs, `docs/runbooks/grpc-admin-auth-cutover.md:57` reads the Helm Secret's key (2b). `ak shell` with stdin runs in the 2026.5.3 worker (CDR-1); the runbook's exact command against a Helm pod is UNVERIFIED |
 | 15 | The recovery endpoint takes `token_duration`, and the link host comes from the request | `core/api/users.py:490-493, 693-695` (`token_duration`), `:707` (`build_absolute_uri`) |
 | 16 | The recovery link is not usable from outside the cluster today | Assumption 15. The API calls Authentik at `Authentik:BaseUrl` (`https://<release>-authentik:8443` since B, `deployment.yaml:186`). LoadTest's follower deliberately ignores the link's host (`AuthentikFlowExecutorClientTests.cs:66`) |
 | 17 | The recovery flow ends at `/if/user/` today | Live: the recovery link completed the prompt stage, then `xak-flow-redirect`, and landed on `/if/user/#/library` |
@@ -266,9 +269,11 @@ Probes ran on an isolated Authentik 2026.5.3 (compose subset, project `csr10cpro
 | 23 | Both workers can carry `IVERSON_CONSOLE_URL` | Helm `deployment-worker.yaml:46` (`env:`); compose `authentik-worker` `environment:` (`docker-compose.yml:399`). Blueprints are applied by the worker, which resolves `!Env` |
 | 24 | `IdpAdminClient` has no configuration dependency today, and two tests construct it | `IdpAdminClient.cs:41` (primary constructor with `IHttpClientFactory`, `ILogger`); `AuthentikAdminClientTests.cs:73`, `AuthentikRecoveryFlowIntegrationTests.cs:73` |
 | 25 | The compose console's authority is `localhost:9000` | `Iverson.AdminUI/.env.development:2`; compose `ExternalIssuer` today at `docker-compose.yml:515, 632` |
-| 26 | GCE and AGIC derive health checks from the serving container's HTTP readiness probe | Documented behaviour of both controllers. **Not verified live** (no cloud here). The design does not depend on it beyond keeping an `httpGet` probe on the serving port |
+| 26 | GCE and AGIC derive health checks from the serving container's HTTP readiness probe, on a port the container declares | Documented behaviour of both controllers (GKE "Troubleshoot Ingress health checks": the probe port must be the `containerPort`, which must match the Service `targetPort`; AGIC "Probes": probing a port not exposed on the pod is unsupported). **Not verified live** (no cloud here). The design depends on it only through keeping an `httpGet` probe on the declared serving port |
 | 27 (C2) | JWT federation yields a short-lived JWT the admin API accepts with exactly the orchestrator role | Live: an OAuth source with a static JWKS, a provider with `jwt_federation_sources` and the `goauthentik.io/api` scope, and a pre-created `<provider>-<sub>` user in `iverson-admin-orchestrators`. A self-signed assertion minted a 300-second token: `GET users` 200, `POST user` 201, recovery on its own user 200, `GET rbac/roles` 403. Another `sub` signed by the same key minted a token with no rights (403) |
 | 28 (C2) | A self-renewing API token bounds nothing | `core/api/tokens.py:145-158` (any user may create API tokens for itself and gets `view_token_key`); `core/models.py:1256-1272` (expired API-intent tokens rotate their key rather than being deleted) |
+| 29 | The recovery flow's sign-in carries into the console | CDR-1, live: after a recovery that ended in `xak-flow-redirect` to the console, the console client's authorize request issued a code with no flow challenge; the token had `amr=null` and the user had 0 TOTP and 0 WebAuthn devices. Authentik runs the authentication flow at authorize only for an unauthenticated user or on `prompt=login`/`max_age` (`providers/oauth2/views/authorize.py:428-489`) |
+| 30 | The 1a listener, as corrected, serves complete browser flows | CDR-1, live: `nginx -t` passes on the per-location `proxy_pass` layout in the pinned image (the server-level layout fails: `"proxy_pass" directive is not allowed here`). Through it on `9080`: console login with forced TOTP enrolment, logout and recovery with zero 404s; `/-/health/live/` 200; the 2a policy returned `invalid_grant` on `9080` and minted on `9000` |
 
 ---
 
@@ -278,5 +283,6 @@ Probes ran on an isolated Authentik 2026.5.3 (compose subset, project `csr10cpro
 - **No public self-service.** With `/if/user/` blocked publicly, users cannot manage their own MFA devices or Authentik settings. A lost device needs an operator, using the in-cluster admin interface. A login started directly at the Authentik host, not from the console, ends on a 404 after authentication.
 - **The orchestrator token still never expires** until C2 lands. After 1a, using it needs reach to `9000` or `8443` from inside the cluster or VPC.
 - **The orchestrator's ability to create a user directly into `operators`** is an Authentik permission-model limit (2026.5.3 has no group-scoped `add_user`). It is recorded in the blueprint and untouched here.
-- **Recovery links stay MFA-free until first use.** The first factor is enrolled at the console login that follows. The link now lives 15 minutes, carries the public host, and still travels the ingress→pod hop in plaintext behind the edge's TLS (#5's mesh item).
+- **#16 is only partly closed: invitees stay MFA-free past the link.** The recovery flow signs the user in, so the first console session after recovery runs no second factor; the first factor is enrolled at the first login in a fresh session (user's choice, CDR-1 §3.1 D). The link now lives 15 minutes, carries the public host, and still travels the ingress→pod hop in plaintext behind the edge's TLS (#5's mesh item).
+- **The cloud half of the issuer match is unverified.** Helm's `ExternalIssuer` assumes each cloud load balancer sends `X-Forwarded-Proto: https`; 4d proves the match on ingress-nginx only (user's choice, CDR-1 §3.2 A).
 - **Load-balancer health-check paths on ALB** are not set for the Authentik Ingress. `/` answers with a redirect through the new listener, exactly as it does on `9000` today. Whether that marks the target unhealthy on AWS is unverified here.
