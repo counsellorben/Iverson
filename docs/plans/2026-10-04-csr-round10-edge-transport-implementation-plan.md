@@ -49,6 +49,7 @@ Verbatim from the spec, plus execution rules from the conversation:
 - `Iverson.Server/Iverson.Api/Tenancy/AuthentikTrust.cs`: the CA-only trust handler and the api-role startup guard.
 - `Iverson.Server/Iverson.Api.Tests/RateLimiting/ClientPartitionKeyTests.cs`: key and partition tests.
 - `Iverson.Server/Iverson.Api.Tests/RateLimiting/TrustedProxyOptionsTests.cs`: configuration validation tests.
+- `Iverson.Server/Iverson.Api.Tests/RateLimiting/PreAuthPartitionPipelineTests.cs`: the spec §1e pipeline test through the real limiter registration.
 - `Iverson.Server/Iverson.Api.Tests/Tenancy/AuthentikTrustTests.cs`: trust handler against a local Kestrel TLS server, the startup guard, and the JwtBearer wiring.
 - `Iverson.Server/deploy/helm/iverson/charts/authentik/templates/secret-internal-tls.yaml`: the generated internal certificate and CA.
 - `Iverson.Server/deploy/helm/iverson/charts/authentik/templates/configmap-tls-proxy.yaml`: the sidecar's `default.conf`.
@@ -124,8 +125,13 @@ The spec's `Verified assumptions` rows 1–43 were verified by `thorough-brainst
 | 25 | Ordering | Task 2 consumes Task 1's key names (`RateLimiting__TrustedProxies__*`); Tasks 5 and 6 consume Task 4's setting names; Task 3 is independent; Task 7 needs all | By construction (names are defined in Tasks 1 and 4) |
 | 26 | Consumer | The API Helm deployment mounts single Secret keys with `items:` and names env vars `Authentication__*` and `Authentik__*` at `deployment.yaml:137-176` | Read of `charts/api/templates/deployment.yaml:130-250` |
 | 27 | Consumer | The authentik subchart's resources live at `.Values.resources.server/worker`, and values-laptop overrides only those two keys | `charts/authentik/values.yaml:1-8`; `values-laptop.yaml:111-118` |
-| 28 | Consumer | WebApplicationFactory settings (`UseSetting`, `ConfigureAppConfiguration`) arrive too late for configuration Program reads before `Build()`. So the guard runs after `Build()` on `app.Configuration`/`app.Environment`, and Authentik settings are read inside the options and HttpClient lambdas | `Iverson.Api.Tests/Helpers/AuthTestWebApplicationFactory.cs:37-46` (the Qdrant `ApiKey` env-var workaround and its comment) |
+| 28 | Consumer | A `UseSetting` value reaches configuration Program reads before `Build()`; a `ConfigureAppConfiguration` override does not. The guard runs after `Build()` on `app.Configuration`/`app.Environment`, and the Authentik settings are read inside the options and HttpClient lambdas, so both see the final configuration either way | CIR-1 §1 #28: `WithWebHostBuilder(b => b.UseSetting("RateLimiting:TrustedProxies:Hops", "0"))` made startup throw from Task 1's pre-`Build()` read; the comment at `AuthTestWebApplicationFactory.cs:37-46` concerns `ConfigureAppConfiguration` overrides. Not re-run in the update round |
 | 29 | Command | No project treats warnings as errors, so an analyzer warning on the new X509 calls does not break the build | `command grep -rn TreatWarningsAsErrors\|WarningsAsErrors` over `Iverson.Server` `*.props`/`*.csproj` → no hits; no `Directory.Build.props` |
+| 30 | Code validity | `WebApplication.CreateBuilder()` in the test host loads the Iverson.Api `appsettings.json` copied to the test output and binds its `Kestrel:Endpoints` (8080/8081) next to the code's listener; `Configuration.Sources.Clear()` leaves only the code's listener | CIR-1 §2.3 (`Failed to bind to address http://[::]:8080` while 127.0.0.1:8080 was held). Re-confirmed: a scratch app with a Kestrel endpoint in `appsettings.json` listened on `127.0.0.1:<ephemeral>` and `[::]:18089` without the clear, and only on `127.0.0.1:<ephemeral>` with it |
+| 31 | Code validity | `CertificateRequest.Create` rejects a leaf whose `notAfter` is later than its issuer's, so a leaf signed a second after its CA cannot reuse the CA's `AddDays(30)` | Re-confirmed: CA at +30 d, a 1.1 s pause, leaf at +30 d → `ArgumentException`; leaf at +29 d → ok |
+| 32 | Code validity | FluentAssertions `NotBeOfType<T>()` fails on a null subject; `(x is T).Should().BeFalse()` passes on null | Re-confirmed in scratch with FluentAssertions 8.11.0 |
+| 33 | Code validity | `ByteArrayContent` reports a computed `Content-Length`, so `ReadCappedAsync`'s pre-check rejects it before the loop; set to `null` explicitly it stays null, so only the loop check can reject that body | Re-confirmed: computed `1048577`; after `ContentLength = null`, `null`. CIR-1 §2.4 ran the no-length test passing on the plan's code and failing under the loop-check mutation |
+| 34 | Consumer | On kind with `values-laptop` on this host: every pod reaches Ready; Calico's pool is `10.244.0.0/16`; ingress-nginx sees a host client and a container on the `kind` network as different `$remote_addr`; a 0.5-CPU API pod takes more than 50,000 requests a minute | Verified on `main` 2026-10-04 before SDD (CIR-1 §3.1, option B): all pods Running and Ready; pool `10.244.0.0/16`; the ingress log shows client A (host, through the node) as `10.89.1.2` and client B (container) as `10.89.1.4`; client A `elapsed=55.8s 401=49999 429=10001`; client B then got `429` on `main` (the shared-partition collapse #3 describes). Cluster deleted; podman state diffed unchanged |
 
 ---
 
@@ -136,7 +142,7 @@ The spec's `Verified assumptions` rows 1–43 were verified by `thorough-brainst
 **Files:**
 - Create: `Iverson.Server/Iverson.Api/RateLimiting/TrustedProxyOptions.cs`, `Iverson.Server/Iverson.Api/RateLimiting/ClientPartitionKey.cs`
 - Modify: `Iverson.Server/Iverson.Api/Program.cs` (usings; after `:38`; `:110-137`; `:489-512`; the partial class at `:841`)
-- Test: `Iverson.Server/Iverson.Api.Tests/RateLimiting/ClientPartitionKeyTests.cs`, `Iverson.Server/Iverson.Api.Tests/RateLimiting/TrustedProxyOptionsTests.cs`
+- Test: `Iverson.Server/Iverson.Api.Tests/RateLimiting/ClientPartitionKeyTests.cs`, `Iverson.Server/Iverson.Api.Tests/RateLimiting/TrustedProxyOptionsTests.cs`, `Iverson.Server/Iverson.Api.Tests/RateLimiting/PreAuthPartitionPipelineTests.cs`
 
 **Interfaces:**
 - Produces:
@@ -280,6 +286,61 @@ public class ClientPartitionKeyTests
         ctx.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "user-1")], "test"));
 
         Program.PostAuthPartition(ctx, Opts(1, "10.244.0.0/16")).PartitionKey.Should().Be("user-1");
+    }
+}
+```
+
+`Iverson.Api.Tests/RateLimiting/PreAuthPartitionPipelineTests.cs`, the spec §1e pipeline test. It goes through the real configuration binding and limiter registration, and takes about 20 s because it sends 50,001 requests to pass the 50,000/min budget:
+
+```csharp
+using System.Net;
+using FluentAssertions;
+using Iverson.Api.Tests.Helpers;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Xunit;
+
+namespace Iverson.Api.Tests.RateLimiting;
+
+public class PreAuthPartitionPipelineTests(AuthTestWebApplicationFactory baseFactory) : IClassFixture<AuthTestWebApplicationFactory>
+{
+    // TestServer supplies no peer address; every request arrives from one trusted ingress pod.
+    private sealed class TrustedPeer : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            app.Use((ctx, n) => { ctx.Connection.RemoteIpAddress = IPAddress.Parse("10.244.3.4"); return n(); });
+            next(app);
+        };
+    }
+
+    [Fact]
+    public async Task TwoClientsBehindOneTrustedProxy_GetSeparatePreAuthPartitions()
+    {
+        using var factory = baseFactory.WithWebHostBuilder(b => b
+            .UseSetting("RateLimiting:TrustedProxies:Cidrs:0", "10.244.0.0/16")
+            .ConfigureServices(s => s.AddTransient<IStartupFilter, TrustedPeer>()));
+        var client = factory.CreateClient();
+
+        async Task<HttpStatusCode> Send(string xff)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, "/admin/dlq");
+            req.Headers.Add("X-Forwarded-For", xff);
+            using var res = await client.SendAsync(req);
+            return res.StatusCode;
+        }
+
+        // One past the 50,000/min pre-auth budget for the first client.
+        var gate = new SemaphoreSlim(64);
+        var first = await Task.WhenAll(Enumerable.Range(0, 50_001).Select(async _ =>
+        {
+            await gate.WaitAsync();
+            try { return await Send("203.0.113.7"); } finally { gate.Release(); }
+        }));
+
+        first.Should().Contain(HttpStatusCode.TooManyRequests);
+        (await Send("203.0.113.8")).Should().NotBe(HttpStatusCode.TooManyRequests);
     }
 }
 ```
@@ -447,12 +508,12 @@ public static class ClientPartitionKey
 cd /home/ben/repositories/Iverson/.worktrees/csr10-edge-transport && dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~Iverson.Api.Tests.RateLimiting"
 ```
 
-Expected: 21 passed. That is 18 in `ClientPartitionKeyTests` (12 theory cases and 6 facts) and 3 in `TrustedProxyOptionsTests`. Record the count xUnit reports.
+Expected: 22 passed. That is 18 in `ClientPartitionKeyTests` (12 theory cases and 6 facts), 3 in `TrustedProxyOptionsTests`, and 1 in `PreAuthPartitionPipelineTests`, which takes about 20 s. Record the count xUnit reports.
 
 - [ ] **Step 5: Mutation-check the key, restoring exactly after each**
   1. Replace `!opts.Networks.Any(network => network.Contains(peer))` with `false`. The untrusted-peer cases must fail.
   2. Replace `entries[^opts.Hops]` with `entries[opts.Hops - 1]`. The spoofed-entry and two-hop cases must fail.
-  3. Delete the `peer = peer.MapToIPv4();` line. Both IPv4-mapped cases must fail.
+  3. Delete the whole `if (peer.IsIPv4MappedToIPv6) peer = peer.MapToIPv4();` statement (both lines). The `::ffff:192.0.2.50` case must fail. The `::ffff:10.244.3.4` case still passes, because `IPNetwork.Contains` already matches IPv4-mapped peers.
 
 - [ ] **Step 6: Run the pipeline suites that build the app**
 
@@ -666,6 +727,17 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
     }
 
     [Fact]
+    public async Task GenerateAsync_RejectsABodyOverOneMebibyte_WhenNoContentLengthIsSent()
+    {
+        var content = new ByteArrayContent(new byte[1024 * 1024 + 1]);
+        content.Headers.ContentLength = null;
+        var handler = new FakeHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+
+        await FluentActions.Awaiting(() => CreateService(handler).GenerateAsync("p"))
+            .Should().ThrowAsync<InvalidOperationException>().WithMessage("*exceeded*");
+    }
+
+    [Fact]
     public async Task GenerateAsync_RaisesTheHttpClientTimeoutShape_WhenTheBodyStallsPastTheTimeout()
     {
         var handler = new FakeHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK)
@@ -690,7 +762,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
         var thrown = await FluentActions.Awaiting(() => svc.GenerateAsync("p", caller.Token))
             .Should().ThrowAsync<OperationCanceledException>();
-        thrown.Which.InnerException.Should().NotBeOfType<TimeoutException>();
+        (thrown.Which.InnerException is TimeoutException).Should().BeFalse();
     }
 ```
 
@@ -702,7 +774,7 @@ cd /home/ben/repositories/Iverson/.worktrees/csr10-edge-transport && dotnet test
 
 Expected failures:
 - `FailsFast` (takes seconds);
-- `RejectsABodyOverOneMebibyte` (a `JsonException` or no throw instead);
+- `RejectsABodyOverOneMebibyte` and `RejectsABodyOverOneMebibyte_WhenNoContentLengthIsSent` (a `JsonException` or no throw instead);
 - `RaisesTheHttpClientTimeoutShape` (it hangs past the 200 ms, finishing only at the test's 100 s HttpClient timeout, so cancel the run once the other results are in);
 - `LeavesCallerCancellationUntranslated` may already pass.
 
@@ -820,13 +892,13 @@ Replace `GenerateInternalAsync` with:
 cd /home/ben/repositories/Iverson/.worktrees/csr10-edge-transport && dotnet test Iverson.Server/Iverson.Embeddings.Tests/Iverson.Embeddings.Tests.csproj
 ```
 
-Expected: all pass, 59 (54 before plus 5 new). Record the count.
+Expected: all pass, 60 (54 before plus 6 new). Record the count.
 
 - [ ] **Step 5: Mutation-check, restoring exactly after each**
   1. Remove `deadline.CancelAfter(...)`. The stall test must fail (it hangs; cancel the run).
   2. Change the catch filter to `when (deadline.IsCancellationRequested)`. The caller-cancellation test must fail.
   3. Replace `RegexOptions.NonBacktracking` with `RegexOptions.Compiled`. `FailsFast` must fail.
-  4. Remove the `buffer.Length + read > MaxResponseBytes` check. The oversize test must fail.
+  4. Remove the `buffer.Length + read > MaxResponseBytes` check. `GenerateAsync_RejectsABodyOverOneMebibyte_WhenNoContentLengthIsSent` must fail; the `Content-Length` pre-check still catches the other oversize test.
 
 - [ ] **Step 6: Run the enrichment consumer tests** (they pin the skip path for this exception shape, `EnrichmentConsumerTests.cs:545`)
 
@@ -901,7 +973,8 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
     }
 
     // A leaf for dnsName signed by issuer, or self-signed when issuer is null, exported and reloaded
-    // so Kestrel gets a persisted private key on every platform.
+    // so Kestrel gets a persisted private key on every platform. The CA-signed leaf ends a day before
+    // its CA: CertificateRequest.Create rejects a leaf that outlives its issuer.
     private static X509Certificate2 NewLeaf(string dnsName, X509Certificate2? issuer)
     {
         using var key = RSA.Create(2048);
@@ -912,7 +985,7 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
         req.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], false));
         using var cert = issuer is null
             ? req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30))
-            : req.Create(issuer, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30), RandomNumberGenerator.GetBytes(8))
+            : req.Create(issuer, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(29), RandomNumberGenerator.GetBytes(8))
                  .CopyWithPrivateKey(key);
         return X509CertificateLoader.LoadPkcs12(cert.Export(X509ContentType.Pfx), null);
     }
@@ -927,6 +1000,8 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
     private static async Task<HttpStatusCode> GetThroughHandler(X509Certificate2 serverCert, string caPath)
     {
         var builder = WebApplication.CreateBuilder();
+        // The copied Iverson.Api appsettings.json would also bind Kestrel:Endpoints (8080/8081).
+        builder.Configuration.Sources.Clear();
         builder.WebHost.ConfigureKestrel(k => k.Listen(IPAddress.Loopback, 0, l => l.UseHttps(serverCert)));
         await using var app = builder.Build();
         app.MapGet("/", () => "ok");
@@ -1141,7 +1216,7 @@ internal static class AuthentikTrust
 ```
 
 `Program.cs`:
-1. Immediately after `var app = builder.Build();` (`:478`), add the guard. It runs against `app.Configuration` and `app.Environment` because they are final there: WebApplicationFactory's settings and environment arrive too late for code that runs before `Build()`, as the comment at `AuthTestWebApplicationFactory.cs:37-46` records. A failure still stops startup before `app.Run()`.
+1. Immediately after `var app = builder.Build();` (`:478`), add the guard. It runs against `app.Configuration` and `app.Environment`, which are final there. A failure still stops startup before `app.Run()`.
 
    ```csharp
    // CSR round-10 #5: outside Development the api role reaches Authentik only over TLS, trusting only
@@ -1149,7 +1224,7 @@ internal static class AuthentikTrust
    Iverson.Api.Tenancy.AuthentikTrust.ValidateStartup(app.Configuration, workloadRole, app.Environment);
    ```
 
-   For the same reason, the settings below are read inside the JwtBearer and HttpClient configuration lambdas, which run when the options resolve, never into variables before `Build()`.
+   The settings below are read inside the JwtBearer and HttpClient configuration lambdas, which run when the options resolve, so they see the final configuration.
 
 2. In the default `AddJwtBearer(options => { … })`:
    - **Issuers.** After `options.TokenValidationParameters.ValidIssuers = new[] { … };`, add:
@@ -1869,7 +1944,7 @@ Expected:
 - `HTTP/2 200` with a `grpc-status` other than `16` (Unauthenticated). That means the token's `http://iverson-authentik:9000/` issuer and its signature validated against keys the API fetched over 8443 through the NetworkPolicy.
 - The IDX count is `0`.
 
-Per-client partitions through ingress-nginx:
+Per-client partitions through ingress-nginx. This block's premise was verified on `main` before SDD (plan row 34): ingress-nginx logs the two clients with different source addresses, and one client drives a partition to `429` in under a minute through the 0.5-CPU API pod.
 
 ```bash
 source $SCR/live/env.sh
