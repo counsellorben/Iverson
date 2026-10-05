@@ -96,7 +96,7 @@ public sealed class EnrichmentService(
                 // than redelivers. Cancelling the linked source surfaces with an inner IOException,
                 // which that filter would not match.
                 throw new TaskCanceledException(
-                    $"The enrichment call exceeded its {options.Value.Timeout} timeout.", new TimeoutException(ex.Message));
+                    $"The enrichment call exceeded its {options.Value.Timeout} timeout.", new TimeoutException(ex.Message, ex));
             }
         }
         catch (Exception ex)

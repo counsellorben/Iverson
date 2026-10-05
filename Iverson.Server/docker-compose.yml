@@ -434,6 +434,8 @@ services:
   # CSR round-10 #5: terminates TLS on 8443 in front of authentik-server, sharing its network
   # namespace the way the Helm chart's tls-proxy sidecar shares the pod, so the hop to Authentik
   # stays on loopback. The API reaches it as authentik-server:8443.
+  # After authentik-server is restarted or recreated, restart authentik-tls-proxy too: it shares
+  # that container's network namespace.
   authentik-tls-proxy:
     image: nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
     container_name: iverson-authentik-tls-proxy

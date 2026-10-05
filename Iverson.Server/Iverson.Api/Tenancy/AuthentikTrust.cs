@@ -45,7 +45,8 @@ internal static class AuthentikTrust
 
     /// <summary>
     /// Outside Development the api role refuses to start unless every Authentik hop is https and the
-    /// CA is readable. The worker role never calls Authentik and carries no Authentik settings.
+    /// CA is readable. The Helm worker carries no Authentik settings, and the guard never runs for the worker role
+    /// (the compose worker mirrors the API's settings).
     /// </summary>
     public static void ValidateStartup(IConfiguration cfg, string workloadRole, IHostEnvironment env)
     {
