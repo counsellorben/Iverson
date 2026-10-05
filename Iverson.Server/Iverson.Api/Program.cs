@@ -164,14 +164,18 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             cfg["Authentication:Authority"],
             cfg["Authentication:ExternalIssuer"]
         };
+        // Authentik's global issuer mode stamps iss with the minting request's own scheme and host. Tokens
+        // minted in-cluster on 9000 carry http://<authentik>:9000/, which matched only because JwtBearer
+        // appends the metadata document's issuer; with metadata now on 8443 that issuer is the https one.
+        if (cfg["Authentication:InternalIssuer"] is { Length: > 0 } internalIssuer)
+            options.TokenValidationParameters.ValidIssuers = options.TokenValidationParameters.ValidIssuers.Append(internalIssuer).ToArray();
+        if (cfg["Authentication:MetadataAddress"] is { Length: > 0 } metadataAddress)
+            options.MetadataAddress = metadataAddress;
         options.TokenValidationParameters.ValidAudiences = cfg.GetSection("Authentication:ValidAudiences").Get<string[]>();
-        // This entire deployment is plaintext h2c/HTTP with no TLS anywhere (see otelEndpoint,
-        // Kafka__BootstrapServers, etc. above) — Authentication:Authority points at Authentik's
-        // OIDC discovery endpoint over a plain http:// URL. RequireHttpsMetadata defaults to
-        // true in ASP.NET Core, which would make OIDC metadata discovery hard-fail against that
-        // plaintext authority at startup/first-token-validation. Disabling it here matches the
-        // rest of this deployment's no-TLS posture.
-        options.RequireHttpsMetadata = false;
+        // CSR round-10 #5: discovery and JWKS come from the tls-proxy sidecar over https, validated
+        // against the deployment's own CA (AuthentikTrust).
+        options.RequireHttpsMetadata = true;
+        options.BackchannelHttpHandler = Iverson.Api.Tenancy.AuthentikTrust.CreateHandler(cfg["Authentik:CaCertificatePath"]);
         // Without this, ASP.NET Core's default claim-type mapping silently renames the "sub"
         // claim to ClaimTypes.NameIdentifier (a legacy WS-Federation-era remapping table that
         // JwtBearerOptions.MapInboundClaims applies by default) — ActingUserInterceptor's
@@ -185,7 +189,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     {
         options.Authority = cfg["Authentication:ActingUser:Authority"];
         options.TokenValidationParameters.ValidAudiences = cfg.GetSection("Authentication:ActingUser:ValidAudiences").Get<string[]>();
-        options.RequireHttpsMetadata = false;
+        options.RequireHttpsMetadata = true;
+        options.BackchannelHttpHandler = Iverson.Api.Tenancy.AuthentikTrust.CreateHandler(cfg["Authentik:CaCertificatePath"]);
+        if (cfg["Authentication:ActingUser:MetadataAddress"] is { Length: > 0 } actingMetadataAddress)
+            options.MetadataAddress = actingMetadataAddress;
+        // See the default scheme: acting-user tokens minted on 9000 carry the internal issuer.
+        if (cfg["Authentication:InternalIssuer"] is { Length: > 0 } internalIssuer)
+            options.TokenValidationParameters.ValidIssuers = [internalIssuer];
         options.MapInboundClaims = false;
         // gRPC metadata IS the HTTP/2 header set — same mechanism the default scheme already
         // relies on for the "authorization" key. This scheme reads a different key so it
@@ -367,24 +377,18 @@ builder.Services.AddSingleton<Iverson.Api.Tenancy.ITokenRevocationCache>(sp =>
         sp.GetRequiredService<ITokenRevocationRepository>(), TimeProvider.System));
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
-// CSR finding #4: IdpAdminClient used to post a cleartext user password to Authentik's
-// set_password endpoint over whatever transport this base URL specifies, which is what the
-// startup guard formerly here existed to fail closed against for production/https profiles. The
-// deeper fix (see IdpAdminClient.CreateUserAsync) removed the password transmission entirely —
-// the platform never sends a user password to Authentik at all — so that guard's entire
-// justification is gone. The remaining admin-token-over-plaintext-in-cluster hop is the accepted
-// architecture decision this deployment already makes elsewhere, compensated by default-deny
-// NetworkPolicy, not something this startup path needs to gate.
-var authentikBaseUrlValue = cfg["Authentik:BaseUrl"] ?? "http://authentik-server:9000";
-
+// CSR round-10 #5: the admin token travels over TLS to the tls-proxy sidecar, trusting only the
+// deployment's CA. Authentik:BaseUrl has no fallback: the startup guard requires it outside
+// Development, and the Development test hosts register their own clients.
 builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName, client =>
 {
-    client.BaseAddress = new Uri(authentikBaseUrlValue);
+    if (cfg["Authentik:BaseUrl"] is { Length: > 0 } authentikBaseUrl)
+        client.BaseAddress = new Uri(authentikBaseUrl);
     var adminToken = cfg["Authentik:AdminToken"];
     if (!string.IsNullOrEmpty(adminToken))
         client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", adminToken);
-});
+}).ConfigurePrimaryHttpMessageHandler(() => Iverson.Api.Tenancy.AuthentikTrust.CreateHandler(cfg["Authentik:CaCertificatePath"]));
 builder.Services.AddSingleton<Iverson.Api.Tenancy.IIdpAdminClient, Iverson.Api.Tenancy.IdpAdminClient>();
 
 builder.Services.AddHttpClient("JaegerOtlpHttp", client =>
@@ -453,6 +457,9 @@ builder.Services.AddHostedService<Iverson.Api.Schema.SchemaRefreshWorker>();
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
+// CSR round-10 #5: outside Development the api role reaches Authentik only over TLS, trusting only
+// the CA the deployment mounts.
+Iverson.Api.Tenancy.AuthentikTrust.ValidateStartup(app.Configuration, workloadRole, app.Environment);
 app.MapPrometheusScrapingEndpoint().AllowAnonymous().WithMetadata(new RequireListenerPort(8081));
 
 if (app.Environment.IsDevelopment())
