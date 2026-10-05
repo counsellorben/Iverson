@@ -8,3 +8,5 @@ spec:
   ports:
     - name: http
       port: 9000
+    - name: https
+      port: 8443

@@ -6,6 +6,9 @@ resources:
   worker:
     requests: { cpu: "250m", memory: "512Mi" }
     limits: { cpu: "500m", memory: "1Gi" }
+  tlsProxy:
+    requests: { cpu: "10m", memory: "16Mi" }
+    limits: { cpu: "100m", memory: "64Mi" }
 nodeSelector: {}
 bootstrapEmail: "admin@iverson.local"
 ingress:
