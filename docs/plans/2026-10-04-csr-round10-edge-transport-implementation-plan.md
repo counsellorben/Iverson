@@ -132,6 +132,9 @@ The spec's `Verified assumptions` rows 1–43 were verified by `thorough-brainst
 | 32 | Code validity | FluentAssertions `NotBeOfType<T>()` fails on a null subject; `(x is T).Should().BeFalse()` passes on null | Re-confirmed in scratch with FluentAssertions 8.11.0 |
 | 33 | Code validity | `ByteArrayContent` reports a computed `Content-Length`, so `ReadCappedAsync`'s pre-check rejects it before the loop; set to `null` explicitly it stays null, so only the loop check can reject that body | Re-confirmed: computed `1048577`; after `ContentLength = null`, `null`. CIR-1 §2.4 ran the no-length test passing on the plan's code and failing under the loop-check mutation |
 | 34 | Consumer | On kind with `values-laptop` on this host: every pod reaches Ready; Calico's pool is `10.244.0.0/16`; ingress-nginx sees a host client and a container on the `kind` network as different `$remote_addr`; a 0.5-CPU API pod takes more than 50,000 requests a minute | Verified on `main` 2026-10-04 before SDD (CIR-1 §3.1, option B): all pods Running and Ready; pool `10.244.0.0/16`; the ingress log shows client A (host, through the node) as `10.89.1.2` and client B (container) as `10.89.1.4`; client A `elapsed=55.8s 401=49999 429=10001`; client B then got `429` on `main` (the shared-partition collapse #3 describes). Cluster deleted; podman state diffed unchanged |
+| 35 | Command | With the pipeline test in a non-parallel collection and its loop run through `Task.Run`, the whole Api.Tests suite (container-backed classes included) passes, the test runs after every other test, and it still catches a broken limiter registration | Verified 2026-10-05 before SDD (CIR-2 §3.1, option A), Task 1 applied in a scratch worktree: two full runs `Passed: 1421, Failed: 0` (7 m 11 s, 7 m 25 s); pipeline test 4.98 s and 7.39 s, starting after the last other test ended; under the registration mutation the RateLimiting filter gave 21 passed, 1 failed (this test, "not to be … TooManyRequests") |
+| 36 | Code validity | The exec readiness probe `curl -sk -o /dev/null https://127.0.0.1:8443/` exits 0 once nginx serves TLS on 8443, even while Authentik's upstream returns 502, and non-zero when nothing listens; it runs inside the container, so no NetworkPolicy engine sees it | Probed 2026-10-05: nginx-unprivileged 1.27-alpine as uid 1000, read-only root, the plan's `default.conf` and a test certificate: exit 0 (HTTP 502, no upstream); against an unbound port, exit 7 |
+| 37 | Code validity | The load probe's `vary` argument sends a different `X-Forwarded-For` on every request | Probed 2026-10-05 against an nginx h2c endpoint logging `$http_x_forwarded_for`: 1,000 requests carried 1,000 distinct values; a fixed value was sent as given |
 
 ---
 
@@ -290,7 +293,7 @@ public class ClientPartitionKeyTests
 }
 ```
 
-`Iverson.Api.Tests/RateLimiting/PreAuthPartitionPipelineTests.cs`, the spec §1e pipeline test. It goes through the real configuration binding and limiter registration, and takes about 20 s because it sends 50,001 requests to pass the 50,000/min budget:
+`Iverson.Api.Tests/RateLimiting/PreAuthPartitionPipelineTests.cs`, the spec §1e pipeline test. It goes through the real configuration binding and limiter registration, and takes about 10 s, running on its own after the other test classes, because it sends 50,001 requests to pass the 50,000/min budget:
 
 ```csharp
 using System.Net;
@@ -303,6 +306,15 @@ using Xunit;
 
 namespace Iverson.Api.Tests.RateLimiting;
 
+// Runs on its own, after the parallel collections: its 50,001 requests must land inside the
+// limiter's one-minute window, which they do not reliably do while other test classes share the CPU.
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class PreAuthPartitionPipelineCollection
+{
+    public const string Name = "pre-auth-partition-pipeline";
+}
+
+[Collection(PreAuthPartitionPipelineCollection.Name)]
 public class PreAuthPartitionPipelineTests(AuthTestWebApplicationFactory baseFactory) : IClassFixture<AuthTestWebApplicationFactory>
 {
     // TestServer supplies no peer address; every request arrives from one trusted ingress pod.
@@ -333,11 +345,11 @@ public class PreAuthPartitionPipelineTests(AuthTestWebApplicationFactory baseFac
 
         // One past the 50,000/min pre-auth budget for the first client.
         var gate = new SemaphoreSlim(64);
-        var first = await Task.WhenAll(Enumerable.Range(0, 50_001).Select(async _ =>
+        var first = await Task.Run(() => Task.WhenAll(Enumerable.Range(0, 50_001).Select(async _ =>
         {
             await gate.WaitAsync();
             try { return await Send("203.0.113.7"); } finally { gate.Release(); }
-        }));
+        })));
 
         first.Should().Contain(HttpStatusCode.TooManyRequests);
         (await Send("203.0.113.8")).Should().NotBe(HttpStatusCode.TooManyRequests);
@@ -508,7 +520,7 @@ public static class ClientPartitionKey
 cd /home/ben/repositories/Iverson/.worktrees/csr10-edge-transport && dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~Iverson.Api.Tests.RateLimiting"
 ```
 
-Expected: 22 passed. That is 18 in `ClientPartitionKeyTests` (12 theory cases and 6 facts), 3 in `TrustedProxyOptionsTests`, and 1 in `PreAuthPartitionPipelineTests`, which takes about 20 s. Record the count xUnit reports.
+Expected: 22 passed. That is 18 in `ClientPartitionKeyTests` (12 theory cases and 6 facts), 3 in `TrustedProxyOptionsTests`, and 1 in `PreAuthPartitionPipelineTests`, which takes about 10 s, running on its own after the other test classes. Record the count xUnit reports.
 
 - [ ] **Step 5: Mutation-check the key, restoring exactly after each**
   1. Replace `!opts.Networks.Any(network => network.Contains(peer))` with `false`. The untrusted-peer cases must fail.
@@ -1433,8 +1445,11 @@ In `deployment-server.yaml`, after the `server` container's `volumeMounts` (befo
             limits:
               cpu: {{ .Values.resources.tlsProxy.limits.cpu | quote }}
               memory: {{ .Values.resources.tlsProxy.limits.memory | quote }}
+          # An exec probe, not the spec's TCP probe (user-approved, CIR-2 §3.3 C): it runs inside the
+          # container, so no cloud NetworkPolicy engine has to admit the kubelet on 8443 (plan row 36).
           readinessProbe:
-            tcpSocket: { port: 8443 }
+            exec:
+              command: ["curl", "-sk", "-o", "/dev/null", "https://127.0.0.1:8443/"]
             periodSeconds: 10
           volumeMounts:
             - name: tls-proxy-config
@@ -1787,13 +1802,15 @@ mkdir -p $LIVE/loadprobe && cd $LIVE/loadprobe
 printf '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>' > loadprobe.csproj
 ```
 
-`Program.cs`. It sends a garbage-token gRPC request to `GetSchema` `count` times and prints counts by HTTP status. The literal `not-a-token` is a placeholder, not a credential.
+`Program.cs`. It sends a garbage-token gRPC request to `GetSchema` `count` times and prints counts by HTTP status. With `vary` as the last argument, every request carries a different `X-Forwarded-For`. The literal `not-a-token` is a placeholder, not a credential.
 
 ```csharp
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
-// args: url count concurrency [hostHeader|-] [xForwardedFor]
+// args: url count concurrency [hostHeader|-] [xForwardedFor|vary]
+// "vary" sends a different X-Forwarded-For on every request: if the API trusted the client's own
+// header, every request would land in a fresh partition and the run would never reach 429.
 var (url, count, conc) = (args[0], int.Parse(args[1]), int.Parse(args[2]));
 var host = args.Length > 3 && args[3] != "-" ? args[3] : null;
 var xff = args.Length > 4 ? args[4] : null;
@@ -1805,14 +1822,15 @@ var handler = new SocketsHttpHandler
 using var http = new HttpClient(handler) { DefaultRequestVersion = HttpVersion.Version20, DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
 var counts = new ConcurrentDictionary<int, int>();
 var sw = Stopwatch.StartNew();
-await Parallel.ForEachAsync(Enumerable.Range(0, count), new ParallelOptions { MaxDegreeOfParallelism = conc }, async (_, ct) =>
+await Parallel.ForEachAsync(Enumerable.Range(0, count), new ParallelOptions { MaxDegreeOfParallelism = conc }, async (i, ct) =>
 {
     using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = new ByteArrayContent(new byte[5]) };
     req.Content.Headers.ContentType = new("application/grpc");
     req.Headers.TryAddWithoutValidation("te", "trailers");
     req.Headers.TryAddWithoutValidation("authorization", "Bearer not-a-token");
     if (host is not null) req.Headers.Host = host;
-    if (xff is not null) req.Headers.TryAddWithoutValidation("x-forwarded-for", xff);
+    var spoof = xff == "vary" ? $"198.51.{i / 256 % 256}.{i % 256}" : xff;
+    if (spoof is not null) req.Headers.TryAddWithoutValidation("x-forwarded-for", spoof);
     try { using var r = await http.SendAsync(req, ct); counts.AddOrUpdate((int)r.StatusCode, 1, (_, n) => n + 1); }
     catch { counts.AddOrUpdate(-1, 1, (_, n) => n + 1); }
 });
@@ -1871,17 +1889,15 @@ Expected:
 ```bash
 source $SCR/live/env.sh
 U=http://127.0.0.1:8080/iverson.ObjectMappingService/GetSchema
-dotnet $LIVE/loadprobe/bin/Release/net10.0/loadprobe.dll $U 60000 128          # client A, the host
-dotnet $LIVE/loadprobe/bin/Release/net10.0/loadprobe.dll $U 50 8 - 198.51.100.77 # client A again, spoofing a header
+dotnet $LIVE/loadprobe/bin/Release/net10.0/loadprobe.dll $U 60000 128 - vary   # client A, the host, a different spoofed header on every request
 docker run --rm --network csr10edge_default --entrypoint sh docker.io/nginxinc/nginx-unprivileged:1.27-alpine -c \
   "printf '\0\0\0\0\0' | curl -s -o /dev/null -w '%{http_code}\n' --http2-prior-knowledge -H 'content-type: application/grpc' -H 'te: trailers' -H 'authorization: Bearer not-a-token' --data-binary @- http://iverson-api:8080/iverson.ObjectMappingService/GetSchema"   # client B
 ```
 
 Expected:
-- The first run ends with a non-zero `429=` count (more than 50,000 requests within the minute) and `401=` for the rest. Record `elapsed`.
-- The spoofing run is all `429`, because the header bought no fresh partition.
+- Client A's run ends with a non-zero `429=` count (more than 50,000 requests within the minute) and `401=` for the rest. Record `elapsed`. Because every request carried a different header, a `429` also shows the header bought no fresh partitions.
 - Client B prints `401`, not `429`: a separate partition.
-- If the first run never reaches `429`, record the `elapsed` and counts and stop and report. Don't retry with different numbers to force it.
+- If client A's run never reaches `429`, record the `elapsed` and counts and stop and report. Don't retry with different numbers to force it.
 
 - [ ] **Step 8: Tear compose down.**
 
@@ -1950,15 +1966,13 @@ Per-client partitions through ingress-nginx. This block's premise was verified o
 source $SCR/live/env.sh
 NODE=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' iverson-control-plane)
 U=https://127.0.0.1:8443/iverson.ObjectMappingService/GetSchema
-dotnet $LIVE/loadprobe/bin/Release/net10.0/loadprobe.dll $U 60000 128 iverson.local                 # client A, the host
-dotnet $LIVE/loadprobe/bin/Release/net10.0/loadprobe.dll $U 50 8 iverson.local 198.51.100.77         # client A, spoofing a header
+dotnet $LIVE/loadprobe/bin/Release/net10.0/loadprobe.dll $U 60000 128 iverson.local vary            # client A, the host, a different spoofed header on every request
 docker run --rm --network kind --entrypoint sh docker.io/nginxinc/nginx-unprivileged:1.27-alpine -c \
   "printf '\0\0\0\0\0' | curl -sk -o /dev/null -w '%{http_code}\n' --http2 --resolve iverson.local:443:$NODE -H 'content-type: application/grpc' -H 'te: trailers' -H 'authorization: Bearer not-a-token' --data-binary @- https://iverson.local/iverson.ObjectMappingService/GetSchema"   # client B
 ```
 
 Expected, as in Step 7:
-- Client A reaches `429` past 50,000 requests in the minute.
-- The spoofing run is all `429`, because ingress-nginx replaces the header.
+- Client A reaches `429` past 50,000 requests in the minute, even though every request carried a different header: ingress-nginx replaces it.
 - Client B prints `401`.
 
 The API pod is capped at 0.5 CPU on this profile. If client A never reaches `429`, record `elapsed` and counts, then **stop and report**. Don't raise limits or change values to force it.
