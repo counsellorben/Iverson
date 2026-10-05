@@ -11,6 +11,9 @@
 #   - Service OAuth2 client secrets (see deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml)
 #   - Qdrant: API key is generated per-checkout, required via ${QDRANT__SERVICE__API_KEY:?...}
 #     (shared by the qdrant and iverson-api services below) — run scripts/generate-compose-secrets.sh first
+#   - Authentik TLS (CSR round-10 #5): the API reaches Authentik through authentik-tls-proxy on 8443,
+#     using a per-checkout CA in deploy/compose-tls/ — run scripts/generate-compose-secrets.sh first
+#     (existing checkouts must re-run it once before the next `up`)
 #   - And other dev-convenience values marked dev-only-not-for-production
 #
 # THIS DOCKER-COMPOSE STACK MUST NEVER BE EXPOSED BEYOND LOCALHOST OR USED IN:
@@ -428,6 +431,27 @@ services:
       retries: 10
       start_period: 30s
 
+  # CSR round-10 #5: terminates TLS on 8443 in front of authentik-server, sharing its network
+  # namespace the way the Helm chart's tls-proxy sidecar shares the pod, so the hop to Authentik
+  # stays on loopback. The API reaches it as authentik-server:8443.
+  authentik-tls-proxy:
+    image: nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+    container_name: iverson-authentik-tls-proxy
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp:mode=1777
+    network_mode: "service:authentik-server"
+    volumes:
+      - { type: bind, source: ./deploy/compose-tls-proxy.conf, target: /etc/nginx/conf.d/default.conf, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/tls.crt, target: /etc/iverson/tls/tls.crt, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/tls.key, target: /etc/iverson/tls/tls.key, read_only: true }
+    depends_on:
+      authentik-server:
+        condition: service_started
+
   # ── Application ─────────────────────────────────────────────────────────────
   #
   # STALE-IMAGE HAZARD — read before rebuilding after a server-side change.
@@ -494,8 +518,13 @@ services:
       - Authentication__ValidAudiences__4=dev-iverson-loadtest-human-client-id
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
-      - Authentik__BaseUrl=http://authentik-server:9000
+      - Authentik__BaseUrl=https://authentik-server:8443
       - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
+      - Authentication__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
+      - Authentication__ActingUser__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
+      # The issuer tokens minted on 9000 carry (Authentik's global issuer mode).
+      - Authentication__InternalIssuer=http://authentik-server:9000/
+      - Authentik__CaCertificatePath=/etc/iverson/authentik-ca/ca.crt
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
       - Tenancy__SeedLegacyTenants=true
       # Iverson.AdminUI's Vite dev server (npm run dev) runs at localhost:5173
@@ -509,6 +538,8 @@ services:
       # and is reachable from api at its compose service name and its own query port 9090 --
       # without this, the endpoint reports "notDeployed" even though Prometheus is running.
       - Prometheus__BaseUrl=http://prometheus:9090
+    volumes:
+      - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/iverson/authentik-ca/ca.crt, read_only: true }
     # Kestrel does not begin listening until Program.cs's startup block has finished — the
     # bootstrap DDL (EnsureRolesAsync, the plumbing-table EnsureTableAsync calls, and every
     # ApplySchemaAsync) is awaited BEFORE app.Run(). A successful TCP connect to 8080 is therefore
@@ -545,6 +576,8 @@ services:
       # service_started is the strongest condition available; blueprint application finishes on
       # its own shortly after the container starts.
       authentik-worker:
+        condition: service_started
+      authentik-tls-proxy:
         condition: service_started
       tei-embed:
         condition: service_healthy
@@ -595,10 +628,17 @@ services:
       - Authentication__ValidAudiences__4=dev-iverson-loadtest-human-client-id
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
-      - Authentik__BaseUrl=http://authentik-server:9000
+      - Authentik__BaseUrl=https://authentik-server:8443
       - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
+      - Authentication__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
+      - Authentication__ActingUser__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
+      # The issuer tokens minted on 9000 carry (Authentik's global issuer mode).
+      - Authentication__InternalIssuer=http://authentik-server:9000/
+      - Authentik__CaCertificatePath=/etc/iverson/authentik-ca/ca.crt
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
       - Tenancy__SeedLegacyTenants=true
+    volumes:
+      - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/iverson/authentik-ca/ca.crt, read_only: true }
     depends_on:
       # The same backing-service conditions iverson-api uses...
       postgres:

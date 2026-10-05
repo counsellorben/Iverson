@@ -36,4 +36,26 @@ for name in "${NAMES[@]}"; do
     fi
 done
 
+# CSR round-10 #5: the certificate the compose authentik-tls-proxy serves on 8443 and the CA the API
+# trusts for it. Written only when missing, like the secrets above, so a re-run keeps them. The CA
+# key is deleted once the certificate is signed. The files are world-readable inside an owner-only
+# directory: under rootless podman a container uid cannot read a host file that is 0600, and the
+# directory keeps other host users out.
+TLS_DIR="$(dirname "$0")/../Iverson.Server/deploy/compose-tls"
+if [ ! -f "$TLS_DIR/tls.crt" ]; then
+    mkdir -p "$TLS_DIR"
+    chmod 700 "$TLS_DIR"
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=iverson-compose-authentik-ca" \
+        -keyout "$work/ca.key" -out "$TLS_DIR/ca.crt" 2>/dev/null
+    openssl req -newkey rsa:2048 -nodes -subj "/CN=authentik-server" \
+        -keyout "$TLS_DIR/tls.key" -out "$work/tls.csr" 2>/dev/null
+    printf 'subjectAltName=DNS:authentik-server\n' > "$work/ext.cnf"
+    openssl x509 -req -in "$work/tls.csr" -CA "$TLS_DIR/ca.crt" -CAkey "$work/ca.key" \
+        -set_serial "0x$(openssl rand -hex 8)" -days 3650 -extfile "$work/ext.cnf" -out "$TLS_DIR/tls.crt" 2>/dev/null
+    chmod 644 "$TLS_DIR/ca.crt" "$TLS_DIR/tls.crt" "$TLS_DIR/tls.key"
+    echo "Wrote $TLS_DIR"
+fi
+
 echo "Wrote/updated $ENV_FILE"
