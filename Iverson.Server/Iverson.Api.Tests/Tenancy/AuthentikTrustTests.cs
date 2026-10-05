@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -37,6 +38,17 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
         return req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
     }
 
+    // An intermediate CA under root, ending before root does and after any leaf NewLeaf signs with it.
+    private static X509Certificate2 NewIntermediate(X509Certificate2 root)
+    {
+        using var key = RSA.Create(2048);
+        var req = new CertificateRequest("CN=test-intermediate", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        req.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        req.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
+        using var cert = req.Create(root, DateTimeOffset.UtcNow.AddDays(-1), root.NotAfter.AddHours(-12), RandomNumberGenerator.GetBytes(8));
+        return cert.CopyWithPrivateKey(key);
+    }
+
     // A leaf for dnsName signed by issuer, or self-signed when issuer is null, exported and reloaded
     // so Kestrel gets a persisted private key on every platform. The CA-signed leaf ends a day before
     // its CA: CertificateRequest.Create rejects a leaf that outlives its issuer.
@@ -62,12 +74,21 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
         return path;
     }
 
-    private static async Task<HttpStatusCode> GetThroughHandler(X509Certificate2 serverCert, string caPath)
+    private string WriteCaPem(string file)
+    {
+        using var ca = NewCa("test-ca");
+        return WritePem(ca, file);
+    }
+
+    private static async Task<HttpStatusCode> GetThroughHandler(X509Certificate2 serverCert, string caPath, X509Certificate2? intermediate = null)
     {
         var builder = WebApplication.CreateBuilder();
         // The copied Iverson.Api appsettings.json would also bind Kestrel:Endpoints (8080/8081).
         builder.Configuration.Sources.Clear();
-        builder.WebHost.ConfigureKestrel(k => k.Listen(IPAddress.Loopback, 0, l => l.UseHttps(serverCert)));
+        var https = new HttpsConnectionAdapterOptions { ServerCertificate = serverCert };
+        if (intermediate is not null)
+            https.ServerCertificateChain = [intermediate];
+        builder.WebHost.ConfigureKestrel(k => k.Listen(IPAddress.Loopback, 0, l => l.UseHttps(https)));
         await using var app = builder.Build();
         app.MapGet("/", () => "ok");
         await app.StartAsync();
@@ -81,32 +102,57 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
     [Fact]
     public async Task Handler_AcceptsACertificateTheConfiguredCaSigned()
     {
-        var ca = NewCa("test-ca");
-        (await GetThroughHandler(NewLeaf("localhost", ca), WritePem(ca, "ca.crt"))).Should().Be(HttpStatusCode.OK);
+        using var ca = NewCa("test-ca");
+        using var leaf = NewLeaf("localhost", ca);
+        (await GetThroughHandler(leaf, WritePem(ca, "ca.crt"))).Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task Handler_AcceptsACertificateSignedByAnIntermediateTheServerSends()
+    {
+        using var root = NewCa("test-root");
+        using var intermediate = NewIntermediate(root);
+        using var leaf = NewLeaf("localhost", intermediate);
+        (await GetThroughHandler(leaf, WritePem(root, "root.crt"), intermediate)).Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task Handler_TrustsEveryCaInABundle()
+    {
+        using var first = NewCa("first-ca");
+        using var second = NewCa("second-ca");
+        using var leaf = NewLeaf("localhost", second);
+        var bundle = Path.Combine(_dir, "bundle.crt");
+        File.WriteAllText(bundle, first.ExportCertificatePem() + "\n" + second.ExportCertificatePem());
+
+        (await GetThroughHandler(leaf, bundle)).Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]
     public async Task Handler_RejectsACertificateAnotherCaSigned()
     {
-        var trusted = NewCa("trusted-ca");
-        var other = NewCa("other-ca");
-        await FluentActions.Awaiting(() => GetThroughHandler(NewLeaf("localhost", other), WritePem(trusted, "ca.crt")))
+        using var trusted = NewCa("trusted-ca");
+        using var other = NewCa("other-ca");
+        using var leaf = NewLeaf("localhost", other);
+        await FluentActions.Awaiting(() => GetThroughHandler(leaf, WritePem(trusted, "ca.crt")))
             .Should().ThrowAsync<HttpRequestException>();
     }
 
     [Fact]
     public async Task Handler_RejectsACertificateForAnotherHost()
     {
-        var ca = NewCa("test-ca");
-        await FluentActions.Awaiting(() => GetThroughHandler(NewLeaf("other.example", ca), WritePem(ca, "ca.crt")))
+        using var ca = NewCa("test-ca");
+        using var leaf = NewLeaf("other.example", ca);
+        await FluentActions.Awaiting(() => GetThroughHandler(leaf, WritePem(ca, "ca.crt")))
             .Should().ThrowAsync<HttpRequestException>();
     }
 
     [Fact]
     public async Task Handler_RejectsASelfSignedCertificate()
     {
-        var ca = NewCa("test-ca");
-        await FluentActions.Awaiting(() => GetThroughHandler(NewLeaf("localhost", null), WritePem(ca, "ca.crt")))
+        using var ca = NewCa("test-ca");
+        using var leaf = NewLeaf("localhost", null);
+        await FluentActions.Awaiting(() => GetThroughHandler(leaf, WritePem(ca, "ca.crt")))
             .Should().ThrowAsync<HttpRequestException>();
     }
 
@@ -118,7 +164,7 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
             ["Authentication:ActingUser:MetadataAddress"] = "https://iverson-authentik:8443/application/o/iverson-api/.well-known/openid-configuration",
             ["Authentication:InternalIssuer"] = "http://iverson-authentik:9000/",
             ["Authentik:BaseUrl"] = "https://iverson-authentik:8443",
-            ["Authentik:CaCertificatePath"] = WritePem(NewCa("test-ca"), "guard-ca.crt"),
+            ["Authentik:CaCertificatePath"] = WriteCaPem("guard-ca.crt"),
         };
         change?.Invoke(values);
         return new ConfigurationBuilder().AddInMemoryCollection(values).Build();
@@ -172,7 +218,7 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
     public void BothSchemes_FetchMetadataOverTls_TrustTheCa_AndAcceptTheInternalIssuer(string scheme, string metadataKey)
     {
         const string metadata = "https://iverson-authentik:8443/application/o/iverson-api/.well-known/openid-configuration";
-        var caPath = WritePem(NewCa("test-ca"), $"wiring-{scheme}.crt");
+        var caPath = WriteCaPem($"wiring-{scheme}.crt");
         using var factory = _baseFactory.WithWebHostBuilder(b => b
             .UseSetting(metadataKey, metadata)
             .UseSetting("Authentication:InternalIssuer", "http://iverson-authentik:9000/")
@@ -184,6 +230,21 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
         opts.MetadataAddress.Should().Be(metadata);
         opts.TokenValidationParameters.ValidIssuers.Should().Contain("http://iverson-authentik:9000/");
         opts.BackchannelHttpHandler.Should().BeOfType<SocketsHttpHandler>()
+            .Which.SslOptions.RemoteCertificateValidationCallback.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void IdpAdminClient_ReachesAuthentikThroughTheCaTrustingHandler()
+    {
+        using var factory = _baseFactory.WithWebHostBuilder(b => b
+            .UseSetting("Authentik:BaseUrl", "https://iverson-authentik:8443")
+            .UseSetting("Authentik:CaCertificatePath", WriteCaPem("admin-client-ca.crt")));
+
+        var handler = factory.Services.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(IdpAdminClient.HttpClientName);
+        while (handler is DelegatingHandler delegating)
+            handler = delegating.InnerHandler!;
+
+        handler.Should().BeOfType<SocketsHttpHandler>()
             .Which.SslOptions.RemoteCertificateValidationCallback.Should().NotBeNull();
     }
 }

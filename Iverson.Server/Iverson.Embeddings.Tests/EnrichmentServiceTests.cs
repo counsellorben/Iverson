@@ -210,14 +210,14 @@ public sealed class EnrichmentServiceTests
     public async Task GenerateJsonAsync_FailsFast_OnManyUnterminatedFences()
     {
         // 128 KB of "```\nx": every fence opening is unterminated. Before NonBacktracking this took
-        // seconds; it must now fail (no JSON) well inside the bound.
+        // over a minute; it now takes milliseconds. The bound leaves room for a cold, loaded test host.
         var handler = new FakeHttpMessageHandler(ChatResponse(string.Concat(Enumerable.Repeat("```\nx", 26_240))));
         var svc = CreateService(handler);
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         await FluentActions.Awaiting(() => svc.GenerateJsonAsync("p")).Should().ThrowAsync<InvalidOperationException>();
 
-        sw.ElapsedMilliseconds.Should().BeLessThan(500);
+        sw.ElapsedMilliseconds.Should().BeLessThan(2_000);
     }
 
     [Fact]

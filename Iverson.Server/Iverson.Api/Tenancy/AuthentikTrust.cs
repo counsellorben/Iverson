@@ -12,22 +12,33 @@ namespace Iverson.Api.Tenancy;
 internal static class AuthentikTrust
 {
     /// <summary>
-    /// A handler that accepts only a certificate chaining to the CA at <paramref name="caCertificatePath"/>
-    /// and matching the requested host. With no path (Development, the test suites) it is a default handler.
+    /// A handler that accepts only a certificate chaining to a CA in the PEM file at
+    /// <paramref name="caCertificatePath"/> and matching the requested host. With no path (Development,
+    /// the test suites) it is a default handler. The file is read once: after a CA rotation, restart.
     /// </summary>
     public static HttpMessageHandler CreateHandler(string? caCertificatePath)
     {
         if (string.IsNullOrEmpty(caCertificatePath))
             return new SocketsHttpHandler();
 
-        var ca = X509Certificate2.CreateFromPem(File.ReadAllText(caCertificatePath));
+        var cas = LoadCas(caCertificatePath);
         return new SocketsHttpHandler
         {
-            SslOptions = { RemoteCertificateValidationCallback = (_, presented, _, errors) => ChainsToCa(ca, presented, errors) }
+            SslOptions = { RemoteCertificateValidationCallback = (_, presented, platformChain, errors) => ChainsToCa(cas, presented, platformChain, errors) }
         };
     }
 
-    private static bool ChainsToCa(X509Certificate2 ca, X509Certificate? presented, SslPolicyErrors errors)
+    // Every certificate in the file, so a bundle carries a rotation's old and new CA together.
+    private static X509Certificate2Collection LoadCas(string path)
+    {
+        var cas = new X509Certificate2Collection();
+        cas.ImportFromPemFile(path);
+        if (cas.Count == 0)
+            throw new CryptographicException($"'{path}' contains no PEM certificate.");
+        return cas;
+    }
+
+    private static bool ChainsToCa(X509Certificate2Collection cas, X509Certificate? presented, X509Chain? platformChain, SslPolicyErrors errors)
     {
         // The platform chain error is expected (the CA is in no system store) and is decided below;
         // a missing certificate or a name mismatch is not.
@@ -37,10 +48,14 @@ internal static class AuthentikTrust
 
         using var chain = new X509Chain();
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-        chain.ChainPolicy.CustomTrustStore.Add(ca);
+        chain.ChainPolicy.CustomTrustStore.AddRange(cas);
+        // Intermediates the server sent help build the path; trust still ends only at the CA file.
+        if (platformChain is not null)
+            chain.ChainPolicy.ExtraStore.AddRange(platformChain.ChainPolicy.ExtraStore);
         // A private CA publishes no revocation endpoint.
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-        return chain.Build(new X509Certificate2(presented));
+        using var leaf = new X509Certificate2(presented);
+        return chain.Build(leaf);
     }
 
     /// <summary>
@@ -64,7 +79,7 @@ internal static class AuthentikTrust
             throw new InvalidOperationException("Authentik:CaCertificatePath is required outside Development.");
         try
         {
-            _ = X509Certificate2.CreateFromPem(File.ReadAllText(caPath));
+            _ = LoadCas(caPath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException or ArgumentException)
         {

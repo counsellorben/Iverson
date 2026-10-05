@@ -11,8 +11,9 @@ public sealed class TrustedProxyOptions
 {
     public const string Section = "RateLimiting:TrustedProxies";
 
-    public string[] Cidrs { get; set; } = [];
-    public int Hops { get; set; } = 1;
+    // Init-only: Networks is parsed from these once, in FromConfiguration.
+    public string[] Cidrs { get; init; } = [];
+    public int Hops { get; init; } = 1;
 
     internal IReadOnlyList<IPNetwork> Networks { get; private set; } = [];
 

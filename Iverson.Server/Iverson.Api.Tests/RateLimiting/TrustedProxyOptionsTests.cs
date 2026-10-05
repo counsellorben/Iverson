@@ -35,4 +35,27 @@ public class TrustedProxyOptionsTests
     public void FromConfiguration_RejectsHopsBelowOne() =>
         FluentActions.Invoking(() => TrustedProxyOptions.FromConfiguration(Config(0, "10.244.0.0/16")))
             .Should().Throw<InvalidOperationException>().WithMessage("*RateLimiting:TrustedProxies:Hops*");
+
+    [Fact]
+    public void FromConfiguration_RejectsHopsThatIsNotAnInteger()
+    {
+        var cfg = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["RateLimiting:TrustedProxies:Hops"] = "two",
+            ["RateLimiting:TrustedProxies:Cidrs:0"] = "10.244.0.0/16",
+        }).Build();
+
+        FluentActions.Invoking(() => TrustedProxyOptions.FromConfiguration(cfg))
+            .Should().Throw<InvalidOperationException>().WithMessage("*Hops*");
+    }
+
+    [Fact]
+    public void FromConfiguration_BindsTheConfiguredValues()
+    {
+        var opts = TrustedProxyOptions.FromConfiguration(Config(2, "130.211.0.0/22", "fd00::/8"));
+
+        opts.Hops.Should().Be(2);
+        opts.Cidrs.Should().Equal("130.211.0.0/22", "fd00::/8");
+        opts.Networks.Should().HaveCount(2);
+    }
 }

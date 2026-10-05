@@ -38,6 +38,12 @@ public class ClientPartitionKeyTests
     public void For_ReturnsTheClientAddress(string peer, string? xff, int hops, string expected) =>
         ClientPartitionKey.For(Ctx(peer, xff), Opts(hops, "10.244.0.0/16")).Should().Be(expected);
 
+    [Theory]
+    [InlineData("fd00::5", "203.0.113.7", "203.0.113.7")]   // IPv6 peer inside a trusted IPv6 range
+    [InlineData("fe80::5", "203.0.113.7", "fe80::5")]       // IPv6 peer outside it
+    public void For_TrustsAnIpv6ProxyRange(string peer, string xff, string expected) =>
+        ClientPartitionKey.For(Ctx(peer, xff), Opts(1, "10.244.0.0/16", "fd00::/8")).Should().Be(expected);
+
     [Fact]
     public void For_ReturnsAnon_WhenThereIsNoPeerAddress() =>
         ClientPartitionKey.For(Ctx(null, "203.0.113.7"), Opts(1, "10.244.0.0/16")).Should().Be("anon");

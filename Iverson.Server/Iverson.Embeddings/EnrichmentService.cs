@@ -107,7 +107,7 @@ public sealed class EnrichmentService(
         }
     }
 
-    private static async Task<byte[]> ReadCappedAsync(HttpContent content, CancellationToken ct)
+    private static async Task<ReadOnlyMemory<byte>> ReadCappedAsync(HttpContent content, CancellationToken ct)
     {
         if (content.Headers.ContentLength > MaxResponseBytes)
             throw Oversize();
@@ -122,7 +122,8 @@ public sealed class EnrichmentService(
                 throw Oversize();
             buffer.Write(chunk, 0, read);
         }
-        return buffer.ToArray();
+        // The buffer itself, not a ToArray copy; the array outlives the stream's disposal.
+        return buffer.GetBuffer().AsMemory(0, (int)buffer.Length);
     }
 
     // Non-transient (CSR round-10 #21): an oversize reply is the backend misbehaving, not an outage.
