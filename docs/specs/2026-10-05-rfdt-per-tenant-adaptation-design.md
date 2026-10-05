@@ -129,8 +129,9 @@ the bar, retrieve from the restored snapshots through Qdrant itself, then re-che
 **5.3 Labels.** The judge labels every pool document of every synthetic query with Phase 0's client and settings
 (and Phase 0's top-20 rule if it applied).
 
-**5.4 Volume.** Up to **1,000 queries per tenant**, sized from Phase 0's measured wall-clock seconds per request (the
-summed per-entry seconds of the Phase 0 main-pass ledgers ÷ their request count) so Phase 1 fits **$40** less any Phase 0 overrun (§4). If the projection falls below **300 queries per tenant**, stop and ask Ben (accept fewer, or spend more).
+**5.4 Volume.** Up to **1,000 queries per tenant**, sized from Phase 0's measured wall-clock seconds per request (per
+passing tenant: the summed per-entry seconds of that tenant's Phase 0 main-pass ledger ÷ its request count; each
+passing tenant's Phase 1 requests are priced at its own rate) so Phase 1 fits **$40** less any Phase 0 overrun (§4). If the projection falls below **300 queries per tenant**, stop and ask Ben (accept fewer, or spend more).
 
 **5.5 RFDT records.** One record per (query, document): `state` = the query; one `choice` question whose
 instructions carry the document and whose criteria are the judge's own binary surrogate — `no`/`yes` with the noul
@@ -257,3 +258,6 @@ Server integration and per-tenant serving; the 50-documents-per-request format; 
 | V30 | The stub recovers each document's pool position from a one-document request on the SciFact dry-run pool | all 300 SciFact pools: no two documents identical or contained in one another; FreshStack fails this (20 of 672 pools hold identical texts), so the dry run uses SciFact |
 | V31 | A seeded random sample represents Phase 0's per-request work; the longest-document basis does not | judge prompt tokens per request: longest-document mean 1.66× (SciFact) and 1.25× (FreshStack) the population mean; a seeded 100-pair sample mean 0.98× and 1.03× |
 | V32 | Sidecars carry the fallback count the amended pair check reads; ledgers carry no timing today | `jev-main.meta.json` `reranker.fallbackCount` (`jev_rerank.py:237-238`); gate ledger keys `completion_tokens, content, order, pass, prompt_tokens, query_id, reason, reasoning, status`, `content` = `metadata, values` |
+| V33 | The pre-flight's random sample runs through `jev_rerank --per-doc` as a sub-pool (1–2 documents per query) | run: a seeded 100-pair sample as a TREC sub-pool through `load_run` → `validate_inputs_before_any_model_call` → `score_query` (stub reply) → `write_run`: 100 rows, 0 fallbacks |
+| V34 | Adding timing keys beside `values`/`metadata` in an accepted entry's `content` breaks no ledger reader | the only reader of a jev ledger's `content` is `test_jev_rerank.py:159` (reads `["values"]`); the gate's metadata check reads `["metadata"]` |
+| V35 | Sidecars distinguish reranker runs from baselines | `bge-base.meta.json` and `fs-2048-l070.meta.json` carry `"reranker": null`; jev_rerank sidecars carry a `reranker` block with `fallbackCount` (`jev-main.meta.json`) |
