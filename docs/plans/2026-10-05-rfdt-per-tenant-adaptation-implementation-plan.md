@@ -122,8 +122,12 @@ Newly introduced by this plan and verified at plan-write time (2026-10-05). The 
 | P30 | Consumer | `pass_identity` now always carries `perDoc`/`labelTop`, so a ledger from the old client (the SimpleJEV gate's) no longer resumes — refused loudly before any request; that gate is finished | scratch test |
 | P31 | Consumer | New sidecar keys (`perDoc`, `labelTop`) break no reader: report.py reads `composite` and (now) `reranker.fallbackCount` | `command grep` of sidecar readers |
 | P32 | Sibling set | Every CLI flag used in Tasks 7–9's commands exists in the code that defines it | checked against the argparse blocks of `jev_rerank.py`, `tenant_pools.py`, `synth_queries.py`, `rfdt_records.py`, `report.py`, RFDT, hf_server |
-| P33 | Sibling set | Every shell variable in a runbook block is set by that task's prelude or an earlier step of the same task | checked block by block at write time |
+| P33 | Sibling set | Every name a block reads is set in that block, in the prelude, or (pod shells) in its task's recovery block; Task 4 Step 7 and Task 8 Step 4 blocks `source $A/restore.sh` for the Qdrant key and `restore()` | CIR-1 §2.1: before the fix the FreshStack block failed in a fresh shell (exit 127); after: a fresh `env -i bash` with `source $A/restore.sh` prints the key and `restore is a function`, then fails only on the absent Qdrant (curl exit 7) |
 | P34 | Code | `synth_queries.py` sends `max_tokens: 512` with `enable_thinking: false` — `call_teacher`'s default `MAX_COMPLETION_TOKENS` is 32,768, which with a ~13.5K-token FreshStack prompt would exceed a 16,384 `--max-model-len` | `teacher_rerank.py:45`; `extra_body` merges with `body.update` (overrides) |
+| P35 | Command | Qdrant v1.18.2's REST surface has `/collections/{c}/snapshots/upload`, `/points/scroll` (`with_vector`) and `/points/search` (deprecated but served; `SearchRequest` takes `vector, limit, with_payload, with_vector`) | v1.18.2 OpenAPI fetched (CIR-1 T4f); snapshot names all `<collection>-6802952876034638-<date>.snapshot` |
+| P36 | Signature | Every chunk `parent_id` in both snapshots is an object `key`, so `load_index` resolves every chunk | byte scan of all payload files: every scanned `parent_id` and `key` lies in the run's keymap key set (5,183 / 6,000); the 20 per tenant the scan missed are all keymap keys (CIR-1 T4g, R15) |
+| P37 | Command | The `vllm-openai` image's start command reaches `vllm serve` as `--model …` | `ENTRYPOINT ["vllm","serve"]` (vLLM `docker/Dockerfile:1292`); `serve` falls back to `--model` with no `model_tag` (`vllm/entrypoints/cli/serve.py:56-57`) (CIR-1 T8a) |
+| P38 | Ordering | The Task 7 pod bundle is import-complete: `jev_rerank`, `rfdt_records`, `teacher_rerank` import from the bundle dir with no third-party module | `python3 -I` import from the bundle dir; `pre-sample` 100 rows (84 / 97 queries), `pre-longest` 5 rows; the tar count check passes (CIR-1 T7c) |
 
 ## Tasks
 
@@ -1691,10 +1695,12 @@ until curl -sf http://127.0.0.1:18091/health; do sleep 5; done; echo TEI up
 until curl -sf -H "api-key: $QDRANT__SERVICE__API_KEY" http://127.0.0.1:16333/collections >/dev/null; do sleep 2; done; echo Qdrant up
 ```
 
-- [ ] **Step 7: Per tenant — restore, dump, build test-query pools, check fidelity.** Both tenants restore to the same collection names, so one tenant at a time; the dump survives the next restore.
+Then write `$A/restore.sh`, which every Task 4 Step 7 and Task 8 Step 4 block sources (each step runs in a fresh shell):
 
 ```bash
-set -e
+mkdir -p $A && cat > $A/restore.sh <<'SH'
+# Sourced by every Task 4 Step 7 and Task 8 Step 4 block: the throwaway Qdrant's key and restore().
+export QDRANT__SERVICE__API_KEY=rfdt-local-qdrant-key-0123456789abcdef
 restore() {  # $1 = snapshot dir; replaces both collections
   for c in benchmark_documents_tenant_bypass benchmark_documents_chunks_tenant_bypass; do
     curl -s -X DELETE -H "api-key: $QDRANT__SERVICE__API_KEY" http://127.0.0.1:16333/collections/$c >/dev/null || true
@@ -1705,6 +1711,14 @@ restore() {  # $1 = snapshot dir; replaces both collections
       "http://127.0.0.1:16333/collections/$c/snapshots/upload?priority=snapshot" -F "snapshot=@$f" >/dev/null
   done
 }
+SH
+```
+
+- [ ] **Step 7: Per tenant — restore, dump, build test-query pools, check fidelity.** Both tenants restore to the same collection names, so one tenant at a time; the dump survives the next restore.
+
+```bash
+set -e
+source $A/restore.sh
 mkdir -p $A/dumps $A/fidelity
 restore $B/scifact-bge-base-qdrant-snapshots
 python3 $S/tenant_pools.py dump --qdrant http://127.0.0.1:16333 --dump-dir $A/dumps/scifact
@@ -1714,12 +1728,13 @@ python3 $S/tenant_pools.py fidelity --run $A/fidelity/scifact-exact.trec --refer
   && echo "scifact exact" >> $A/fidelity.txt
 ```
 
-Expected: `[dump] 19967 chunks, 5183 objects`, then a `[fidelity]` line with mean top-50 overlap ≥ 0.90. If it exits 1, rerun the `pools` step with `--retrieval qdrant --qdrant http://127.0.0.1:16333 --out $A/fidelity/scifact-qdrant.trec` and its `fidelity` check, appending `scifact qdrant` on success. If both fail: **STOP** — spec §8, no spend.
+Expected: `[dump] 19967 chunks, 5183 objects`, then a `[fidelity]` line with mean top-50 overlap ≥ 0.90. If it exits 1, in a shell that has run `source $A/restore.sh`, rerun the `pools` step with `--retrieval qdrant --qdrant http://127.0.0.1:16333 --out $A/fidelity/scifact-qdrant.trec` and its `fidelity` check, appending `scifact qdrant` on success. If both fail: **STOP** — spec §8, no spend.
 
 Then FreshStack, the same way:
 
 ```bash
 set -e
+source $A/restore.sh
 restore $B/freshstack-2048-qdrant-snapshots
 python3 $S/tenant_pools.py dump --qdrant http://127.0.0.1:16333 --dump-dir $A/dumps/freshstack
 python3 $S/tenant_pools.py pools --dump-dir $A/dumps/freshstack --tei http://127.0.0.1:18091 \
@@ -1728,7 +1743,7 @@ python3 $S/tenant_pools.py fidelity --run $A/fidelity/freshstack-exact.trec --re
   && echo "freshstack exact" >> $A/fidelity.txt
 ```
 
-Expected: `[dump] 18622 chunks, 6000 objects`; overlap ≥ 0.90, or the `qdrant` fallback as above (the Qdrant collections then hold FreshStack — restore SciFact again before a SciFact `--retrieval qdrant` run). `$A/fidelity.txt` ends with one line per tenant naming the mode that passed.
+Expected: `[dump] 18622 chunks, 6000 objects`; overlap ≥ 0.90, or the `qdrant` fallback as above (in a shell that has run `source $A/restore.sh`; the Qdrant collections then hold FreshStack — restore SciFact again before a SciFact `--retrieval qdrant` run). `$A/fidelity.txt` ends with one line per tenant naming the mode that passed.
 
 - [ ] **Step 8: Leave the containers stopped but kept** (Task 8 reuses them): `docker stop rfdt-qdrant rfdt-tei`.
 
@@ -2587,8 +2602,10 @@ python3 - <<'PY'
 import json
 def load(p): return {r["query_id"]: json.loads(r["content"])["values"] for r in map(json.loads, open(p)) if r["status"] == "accepted"}
 m, r = load("sf-main.responses.jsonl"), load("sf-repeat.responses.jsonl")
-same = sum(m[q] == r[q] for q in r)
-print(f"repeat: {same}/{len(r)} queries bit-identical; max |delta| {max(max(abs(a - b) for a, b in zip(m[q], r[q])) for q in r):.6f}")
+both = [q for q in r if q in m]
+same = sum(m[q] == r[q] for q in both)
+print(f"repeat: {same}/{len(both)} queries bit-identical ({len(r) - len(both)} repeat queries fell back in the main pass); "
+      f"max |delta| {max((max(abs(a - b) for a, b in zip(m[q], r[q])) for q in both), default=0.0):.6f}")
 PY
 ```
 
@@ -2702,7 +2719,7 @@ python3 $S/tenant_pools.py pools --dump-dir $A/dumps/freshstack --tei http://127
 docker stop rfdt-qdrant rfdt-tei
 ```
 
-If `$A/fidelity.txt` says `qdrant` for a tenant: run Task 4 Step 7's `restore` for that tenant's snapshots first and use `--retrieval qdrant --qdrant http://127.0.0.1:16333`.
+If `$A/fidelity.txt` says `qdrant` for a tenant: run `source $A/restore.sh && restore <that tenant's snapshot dir>` first and use `--retrieval qdrant --qdrant http://127.0.0.1:16333`.
 
 - [ ] **Step 5: Size Phase 1 — one N for every passing tenant (dev box)**
 
