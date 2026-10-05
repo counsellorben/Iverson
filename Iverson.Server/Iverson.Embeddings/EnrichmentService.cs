@@ -19,8 +19,13 @@ public sealed class EnrichmentService(
     private static readonly JsonSerializerOptions _jsonOpts =
         new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
+    // NonBacktracking (CSR round-10 #21): the lazy body over many unterminated fence openings was
+    // quadratic under the backtracking engine; this engine is linear and returns the same groups.
     private static readonly Regex FencedBlock =
-        new("```(?:json)?\\s*\\n(.*?)\\n\\s*```", RegexOptions.Singleline | RegexOptions.Compiled);
+        new("```(?:json)?\\s*\\n(.*?)\\n\\s*```", RegexOptions.Singleline | RegexOptions.NonBacktracking);
+
+    // A completion capped at MaxGeneratedTokens is a few KB; anything near this cap is not a reply.
+    internal const int MaxResponseBytes = 1024 * 1024;
 
     // Absolute, from this service's own BaseUrl: the named HttpClient's BaseAddress is not the
     // request base (the same rule EmbeddingService follows).
@@ -41,43 +46,58 @@ public sealed class EnrichmentService(
         activity?.SetTag("enrichment.input_chars", prompt.Length);
         activity?.SetTag("enrichment.json_format", jsonFormat);
 
+        // The body is read after the headers, outside HttpClient.Timeout, so the whole call shares one
+        // deadline: the same bound HttpClient.Timeout gave the buffered read before (CSR round-10 #21).
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(options.Value.Timeout);
+
         try
         {
-            using var client = httpClientFactory.CreateClient(Telemetry.EnrichmentHttpClientName);
-
-            // The OpenAI-compatible chat route, served by TGI and by Ollama alike. No grammar for the
-            // JSON case: TGI's grammars need a fixed property set and the extraction hint is free
-            // text (spec §3.5); ExtractJson isolates the object from the reply instead.
-            var body = JsonSerializer.Serialize(new
+            try
             {
-                model       = ModelId,
-                messages    = new[] { new { role = "user", content = prompt } },
-                max_tokens  = MaxGeneratedTokens,
-                temperature = 0,
-                stream      = false,
-            }, _jsonOpts);
-            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(_baseUrl), "/v1/chat/completions"))
+                using var client = httpClientFactory.CreateClient(Telemetry.EnrichmentHttpClientName);
+
+                // The OpenAI-compatible chat route, served by TGI and by Ollama alike. No grammar for the
+                // JSON case: TGI's grammars need a fixed property set and the extraction hint is free
+                // text (spec §3.5); ExtractJson isolates the object from the reply instead.
+                var body = JsonSerializer.Serialize(new
+                {
+                    model       = ModelId,
+                    messages    = new[] { new { role = "user", content = prompt } },
+                    max_tokens  = MaxGeneratedTokens,
+                    temperature = 0,
+                    stream      = false,
+                }, _jsonOpts);
+                using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(_baseUrl), "/v1/chat/completions"))
+                {
+                    Content = new StringContent(body, Encoding.UTF8, "application/json")
+                };
+
+                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+                response.EnsureSuccessStatusCode();
+
+                using var doc = JsonDocument.Parse(await ReadCappedAsync(response.Content, deadline.Token));
+
+                // { "choices": [ { "message": { "role": "assistant", "content": "..." } } ], ... }
+                var text = doc.RootElement
+                    .GetProperty("choices")[0]
+                    .GetProperty("message")
+                    .GetProperty("content")
+                    .GetString() ?? string.Empty;
+
+                activity?.SetTag("enrichment.output_chars", text.Length);
+                activity?.SetStatus(ActivityStatusCode.Ok);
+
+                return text;
+            }
+            catch (OperationCanceledException ex) when (deadline.IsCancellationRequested && !ct.IsCancellationRequested)
             {
-                Content = new StringContent(body, Encoding.UTF8, "application/json")
-            };
-
-            var response = await client.SendAsync(request, ct);
-            response.EnsureSuccessStatusCode();
-
-            await using var responseStream = await response.Content.ReadAsStreamAsync(ct);
-            using var doc                  = await JsonDocument.ParseAsync(responseStream, default, ct);
-
-            // { "choices": [ { "message": { "role": "assistant", "content": "..." } } ], ... }
-            var text = doc.RootElement
-                .GetProperty("choices")[0]
-                .GetProperty("message")
-                .GetProperty("content")
-                .GetString() ?? string.Empty;
-
-            activity?.SetTag("enrichment.output_chars", text.Length);
-            activity?.SetStatus(ActivityStatusCode.Ok);
-
-            return text;
+                // The shape HttpClient itself raises on timeout, which EnrichmentConsumer skips rather
+                // than redelivers. Cancelling the linked source surfaces with an inner IOException,
+                // which that filter would not match.
+                throw new TaskCanceledException(
+                    $"The enrichment call exceeded its {options.Value.Timeout} timeout.", new TimeoutException(ex.Message, ex));
+            }
         }
         catch (Exception ex)
         {
@@ -86,6 +106,29 @@ public sealed class EnrichmentService(
             throw;
         }
     }
+
+    private static async Task<ReadOnlyMemory<byte>> ReadCappedAsync(HttpContent content, CancellationToken ct)
+    {
+        if (content.Headers.ContentLength > MaxResponseBytes)
+            throw Oversize();
+
+        await using var stream = await content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[16 * 1024];
+        int read;
+        while ((read = await stream.ReadAsync(chunk, ct)) > 0)
+        {
+            if (buffer.Length + read > MaxResponseBytes)
+                throw Oversize();
+            buffer.Write(chunk, 0, read);
+        }
+        // The buffer itself, not a ToArray copy; the array outlives the stream's disposal.
+        return buffer.GetBuffer().AsMemory(0, (int)buffer.Length);
+    }
+
+    // Non-transient (CSR round-10 #21): an oversize reply is the backend misbehaving, not an outage.
+    private static InvalidOperationException Oversize() =>
+        new($"Enrichment backend response exceeded {MaxResponseBytes} bytes.");
 
     // The first fenced code block if the reply carries one, else the first balanced { ... } span
     // (string-aware), parsed to prove it is JSON. Without a format directive Ollama wraps the object

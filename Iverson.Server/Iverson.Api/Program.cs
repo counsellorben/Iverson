@@ -9,6 +9,7 @@ using Iverson.Api.Authorization;
 using Iverson.Api.Console;
 using Iverson.Api.Consumers;
 using Iverson.Api.Grpc;
+using Iverson.Api.RateLimiting;
 using Iverson.Api.Schema;
 using Iverson.Embeddings;
 using Iverson.Events;
@@ -36,6 +37,9 @@ var cfg = builder.Configuration;
 var workloadRole = cfg["WORKLOAD_ROLE"] ?? cfg["WorkloadRole"] ?? "api";
 if (workloadRole is not ("api" or "worker"))
     throw new InvalidOperationException($"WorkloadRole must be 'api' or 'worker', got '{workloadRole}'.");
+
+// CSR round-10 #3: which peers may vouch for a client address through X-Forwarded-For.
+var trustedProxies = TrustedProxyOptions.FromConfiguration(cfg);
 
 // ── OpenTelemetry ──────────────────────────────────────────────────────────────
 var otelEndpoint = cfg["Otel:Endpoint"] ?? "http://localhost:4317";
@@ -107,34 +111,7 @@ builder.Services.AddRateLimiter(options =>
     // uses the equivalent ResourceExhausted status. RateLimiterOptions defaults to 503 —
     // override it explicitly rather than relying on that default.
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
-    {
-        // Exclude the gRPC data plane (already governed by RateLimitInterceptor's own 50,000/min
-        // budget) and the anonymous probe/observability endpoints (kubelet, Prometheus — a 429
-        // there pulls the pod out of service). Both are marked RequireListenerPort(8081) or are
-        // gRPC methods, identified the same way Task 1's middleware identifies them, so this
-        // list can never silently diverge from Task 1's own endpoint enumeration.
-        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
-        var isGrpcCall = ctx.Request.ContentType?.StartsWith("application/grpc") == true;
-        if (isHealthListenerEndpoint || isGrpcCall)
-            // A constant key, not the request path: PartitionedRateLimiter.Create caches one
-            // dictionary entry per distinct partition key returned by this factory — including
-            // no-op (GetNoLimiter) partitions, which are never swept. Keying by path let any
-            // authenticated caller (every SDK client holds a service token) grow this dictionary
-            // without bound by varying the path on gRPC-content-typed requests. The key carries
-            // no meaning for a no-op partition, so collapse every excluded request onto one entry.
-            return RateLimitPartition.GetNoLimiter("unlimited");
-
-        return RateLimitPartition.GetSlidingWindowLimiter(
-            ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
-            _ => new SlidingWindowRateLimiterOptions
-            {
-                PermitLimit = 6_000,
-                Window = TimeSpan.FromMinutes(1),
-                SegmentsPerWindow = 6,
-                QueueLimit = 0
-            });
-    });
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx => PostAuthPartition(ctx, trustedProxies));
     options.OnRejected = (ctx, _) =>
     {
         ctx.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>()
@@ -187,14 +164,18 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             cfg["Authentication:Authority"],
             cfg["Authentication:ExternalIssuer"]
         };
+        // Authentik's global issuer mode stamps iss with the minting request's own scheme and host. Tokens
+        // minted in-cluster on 9000 carry http://<authentik>:9000/, which matched only because JwtBearer
+        // appends the metadata document's issuer; with metadata now on 8443 that issuer is the https one.
+        if (cfg["Authentication:InternalIssuer"] is { Length: > 0 } internalIssuer)
+            options.TokenValidationParameters.ValidIssuers = options.TokenValidationParameters.ValidIssuers.Append(internalIssuer).ToArray();
+        if (cfg["Authentication:MetadataAddress"] is { Length: > 0 } metadataAddress)
+            options.MetadataAddress = metadataAddress;
         options.TokenValidationParameters.ValidAudiences = cfg.GetSection("Authentication:ValidAudiences").Get<string[]>();
-        // This entire deployment is plaintext h2c/HTTP with no TLS anywhere (see otelEndpoint,
-        // Kafka__BootstrapServers, etc. above) — Authentication:Authority points at Authentik's
-        // OIDC discovery endpoint over a plain http:// URL. RequireHttpsMetadata defaults to
-        // true in ASP.NET Core, which would make OIDC metadata discovery hard-fail against that
-        // plaintext authority at startup/first-token-validation. Disabling it here matches the
-        // rest of this deployment's no-TLS posture.
-        options.RequireHttpsMetadata = false;
+        // CSR round-10 #5: discovery and JWKS come from the tls-proxy sidecar over https, validated
+        // against the deployment's own CA (AuthentikTrust).
+        options.RequireHttpsMetadata = true;
+        options.BackchannelHttpHandler = Iverson.Api.Tenancy.AuthentikTrust.CreateHandler(cfg["Authentik:CaCertificatePath"]);
         // Without this, ASP.NET Core's default claim-type mapping silently renames the "sub"
         // claim to ClaimTypes.NameIdentifier (a legacy WS-Federation-era remapping table that
         // JwtBearerOptions.MapInboundClaims applies by default) — ActingUserInterceptor's
@@ -208,7 +189,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     {
         options.Authority = cfg["Authentication:ActingUser:Authority"];
         options.TokenValidationParameters.ValidAudiences = cfg.GetSection("Authentication:ActingUser:ValidAudiences").Get<string[]>();
-        options.RequireHttpsMetadata = false;
+        options.RequireHttpsMetadata = true;
+        options.BackchannelHttpHandler = Iverson.Api.Tenancy.AuthentikTrust.CreateHandler(cfg["Authentik:CaCertificatePath"]);
+        if (cfg["Authentication:ActingUser:MetadataAddress"] is { Length: > 0 } actingMetadataAddress)
+            options.MetadataAddress = actingMetadataAddress;
+        // See the default scheme: acting-user tokens minted on 9000 carry the internal issuer.
+        if (cfg["Authentication:InternalIssuer"] is { Length: > 0 } internalIssuer)
+            options.TokenValidationParameters.ValidIssuers = [internalIssuer];
         options.MapInboundClaims = false;
         // gRPC metadata IS the HTTP/2 header set — same mechanism the default scheme already
         // relies on for the "authorization" key. This scheme reads a different key so it
@@ -390,24 +377,18 @@ builder.Services.AddSingleton<Iverson.Api.Tenancy.ITokenRevocationCache>(sp =>
         sp.GetRequiredService<ITokenRevocationRepository>(), TimeProvider.System));
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
-// CSR finding #4: IdpAdminClient used to post a cleartext user password to Authentik's
-// set_password endpoint over whatever transport this base URL specifies, which is what the
-// startup guard formerly here existed to fail closed against for production/https profiles. The
-// deeper fix (see IdpAdminClient.CreateUserAsync) removed the password transmission entirely —
-// the platform never sends a user password to Authentik at all — so that guard's entire
-// justification is gone. The remaining admin-token-over-plaintext-in-cluster hop is the accepted
-// architecture decision this deployment already makes elsewhere, compensated by default-deny
-// NetworkPolicy, not something this startup path needs to gate.
-var authentikBaseUrlValue = cfg["Authentik:BaseUrl"] ?? "http://authentik-server:9000";
-
+// CSR round-10 #5: the admin token travels over TLS to the tls-proxy sidecar, trusting only the
+// deployment's CA. Authentik:BaseUrl has no fallback: the startup guard requires it outside
+// Development, and the Development test hosts register their own clients.
 builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName, client =>
 {
-    client.BaseAddress = new Uri(authentikBaseUrlValue);
+    if (cfg["Authentik:BaseUrl"] is { Length: > 0 } authentikBaseUrl)
+        client.BaseAddress = new Uri(authentikBaseUrl);
     var adminToken = cfg["Authentik:AdminToken"];
     if (!string.IsNullOrEmpty(adminToken))
         client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", adminToken);
-});
+}).ConfigurePrimaryHttpMessageHandler(() => Iverson.Api.Tenancy.AuthentikTrust.CreateHandler(cfg["Authentik:CaCertificatePath"]));
 builder.Services.AddSingleton<Iverson.Api.Tenancy.IIdpAdminClient, Iverson.Api.Tenancy.IdpAdminClient>();
 
 builder.Services.AddHttpClient("JaegerOtlpHttp", client =>
@@ -476,6 +457,9 @@ builder.Services.AddHostedService<Iverson.Api.Schema.SchemaRefreshWorker>();
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
+// CSR round-10 #5: outside Development the api role reaches Authentik only over TLS, trusting only
+// the CA the deployment mounts.
+Iverson.Api.Tenancy.AuthentikTrust.ValidateStartup(app.Configuration, workloadRole, app.Environment);
 app.MapPrometheusScrapingEndpoint().AllowAnonymous().WithMetadata(new RequireListenerPort(8081));
 
 if (app.Environment.IsDevelopment())
@@ -487,30 +471,7 @@ var preAuthOptions = new RateLimiterOptions
     // (503 means "I'm down", not "you're too fast"); mirrors the post-auth limiter's choice.
     RejectionStatusCode = StatusCodes.Status429TooManyRequests
 };
-preAuthOptions.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
-{
-    // Unlike the post-auth limiter, this one deliberately does NOT exclude gRPC calls:
-    // gRPC requests with an invalid/expired token never reach RateLimitInterceptor (which
-    // runs post-auth), so they have no rate-limit coverage outside this pre-auth limiter.
-    // Excluding gRPC here would leave garbage-token gRPC calls with zero rate limiting,
-    // reopening the vulnerability this pre-auth limiter exists to close.
-    var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
-    if (isHealthListenerEndpoint)
-        return RateLimitPartition.GetNoLimiter("unlimited");
-
-    return RateLimitPartition.GetSlidingWindowLimiter(
-        ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
-        _ => new SlidingWindowRateLimiterOptions
-        {
-            // Matches RateLimitInterceptor's 50,000/min-per-subject budget for authenticated gRPC
-            // traffic: this limiter uniquely also covers gRPC pre-auth (see above), so it must not
-            // sit below that dedicated budget or it becomes the accidental ceiling instead of it.
-            PermitLimit = 50_000,
-            Window = TimeSpan.FromMinutes(1),
-            SegmentsPerWindow = 6,
-            QueueLimit = 0
-        });
-});
+preAuthOptions.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx => PreAuthPartition(ctx, trustedProxies));
 // The existing "traces" named policy (registered only on the DI-configured post-auth options
 // below) must also exist on this instance — RateLimiterOptions' policy map is per-instance, and
 // /v1/traces carries .RequireRateLimiting("traces"); without this, every request to that endpoint
@@ -840,6 +801,62 @@ app.Run();
 // fails accessibility consistency checking (verified empirically) unless Program is public.
 public partial class Program
 {
+    /// <summary>The post-auth global limiter's partition (CSR round-7 #7, round-10 #3).</summary>
+    internal static RateLimitPartition<string> PostAuthPartition(HttpContext ctx, TrustedProxyOptions trustedProxies)
+    {
+        // Exclude the gRPC data plane (already governed by RateLimitInterceptor's own 50,000/min
+        // budget) and the anonymous probe/observability endpoints (kubelet, Prometheus — a 429
+        // there pulls the pod out of service). Both are marked RequireListenerPort(8081) or are
+        // gRPC methods, identified the same way Task 1's middleware identifies them, so this
+        // list can never silently diverge from Task 1's own endpoint enumeration.
+        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
+        var isGrpcCall = ctx.Request.ContentType?.StartsWith("application/grpc") == true;
+        if (isHealthListenerEndpoint || isGrpcCall)
+            // A constant key, not the request path: PartitionedRateLimiter.Create caches one
+            // dictionary entry per distinct partition key returned by this factory — including
+            // no-op (GetNoLimiter) partitions, which are never swept. Keying by path let any
+            // authenticated caller (every SDK client holds a service token) grow this dictionary
+            // without bound by varying the path on gRPC-content-typed requests. The key carries
+            // no meaning for a no-op partition, so collapse every excluded request onto one entry.
+            return RateLimitPartition.GetNoLimiter("unlimited");
+
+        return RateLimitPartition.GetSlidingWindowLimiter(
+            ctx.User.FindFirst("sub")?.Value ?? ClientPartitionKey.For(ctx, trustedProxies),
+            _ => new SlidingWindowRateLimiterOptions
+            {
+                PermitLimit = 6_000,
+                Window = TimeSpan.FromMinutes(1),
+                SegmentsPerWindow = 6,
+                QueueLimit = 0
+            });
+    }
+
+    /// <summary>The pre-auth global limiter's partition (CSR round-9 #2, round-10 #3).</summary>
+    internal static RateLimitPartition<string> PreAuthPartition(HttpContext ctx, TrustedProxyOptions trustedProxies)
+    {
+        // Unlike the post-auth limiter, this one deliberately does NOT exclude gRPC calls:
+        // gRPC requests with an invalid/expired token never reach RateLimitInterceptor (which
+        // runs post-auth), so they have no rate-limit coverage outside this pre-auth limiter.
+        // Excluding gRPC here would leave garbage-token gRPC calls with zero rate limiting,
+        // reopening the vulnerability this pre-auth limiter exists to close.
+        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
+        if (isHealthListenerEndpoint)
+            return RateLimitPartition.GetNoLimiter("unlimited");
+
+        return RateLimitPartition.GetSlidingWindowLimiter(
+            ClientPartitionKey.For(ctx, trustedProxies),
+            _ => new SlidingWindowRateLimiterOptions
+            {
+                // Matches RateLimitInterceptor's 50,000/min-per-subject budget for authenticated gRPC
+                // traffic: this limiter uniquely also covers gRPC pre-auth (see above), so it must not
+                // sit below that dedicated budget or it becomes the accidental ceiling instead of it.
+                PermitLimit = 50_000,
+                Window = TimeSpan.FromMinutes(1),
+                SegmentsPerWindow = 6,
+                QueueLimit = 0
+            });
+    }
+
     /// <summary>
     /// CSR round-10 #11: both JwtBearer schemes' <c>OnTokenValidated</c>. Refuses a token whose
     /// <c>sub</c> was revoked (a removed user, or a demoted tenant admin) at or after its

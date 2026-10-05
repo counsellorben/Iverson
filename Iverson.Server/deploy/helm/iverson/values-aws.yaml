@@ -112,6 +112,12 @@ api:
       alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
       alb.ingress.kubernetes.io/ssl-redirect: "443"
   adminConsoleEnabled: true
+  # CSR round-10 #3: the two public subnets (modules/cluster-aws, cidrsubnet(vpc_cidr, 4, 8..9)),
+  # where the internet-facing ALB is placed; nodes sit in the private subnets. ALB appends the
+  # client IP.
+  trustedProxies:
+    cidrs: ["10.0.128.0/20", "10.0.144.0/20"]
+    hops: 1
 
 # worker/prometheus/redis/authentik: none of these get a dedicated node pool in
 # modules/cluster-aws (only postgres/kafka/starrocks/qdrant/ollama do — confirmed

@@ -45,3 +45,11 @@ adminApiIngress:
 # not render, so a console-less profile does not expose /admin, /health (ANONYMOUS) and
 # /v1/traces on a public hostname for nobody to call.
 adminConsoleEnabled: false
+# CSR round-10 #3: the load-balancer or ingress ranges whose X-Forwarded-For the rate limiters
+# trust, and which entry from the right holds the client (2 behind Google's load balancer, which
+# appends "<client>,<lb-ip>"). No usable default: every profile sets its own, and
+# templates/deployment.yaml fails the render while the list is empty, the same guard
+# networkPolicy.clusterCidrs has.
+trustedProxies:
+  cidrs: []
+  hops: 1

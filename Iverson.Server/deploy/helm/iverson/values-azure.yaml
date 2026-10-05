@@ -104,6 +104,11 @@ api:
     # for the real host before applying.
     tlsSecretName: "iverson-admin-api-tls"
   adminConsoleEnabled: true
+  # CSR round-10 #3: the Application Gateway subnet (modules/cluster-azure,
+  # ingress_application_gateway.subnet_cidr). It writes "ip:port", which the API accepts.
+  trustedProxies:
+    cidrs: ["10.1.16.0/24"]
+    hops: 1
 
 # worker/prometheus/redis/authentik: none of these get a dedicated node pool in
 # modules/cluster-azure (only postgres/kafka/starrocks/qdrant/ollama do — confirmed

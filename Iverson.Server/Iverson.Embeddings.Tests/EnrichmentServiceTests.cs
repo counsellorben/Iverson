@@ -180,4 +180,103 @@ public sealed class EnrichmentServiceTests
         await svc.Invoking(s => s.GenerateAsync("hello"))
                  .Should().ThrowAsync<Exception>();
     }
+
+    // A response body that never completes: ReadAsync waits until its token is cancelled.
+    private sealed class StallingStream : Stream
+    {
+        public override bool CanRead  => true;
+        public override bool CanSeek  => false;
+        public override bool CanWrite => false;
+        public override long Length   => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            return 0;
+        }
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+            ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+        public override int  Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private static EnrichmentServiceOptions WithTimeout(TimeSpan timeout) =>
+        new() { ModelId = "Qwen/Qwen2.5-1.5B-Instruct", BaseUrl = "http://tgi:8092", Timeout = timeout };
+
+    [Fact]
+    public async Task GenerateJsonAsync_FailsFast_OnManyUnterminatedFences()
+    {
+        // 128 KB of "```\nx": every fence opening is unterminated. Before NonBacktracking this took
+        // over a minute; it now takes milliseconds. The bound leaves room for a cold, loaded test host.
+        var handler = new FakeHttpMessageHandler(ChatResponse(string.Concat(Enumerable.Repeat("```\nx", 26_240))));
+        var svc = CreateService(handler);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        await FluentActions.Awaiting(() => svc.GenerateJsonAsync("p")).Should().ThrowAsync<InvalidOperationException>();
+
+        sw.ElapsedMilliseconds.Should().BeLessThan(2_000);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_RejectsABodyOverOneMebibyte_AsANonTransientError()
+    {
+        var handler = new FakeHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(new byte[1024 * 1024 + 1])
+        });
+
+        await FluentActions.Awaiting(() => CreateService(handler).GenerateAsync("p"))
+            .Should().ThrowAsync<InvalidOperationException>().WithMessage("*exceeded*");
+    }
+
+    [Fact]
+    public async Task GenerateAsync_ParsesABodyJustUnderTheCap()
+    {
+        var content = new string('a', 1_000_000); // the JSON envelope stays under 1 MiB
+        var handler = new FakeHttpMessageHandler(ChatResponse(content));
+
+        (await CreateService(handler).GenerateAsync("p")).Should().HaveLength(1_000_000);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_RejectsABodyOverOneMebibyte_WhenNoContentLengthIsSent()
+    {
+        var content = new ByteArrayContent(new byte[1024 * 1024 + 1]);
+        content.Headers.ContentLength = null;
+        var handler = new FakeHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+
+        await FluentActions.Awaiting(() => CreateService(handler).GenerateAsync("p"))
+            .Should().ThrowAsync<InvalidOperationException>().WithMessage("*exceeded*");
+    }
+
+    [Fact]
+    public async Task GenerateAsync_RaisesTheHttpClientTimeoutShape_WhenTheBodyStallsPastTheTimeout()
+    {
+        var handler = new FakeHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new StallingStream())
+        });
+        var svc = CreateService(handler, WithTimeout(TimeSpan.FromMilliseconds(200)));
+
+        (await FluentActions.Awaiting(() => svc.GenerateAsync("p")).Should().ThrowAsync<TaskCanceledException>())
+            .WithInnerException<TimeoutException>();
+    }
+
+    [Fact]
+    public async Task GenerateAsync_LeavesCallerCancellationUntranslated()
+    {
+        var handler = new FakeHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new StallingStream())
+        });
+        var svc = CreateService(handler, WithTimeout(TimeSpan.FromMinutes(1)));
+        using var caller = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+
+        var thrown = await FluentActions.Awaiting(() => svc.GenerateAsync("p", caller.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+        (thrown.Which.InnerException is TimeoutException).Should().BeFalse();
+    }
 }

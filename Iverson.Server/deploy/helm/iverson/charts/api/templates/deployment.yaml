@@ -1,3 +1,11 @@
+{{- if not .Values.trustedProxies.cidrs }}
+{{- fail "api.trustedProxies.cidrs must list at least one CIDR: the load-balancer or ingress ranges whose X-Forwarded-For the rate limiters trust" }}
+{{- end }}
+{{- range .Values.trustedProxies.cidrs }}
+{{- if not (trim .) }}
+{{- fail "api.trustedProxies.cidrs contains a blank entry; every entry must be a CIDR" }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -134,6 +142,12 @@ spec:
             - name: Otel__Endpoint
               value: "http://{{ .Release.Name }}-jaeger:4317"
             {{- end }}
+            {{- range $i, $cidr := .Values.trustedProxies.cidrs }}
+            - name: RateLimiting__TrustedProxies__Cidrs__{{ $i }}
+              value: {{ $cidr | quote }}
+            {{- end }}
+            - name: RateLimiting__TrustedProxies__Hops
+              value: {{ .Values.trustedProxies.hops | quote }}
             - name: Authentication__Authority
               value: "http://{{ .Release.Name }}-authentik:9000/application/o/iverson-api/"
             - name: Authentication__ExternalIssuer
@@ -170,10 +184,19 @@ spec:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-loadtest-human-client, key: client-id }
             {{- end }}
             - name: Authentik__BaseUrl
-              value: "http://{{ .Release.Name }}-authentik:9000"
+              value: "https://{{ .Release.Name }}-authentik:8443"
             - name: Authentik__AdminToken
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-admin-orchestrator-token, key: token-key }
+            - name: Authentication__MetadataAddress
+              value: "https://{{ .Release.Name }}-authentik:8443/application/o/iverson-api/.well-known/openid-configuration"
+            - name: Authentication__ActingUser__MetadataAddress
+              value: "https://{{ .Release.Name }}-authentik:8443/application/o/iverson-api/.well-known/openid-configuration"
+            # The issuer in-cluster minters on 9000 stamp (Authentik's global issuer mode).
+            - name: Authentication__InternalIssuer
+              value: "http://{{ .Release.Name }}-authentik:9000/"
+            - name: Authentik__CaCertificatePath
+              value: "/etc/iverson/authentik-ca/ca.crt"
             {{- if .Values.global.tracingEnabled }}
             - name: Jaeger__OtlpHttpUrl
               value: "http://{{ .Release.Name }}-jaeger:4318"
@@ -226,6 +249,9 @@ spec:
             - name: postgres-tls
               mountPath: /etc/postgres-tls
               readOnly: true
+            - name: authentik-ca
+              mountPath: /etc/iverson/authentik-ca
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -241,6 +267,12 @@ spec:
         - name: postgres-tls
           secret:
             secretName: {{ .Release.Name }}-postgres-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: authentik-ca
+          secret:
+            secretName: {{ .Release.Name }}-authentik-internal-tls
             items:
               - key: ca.crt
                 path: ca.crt

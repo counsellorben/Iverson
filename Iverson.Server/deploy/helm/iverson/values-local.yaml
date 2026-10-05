@@ -127,6 +127,13 @@ api:
     annotations: {}
     tlsSecretName: ""
   adminConsoleEnabled: true
+  # CSR round-10 #3: ingress-nginx reaches the API from a pod IP in kind's pod CIDR (the tigera
+  # operator sizes Calico's pool from kubeadm's podSubnet, kind's default 10.244.0.0/16), and its
+  # defaults replace X-Forwarded-For with the address it saw. NetworkPolicy admits only the
+  # ingress-nginx namespace from pod IPs on 8080.
+  trustedProxies:
+    cidrs: ["10.244.0.0/16"]
+    hops: 1
 
 worker:
   replicas: 1

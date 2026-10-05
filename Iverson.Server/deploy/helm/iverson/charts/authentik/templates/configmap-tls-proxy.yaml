@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-authentik-tls-proxy
+data:
+  # CSR round-10 #5: TLS on 8443 in front of Authentik's plaintext 9000, inside the same pod. Host is
+  # passed through and X-Forwarded-Proto set to https, so Authentik (which trusts both from loopback)
+  # builds https issuer and jwks_uri URLs for this listener.
+  default.conf: |
+    server {
+      listen 8443 ssl;
+      ssl_certificate     /etc/iverson/tls/tls.crt;
+      ssl_certificate_key /etc/iverson/tls/tls.key;
+      ssl_protocols       TLSv1.2 TLSv1.3;
+      location / {
+        proxy_pass http://127.0.0.1:9000;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+      }
+    }
