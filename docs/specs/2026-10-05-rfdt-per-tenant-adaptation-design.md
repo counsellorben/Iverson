@@ -58,9 +58,13 @@ Artifacts: `$B/rfdt-tenant-2026-10/{phase0,phase1,phase2,gate}`.
 the existing `build_request` with a single document (`d0`), and assembles the 50 values in pool order. One ledger
 entry per query (the existing accepted/rejected tagging, resume, 5% fallback cap and sidecar are unchanged); a
 query is accepted only when all 50 per-document requests are accepted. `stub_jev_server.py` gains the matching
-single-question mode so the two-sided dry run (identity / reversed) still proves the pipeline end to end. In
+single-question mode so the two-sided dry run (identity / reversed), on the SciFact pool, still proves the pipeline
+end to end. In
 `--per-doc` mode the client sends without the 0.5 s pacing sleep (`MIN_INTERVAL_SECONDS`, the public demo's
 2-requests-per-second limit, `jev_rerank.py:46`); the 429 `Retry-After` backoff and the 4-attempt retry are unchanged.
+Each accepted per-query ledger entry also records, in its `content` beside `values` and `metadata`, the UTC start of
+the query's first request and the summed wall-clock seconds of all its requests (retries included); every pass, and
+the smoke test, writes its UTC start and end to its log.
 
 **Server.** `hf_server` serializes every forward under one lock and does not batch across requests
 (`hf_server.py:441,481`), so Phase 0 is 48,600 sequential forwards (SciFact 15,000; FreshStack 33,600) plus
@@ -70,8 +74,9 @@ the repeat. Launch: `--max-model-len 16384`, `--dtype bfloat16`, advanced metric
 (`total_size`, pinned revision); single-document prompts are ≤ 13.1K tokens.
 
 **Pre-flight (sizes Phase 0 before it starts).** Time 100 end-to-end client requests (wall clock through
-`jev_rerank --per-doc`) on each tenant's longest documents; record wall-clock seconds per request and `nvidia-smi`
-memory. Project Phase 0's cost at the card's hourly price. If the projection
+`jev_rerank --per-doc`) on a seeded random sample of each tenant's (test query, pool document) pairs, and project
+Phase 0's cost from their mean × each pass's request count at the card's hourly price; separately send each
+tenant's longest prompts and record peak `nvidia-smi` memory (Ben, CDR-2 §3.1). If the projection
 exceeds **$35**, every pass labels only each pool's **top 20** (positions 21–50 keep baseline order) — the gate doc
 then reports how many qrels-relevant documents sit at baseline ranks 21–50 (unreachable by construction). If the
 top-20 projection still exceeds $35, Phase 0 runs at top 20 anyway and the overrun is charged to Phase 1's $40
@@ -93,7 +98,7 @@ request. Record peak `nvidia-smi` memory. Any failure stops before Phase 1. The 
 Phase 1's labelling.
 
 **Reported, not gated.** SciFact one-document vs all-50-in-context (the gate's `jev-main` run, +0.0713): how much
-of the gain came from cross-document context.
+of the gain came from cross-document context. This reranker-vs-reranker pair uses §6.4's amended pool check.
 
 ## 5. Phase 1 — training data, per passing tenant
 
@@ -124,8 +129,8 @@ the bar, retrieve from the restored snapshots through Qdrant itself, then re-che
 **5.3 Labels.** The judge labels every pool document of every synthetic query with Phase 0's client and settings
 (and Phase 0's top-20 rule if it applied).
 
-**5.4 Volume.** Up to **1,000 queries per tenant**, sized from Phase 0's measured wall-clock seconds per request so
-Phase 1 fits **$40** less any Phase 0 overrun (§4). If the projection falls below **300 queries per tenant**, stop and ask Ben (accept fewer, or spend more).
+**5.4 Volume.** Up to **1,000 queries per tenant**, sized from Phase 0's measured wall-clock seconds per request (the
+summed per-entry seconds of the Phase 0 main-pass ledgers ÷ their request count) so Phase 1 fits **$40** less any Phase 0 overrun (§4). If the projection falls below **300 queries per tenant**, stop and ask Ben (accept fewer, or spend more).
 
 **5.5 RFDT records.** One record per (query, document): `state` = the query; one `choice` question whose
 instructions carry the document and whose criteria are the judge's own binary surrogate — `no`/`yes` with the noul
@@ -152,7 +157,11 @@ the student's P(yes) (the choice response's `probabilities.yes`); ties keep base
 the existing rank-derived writer and sidecar. Arms per tenant test pool: **S0** (base, no adapter), **own** adapter,
 **cross** (the other tenant's adapter). Same pod as Phase 1's labelling, after the judge's server is stopped.
 
-**6.4 Verdicts, per tenant** (Holm over the two gated comparisons, `report.py`'s permutation test):
+**6.4 Verdicts, per tenant** (Holm over the two gated comparisons, `report.py`'s permutation test). Both gated
+pairs compare two rerankers, which can reorder fewer than 25% of queries and so fail `check_pool`'s reorder floor
+(`report.py:700,732-766`; one refusal exits the whole invocation). For reranker-vs-reranker pairs, `report.py` keeps
+`check_pool`'s pool-set check but replaces the 25% floor with each run's sidecar `fallbackCount` being within the 5%
+cap (Ben, CDR-2 §3.2). Pairs against the bge-base baseline keep the floor.
 - **Adaptation helps:** own − S0, Holm p < 0.05 and delta > 0.
 - **Domain-specific:** own − cross, Holm p < 0.05 and delta > 0. Not significant while adaptation helps ⇒ one
   general adapter would do.
@@ -170,7 +179,8 @@ If only one tenant passed Phase 0, only its adapter is trained; it is scored on 
 | 1 | $40 (incl. the vLLM generation pod) | projection < 300 queries per tenant ⇒ stop, ask Ben |
 | 2 | $25 | — |
 
-Card prices are re-read at rental. Every pod launch and termination time is recorded.
+Card prices are re-read at rental. Every pod launch and termination time is recorded. Phase 0's spend runs from pod
+launch to the end of the student toolchain smoke test; later time on that pod is Phase 1's.
 
 ## 8. Failure handling
 
@@ -183,9 +193,11 @@ Card prices are re-read at rental. Every pod launch and termination time is reco
 
 ## 9. Harness changes (repo)
 
-- `jev_rerank.py`: `--per-doc`, without the demo pacing sleep; the yes/no `choice` question type for students. **One** request-shape definition
+- `jev_rerank.py`: `--per-doc`, without the demo pacing sleep, per-query timing in the ledger; the yes/no `choice` question type for students. **One** request-shape definition
   serves every role (Phase 0 teacher, Phase 1 teacher, RFDT records, S0/own/cross scoring).
 - `stub_jev_server.py`: single-question mode for the two-sided dry run.
+- `report.py`: for reranker-vs-reranker pairs, the pool-set check plus each run's sidecar `fallbackCount` in place of
+  the 25% reorder floor (§6.4).
 - A bge-base pool builder (generalized `snapshot_pools.py`, with MMR) and its fidelity check.
 - A synthetic-query generator (parameterized `generate_synthetic_queries.py`).
 - An RFDT record writer (ledger → `prepare.py` input).
@@ -241,3 +253,7 @@ Server integration and per-tenant serving; the 50-documents-per-request format; 
 | V26 | Test-query exclusion lists exist | `beir/queries.jsonl`: 300 SciFact, 672 FreshStack |
 | V27 | The yes/no choice labels are single-token stable for both tokenizers (no request 422s on the label check) | `hf_server.py:357-371`; probe: on both tokenizers, the label prefix plus `A` / `B` each add exactly one token (ids 32, 33), with the prefix unchanged |
 | V28 | The client's 0.5 s pacing sleep is demo-only and removable without breaking the 429 backoff/retry | `jev_rerank.py:46,176-177,201-203`; run with `MIN_INTERVAL_SECONDS` 0 → 429 then success: order returned, sleeps `[0, 1.0, 0]` |
+| V29 | Phase 1 prompts (synthetic query × any corpus document) stay ≤ 16,384 tokens | all 6,000 FreshStack corpus documents with a worst-case 300-char query: judge max 13,519, student max 12,908 (smoke records max 12,575) |
+| V30 | The stub recovers each document's pool position from a one-document request on the SciFact dry-run pool | all 300 SciFact pools: no two documents identical or contained in one another; FreshStack fails this (20 of 672 pools hold identical texts), so the dry run uses SciFact |
+| V31 | A seeded random sample represents Phase 0's per-request work; the longest-document basis does not | judge prompt tokens per request: longest-document mean 1.66× (SciFact) and 1.25× (FreshStack) the population mean; a seeded 100-pair sample mean 0.98× and 1.03× |
+| V32 | Sidecars carry the fallback count the amended pair check reads; ledgers carry no timing today | `jev-main.meta.json` `reranker.fallbackCount` (`jev_rerank.py:237-238`); gate ledger keys `completion_tokens, content, order, pass, prompt_tokens, query_id, reason, reasoning, status`, `content` = `metadata, values` |
