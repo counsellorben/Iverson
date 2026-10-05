@@ -134,7 +134,12 @@ The spec's `Verified assumptions` rows 1–43 were verified by `thorough-brainst
 | 34 | Consumer | On kind with `values-laptop` on this host: every pod reaches Ready; Calico's pool is `10.244.0.0/16`; ingress-nginx sees a host client and a container on the `kind` network as different `$remote_addr`; a 0.5-CPU API pod takes more than 50,000 requests a minute | Verified on `main` 2026-10-04 before SDD (CIR-1 §3.1, option B): all pods Running and Ready; pool `10.244.0.0/16`; the ingress log shows client A (host, through the node) as `10.89.1.2` and client B (container) as `10.89.1.4`; client A `elapsed=55.8s 401=49999 429=10001`; client B then got `429` on `main` (the shared-partition collapse #3 describes). Cluster deleted; podman state diffed unchanged |
 | 35 | Command | With the pipeline test in a non-parallel collection and its loop run through `Task.Run`, the whole Api.Tests suite (container-backed classes included) passes, the test runs after every other test, and it still catches a broken limiter registration | Verified 2026-10-05 before SDD (CIR-2 §3.1, option A), Task 1 applied in a scratch worktree: two full runs `Passed: 1421, Failed: 0` (7 m 11 s, 7 m 25 s); pipeline test 4.98 s and 7.39 s, starting after the last other test ended; under the registration mutation the RateLimiting filter gave 21 passed, 1 failed (this test, "not to be … TooManyRequests") |
 | 36 | Code validity | The exec readiness probe `curl -sk -o /dev/null https://127.0.0.1:8443/` exits 0 once nginx serves TLS on 8443, even while Authentik's upstream returns 502, and non-zero when nothing listens; it runs inside the container, so no NetworkPolicy engine sees it | Probed 2026-10-05: nginx-unprivileged 1.27-alpine as uid 1000, read-only root, the plan's `default.conf` and a test certificate: exit 0 (HTTP 502, no upstream); against an unbound port, exit 7 |
-| 37 | Code validity | The load probe's `vary` argument sends a different `X-Forwarded-For` on every request | Probed 2026-10-05 against an nginx h2c endpoint logging `$http_x_forwarded_for`: 1,000 requests carried 1,000 distinct values; a fixed value was sent as given |
+| 37 | Code validity | The load probe's `vary` argument sends a different `X-Forwarded-For` on every request | Probed 2026-10-05 against an nginx endpoint (the probe spoke HTTP/1.1 there) logging `$http_x_forwarded_for`: 1,000 requests carried 1,000 distinct values; a fixed value was sent as given |
+| 38 | Code validity | The compose API's 8080 accepts only HTTP/2, so the load probe sets HTTP/2 on http:// URLs; over https it speaks HTTP/1.1, as row 34 measured | CIR-3 §2.1: without the line, the plan's probe got 400=2000 from the real Program pipeline on 8080 and 400=60000 from an appsettings replica; with it, 401=50000 429=10000, and another source address got 401. Re-confirmed 2026-10-05 against an HTTP/2-only Kestrel endpoint: without the line `400=500`, with it `401=500` |
+| 39 | Consumer | With Tasks 2 and 5 applied, on kind with `values-laptop`, the tls-proxy sidecar becomes Ready under the exec probe, and discovery over 8443 validates against the chart's CA | Verified 2026-10-05 before SDD (CIR-3 §3.1, option B): Tasks 2 and 5 applied on a scratch branch (lint, kubeconform and the kube-score diff clean on all 5 profiles); the authentik-server pod read `server tls-proxy true true` with 0 restarts and the rendered exec probe (`timeoutSeconds: 1`); once Authentik's blueprints applied, discovery through the 8443 port-forward with the chart's `ca.crt` gave `https://iverson-authentik:18443/` and an https `jwks_uri` (verify result 0). Cluster deleted; podman state diffed unchanged |
+| 40 | Consumer | Against an HTTP/2 Kestrel endpoint, the load probe's `-1=` failures come from Kestrel's per-connection stream limit: unread 5-byte bodies leave reset streams counted against the 100-stream limit (`ENHANCE_YOUR_CALM`), and more than 20 of those a second abort the connection, failing up to 100 in-flight requests (`ResponseEnded`, connection reset). The limiter never sees a refused request, so `401=50000` stays exact and only the `429=` count shrinks | Investigated 2026-10-05 before SDD (CIR-3 §3.2, option B), Kestrel at Trace with a lossless logger: replica `-1=` 0–674 per run, with these groups; draining the body → 0 failures in 5 runs; stream limit 1000 → 0 in 5 runs; `main`'s real pipeline under Kestrel, 6 runs: five `401=50000 429=10000`, one `-1=41 401=50000 429=9959` (all `ENHANCE_YOUR_CALM`). Worst observed `-1=` 931, against the 9,999 margin |
+| 41 | Code validity | The exec readiness probe completes within the kubelet's default `timeoutSeconds` of 1 s against a live Authentik | CIR-3 span S2: 150/150 `exit=0` under `timeout 1`, p95 0.192 s, at the chart's CPU limits |
+| 42 | Consumer | The `vary` header leaves row 34's kind throughput premise intact | CIR-3 span S3: at an nginx TLS hop, 60,000 requests took 5.1 s and 5.5 s without the header and 5.3 s and 5.1 s with it; behind ingress-nginx the API sees one forwarded entry either way (inherited spec row 4) |
 
 ---
 
@@ -1802,7 +1807,7 @@ mkdir -p $LIVE/loadprobe && cd $LIVE/loadprobe
 printf '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>' > loadprobe.csproj
 ```
 
-`Program.cs`. It sends a garbage-token gRPC request to `GetSchema` `count` times and prints counts by HTTP status. With `vary` as the last argument, every request carries a different `X-Forwarded-For`. The literal `not-a-token` is a placeholder, not a credential.
+`Program.cs`. It sends a garbage-token gRPC request to `GetSchema` (h2c with prior knowledge for an `http://` URL, HTTP/1.1 for `https://`) `count` times and prints counts by HTTP status. With `vary` as the last argument, every request carries a different `X-Forwarded-For`. The literal `not-a-token` is a placeholder, not a credential.
 
 ```csharp
 using System.Collections.Concurrent;
@@ -1826,6 +1831,10 @@ await Parallel.ForEachAsync(Enumerable.Range(0, count), new ParallelOptions { Ma
 {
     using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = new ByteArrayContent(new byte[5]) };
     req.Content.Headers.ContentType = new("application/grpc");
+    // An explicit HttpRequestMessage ignores HttpClient.DefaultRequestVersion and goes out as HTTP/1.1.
+    // The compose API's 8080 accepts only HTTP/2 (appsettings.json Kestrel:Endpoints:Grpc), so http://
+    // URLs use h2c with prior knowledge; https:// through ingress-nginx stays HTTP/1.1, as row 34 measured.
+    if (url.StartsWith("http://")) { req.Version = HttpVersion.Version20; req.VersionPolicy = HttpVersionPolicy.RequestVersionExact; }
     req.Headers.TryAddWithoutValidation("te", "trailers");
     req.Headers.TryAddWithoutValidation("authorization", "Bearer not-a-token");
     if (host is not null) req.Headers.Host = host;
@@ -1895,7 +1904,7 @@ docker run --rm --network csr10edge_default --entrypoint sh docker.io/nginxinc/n
 ```
 
 Expected:
-- Client A's run ends with a non-zero `429=` count (more than 50,000 requests within the minute) and `401=` for the rest. Record `elapsed`. Because every request carried a different header, a `429` also shows the header bought no fresh partitions.
+- Client A's run ends with a non-zero `429=` count (more than 50,000 requests within the minute) and `401=` for the rest, apart from any `-1=` count. Those are requests that failed at the HTTP/2 layer during the 128-way burst: Kestrel's `ENHANCE_YOUR_CALM` stream resets are one source; another is Kestrel aborting a connection after more than 20 `ENHANCE_YOUR_CALM` resets in a second, which fails up to 100 in-flight requests at once (`ResponseEnded` / connection reset) (plan row 40). A `-1=` count does not by itself fail the check: the verdict is the non-zero `429=`, which only the limiter returns. Record `elapsed`. Because every request carried a different header, a `429` also shows the header bought no fresh partitions.
 - Client B prints `401`, not `429`: a separate partition.
 - If client A's run never reaches `429`, record the `elapsed` and counts and stop and report. Don't retry with different numbers to force it.
 
@@ -1937,7 +1946,7 @@ curl -s --cacert $LIVE/kind-ca.crt --resolve iverson-authentik:18443:127.0.0.1 \
 
 Expected:
 - The pool is `10.244.0.0/16`.
-- Every pod is Running and Ready, and the authentik-server pod shows `server tls-proxy true true`.
+- Every pod is Running and Ready, and the authentik-server pod shows `server tls-proxy true true` (already observed before SDD with Tasks 2 and 5 applied, plan row 39).
 - The `jwks_uri` is `https://iverson-authentik:18443/application/o/iverson-api/jwks/`, validated through the chart's CA.
 
 Mint a service token with the Host header the in-cluster minters use, and call the API with it:
