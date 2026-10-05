@@ -29,8 +29,9 @@ instructions in the shared prefix. That format cannot carry this experiment:
 
 So every judge and student request in this design carries **one document**. A single-question request's prompt
 holds only that document (it appears 2–3 times: prefix instructions plus the selected-question suffix). Measured
-with the real tokenizers on FreshStack's five longest pool documents (17,169 chars max): **≤ 6,876 tokens**
-(Qwen3.8-27B) and **≤ 6,710** (Qwen3-Reranker-0.6B).
+with the real tokenizers over every (test query, pool document) pair: **≤ 13,081 tokens** (Qwen3.8-27B,
+`shared_examples_binary`) and **≤ 12,558** (Qwen3-Reranker-0.6B, `baseline` choice). About 91% of FreshStack and 11%
+of SciFact student prompts exceed 2,048 tokens.
 
 Whether the judge's gain survives without the other 49 documents in context is **unmeasured** — Phase 0 measures it.
 
@@ -57,19 +58,24 @@ Artifacts: `$B/rfdt-tenant-2026-10/{phase0,phase1,phase2,gate}`.
 the existing `build_request` with a single document (`d0`), and assembles the 50 values in pool order. One ledger
 entry per query (the existing accepted/rejected tagging, resume, 5% fallback cap and sidecar are unchanged); a
 query is accepted only when all 50 per-document requests are accepted. `stub_jev_server.py` gains the matching
-single-question mode so the two-sided dry run (identity / reversed) still proves the pipeline end to end.
+single-question mode so the two-sided dry run (identity / reversed) still proves the pipeline end to end. In
+`--per-doc` mode the client sends without the 0.5 s pacing sleep (`MIN_INTERVAL_SECONDS`, the public demo's
+2-requests-per-second limit, `jev_rerank.py:46`); the 429 `Retry-After` backoff and the 4-attempt retry are unchanged.
 
 **Server.** `hf_server` serializes every forward under one lock and does not batch across requests
 (`hf_server.py:441,481`), so Phase 0 is 48,600 sequential forwards (SciFact 15,000; FreshStack 33,600) plus
 the repeat. Launch: `--max-model-len 16384`, `--dtype bfloat16`, advanced metrics on, everything else as the gate.
 
 **Pod.** One 80 GB card (H100 or A100), PyTorch template, `setsid nohup` for every long process. Weights are 55.6 GB
-(`total_size`, pinned revision); single-document prompts are ≤ 7K tokens.
+(`total_size`, pinned revision); single-document prompts are ≤ 13.1K tokens.
 
-**Pre-flight (sizes Phase 0 before it starts).** Time 100 forwards on each tenant's longest documents; record
-seconds per forward and `nvidia-smi` memory. Project Phase 0's cost at the card's hourly price. If the projection
+**Pre-flight (sizes Phase 0 before it starts).** Time 100 end-to-end client requests (wall clock through
+`jev_rerank --per-doc`) on each tenant's longest documents; record wall-clock seconds per request and `nvidia-smi`
+memory. Project Phase 0's cost at the card's hourly price. If the projection
 exceeds **$35**, every pass labels only each pool's **top 20** (positions 21–50 keep baseline order) — the gate doc
-then reports how many qrels-relevant documents sit at baseline ranks 21–50 (unreachable by construction).
+then reports how many qrels-relevant documents sit at baseline ranks 21–50 (unreachable by construction). If the
+top-20 projection still exceeds $35, Phase 0 runs at top 20 anyway and the overrun is charged to Phase 1's $40
+(Ben, CDR-1 §3.1); Phase 1's sizing (§5.4) then works from what remains.
 
 **Runs, in order.** (1) SciFact main pass, 300 queries. (2) SciFact repeat on the gate's 50-query subsample
 (`--subsample 50 --subsample-seed 20260929`, separate ledger) — confirms per-document determinism. (3) FreshStack
@@ -78,6 +84,13 @@ main pass, 672 queries.
 **Gate, per tenant.** `report.py --pair <run>=<baseline>`: **PASS iff permutation p < 0.05 AND delta ≥ the tenant's
 bar (§3)**, with the gate's existing preconditions (exit 0, R@50 unchanged, fallbacks ≤ 5%). A tenant that fails
 stops: no Phase 1 or 2 for it. If both fail, the experiment ends with that verdict.
+
+**Student toolchain smoke test (Ben, CDR-1 §3.2), on the Phase 0 pod before any Phase 1 spend.** Run only if a
+tenant passed. With the judge's server stopped: build ~20 §5.5-shaped records from Phase 0's own ledger, using the
+longest FreshStack documents; run `RFDT/train.py --lora … --max-length 16384 --max-steps 2`, then `RFDT/export.py`;
+serve the merged model with `hf_server --classifier-prompt-policy baseline` and send one per-document `choice`
+request. Record peak `nvidia-smi` memory. Any failure stops before Phase 1. The judge's server is then relaunched for
+Phase 1's labelling.
 
 **Reported, not gated.** SciFact one-document vs all-50-in-context (the gate's `jev-main` run, +0.0713): how much
 of the gain came from cross-document context.
@@ -111,8 +124,8 @@ the bar, retrieve from the restored snapshots through Qdrant itself, then re-che
 **5.3 Labels.** The judge labels every pool document of every synthetic query with Phase 0's client and settings
 (and Phase 0's top-20 rule if it applied).
 
-**5.4 Volume.** Up to **1,000 queries per tenant**, sized from Phase 0's measured cost per forward so Phase 1 fits
-**$40**. If the projection falls below **300 queries per tenant**, stop and ask Ben (accept fewer, or spend more).
+**5.4 Volume.** Up to **1,000 queries per tenant**, sized from Phase 0's measured wall-clock seconds per request so
+Phase 1 fits **$40** less any Phase 0 overrun (§4). If the projection falls below **300 queries per tenant**, stop and ask Ben (accept fewer, or spend more).
 
 **5.5 RFDT records.** One record per (query, document): `state` = the query; one `choice` question whose
 instructions carry the document and whose criteria are the judge's own binary surrogate — `no`/`yes` with the noul
@@ -128,7 +141,8 @@ connected group; every target supplied, so no teacher API is called).
 **6.1 Base.** `Qwen/Qwen3-Reranker-0.6B`, shared by every arm.
 
 **6.2 Training.** One adapter per passing tenant: `RFDT/train.py --lora --lora-rank 16 --learning-rate 0.0001
---epochs 3 --dtype bfloat16 --batch-size 2 --gradient-accumulation 8 --gradient-checkpointing` (LoRA on all linear
+--epochs 3 --dtype bfloat16 --batch-size 2 --gradient-accumulation 8 --gradient-checkpointing
+--max-length 16384` (LoRA on all linear
 layers, `train.py:261-268`). The model after the last epoch is kept — no epoch selection. `eval_results.json` is
 reported, not gated. Merge with `RFDT/export.py`.
 
@@ -152,7 +166,7 @@ If only one tenant passed Phase 0, only its adapter is trained; it is scored on 
 
 | Phase | Ceiling | Stop rule |
 |---|---|---|
-| 0 | $35 | pre-flight projection > $35 ⇒ top-20 labelling |
+| 0 | $35 | pre-flight projection > $35 ⇒ top-20 labelling; top-20 projection still > $35 ⇒ run anyway, overrun charged to Phase 1 |
 | 1 | $40 (incl. the vLLM generation pod) | projection < 300 queries per tenant ⇒ stop, ask Ben |
 | 2 | $25 | — |
 
@@ -164,11 +178,12 @@ Card prices are re-read at rental. Every pod launch and termination time is reco
   A refused run (cap exceeded) stops the phase — no verdict from a partial run.
 - Pool fidelity < 0.90 after the Qdrant-search fallback: stop before Phase 1 labelling; no spend.
 - RFDT `prepare.py` rejects a record: stop (RFDT never truncates or silently drops).
+- `train.py` rejects a row as too long: stop (RFDT never truncates).
 - Training OOM: `--batch-size 1`, keeping the effective batch with `--gradient-accumulation 16`.
 
 ## 9. Harness changes (repo)
 
-- `jev_rerank.py`: `--per-doc`; the yes/no `choice` question type for students. **One** request-shape definition
+- `jev_rerank.py`: `--per-doc`, without the demo pacing sleep; the yes/no `choice` question type for students. **One** request-shape definition
   serves every role (Phase 0 teacher, Phase 1 teacher, RFDT records, S0/own/cross scoring).
 - `stub_jev_server.py`: single-question mode for the two-sided dry run.
 - A bge-base pool builder (generalized `snapshot_pools.py`, with MMR) and its fidelity check.
@@ -202,7 +217,7 @@ Server integration and per-tenant serving; the 50-documents-per-request format; 
 | V2 | A single-question prompt holds only that document | rendered with `prepare_policy` on FreshStack's longest docs: one doc, 2–3 occurrences |
 | V3 | `/v1/classifier` forwards are serialized, no cross-request batching | `hf_server.py:441,481,934,1075` |
 | V4 | The 27B fits an 80 GB card | `model.safetensors.index.json` `total_size` 55,562,855,904 B |
-| V5 | Single-doc prompts ≤ 16,384 tokens | real tokenizers: ≤ 6,876 (Qwen3.8), ≤ 6,710 (Qwen3-Reranker) |
+| V5 | Single-doc prompts ≤ 16,384 tokens; the student needs `train.py --max-length 16384` | real tokenizers over all 15,000 + 33,600 test-pool pairs: ≤ 13,081 (Qwen3.8, `shared_examples_binary`), ≤ 12,558 (Qwen3-Reranker, `baseline` choice); `train.py:213` defaults `--max-length` to 2,048 and `hf_server.py:351-354` rejects longer branches |
 | V6 | jev_rerank's ledger/fallback/sidecar can wrap a per-doc mode | `score_query` is per query with an injectable `call` (`jev_rerank.py:158-176`) |
 | V7 | `report.py`/ir_measures score the FreshStack pool | baseline 0.2933 / R@50 0.5443, oracle 0.6755 computed |
 | V8 | FreshStack pool = bge-base, 2048/1792, λ 0.70 | `ingest.log` lines 1–2; `RESTORE.md`; composite `9714c660b365fad1` = tier-1 gate's λ sweep |
@@ -224,3 +239,5 @@ Server integration and per-tenant serving; the 50-documents-per-request format; 
 | V24 | Nothing else consumes `jev_rerank.py` | only `stub_jev_server.py`, `test_jev_rerank.py` |
 | V25 | Ties and run writing are handled | `jev_rerank.write_run` rank-derived scores, baseline tie-break |
 | V26 | Test-query exclusion lists exist | `beir/queries.jsonl`: 300 SciFact, 672 FreshStack |
+| V27 | The yes/no choice labels are single-token stable for both tokenizers (no request 422s on the label check) | `hf_server.py:357-371`; probe: on both tokenizers, the label prefix plus `A` / `B` each add exactly one token (ids 32, 33), with the prefix unchanged |
+| V28 | The client's 0.5 s pacing sleep is demo-only and removable without breaking the 429 backoff/retry | `jev_rerank.py:46,176-177,201-203`; run with `MIN_INTERVAL_SECONDS` 0 → 429 then success: order returned, sleeps `[0, 1.0, 0]` |
