@@ -112,6 +112,11 @@ api:
     # Secret name for the real host before applying.
     tlsSecretName: "iverson-admin-api-tls"
   adminConsoleEnabled: true
+  # CSR round-10 #3: Google's front-end ranges. The load balancer appends "<client>,<lb-ip>", so
+  # the client is the second entry from the right.
+  trustedProxies:
+    cidrs: ["130.211.0.0/22", "35.191.0.0/16"]
+    hops: 2
 
 # worker/prometheus/redis/authentik: none of these get a dedicated node pool in
 # modules/cluster-gcp (only postgres/kafka/starrocks/qdrant/ollama do — confirmed
