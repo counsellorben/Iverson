@@ -129,6 +129,10 @@ ready-made operator identity — that file never ships to a real deployment.)
      `docker-compose.yml`, dev-only).
    - **kind:** email from `AUTHENTIK_BOOTSTRAP_EMAIL`, password from the
      `<release>-authentik-app` Secret's `bootstrap-password` key.
+   - **kind/production:** the admin interface (and the rest of the admin API) is reachable only
+     in-cluster since CSR round-10's identity-plane change; the public host no longer serves it.
+     Run `kubectl -n <ns> port-forward svc/<release>-authentik 9000:9000`, then open
+     `http://localhost:9000/if/admin/` (login there still enforces MFA).
 2. Create the new user (Directory → Users → Create), or invite them via
    Authentik's normal enrollment flow.
 3. Add the user to the `operators` Group (Directory → Groups → `operators`) — it already exists,
@@ -294,10 +298,11 @@ Full CLI:
 
 The `--target` flag matters because compose and kind differ in base URL,
 `client_id`, and (a live-verified gotcha, not initially expected) **both**
-targets need a forced `Host` header — Authentik derives the `iss` claim from
+targets use a forced `Host` header — Authentik derives the `iss` claim from
 the *request's* Host header, so a token minted by hitting `localhost:9000`
 directly gets a different `iss` than what `iverson-api`'s own OIDC discovery
-resolves internally. See [Troubleshooting](#troubleshooting).
+resolves internally (compose also accepts `iss=http://localhost:9000/` since
+CSR round-10's identity-plane change; kind does not). See [Troubleshooting](#troubleshooting).
 
 ---
 
@@ -513,8 +518,8 @@ gotchas in detail:
   verification procedure.
 - **`docs/runbooks/kind-cluster-troubleshooting.md`** §5.1–§5.3 — the
   Host-header/issuer-claim mismatch trap when minting tokens through
-  `kubectl port-forward` (or even `localhost:9000` on compose — this turned
-  out not to be kind-specific), why `kubectl get pod -o jsonpath` never shows
+  `kubectl port-forward` (`localhost:9000` on compose is also accepted since the
+  identity-plane change, but forcing the Host header still works), why `kubectl get pod -o jsonpath` never shows
   secret-resolved env values (use `kubectl exec ... -- printenv` instead),
   and a wrong-HTTP-verb trap that looks like an auth failure but is actually
   a routing miss.

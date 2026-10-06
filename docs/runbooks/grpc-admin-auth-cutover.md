@@ -48,6 +48,10 @@ A single `helm upgrade --install` now converges on the first pass:
 helm upgrade --install iverson . -f values-<env>.yaml -n iverson --create-namespace
 ```
 
+Note: the upgrade moves the Authentik Ingress to Service port 9080 immediately, while the old
+single pod (which has no 9080 listener) remains the only endpoint until the new pod is Ready, so
+public logins return 502 for that short window.
+
 ## Confirming the blueprint actually applied
 
 Authentik applies blueprint changes **asynchronously** via a worker task queue — confirmed live

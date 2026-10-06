@@ -143,7 +143,8 @@ spec:
             - name: blueprints-service-clients
               mountPath: /blueprints/custom/service-clients
               readOnly: true
-        # CSR round-10 #5: terminates TLS on 8443 for the API's discovery, JWKS and admin-API calls.
+        # CSR round-10 #5: terminates TLS on 8443 for the API's discovery, JWKS and admin-API calls,
+        # and (identity-plane change) also carries the public 9080 listener behind the Ingress.
         # Authentik's own 9443 listener serves a self-signed fallback and is never exposed.
         - name: tls-proxy
           image: "nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0"

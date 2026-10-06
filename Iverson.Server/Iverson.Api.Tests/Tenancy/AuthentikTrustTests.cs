@@ -164,6 +164,7 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
             ["Authentication:ActingUser:MetadataAddress"] = "https://iverson-authentik:8443/application/o/iverson-api/.well-known/openid-configuration",
             ["Authentication:InternalIssuer"] = "http://iverson-authentik:9000/",
             ["Authentik:BaseUrl"] = "https://iverson-authentik:8443",
+            ["Authentik:PublicBaseUrl"] = "https://authentik.iverson.example.com",
             ["Authentik:CaCertificatePath"] = WriteCaPem("guard-ca.crt"),
         };
         change?.Invoke(values);
@@ -185,6 +186,9 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
     [InlineData("Authentik:BaseUrl", null)]
     [InlineData("Authentik:BaseUrl", "http://iverson-authentik:9000")]
     [InlineData("Authentication:InternalIssuer", null)]
+    [InlineData("Authentik:PublicBaseUrl", null)]
+    [InlineData("Authentik:PublicBaseUrl", "not a url")]
+    [InlineData("Authentik:PublicBaseUrl", "ftp://x")]
     [InlineData("Authentik:CaCertificatePath", null)]
     [InlineData("Authentik:CaCertificatePath", "/nonexistent/ca.crt")]
     public void Guard_RefusesTheApiRole_OutsideDevelopment(string key, string? value) =>

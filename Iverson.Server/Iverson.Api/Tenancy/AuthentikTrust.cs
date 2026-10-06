@@ -71,6 +71,10 @@ internal static class AuthentikTrust
         RequireHttps(cfg, "Authentication:MetadataAddress");
         RequireHttps(cfg, "Authentication:ActingUser:MetadataAddress");
         RequireHttps(cfg, "Authentik:BaseUrl");
+        var publicBase = cfg["Authentik:PublicBaseUrl"];
+        if (!Uri.TryCreate(publicBase, UriKind.Absolute, out var publicUri)
+            || (publicUri.Scheme != Uri.UriSchemeHttp && publicUri.Scheme != Uri.UriSchemeHttps))
+            throw new InvalidOperationException("Authentik:PublicBaseUrl must be an absolute http or https URL outside Development.");
         if (string.IsNullOrWhiteSpace(cfg["Authentication:InternalIssuer"]))
             throw new InvalidOperationException("Authentication:InternalIssuer is required outside Development.");
 
