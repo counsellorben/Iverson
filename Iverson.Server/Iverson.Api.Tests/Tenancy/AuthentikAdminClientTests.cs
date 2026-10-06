@@ -115,6 +115,35 @@ public sealed class AuthentikAdminClientTests
         result.RecoveryLink.Should().Be(expected);
     }
 
+    [Theory]
+    [InlineData("https://authentik.iverson.example.com", "/if/flow/iverson-recovery/?flow_token=abc123")]
+    [InlineData("", "https://iverson-authentik:8443/if/flow/iverson-recovery/?flow_token=abc123")]
+    public async Task CreateUserAsync_LeavesTheLinkUnchangedWhenItCannotOrNeedNotBeRewritten(string publicBaseUrl, string link)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Authentik:PublicBaseUrl"] = publicBaseUrl }).Build();
+        var sut = CreateClient(new FakeHttpMessageHandler(OnboardingResponses(link)), configuration, out _);
+
+        var result = await sut.CreateUserAsync("new-user", "new-user@example.invalid", "tenant-a", ["tenant-admins"]);
+
+        result.RecoveryLink.Should().Be(link);
+    }
+
+    [Theory]
+    [InlineData("https://iverson-authentik:8443/if/flow/iverson-recovery/?flow_token=a%2f%41%3d", "https://authentik.iverson.example.com/if/flow/iverson-recovery/?flow_token=a%2f%41%3d")]
+    [InlineData("https://iverson-authentik:8443/if/flow/iverson-recovery/?flow_token=a%2Fb%3D", "https://authentik.iverson.example.com/if/flow/iverson-recovery/?flow_token=a%2Fb%3D")]
+    [InlineData("https://iverson-authentik:8443", "https://authentik.iverson.example.com/")]
+    public async Task CreateUserAsync_KeepsThePathAndQueryByteForByte(string link, string expected)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Authentik:PublicBaseUrl"] = "https://authentik.iverson.example.com" }).Build();
+        var sut = CreateClient(new FakeHttpMessageHandler(OnboardingResponses(link)), configuration, out _);
+
+        var result = await sut.CreateUserAsync("new-user", "new-user@example.invalid", "tenant-a", ["tenant-admins"]);
+
+        result.RecoveryLink.Should().Be(expected);
+    }
+
     [Fact]
     public async Task CreateUserAsync_ResolvesGroupThenCreatesUserThenTriggersRecovery()
     {

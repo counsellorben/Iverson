@@ -55,9 +55,11 @@ IversonClientCredentials -- see mint_service_token), sent with header Host: IVER
 Iverson.LoadTest/Program.cs's MintClientCredentialsTokenAsync document), and the SDK's own
 IversonClientCredentials path cannot set that header, so a token it mints carries
 iss=http://localhost:9000/. Forcing the in-cluster Host name still works and is what this script
-does; compose also accepts iss=http://localhost:9000/ since the identity-plane change, but other
-targets reject it with 401 before authorization is evaluated. The service token is re-minted at expires_in - SERVICE_TOKEN_REFRESH_MARGIN_SECONDS
-(300s) after the mint that produced it -- 3600s tokens, so ~55 minutes. The acting-user token is
+does; compose also accepts iss=http://localhost:9000/ since the identity-plane change. The API
+accepts a token whose issuer is one of its configured issuers: the internal issuer, the external
+one, or the metadata issuer. Minting through any other host gives an issuer it rejects (401),
+before authorization is evaluated. The service token is re-minted at
+expires_in - SERVICE_TOKEN_REFRESH_MARGIN_SECONDS (300s) after the mint that produced it -- 3600s tokens, so ~55 minutes. The acting-user token is
 minted here, not read once:
 Authentik issues it with access_token_validity hours=2 (compose-only/service-clients.yaml,
 iverson-loadtest-human provider) and a per-candidate pass may run for up to 8 hours. So this script

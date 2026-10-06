@@ -354,13 +354,21 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
 
     // Authentik builds the link from the host this client called, which is the in-cluster address an
     // invited user cannot open. Authentik:PublicBaseUrl is the host they can; without it (Development,
-    // tests) the link is returned as Authentik built it.
+    // tests) the link is returned as Authentik built it. A link that is not an absolute http(s) URL
+    // is also returned as is: the user already exists, so a throw here would lose the link.
+    // Only the leading scheme://authority is replaced; path, query and fragment are kept byte for
+    // byte, because re-serialising through Uri can re-normalise percent-escapes in a bearer token.
     private string PublicLink(string link)
     {
         if (configuration["Authentik:PublicBaseUrl"] is not { Length: > 0 } publicBaseUrl)
             return link;
+        if (!Uri.TryCreate(link, UriKind.Absolute, out var parsed)
+            || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+            return link;
         var publicBase = new Uri(publicBaseUrl);
-        return new UriBuilder(new Uri(link)) { Scheme = publicBase.Scheme, Host = publicBase.Host, Port = publicBase.Port }.Uri.AbsoluteUri;
+        var schemeEnd = link.IndexOf("://", StringComparison.Ordinal) + 3;
+        var pathStart = link.IndexOfAny(['/', '?', '#'], schemeEnd);
+        return publicBase.GetLeftPart(UriPartial.Authority) + (pathStart < 0 ? "/" : link[pathStart..]);
     }
 
     /// <summary>

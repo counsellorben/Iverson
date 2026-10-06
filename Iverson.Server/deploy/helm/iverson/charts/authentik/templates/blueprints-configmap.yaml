@@ -6,9 +6,14 @@ data:
 {{- /* CSR round-10 #4/#16: the console URL is written into recovery-flow.yaml here, not read from the
    worker's environment. Authentik resolves !Env in whichever worker applies a file, and re-applies a
    file only when its content changes, so an environment value can stick at the default during a
-   rolling upgrade and never follow a host change. */}}
+   rolling upgrade and never follow a host change. Only recovery-flow.yaml is rewritten; every other
+   blueprint is emitted unchanged. */}}
 {{- $consoleUrl := printf "%s://%s/admin/" .Values.global.externalScheme .Values.global.ingressHost }}
 {{- range $path, $bytes := .Files.Glob "blueprints/*.yaml" }}
   {{ base $path }}: |
-{{ $.Files.Get $path | replace "!Env [IVERSON_CONSOLE_URL, \"http://localhost:5173/\"]" ($consoleUrl | quote) | indent 4 }}
+{{- $content := $.Files.Get $path }}
+{{- if eq (base $path) "recovery-flow.yaml" }}
+{{- $content = $content | replace "!Env [IVERSON_CONSOLE_URL, \"http://localhost:5173/\"]" ($consoleUrl | quote) }}
+{{- end }}
+{{ $content | indent 4 }}
 {{- end }}
