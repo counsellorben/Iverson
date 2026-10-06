@@ -60,9 +60,10 @@ something's broken:
 
 ```bash
 LOADTEST_SECRET_ID=$(kubectl -n <ns> get secret <release>-authentik-loadtest-client -o jsonpath='{.data.client-id}' | base64 -d)
-kubectl -n <ns> exec deploy/<release>-authentik-worker -- ak shell -c "
+kubectl -n <ns> exec deploy/<release>-authentik-worker -- env EXPECTED_CLIENT_ID="$LOADTEST_SECRET_ID" ak shell -c "
+import os
 from authentik.providers.oauth2.models import OAuth2Provider
-print('matches secret:', OAuth2Provider.objects.get(name='iverson-loadtest').client_id == '$LOADTEST_SECRET_ID')
+print('matches secret:', OAuth2Provider.objects.get(name='iverson-loadtest').client_id == os.environ['EXPECTED_CLIENT_ID'])
 "
 ```
 
