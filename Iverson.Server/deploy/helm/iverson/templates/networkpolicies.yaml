@@ -610,6 +610,10 @@ spec:
                # this rule has not been migrated yet. See api-ingress above for the pattern to
                # follow.
       ports: [{ protocol: TCP, port: 9000 }]
+    # CSR round-10 #4: the tls-proxy sidecar's public listener, which the Authentik Ingress targets,
+    # and the load-balancer health checks that follow it.
+    - from: []
+      ports: [{ protocol: TCP, port: 9080 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

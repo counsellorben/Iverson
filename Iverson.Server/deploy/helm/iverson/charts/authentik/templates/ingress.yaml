@@ -26,4 +26,4 @@ spec:
               service:
                 name: {{ .Release.Name }}-authentik
                 port:
-                  number: 9000
+                  number: 9080

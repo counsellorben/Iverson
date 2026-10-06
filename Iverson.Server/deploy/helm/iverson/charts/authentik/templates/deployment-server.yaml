@@ -158,6 +158,8 @@ spec:
           ports:
             - containerPort: 8443
               name: https
+            - containerPort: 9080
+              name: http-public
           resources:
             requests:
               cpu: {{ .Values.resources.tlsProxy.requests.cpu | quote }}
@@ -165,14 +167,14 @@ spec:
             limits:
               cpu: {{ .Values.resources.tlsProxy.limits.cpu | quote }}
               memory: {{ .Values.resources.tlsProxy.limits.memory | quote }}
-          # An exec probe, not the spec's TCP probe (user-approved, CIR-2 §3.3 C): it runs inside the
-          # container, so no cloud NetworkPolicy engine has to admit the kubelet on 8443 (plan row 36).
-          # It targets Authentik's cheap /-/health/live/ path (the server container's liveness path)
-          # with that container's timeout and threshold, so a slow Django response cannot take the
+          # An HTTP probe on the public listener (CSR round-10 #4): GCE and AGIC derive the Ingress
+          # backend's health check from the readiness probe on the port the container declares, and
+          # 9080 needs no NetworkPolicy exception beyond its own rule. Both listeners share one nginx
+          # process and config, so it vouches for 8443 too. Authentik's cheap /-/health/live/ path with
+          # the server container's timeout and threshold keeps a slow Django response from taking the
           # only Authentik pod out of its Service.
           readinessProbe:
-            exec:
-              command: ["curl", "-sk", "-o", "/dev/null", "https://127.0.0.1:8443/-/health/live/"]
+            httpGet: { path: /-/health/live/, port: 9080 }
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 5

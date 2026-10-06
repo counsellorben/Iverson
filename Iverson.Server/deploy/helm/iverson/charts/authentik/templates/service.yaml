@@ -10,3 +10,5 @@ spec:
       port: 9000
     - name: https
       port: 8443
+    - name: http-public
+      port: 9080
