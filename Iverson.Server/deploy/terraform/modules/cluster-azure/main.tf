@@ -111,10 +111,10 @@ resource "azurerm_key_vault_access_policy" "des" {
 # (https://learn.microsoft.com/en-us/azure/aks/azure-disk-customer-managed-keys,
 # section "Encrypt your AKS cluster data disk"): "The AKS cluster identity
 # needs Reader access to the DiskEncryptionSet, otherwise you get an error
-# suggesting that the managed identity doesn't have permissions", resolved via
-# `az aks show --query "identity.principalId"` — i.e. the cluster's own
-# system-assigned identity (azurerm_kubernetes_cluster.this.identity[0], not
-# the node-resource-group Contributor identity granted elsewhere), granted the
+# suggesting that the managed identity doesn't have permissions". Here that
+# cluster identity is the control plane's user-assigned identity
+# (azurerm_user_assigned_identity.control_plane, not the node-resource-group
+# Contributor identity granted elsewhere); its principal is granted the
 # built-in "Reader" role scoped to the DES.
 resource "azurerm_role_assignment" "aks_data_volumes_des" {
   scope                = azurerm_disk_encryption_set.data_volumes.id
