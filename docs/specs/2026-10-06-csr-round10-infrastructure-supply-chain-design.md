@@ -207,7 +207,7 @@ The model images are too large to build in CI; their base images are covered by 
 - DNS resolves through kube-dns; a query to an outside resolver fails.
 - CNPG and Strimzi operands run (they reach the API server through `apiServerCidrs`).
 - TEI and Ollama serve from baked images with no egress; a probe pod sharing their labels cannot resolve or connect outward.
-- The existing laptop smoke flow (LoadTest `write-path --count 10 --concurrency 1`, the API through ingress) passes.
+- An authenticated gRPC call to the API through ingress-nginx (TLS on 8443, HTTP/2) returns `grpc-status: 0`. From a never-Ready probe pod carrying the API's labels (so it joins no Service), TEI `/embed` returns a vector and Ollama `/api/generate` answers. LoadTest `write-path` is not used here: its closing Kafka lag report connects to Kafka from the host, and the kind brokers advertise only in-cluster addresses.
 
 **Pass 2 — `values-laptop` with `--set global.prometheusEnabled=true --set adminUi.enabled=true --set adminUi.ingress.className=nginx --set prometheus.storageClassName=standard --set ollama.enabled=false`:**
 - Every pod reaches Ready (the API's and worker's readiness does not depend on Ollama).
