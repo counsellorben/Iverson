@@ -25,6 +25,11 @@ variable "cluster_autoscaler_irsa_role_arn" {
   default = "" # only meaningful when cloud == "aws"
 }
 
+variable "vpc_id" {
+  type    = string
+  default = null # only meaningful when cloud == "aws"
+}
+
 variable "storage_class_config" {
   type = object({
     provisioner = string

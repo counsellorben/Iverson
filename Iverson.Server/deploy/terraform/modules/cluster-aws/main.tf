@@ -544,16 +544,16 @@ resource "aws_launch_template" "pools" {
     }
   }
 
-  # IMDSv2 required. The hop limit is the load-bearing half: a container
-  # reaching IMDS crosses an extra network hop, so with the AWS default of 1
-  # the token PUT that IMDSv2 requires is dropped and pods lose instance
-  # metadata entirely. EKS documents 2 as the value to use whenever workloads
-  # on the node use IMDS, which is why http_tokens and this line ship together
-  # — setting http_tokens alone is the failure mode, not the fix.
+  # IMDSv2 required, hop limit 1 (CSR round-10 #18): pods cannot reach instance metadata, so the
+  # node role's credentials stay off-limits to them. Every AWS-calling workload gets its identity
+  # from IRSA instead: the load-balancer controller and cluster autoscaler are given region and
+  # VPC explicitly (modules/operators), the EBS CSI controller receives AWS_REGION from the IRSA
+  # webhook, and its node plugin falls back to Kubernetes node metadata. aws-node and kube-proxy
+  # run on the host network and are unaffected.
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
-    http_put_response_hop_limit = 2
+    http_put_response_hop_limit = 1
   }
 }
 

@@ -60,6 +60,7 @@ module "operators" {
   cloud                            = "aws"
   cluster_name                     = module.cluster.cluster_name
   aws_region                       = var.region
+  vpc_id                           = module.cluster.vpc_id
   lb_controller_irsa_role_arn      = module.cluster.lb_controller_irsa_role_arn
   cluster_autoscaler_irsa_role_arn = module.cluster.cluster_autoscaler_irsa_role_arn
   storage_class_config = {

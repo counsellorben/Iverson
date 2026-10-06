@@ -126,6 +126,16 @@ resource "helm_release" "aws_load_balancer_controller" {
     value = var.cluster_name
   }
 
+  # Without instance metadata (hop limit 1, cluster-aws) the controller cannot discover these.
+  set {
+    name  = "region"
+    value = var.aws_region
+  }
+  set {
+    name  = "vpcId"
+    value = var.vpc_id
+  }
+
   # IRSA: scopes the controller's AWS permissions to this one ServiceAccount
   # instead of the shared node role (see cluster-aws's Security baseline
   # note for why). serviceAccount.create defaults to true in this chart, so

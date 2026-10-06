@@ -15,3 +15,5 @@ output "data_volumes_key_arn" { value = aws_kms_key.data_volumes.arn }
 output "node_pool_labels" {
   value = { for k, v in local.node_pools : k => "iverson.io/node-pool=${k}" if k != "general" }
 }
+
+output "vpc_id" { value = aws_vpc.this.id }
