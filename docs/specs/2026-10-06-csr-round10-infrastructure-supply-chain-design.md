@@ -198,14 +198,20 @@ The model images are too large to build in CI; their base images are covered by 
 - `helm dependency build`, then `helm lint`, `helm template | kubeconform`, `kube-score` as `deploy-validate.yml` runs them.
 - Rendered assertions: with the fallback values at their defaults, no NetworkPolicy contains `from: []` or a `to: []` rule; setting `networkPolicy.dnsAnyDestination` or `networkPolicy.apiServerAnyDestination` renders `to: []` for exactly its own rules; every DNS rule is the kube-dns helper; API-server rules use `apiServerCidrs`; TEI/Ollama egress policies have no rules; `clusterCidrs` per 1a; image references are exact tags and model images use the derived names; the guards fail on unset or blank `apiServerCidrs`; no third-party image reference appears in any `values-*.yaml` overlay or as a literal in a template; no TEI or Ollama container env, args or volumeMount references `/data`; model image tags change when their `model-image/Dockerfile` changes.
 
-### 5b. kind live (throwaway cluster, Calico v3.32.2, `values-laptop` with `--set global.prometheusEnabled=true --set adminUi.enabled=true`)
-`values-laptop` alone renders neither Prometheus nor the console, so their rules would be untestable; the kind scripts build and load `iverson-admin-ui` for this run.
+### 5b. kind live (throwaway cluster, Calico v3.32.2, two passes)
+`values-laptop` alone renders neither Prometheus nor the console, so their rules need a second pass. Adding both to the full laptop profile would raise CPU requests above a deploy known to fit this 4-CPU host, so pass 2 drops Ollama instead of resizing anything (default requests everywhere). The kind scripts build and load `iverson-admin-ui` for pass 2.
+
+**Pass 1 — `values-laptop`:**
 - Every pod reaches Ready under the new rules.
-- From a pod outside each allowed set: 8080, 8081, 9090, Authentik 9000 and 9080 refused. Each refusal is paired with a check that must succeed (an API pod reaches `prometheus:9090`; ingress-nginx serves `/admin` from the console's 8080; ingress-nginx reaches the API and Authentik 9080), so a refusal cannot be confused with an absent listener. Port-forward to Authentik 9000 works.
+- From a pod outside each allowed set: API 8080 and 8081, Authentik 9000 and 9080 refused. Each refusal is paired with a check that must succeed (ingress-nginx reaches the API and Authentik 9080; Prometheus is absent in this pass, so API 8081 is paired with the kubelet probe passing), so a refusal cannot be confused with an absent listener. Port-forward to Authentik 9000 works.
 - DNS resolves through kube-dns; a query to an outside resolver fails.
 - CNPG and Strimzi operands run (they reach the API server through `apiServerCidrs`).
 - TEI and Ollama serve from baked images with no egress; a probe pod sharing their labels cannot resolve or connect outward.
-- The existing laptop smoke flow (LoadTest `write-path --count 10 --concurrency 1`, the API and console through ingress) passes.
+- The existing laptop smoke flow (LoadTest `write-path --count 10 --concurrency 1`, the API through ingress) passes.
+
+**Pass 2 — `values-laptop` with `--set global.prometheusEnabled=true --set adminUi.enabled=true --set adminUi.ingress.className=nginx --set ollama.enabled=false`:**
+- Every pod reaches Ready (the API's and worker's readiness does not depend on Ollama).
+- From a pod outside each allowed set: Prometheus 9090 and the console's 8080 refused. Each refusal is paired with a check that must succeed: an API pod reaches `prometheus:9090`; ingress-nginx serves `/admin` from the console's 8080.
 
 ### 5c. Images
 - A canary `.env` and worktree file in a scratch copy of the context never reach the Api and console build stages.
@@ -280,7 +286,7 @@ The model images are too large to build in CI; their base images are covered by 
 | 53 | The checkout/setup-node SHAs used elsewhere are v7.0.1/v7.0.0 | `.github/workflows/dependency-scan.yml:17-18` and peers; upstream tags |
 | 54 | The `kubernetes` Service takes the first address of the service range; EKS picks `10.100.0.0/16` or `172.20.0.0/16` when unset | Live kind: `kubernetes.default` → `10.96.0.1` (service range `10.96.0.0/12`); EKS `KubernetesNetworkConfig` docs ("either the 10.100.0.0/16 or 172.20.0.0/16 CIDR blocks"); `cluster-aws` sets no `service_ipv4_cidr` |
 | 55 | Pod env overrides the image `ENV`, and the Ollama chart sets `OLLAMA_MODELS=/data` | `charts/ollama/templates/statefulset.yaml:103`; CDR-1 run: `ollama serve` with `-e OLLAMA_MODELS=/data` on a read-only root logged `OLLAMA_MODELS:/data` then `mkdir /data: read-only file system` |
-| 56 | `values-laptop` renders neither Prometheus nor the console; with the two flags it renders both | `values-laptop.yaml:24, 40-41`; CDR-1 `helm template` runs: no `iverson-prometheus-ingress` and no admin-ui workload by default; both rendered with `--set global.prometheusEnabled=true --set adminUi.enabled=true` |
+| 56 | `values-laptop` renders neither Prometheus nor the console; with pass 2's flags it renders both, every Ingress with class `nginx`, and no Ollama; the API's and worker's readiness does not depend on Ollama | `values-laptop.yaml:24, 40-41`; CDR-1 `helm template` runs: no `iverson-prometheus-ingress` and no admin-ui workload by default. Pass-2 render (`--set global.prometheusEnabled=true --set adminUi.enabled=true --set adminUi.ingress.className=nginx --set ollama.enabled=false`): all three Ingresses `ingressClassName: "nginx"` (without the class flag the console's is `""`, which Kubernetes rejects: `IsDNS1123Subdomain`), Prometheus and admin-ui rendered, no `iverson-ollama`. `/health` checks only Postgres, StarRocks, Qdrant and Kafka (`Iverson.Api/Program.cs:527-565`) |
 | 57 | A subchart's `model-image/Dockerfile` is packaged and its hash renders in templates | Scratch chart copy: `charts/tei/.helmignore` is empty; after `helm dependency build`, `tei-0.1.0.tgz` lists `tei/model-image/Dockerfile`; a template with `.Files.Get "model-image/Dockerfile" \| sha256sum \| trunc 12` rendered `e86664a9decc`, equal to `sha256sum … \| cut -c1-12` |
 | 58 | Dependabot's docker ecosystem reads Dockerfiles in the directory each entry names | dependabot-core `docker/file_fetcher.rb`: `DOCKER_REGEXP = /dockerfile\|containerfile/i`, selecting regular files of the entry's directory |
 
