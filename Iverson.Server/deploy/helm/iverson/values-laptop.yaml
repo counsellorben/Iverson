@@ -10,11 +10,9 @@
 # measured ~2.0; metrics-server ~0.1. Total ~3.8 of 4.0 (~95%). Margin is thin — roughly
 # 200m. Re-measure with `kubectl top` after deploying.
 #
-# 172.18.0.0/16 is kind's Docker bridge network (this profile also runs on
-# kind) — the *node* IP range the kubelet probes api from, not kind's pod CIDR
-# (10.244.0.0/16) or service CIDR (10.96.0.0/12); pod IPs come from Calico's
-# own pool (deploy/kind/setup.sh installs it), not this range. See values.yaml's
-# networkPolicy comment for why every profile must set this itself.
+# kind has no load balancer: ingress-nginx is admitted by namespace. clusterCidrs must still
+# list at least one range (see values.yaml's networkPolicy comment), so it names kind's docker
+# network, which nothing else needs.
 networkPolicy:
   clusterCidrs: ["172.18.0.0/16"]
 

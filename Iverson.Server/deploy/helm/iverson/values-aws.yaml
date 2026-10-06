@@ -1,11 +1,11 @@
 # AWS EKS overlay — StorageClass names and node-pool labels match modules/operators
 # and modules/cluster-aws's fixed naming exactly (see Tasks 2 and 3 of this plan).
 
-# modules/cluster-aws's VPC CIDR — covers both the kubelet (node IPs) and the ALB's
-# pod-IP targets, since AWS has no ingress-nginx namespace for api-ingress to admit
-# instead. See values.yaml's networkPolicy comment for why every profile sets this.
+# modules/cluster-aws's two public subnets, where the internet-facing ALB (target-type ip)
+# places its interfaces. Pods and nodes use the private subnets (VPC CNI), so they are not
+# admitted. See values.yaml's networkPolicy comment.
 networkPolicy:
-  clusterCidrs: ["10.0.0.0/16"]
+  clusterCidrs: ["10.0.128.0/20", "10.0.144.0/20"]
 
 global:
   ingressHost: "iverson.example.com"

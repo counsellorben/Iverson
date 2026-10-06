@@ -11,11 +11,9 @@
 # certificate would otherwise trigger on their shared iverson.local host.
 # global.externalScheme is untouched, still "http".
 
-# 172.18.0.0/16 is kind's Docker bridge network — the *node* IP range the
-# kubelet probes api from, not kind's pod CIDR (10.244.0.0/16) or service CIDR
-# (10.96.0.0/12); pod IPs come from Calico's own pool (deploy/kind/setup.sh
-# installs it), not this range. See values.yaml's networkPolicy comment for
-# why every profile must set this itself.
+# kind has no load balancer: ingress-nginx is admitted by namespace. clusterCidrs must still
+# list at least one range (see values.yaml's networkPolicy comment), so it names kind's docker
+# network, which nothing else needs.
 networkPolicy:
   clusterCidrs: ["172.18.0.0/16"]
 

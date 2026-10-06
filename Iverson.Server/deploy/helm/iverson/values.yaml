@@ -11,20 +11,14 @@
 # segmentation entirely rather than degrading gracefully, so treat "false"
 # as an explicit, logged exception, not a default anyone should ship with.
 #
-# networkPolicy.clusterCidrs has no default here on purpose. It scopes the
-# api-ingress rules on 8080/8081 AND prometheus-ingress's 9090 rule (where it
-# carries the kubelet's /-/ready probe): list every non-pod IP range that must
-# legitimately reach those ports — always the node/kubelet range, plus whatever
-# load-balancer or health-check ranges the platform itself connects from (on AWS/Azure/GCP,
-# which have no ingress-nginx namespace, that's the cloud load balancer; GCP
-# additionally needs GCLB's fixed health-check ranges alongside its node
-# subnet — see values-gcp.yaml). That set is a different, non-overlapping value
-# per profile — every values-*.yaml overlay MUST set its own.
-# templates/networkpolicies.yaml fails the render with `fail` (not `required`,
-# which lets an empty list through, and not just on an empty list — a list
-# containing only a blank entry, the shape `--set clusterCidrs={}` actually
-# produces, is rejected too) if this is left unset, rather than silently
-# falling back to an ingress rule that matches every source.
+# networkPolicy.clusterCidrs has no default here on purpose. It lists the address ranges
+# the platform's load balancer connects from, for the api (8080, 8081), admin-ui (8080) and
+# Authentik public-listener (9080) ingress rules. The kubelet needs no entry: NetworkPolicy
+# always admits traffic from the node a pod runs on. That set is a different value per
+# profile, so every values-*.yaml overlay MUST set its own. templates/networkpolicies.yaml
+# fails the render with `fail` (not `required`, which lets an empty list through) if this is
+# left unset or contains a blank entry (the shape `--set clusterCidrs={}` produces), rather
+# than silently rendering an ingress rule that matches every source.
 networkPolicy:
   enabled: true
 
