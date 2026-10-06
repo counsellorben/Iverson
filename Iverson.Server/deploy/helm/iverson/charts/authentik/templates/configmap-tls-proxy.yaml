@@ -18,3 +18,21 @@ data:
         proxy_set_header X-Forwarded-Proto https;
       }
     }
+    # CSR round-10 #4: the public listener behind the Authentik Ingress. It forwards only the paths a
+    # browser needs (login, MFA enrolment, recovery, logout, OIDC), overwrites X-Forwarded-Host, and
+    # marks every request, so the admin-automation policy can tell public traffic from in-cluster
+    # callers. Everything else, the admin interface and admin API included, answers 404 here.
+    server {
+      listen 9080;
+      proxy_set_header Host $http_host;
+      proxy_set_header X-Forwarded-Host $http_host;
+      proxy_set_header X-Iverson-Public-Ingress 1;
+      location /application/ { proxy_pass http://127.0.0.1:9000; }
+      location /if/flow/ { proxy_pass http://127.0.0.1:9000; }
+      location /api/v3/flows/executor/ { proxy_pass http://127.0.0.1:9000; }
+      location /flows/-/default/ { proxy_pass http://127.0.0.1:9000; }
+      location /static/ { proxy_pass http://127.0.0.1:9000; }
+      location = / { proxy_pass http://127.0.0.1:9000; }
+      location = /-/health/live/ { proxy_pass http://127.0.0.1:9000; }
+      location / { return 404; }
+    }

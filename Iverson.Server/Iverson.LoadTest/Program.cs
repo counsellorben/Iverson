@@ -398,8 +398,12 @@ static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentia
     };
     // This is a second minting path alongside CachedClientCredentialsTokenProvider, and it must
     // honour HostHeader for the same reason: Authentik's issuer_mode:global stamps the JWT's `iss`
-    // from the request's Host header, so minting via localhost yields iss=http://localhost:9000/,
-    // which the API rejects with a 401 before any authorization is evaluated.
+    // from the request's Host header. Forcing the in-cluster Host name is what this tool does and
+    // always works; minting via localhost yields iss=http://localhost:9000/, which compose also
+    // accepts since the identity-plane change (its Authentication__ExternalIssuer). The API accepts
+    // a token whose issuer is one of its configured issuers: the internal issuer, the external one,
+    // or the metadata issuer. Minting through any other host gives an issuer it rejects (401),
+    // before any authorization is evaluated.
     if (creds.HostHeader is { Length: > 0 } host)
         request.Headers.Host = host;
 

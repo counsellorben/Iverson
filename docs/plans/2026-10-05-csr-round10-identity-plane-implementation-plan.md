@@ -988,7 +988,16 @@ source $SCR/c1/live/env.sh
   export IVERSON_TOKEN_ENDPOINT=http://localhost:9000/application/o/token/ IVERSON_CLIENT_SCOPE="admin schema_admin tenant_id_admin"
   export IVERSON_ACTING_USER_PASSWORD="$(val IVERSON_SMOKE_TEST_PASSWORD)" IVERSON_ACTING_USER_BYPASS_PASSWORD="$(val IVERSON_BYPASS_PASSWORD)"
   export IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD="$(openssl rand -base64 24)aA1!"
-  cd $BR/Iverson.Server && systemd-run --user --scope -q -p MemoryMax=4G dotnet run --project Iverson.LoadTest -- seed --count 10 ) > $LIVE/loadtest.out 2>&1; echo "loadtest exit=$?"
+  # Authentik applies blueprints asynchronously: wait (up to 10 minutes) until the admin-automation client is known.
+  # An unreachable endpoint or a non-JSON answer counts as not ready; any other answer ends the wait and LoadTest reports it.
+  for i in $(seq 1 60); do
+    e=$(curl -s -d grant_type=client_credentials -d client_id="$IVERSON_CLIENT_ID" --data-urlencode client_secret="$IVERSON_CLIENT_SECRET" \
+        -d scope="$IVERSON_CLIENT_SCOPE" "$IVERSON_TOKEN_ENDPOINT" | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("error") or "ok")
+except Exception: print("unreachable")')
+    [ "$e" != invalid_client ] && [ "$e" != unreachable ] && break; sleep 10; done
+  # write-path, not seed: seed ignores --count and always writes 400,000 articles (DirectSeeder.cs:27), which exhausts the VM.
+  cd $BR/Iverson.Server && systemd-run --user --scope -q -p MemoryMax=4G dotnet run --project Iverson.LoadTest -- write-path --count 10 --concurrency 1 ) > $LIVE/loadtest.out 2>&1; echo "loadtest exit=$?"
 grep -E "recovery link|Logged the tenant admin in|ready\.|failed" $LIVE/loadtest.out
 ```
 
@@ -1058,7 +1067,7 @@ sleep 3
     | python3 -c 'import sys,json; d=json.load(sys.stdin); print("MINTED" if "access_token" in d else "REFUSED "+d.get("error",""))'; }
   echo "through the ingress:  $(mint -H 'Host: authentik.iverson.local' http://127.0.0.1:8080/application/o/token/)"
   echo "through 9000 (port-forward): $(mint -H 'Host: iverson-authentik:9000' http://127.0.0.1:19000/application/o/token/)" )
-kubectl -n iverson exec deploy/iverson-authentik-server -c server -- ak shell -c "from authentik.core.models import Token; print('bootstrap token rows:', Token.objects.filter(identifier='authentik-bootstrap-token').count())"
+kubectl -n iverson exec deploy/iverson-authentik-worker -- ak shell -c "from authentik.core.models import Token; print('bootstrap token rows:', Token.objects.filter(identifier='authentik-bootstrap-token').count())" 2>/dev/null | tail -1   # worker pod: the laptop profile's 512Mi limit OOM-kills the server container when ak shell loads
 kubectl -n iverson get secret iverson-authentik-app -o jsonpath='{.data}' | python3 -c "import sys,json; print('secret keys:', sorted(json.load(sys.stdin)))"
 ```
 
@@ -1139,11 +1148,11 @@ source $SCR/c1/live/env.sh; umask 077
     -d scope="admin schema_admin tenant_id_admin" http://127.0.0.1:19000/application/o/token/ | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')"
   export LINK_FILE=$LIVE/link.txt
   dotnet $LIVE/createtenant/bin/Release/net10.0/createtenant.dll http://127.0.0.1:18080 c1-live-check )
-kubectl -n iverson exec deploy/iverson-authentik-server -c server -- ak shell -c "
+kubectl -n iverson exec deploy/iverson-authentik-worker -- ak shell -c "
 from django.utils.timezone import now
 from authentik.flows.models import FlowToken
 t = FlowToken.objects.filter(flow__slug='iverson-recovery').order_by('-expires').first()
-print('minutes to expiry:', round((t.expires - now()).total_seconds() / 60, 1))"
+print('minutes to expiry:', round((t.expires - now()).total_seconds() / 60, 1))" 2>/dev/null | tail -1
 ( export PW BASE=http://authentik.iverson.local PROXY=http://127.0.0.1:8080 HOME_REAL=$REAL_HOME RECOVERY_LINK="$(cat $LIVE/link.txt)" SKIP_LOGIN=1
   export OUT=$LIVE/kind-recovery.json CODES=$LIVE/kind-codes2.json
   node $LIVE/c1flows.js )

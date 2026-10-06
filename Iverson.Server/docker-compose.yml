@@ -415,6 +415,8 @@ services:
       IVERSON_BYPASS_PASSWORD: ${IVERSON_BYPASS_PASSWORD:?run scripts/generate-compose-secrets.sh first}
       IVERSON_ADMIN_ORCHESTRATOR_PASSWORD: ${IVERSON_ADMIN_ORCHESTRATOR_PASSWORD:?run scripts/generate-compose-secrets.sh first}
       IVERSON_ADMIN_ORCHESTRATOR_TOKEN: ${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
+      # CSR round-10 #4/#16: where the recovery flow sends an invitee (recovery-flow.yaml's !Env).
+      IVERSON_CONSOLE_URL: http://localhost:5173/
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
     depends_on:
@@ -512,7 +514,7 @@ services:
       - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
       - Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
-      - Authentication__ExternalIssuer=http://authentik.iverson.local/application/o/iverson-api/
+      - Authentication__ExternalIssuer=http://localhost:9000/
       - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
       # The admin console's client id (ValidAudiences__0): /v1/traces accepts only its tokens.
       - Authentication__ConsoleAudience=dev-iverson-human-oidc-client-id
@@ -528,6 +530,7 @@ services:
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=https://authentik-server:8443
+      - Authentik__PublicBaseUrl=http://localhost:9000
       - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
       - Authentication__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
       - Authentication__ActingUser__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
@@ -629,7 +632,7 @@ services:
       - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
       - Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
-      - Authentication__ExternalIssuer=http://authentik.iverson.local/application/o/iverson-api/
+      - Authentication__ExternalIssuer=http://localhost:9000/
       - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
       - Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id
       - Authentication__ValidAudiences__2=dev-iverson-webtest-client-id
@@ -638,6 +641,7 @@ services:
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=https://authentik-server:8443
+      - Authentik__PublicBaseUrl=http://localhost:9000
       - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
       - Authentication__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
       - Authentication__ActingUser__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration

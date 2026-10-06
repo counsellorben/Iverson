@@ -27,6 +27,10 @@ The `operators` group already exists (blueprinted) — do not create it. Only me
 1. Log into the Authentik admin UI with the deployment's bootstrap credentials (kind: email from
    `AUTHENTIK_BOOTSTRAP_EMAIL`, password from the `<release>-authentik-app` Secret's
    `bootstrap-password` key).
+   The Authentik admin interface (and the rest of the admin API) is reachable only in-cluster since
+   CSR round-10's identity-plane change; the public host no longer serves it. Reach it with
+   `kubectl -n <ns> port-forward svc/<release>-authentik 9000:9000`, then open
+   `http://localhost:9000/if/admin/` (login there still enforces MFA).
 2. Create the user (Directory → Users → Create) if they don't already have one, or locate their
    existing account.
 3. Directory → Groups → `operators` → add the user.
