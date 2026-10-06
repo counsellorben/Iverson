@@ -28,6 +28,9 @@ $ImageQualified = "docker.io/library/iverson-api:$Tag"
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "../../..")
 
 if ($ModelImages) {
+    # $ErrorActionPreference does not cover a native command's exit code, so check it explicitly.
+    function Assert-Native($what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
+
     $chart = Join-Path $RepoRoot "Iverson.Server/deploy/helm/iverson"
     if ([IO.Path]::IsPathRooted($Values)) { $valuesPath = $Values } else { $valuesPath = Join-Path $RepoRoot $Values }
     # The chart is the single source of the model pins and of the image tags (which hash the model
@@ -38,9 +41,6 @@ if ($ModelImages) {
     $render = helm template iverson $chart -f $valuesPath | Out-String
     Assert-Native "helm template"
     if ([string]::IsNullOrWhiteSpace($render)) { throw "helm template rendered nothing" }
-
-    # $ErrorActionPreference does not cover a native command's exit code, so check it explicitly.
-    function Assert-Native($what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
 
     function Build-And-Load($img, $dockerfile, $contextDir, $buildArgs) {
         Write-Host "Building $img..."
