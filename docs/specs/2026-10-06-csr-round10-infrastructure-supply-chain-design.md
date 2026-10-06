@@ -62,7 +62,7 @@ The 14 DNS rules (`to: []` on 53) become one named helper in `templates/_helpers
 
 - `to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }, podSelector: { matchLabels: { k8s-app: kube-dns } } }]`, UDP and TCP 53.
 
-`k8s-app=kube-dns` is the CoreDNS/kube-dns pod label and the kube-dns Service selector on EKS, AKS, GKE and kind. On EKS a NetworkPolicy matches traffic sent to a Service address only when its podSelector uses the Service's own selector labels, which this one does; the Service port equals the container port (53). No override value (YAGNI).
+`k8s-app=kube-dns` is the CoreDNS/kube-dns pod label and the kube-dns Service selector on EKS, AKS, GKE and kind. On EKS a NetworkPolicy matches traffic sent to a Service address only when its podSelector uses the Service's own selector labels, which this one does; the Service port equals the container port (53). One fallback value, `networkPolicy.dnsAnyDestination` (default `false`), renders the port-only `to: []` DNS rule instead; it exists only for the first-deploy gate in 2b.
 
 ### 2b. API-server egress goes only to the control plane
 
@@ -70,29 +70,34 @@ A new value, `networkPolicy.apiServerCidrs`, has the same fail-closed guard as `
 
 | Profile | `apiServerCidrs` | Why |
 |---|---|---|
-| AWS | `10.0.0.0/20`, `10.0.16.0/20`, `10.0.128.0/20`, `10.0.144.0/20` | EKS places its control-plane interfaces in the cluster subnets (private and public) and recreates them on upgrade, so /32s would go stale |
+| AWS | `10.0.0.0/20`, `10.0.16.0/20`, `10.0.128.0/20`, `10.0.144.0/20`, `10.100.0.1/32`, `172.20.0.1/32` | EKS's network-policy agent matches pod egress before the Service address is rewritten, so traffic to the API server is seen on the `kubernetes` Service ClusterIP: the first address of the service range, which EKS picks as `10.100.0.0/16` or `172.20.0.0/16` when `cluster-aws` sets none (it sets none), so both are listed. The cluster subnets (where EKS places, and on upgrade recreates, its control-plane interfaces) stay listed for engines that match after the rewrite |
 | Azure | `10.1.17.0/28` | The API Server VNet Integration subnet (3b) |
 | GCP | `172.16.0.0/28` | `master_ipv4_cidr_block`; nodes reach the control plane on its internal endpoint. The runbook confirms the in-cluster endpoint on first deploy |
 | laptop/local | `172.18.0.0/16`, `10.89.0.0/16` | kind's node network under docker and under podman (podman's default pool; observed `10.89.1.3`). The control plane serves on 6443 |
 
-Both ports stay listed: policy is evaluated after service translation, and kind/kubeadm serve the API on 6443.
+Both ports stay listed: kind/kubeadm serve the API on 6443, and engines that match after the Service address is rewritten see the endpoint's port.
+
+**First-deploy gate (every cloud).** How a managed dataplane matches the API-server ipBlocks and the kube-dns helper is verified only on kind/Calico; Kubernetes leaves ipBlock matching of rewritten Service traffic to the implementation. The runbook therefore gates each cloud's first deploy: a pod in the namespace resolves `kubernetes.default`, the CNPG `Cluster` is healthy, and the Kafka brokers are Ready. Fallbacks are values-only, per profile:
+- **API server:** add the `kubernetes` Service ClusterIP as a `/32` to `apiServerCidrs`; if still blocked, set `networkPolicy.apiServerAnyDestination: true` (default `false`), which renders the port-only `to: []` rule on 443/6443.
+- **DNS:** set `networkPolicy.dnsAnyDestination: true`.
+A profile that keeps a fallback leaves that half of #17 open there until the matching is resolved.
 
 ### 2c. Model weights are baked into images; TEI and Ollama get no egress
 
 Two new Dockerfiles build derived images from digest-pinned bases (each `@sha256:…` below is the multi-arch index digest of that exact tag, resolved from the registry when the plan is written):
 
-- **`Iverson.Server/deploy/images/tei-model/Dockerfile`** — from `ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3@sha256:…`. A build stage runs TEI once against the pinned `--model-id`/`--revision` to populate its hub cache under `/models` (the same code path TEI uses today), fails the build if TEI never reports healthy, and removes lock files. The runtime stage copies `/models` and sets `HUGGINGFACE_HUB_CACHE=/models` and `HF_HUB_OFFLINE=1`.
-- **`Iverson.Server/deploy/images/ollama-model/Dockerfile`** — from `ollama/ollama:0.12.11@sha256:…`. A build stage pulls the model and compares the full SHA-256 of its local manifest with `global.generativeModelDigest`, failing the build on any mismatch (closes #19's 48-bit prefix check). The runtime stage copies `/models` and sets `OLLAMA_MODELS=/models`.
+- **`Iverson.Server/deploy/helm/iverson/charts/tei/model-image/Dockerfile`** — from `ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3@sha256:…`. A build stage runs TEI once against the pinned `--model-id`/`--revision` to populate its hub cache under `/models` (the same code path TEI uses today), fails the build if TEI never reports healthy, and removes lock files. The runtime stage copies `/models` and sets `HUGGINGFACE_HUB_CACHE=/models` and `HF_HUB_OFFLINE=1`.
+- **`Iverson.Server/deploy/helm/iverson/charts/ollama/model-image/Dockerfile`** — from `ollama/ollama:0.12.11@sha256:…`. A build stage pulls the model and compares the full SHA-256 of its local manifest with `global.generativeModelDigest`, failing the build on any mismatch (closes #19's 48-bit prefix check). The runtime stage copies `/models` and sets `OLLAMA_MODELS=/models`.
 
 **Chart changes:**
-- **Image names** are derived, so the pin and the image cannot diverge: TEI `{{ global.modelImageRegistry }}iverson-tei-model:<slug>-<revision[0:12]>`; Ollama `{{ global.modelImageRegistry }}iverson-ollama-model:<model with ':' and '/' → '-'>-<digest[0:12]>`. `global.modelImageRegistry` defaults to empty (kind) and is set per cloud like the `iverson-api` registry.
+- **Image names** are derived, so neither the model pin nor the engine can diverge from the image: TEI `{{ global.modelImageRegistry }}iverson-tei-model:<slug>-<revision[0:12]>-<dockerfile[0:12]>`; Ollama `{{ global.modelImageRegistry }}iverson-ollama-model:<model with ':' and '/' → '-'>-<digest[0:12]>-<dockerfile[0:12]>`, where `<dockerfile>` is the SHA-256 of the subchart's `model-image/Dockerfile` (`.Files.Get "model-image/Dockerfile" | sha256sum`). A base-image (engine) bump changes the Dockerfile, so it changes the tag and rolls the StatefulSet. `global.modelImageRegistry` defaults to empty (kind) and is set per cloud like the `iverson-api` registry.
 - **TEI StatefulSet:** args unchanged; the PVC, its mount and `volumeClaimTemplates` are removed; `storageSize`/`storageClassName` leave every overlay.
-- **Ollama StatefulSet:** the `pull-model` init container, the PVC and `volumeClaimTemplates` are removed; `HOME` points at the existing writable `tmp` emptyDir (the root filesystem stays read-only).
+- **Ollama StatefulSet:** the `pull-model` init container, the PVC and `volumeClaimTemplates` are removed; the container's `OLLAMA_MODELS=/data` env entry (`statefulset.yaml:103`) is removed, so the image's `/models` applies (pod env overrides image `ENV`); `HOME` points at the existing writable `tmp` emptyDir (the root filesystem stays read-only).
 - **NetworkPolicy:** `tei-egress` and `ollama-egress` keep no egress rules at all (no 443, no DNS).
 - **Upgrade:** `volumeClaimTemplates` is immutable, so an existing release's TEI and Ollama StatefulSets must be deleted before upgrading, and their old PVCs removed. The runbook says so.
 
 **Build and load:**
-- `deploy/kind/build-and-load-image.sh` and `.ps1` also build and load the model images. Image saves stage under `/var/tmp` (disk), not `/tmp`, because a 5.7 GB Ollama image staged in RAM can exhaust the VM.
+- `deploy/kind/build-and-load-image.sh` and `.ps1` also build and load the model images, tagging them with the same Dockerfile hash the chart renders (`sha256sum` of the file, first 12 characters). Image saves stage under `/var/tmp` (disk), not `/tmp`, because a 5.7 GB Ollama image staged in RAM can exhaust the VM.
 - Cloud deploys push the model images alongside `iverson-api` (deployment docs updated).
 - Compose keeps downloading at runtime: it has no NetworkPolicy, so nothing changes there.
 
@@ -163,13 +168,16 @@ Two new Dockerfiles build derived images from digest-pinned bases (each `@sha256
 
 ### 4d. Third-party chart images and Dependabot
 
-- **Chart images become Dependabot-readable scalars.** Each subchart's `imageTag` value becomes `image: "<repo>:<exact-tag>"`, and templates use `{{ .Values.image }}`. Dependabot's helm ecosystem reads `image:` scalars and `repository`+`tag` pairs, and skips digest-pinned images, so chart images use exact tags, not digests. Floating tags become exact: `postgres:16` → `16.15`, `mysql:8.0` → `8.0.46`, `redis:7.4-alpine` → `7.4.11-alpine` (resolved at plan time and re-checked at execution). The Authentik tls-proxy's digest pin becomes the tracked tag `1.30.x-alpine`, trading immutability for automated updates.
+- **Chart images become Dependabot-readable scalars.** Each subchart's `imageTag` value becomes `image: "<repo>:<exact-tag>"`, and templates use `{{ .Values.image }}`. Dependabot's helm ecosystem reads `image:` scalars and `repository`+`tag` pairs, and skips digest-pinned images, so chart images use exact tags, not digests. Dependabot's helm parser reads only files named `values.yaml` and never `templates/`, so:
+  - the nine `imageTag` pins in `values-{aws,azure,gcp}.yaml` (prometheus, redis, authentik) are deleted rather than renamed; each equals its base value, so the umbrella `values.yaml` is the single pin and no overlay carries an image;
+  - the three template literals move into their subcharts' `values.yaml` under keys named exactly `image`: authentik `tlsProxy.image: "nginxinc/nginx-unprivileged:1.30.5-alpine"` and `revokeCrossDb.image: "postgres:16.15"`, starrocks `createUser.image: "mysql:8.0.46"`. Templates read those values.
+  Floating tags become exact: `postgres:16` → `16.15`, `mysql:8.0` → `8.0.46`, `redis:7.4-alpine` → `7.4.11-alpine` (resolved at plan time and re-checked at execution). The Authentik tls-proxy's digest pin becomes the tracked tag `1.30.5-alpine`, trading immutability for automated updates.
 - TEI and Ollama no longer appear in the chart as third-party images (2c); their bases are digest-pinned in the model Dockerfiles.
 - CNPG and Strimzi operand images come from their operators' defaults and are pinned through the operators' pinned chart versions; unchanged.
 - **`.github/dependabot.yml`** gains:
-  - `docker` for every Dockerfile directory (`/Iverson.AdminUI`, `/Iverson.Server/Iverson.Api`, `/Iverson.Server/Iverson.Launcher`, `/Iverson.Server/Iverson.Events`, `/Iverson.Server/Iverson.Sql`, `/Iverson.Server/Iverson.Vector`, and the two model-image directories);
+  - `docker` for every Dockerfile directory (`/Iverson.AdminUI`, `/Iverson.Server/Iverson.Api`, `/Iverson.Server/Iverson.Launcher`, `/Iverson.Server/Iverson.Events`, `/Iverson.Server/Iverson.Sql`, `/Iverson.Server/Iverson.Vector`, and the two model-image directories, `/Iverson.Server/deploy/helm/iverson/charts/tei/model-image` and `/Iverson.Server/deploy/helm/iverson/charts/ollama/model-image`);
   - `docker-compose` for `/Iverson.Server`;
-  - `terraform` for `/Iverson.Server/deploy/terraform/{aws,azure,gcp,bootstrap/azure}`;
+  - `terraform` for `/Iverson.Server/deploy/terraform/{aws,azure,gcp,bootstrap/aws,bootstrap/azure,bootstrap/gcp}` (every root with a committed lockfile);
   - `helm` for the umbrella chart and each subchart directory (the helm fetcher reads one directory per entry).
 - Compose third-party images are digest-pinned (Dependabot's compose updater refreshes `tag@sha256` pins).
 
@@ -180,7 +188,7 @@ A new workflow, `.github/workflows/image-scan.yml` (pull requests, pushes to mai
 - renders the chart for each cloud overlay, extracts every third-party image reference, and scans each report-only;
 - pins `aquasecurity/trivy-action` by full commit SHA at v0.36.0 (`ed142fd0…`), above the 2026-03 compromise's affected range (GHSA-69fq-xp46-6x23), and pins the trivy version.
 
-The model images are too large to build in CI; their base images are covered by Dependabot's docker ecosystem.
+The model images are too large to build in CI; their base images are covered by Dependabot's docker ecosystem, and a base bump changes the derived tag (2c), so it rolls out.
 
 ---
 
@@ -188,11 +196,12 @@ The model images are too large to build in CI; their base images are covered by 
 
 ### 5a. Helm (all five overlays)
 - `helm dependency build`, then `helm lint`, `helm template | kubeconform`, `kube-score` as `deploy-validate.yml` runs them.
-- Rendered assertions: no NetworkPolicy contains `from: []` or a `to: []` rule; every DNS rule is the kube-dns helper; API-server rules use `apiServerCidrs`; TEI/Ollama egress policies have no rules; `clusterCidrs` per 1a; image references are exact tags and model images use the derived names; the guards fail on unset or blank `apiServerCidrs`.
+- Rendered assertions: with the fallback values at their defaults, no NetworkPolicy contains `from: []` or a `to: []` rule; setting `networkPolicy.dnsAnyDestination` or `networkPolicy.apiServerAnyDestination` renders `to: []` for exactly its own rules; every DNS rule is the kube-dns helper; API-server rules use `apiServerCidrs`; TEI/Ollama egress policies have no rules; `clusterCidrs` per 1a; image references are exact tags and model images use the derived names; the guards fail on unset or blank `apiServerCidrs`; no third-party image reference appears in any `values-*.yaml` overlay or as a literal in a template; no TEI or Ollama container env, args or volumeMount references `/data`; model image tags change when their `model-image/Dockerfile` changes.
 
-### 5b. kind live (throwaway cluster, Calico v3.32.2, `values-laptop`)
+### 5b. kind live (throwaway cluster, Calico v3.32.2, `values-laptop` with `--set global.prometheusEnabled=true --set adminUi.enabled=true`)
+`values-laptop` alone renders neither Prometheus nor the console, so their rules would be untestable; the kind scripts build and load `iverson-admin-ui` for this run.
 - Every pod reaches Ready under the new rules.
-- From a pod outside each allowed set: 8080, 8081, 9090, Authentik 9000 and 9080 refused. Port-forward to Authentik 9000 works.
+- From a pod outside each allowed set: 8080, 8081, 9090, Authentik 9000 and 9080 refused. Each refusal is paired with a check that must succeed (an API pod reaches `prometheus:9090`; ingress-nginx serves `/admin` from the console's 8080; ingress-nginx reaches the API and Authentik 9080), so a refusal cannot be confused with an absent listener. Port-forward to Authentik 9000 works.
 - DNS resolves through kube-dns; a query to an outside resolver fails.
 - CNPG and Strimzi operands run (they reach the API server through `apiServerCidrs`).
 - TEI and Ollama serve from baked images with no egress; a probe pod sharing their labels cannot resolve or connect outward.
@@ -229,7 +238,7 @@ The model images are too large to build in CI; their base images are covered by 
 | 11 | All 14 DNS rules are `to: []`; only Postgres and Kafka have API-server rules; only TEI and Ollama have 443 | `grep 'port: 53'` → 14, every preceding `to:` is `[]`; `port: (443|6443)` at `:212, :274, :462, :493` |
 | 12 | kube-dns selector, labels and ports | Live kind: kube-dns Service selector `{"k8s-app":"kube-dns"}`, 53→53; `kube-system` labelled `kubernetes.io/metadata.name=kube-system`. EKS/AKS/GKE docs use `-l k8s-app=kube-dns` |
 | 13 | A kube-dns-only egress rule resolves names and blocks outside resolvers | Live: `nslookup kubernetes.default…` answered; `nslookup … 8.8.8.8` failed |
-| 14 | EKS API-server traffic must be allowed by DNAT'd endpoint (ClusterIP pre-DNAT resolution) and the EKS ENIs move on upgrade | amazon-network-policy-controller-k8s README (pre-DNAT resolution; podSelector must match Service selector); EKS network-reqs: interfaces "deleted" and recreated on version update, in the cluster subnets |
+| 14 | On EKS, pod egress to the API server is matched before the Service address is rewritten (on the `kubernetes` ClusterIP), ipBlock peers get no Service addresses added, and the EKS ENIs move on upgrade | amazon-network-policy-controller-k8s README ("resolves the traffic through the Service IP (pre-DNAT)"); its `pkg/resolvers/endpoints.go` (ipBlock peers `continue` before `getMatchingServiceClusterIPs`, which runs only for podSelector peers); EKS network-reqs: interfaces "deleted" and recreated on version update, in the cluster subnets |
 | 15 | On kind the API endpoint is the node IP on 6443, and under podman that is `10.89.x` | Live: EndpointSlice `kubernetes` → `10.89.1.3:6443` |
 | 16 | An ipBlock on the node network admits API-server traffic via the `kubernetes` Service, and nothing else does | Live: `nc kubernetes.default 443` OPEN with ipBlock `10.89.0.0/16`; BLOCKED for a pod with only the DNS rule |
 | 17 | AKS API IP is public and can change without VNet Integration; with it, an ILB VIP in the delegated subnet | Microsoft Learn outbound-rules ("your API server IP might change"); api-server-vnet-integration ("projects the API server endpoint directly into a delegated subnet") |
@@ -263,19 +272,24 @@ The model images are too large to build in CI; their base images are covered by 
 | 45 | nginx-unprivileged is used at exactly three sites | `Iverson.AdminUI/Dockerfile:24`, `docker-compose.yml:442`, `charts/authentik/templates/deployment-server.yaml:150` |
 | 46 | `setup.sh` and `setup.ps1` install the same six charts; only `setup.sh` pins versions | Side-by-side read |
 | 47 | Floating chart tags and their current exact versions | Registry lookups: `postgres:16`→16.15, `mysql:8.0`→8.0.46, TEI `cpu-1.8`→cpu-1.8.3, `redis:7.4-alpine`→7.4.11-alpine; CNPG operand from operator default, Strimzi from operator |
-| 48 | `imageTag` has no consumers outside the chart | `grep`: 7 subchart templates and values, parent `values.yaml`, aws/azure/gcp overlays; none in CI, scripts, runbooks or tests |
-| 49 | Dependabot helm reads `image:` scalars and skips digest-pinned images; reads one directory per entry | dependabot-core `helm/file_parser.rb` (`key == "image" && value.include?(":")`), `file_updater/image_updater.rb` ("digest-pinned images resolve by digest, so a tag-only bump would silently keep the old image" → `next`), `file_fetcher.rb` (`repo_contents` of the entry's directory) |
+| 48 | `imageTag` has no consumers outside the chart; the cloud overlays' pins equal the base values | `grep`: 7 subchart templates and values, parent `values.yaml`, aws/azure/gcp overlays (`values-aws.yaml:140,149,156`, `values-azure.yaml:131,140,147`, `values-gcp.yaml:139,148,155`: `v2.55.1`, `7.4-alpine`, `2026.5.3`, as at `values.yaml:248,258,282`); none in CI, scripts, runbooks or tests |
+| 49 | Dependabot helm reads `image:` scalars and skips digest-pinned images; reads one directory per entry | dependabot-core `helm/file_parser.rb` (`key == "image" && value.include?(":")`), `file_updater/image_updater.rb` ("digest-pinned images resolve by digest, so a tag-only bump would silently keep the old image" → `next`), `file_fetcher.rb` (`repo_contents` of the entry's directory, regular files only, so `templates/` is never read); `file_parser.rb` `VALUES_YAML = /.*values\.ya?ml$/i` (run over the chart's files: only `values.yaml` matches, none of the eight `values-*.yaml`). CDR-1 ran `find_images_in_hash` verbatim: nested keys named `image` are detected, a key such as `tlsProxyImage` is not |
 | 50 | Dependabot docker and docker-compose refresh `tag@sha256` pins; terraform updates providers, not `helm_release` | dependabot-core `docker/file_parser.rb` (`IMAGE_SPEC … @sha256`), docker_compose delegating to the docker checker, `terraform/file_parser.rb` (no helm handling) |
 | 51 | The three console packages are unused | No import in `src/`, tests or `vite.config.ts`; `generated/` absent and gitignored |
 | 52 | trivy-action v0.36.0 is at `ed142fd0…`; the 2026-03 compromise affected older versions | GitHub API; GHSA-69fq-xp46-6x23 (CVE-2026-33634) |
 | 53 | The checkout/setup-node SHAs used elsewhere are v7.0.1/v7.0.0 | `.github/workflows/dependency-scan.yml:17-18` and peers; upstream tags |
+| 54 | The `kubernetes` Service takes the first address of the service range; EKS picks `10.100.0.0/16` or `172.20.0.0/16` when unset | Live kind: `kubernetes.default` → `10.96.0.1` (service range `10.96.0.0/12`); EKS `KubernetesNetworkConfig` docs ("either the 10.100.0.0/16 or 172.20.0.0/16 CIDR blocks"); `cluster-aws` sets no `service_ipv4_cidr` |
+| 55 | Pod env overrides the image `ENV`, and the Ollama chart sets `OLLAMA_MODELS=/data` | `charts/ollama/templates/statefulset.yaml:103`; CDR-1 run: `ollama serve` with `-e OLLAMA_MODELS=/data` on a read-only root logged `OLLAMA_MODELS:/data` then `mkdir /data: read-only file system` |
+| 56 | `values-laptop` renders neither Prometheus nor the console; with the two flags it renders both | `values-laptop.yaml:24, 40-41`; CDR-1 `helm template` runs: no `iverson-prometheus-ingress` and no admin-ui workload by default; both rendered with `--set global.prometheusEnabled=true --set adminUi.enabled=true` |
+| 57 | A subchart's `model-image/Dockerfile` is packaged and its hash renders in templates | Scratch chart copy: `charts/tei/.helmignore` is empty; after `helm dependency build`, `tei-0.1.0.tgz` lists `tei/model-image/Dockerfile`; a template with `.Files.Get "model-image/Dockerfile" \| sha256sum \| trunc 12` rendered `e86664a9decc`, equal to `sha256sum … \| cut -c1-12` |
+| 58 | Dependabot's docker ecosystem reads Dockerfiles in the directory each entry names | dependabot-core `docker/file_fetcher.rb`: `DOCKER_REGEXP = /dockerfile\|containerfile/i`, selecting regular files of the entry's directory |
 
 ---
 
 ## Known issues / accepted as out of scope
 
 - **Azure NPM's kubelet exemption is not documented by Microsoft** (spec and user report only). If it does not hold, AKS pods fail readiness at deploy; the runbook gives the check and the fallback (node subnet in `clusterCidrs`). Azure NPM on Linux is retired on 2028-09-30; moving AKS to Cilium is not in scope.
-- **GKE's in-cluster API endpoint** is inferred from the private-cluster documentation; the runbook checks `kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes` on first deploy.
+- **Runtime matching of the new egress rules on the managed dataplanes** (the API-server ipBlocks on AKS and GKE, the kube-dns helper on EKS, AKS and GKE, and the AWS ClusterIP entries) is unverified; Kubernetes leaves it to the implementation, and GKE Dataplane V2 has been observed to deny ipBlock rules to API-server addresses. The first-deploy gate (2b) detects a miss as a failed data-tier deploy, and the values-only fallbacks restore the port-only rules for that profile, leaving that half of #17 open there. GKE's in-cluster API endpoint is likewise inferred; the runbook checks `kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes` on first deploy.
 - **AKS changes are statically verified only:** the identity swap (system- to user-assigned), VNet Integration enablement (one-way, API IP change) and first-apply role propagation are covered by runbook steps, not by an apply. The VNet Integration attributes are deprecated in azurerm 3.x and must be renamed when the provider moves to 4.46+.
 - **EBS CSI node plugin on Kubernetes metadata** assumes one ENI and one EBS volume when computing attach limits (driver docs); a later driver upgrade to v1.46+ with its volume-limit feature would need metadata again.
 - **Compose still downloads models at runtime**, and the `.pyc`'s old password remains in git history.
