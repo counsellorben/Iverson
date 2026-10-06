@@ -132,6 +132,12 @@ Verified by `thorough-brainstorming` and the two design reviews. They are not re
 | 22 | Convention | Commit messages are lowercase imperative sentences ending with the `Co-Authored-By` line | `git log --oneline -8` |
 | 23 | Command | `POST /api/v3/core/users/{pk}/set_password/` with `{"password": …}` sets a password and answers 204 (the compose bootstrap token holds the right) | `core/api/users.py:830-850` in the 2026.5.3 image |
 | 24 | Consumer | The compose identity scenario and LoadTest log in their own users, the smoke and bypass users and the LoadTest tenant admin, with TOTP. The bypass group is an authorization bypass, not an MFA exemption. So Task 6's compose browser login uses a dedicated user | `compose-only/service-clients.yaml:282-301`; `mfa-enforcement.yaml` has no exemption; `Iverson.LoadTest/Program.cs:153-162` (the tenant admin's TOTP enrolment) |
+| 25 | Command | The flow script's in-page `fetch` to `/application/o/token/` from a page on `BASE` mints the token through the browser's proxy path (the public host on kind). Playwright's `context.request` under the proxy tunnels with `CONNECT` and gets a 400. Logging out first deletes the session's unexchanged codes | CIR-1, live: stand-in ingress gave `console/second: token received` and `iss=http://authentik.iverson.local/ False`; compose shape gave `iss=http://localhost:9000/ False`; `context.request` gave nginx `400`, with `CONNECT authentik.iverson.local:80` in the proxy log; after logout `AuthorizationCode` rows for the user were 0, and stored codes gave `invalid_grant` |
+| 26 | Behaviour | On the default scheme a rejected token gets HTTP 401 with no `grpc-status`; an accepted one gets `200` with `grpc-status: 0`. A bad acting-user token with a good service token gets `200` with `grpc-status: 16`. JwtBearer's IDX lines are not logged at the shipped level | CIR-1, live through the real `Program.cs` pipeline; `Iverson.Api/appsettings.json:5` (`"Microsoft.AspNetCore": "Warning"`) |
+| 27 | Behaviour | On `values-laptop`, `iverson.local` carries a certificate and no admin-ui Ingress opts `/admin/` out of ingress-nginx's https redirect, so the proxied browser cannot load the redirect target; the first request off the Authentik origin is the flow's own target | `values-local.yaml:4-11`, `values-laptop.yaml:40-41` (`adminUi.enabled: false`), `charts/admin-ui/templates/ingress.yaml:39`; CIR-1, emulated: `recovery left Authentik for http://iverson.local/admin/` while the final page was `chrome-error://chromewebdata/` |
+| 28 | Command | `ak shell -c` prints a banner (3 lines and a blank) before the value on stdout and logs JSON to stderr | CIR-1, live in the 2026.5.3 worker: 5 stdout lines ending in the value; `2>/dev/null \| tail -1` printed exactly `1` |
+| 29 | Behaviour | The Helm blueprint's `state: absent` token entry applies without failing the blueprint and deletes an existing `authentik-bootstrap-token` | CIR-1, live: the edited Helm blueprint applied on an isolated Authentik that had the token; afterwards the token was gone |
+| 30 | Behaviour | Authentik accepts `token_duration=minutes=15` on `/recovery/`, and the startup guard does not reject compose's `http://` `ExternalIssuer` | CIR-1, live: the link's `FlowToken` expired 14.9 minutes out; `Iverson.Api/Tenancy/AuthentikTrust.cs:66-95` checks only the metadata addresses, `Authentik:BaseUrl`, `InternalIssuer` presence and the CA |
 
 ## Tasks
 
@@ -803,10 +809,10 @@ scratch_env() {
   export HOME=$LIVE/home NUGET_PACKAGES=$REAL_HOME/.nuget/packages PYTHONUSERBASE=$REAL_HOME/.local
   export GOMODCACHE=$REAL_HOME/go/pkg/mod MAVEN_OPTS=-Dmaven.repo.local=$REAL_HOME/.m2/repository npm_config_cache=$REAL_HOME/.npm
 }
-grpc() { # url header-file... : prints the grpc-status and grpc-message of a 5-byte GetSchema call
+grpc() { # url header-file... : prints the HTTP status line, grpc-status and grpc-message of a 5-byte GetSchema call
   local url=$1; shift; local hs=(); for h in "$@"; do hs+=(-H "@$h"); done
   printf '\0\0\0\0\0' | curl -s -D - -o /dev/null --http2-prior-knowledge -H 'content-type: application/grpc' -H 'te: trailers' "${hs[@]}" \
-    --data-binary @- "$url/iverson.ObjectMappingService/GetSchema" | grep -i -E "^grpc-(status|message)" | tr -d '\r' | tr '\n' ' '; echo; }
+    --data-binary @- "$url/iverson.ObjectMappingService/GetSchema" | grep -i -E "^HTTP/|^grpc-(status|message)" | tr -d '\r' | tr '\n' ' '; echo; }
 ```
 
 Then:
@@ -895,6 +901,17 @@ async function authorize(ctx, name, client, redirect, cred) {
   for (let i = 0; i < 20 && !callback; i++) { await runFlow(page, challenges, cred); await page.waitForTimeout(500); }
   out.notes.push(`${name}: ${callback ? 'code received' : 'NO CODE'}`);
   if (callback) codes[name] = { code: new URL(callback).searchParams.get('code'), verifier, client, redirect };
+  // Exchange now, before logout: ending the Authentik session deletes its unexchanged codes. A same-origin fetch
+  // from a page on BASE goes through the browser's own proxy path, so the token is minted through the public host.
+  if (callback) {
+    const tp = await ctx.newPage();
+    await tp.goto(`${BASE}/-/health/live/`);
+    const t = await tp.evaluate(async f => (await fetch('/application/o/token/', { method: 'POST', body: new URLSearchParams(f) })).json(),
+      { grant_type: 'authorization_code', client_id: client, redirect_uri: redirect, code: codes[name].code, code_verifier: verifier });
+    await tp.close();
+    codes[name].token = t.access_token; codes[name].refresh = 'refresh_token' in t;
+    out.notes.push(`${name}: token ${t.access_token ? 'received' : 'REFUSED ' + t.error}`);
+  }
   await page.close();
 }
 
@@ -915,11 +932,15 @@ async function authorize(ctx, name, client, redirect, cred) {
   if (E.RECOVERY_LINK) {
     const rctx = await browser.newContext(); await track(rctx, 'recovery');
     const rp = await rctx.newPage(), ch = [];
+    // The first request off the Authentik origin is the flow's redirect target, recorded before any redirect the
+    // target host itself answers with (ingress-nginx sends http to https on a host with a certificate).
+    let leftFor = null; rp.on('request', r => { if (!leftFor && new URL(r.url()).origin !== BASE) leftFor = r.url(); });
     rp.on('response', async r => { if (r.url().includes('/api/v3/flows/executor/')) { try { ch.push(await r.json()); } catch {} } });
     await rp.goto(E.RECOVERY_LINK).catch(() => {});
     const end = await runFlow(rp, ch, { newPassword: crypto.randomBytes(18).toString('base64url') + 'aA1!' });
     await rp.waitForTimeout(3000);
     out.notes.push(`recovery ended at ${end.split('?')[0]}`);
+    out.notes.push(`recovery left Authentik for ${leftFor}`);
   }
   await browser.close();
   for (const k of Object.keys(out.phases)) { out.phases[k].paths = [...new Set(out.phases[k].paths)].sort(); out.phases[k].notFound = [...new Set(out.phases[k].notFound)]; }
@@ -929,17 +950,15 @@ async function authorize(ctx, name, client, redirect, cred) {
 })().catch(e => { fs.writeFileSync(E.OUT, JSON.stringify({ ...out, error: e.message }, null, 1)); console.error('ERR', e.message); process.exit(1); });
 ```
 
-Also write `$LIVE/exchange.sh`, which exchanges a recorded code for an access token at a token URL and writes `authorization: Bearer …` (or `x-acting-user-authorization: Bearer …` with `ACTING=1`) to a 0600 header file. It reads the code from `CODES`. With `-H 'Host: …'` and the ingress URL on kind, the token is minted through the public host.
+Also write `$LIVE/readtoken.sh`. It writes the token the flow script already exchanged to a 0600 header file, as `authorization: Bearer …` (or `x-acting-user-authorization: Bearer …` with `ACTING=1`), and prints its `iss` and whether the token response carried a refresh token. The flow script exchanges each code itself, before its logout, because ending the Authentik session deletes the session's unexchanged codes (CIR-1 §2.1). It exchanges with a same-origin `fetch` from a page on `BASE`, so on kind the token is minted through the public host. Playwright's `context.request` is not a substitute: under the proxy setting it tunnels with `CONNECT`, which the ingress refuses.
 
 ```bash
 #!/usr/bin/env bash
-# usage: exchange.sh <codes.json> <name> <token-url> <header-file> [extra curl args...]
+# usage: readtoken.sh <codes.json> <name> <header-file> — writes the header from the token the flow script exchanged
 set -euo pipefail; umask 077
-codes=$1 name=$2 url=$3 hdr=$4; shift 4
-read -r code verifier client redirect < <(python3 -c "import json,sys; c=json.load(open('$codes'))['$name']; print(c['code'],c['verifier'],c['client'],c['redirect'])")
+codes=$1 name=$2 hdr=$3
 key=authorization; [ "${ACTING:-}" = 1 ] && key=x-acting-user-authorization
-curl -s "$@" -d grant_type=authorization_code -d client_id="$client" --data-urlencode redirect_uri="$redirect" -d code="$code" -d code_verifier="$verifier" "$url" \
-  | python3 -c "import sys,json,base64; t=json.load(sys.stdin)['access_token']; c=json.loads(base64.urlsafe_b64decode(t.split('.')[1]+'==')); open('$hdr','w').write('$key: Bearer '+t); print('iss='+c['iss'], 'refresh_token' in c)"
+python3 -c "import json,base64; c=json.load(open('$codes'))['$name']; t=c['token']; p=json.loads(base64.urlsafe_b64decode(t.split('.')[1]+'==')); open('$hdr','w').write('$key: Bearer '+t); print('iss='+p['iss'], c['refresh'])"
 ```
 
 - [ ] **Step 4: Stand up the isolated compose stack.** Run this with `run_in_background`: `source $SCR/c1/live/env.sh; $DC up -d --build > $LIVE/up.log 2>&1; echo "up exit=$?" >> $LIVE/up.log`.
@@ -994,7 +1013,7 @@ source $SCR/c1/live/env.sh; umask 077
   export USERNAME=c1-console-check OUT=$LIVE/compose-flows.json CODES=$LIVE/compose-codes.json
   node $LIVE/c1flows.js )
 python3 -c "import json; d=json.load(open('$LIVE/compose-flows.json')); print(d['notes'], d.get('error',''))"
-bash $LIVE/exchange.sh $LIVE/compose-codes.json console http://localhost:9000/application/o/token/ $LIVE/console.hdr
+bash $LIVE/readtoken.sh $LIVE/compose-codes.json console $LIVE/console.hdr
 grpc http://127.0.0.1:8080 $LIVE/console.hdr
 printf 'authorization: Bearer not-a-token' > $LIVE/garbage.hdr; grpc http://127.0.0.1:8080 $LIVE/garbage.hdr
 rm -f $LIVE/console.hdr $LIVE/compose-codes.json
@@ -1002,10 +1021,10 @@ rm -f $LIVE/console.hdr $LIVE/compose-codes.json
 
 Expected:
 - `set_password: 204`;
-- the notes show TOTP enrolment and `console: code received`;
-- `exchange.sh` prints `iss=http://localhost:9000/ False`;
-- the console token's `grpc-status` is not `16`;
-- the garbage token's is `16`.
+- the notes show TOTP enrolment, `console: code received` and `console: token received`;
+- `readtoken.sh` prints `iss=http://localhost:9000/ False`;
+- the console token: `HTTP/2 200` with `grpc-status: 0`;
+- the garbage token: `HTTP/2 401` with no `grpc-status` (the default scheme rejects before the gRPC service).
 
 - [ ] **Step 8: Tear compose down.** `source $SCR/c1/live/env.sh; $DC down -v > $LIVE/down.log 2>&1; docker rmi csr10c-api >/dev/null 2>&1; true`. Kind's ingress also binds host `8080`, so compose must be down first.
 
@@ -1021,7 +1040,7 @@ helm upgrade --install iverson . -n iverson -f values-laptop.yaml \
   --set api.hpa.maxReplicas=1 --set api.image.tag=csr10c --set worker.image.tag=csr10c --wait --timeout 30m
 ```
 
-Then wait until `kubectl -n iverson exec deploy/iverson-authentik-worker -- ak shell -c "from authentik.policies.expression.models import ExpressionPolicy; print(ExpressionPolicy.objects.filter(name='iverson-admin-automation-in-cluster-only').count())"` prints `1` (blueprints apply asynchronously).
+Then wait until `kubectl -n iverson exec deploy/iverson-authentik-worker -- ak shell -c "from authentik.policies.expression.models import ExpressionPolicy; print(ExpressionPolicy.objects.filter(name='iverson-admin-automation-in-cluster-only').count())" 2>/dev/null | tail -1` prints `1` (blueprints apply asynchronously; `ak shell` prints a banner before the value and logs to stderr).
 
 - [ ] **Step 10: kind: readiness, blocked paths, admin-automation, bootstrap token.**
 
@@ -1064,9 +1083,8 @@ source $SCR/c1/live/env.sh; umask 077
   export OUT=$LIVE/kind-flows.json CODES=$LIVE/kind-codes.json
   node $LIVE/c1flows.js )
 python3 -c "import json; d=json.load(open('$LIVE/kind-flows.json')); print(d['notes'], {k: v['notFound'] for k, v in d['phases'].items()}, d.get('error',''))"
-T=http://127.0.0.1:8080/application/o/token/
-bash $LIVE/exchange.sh $LIVE/kind-codes.json console $T $LIVE/console.hdr -H 'Host: authentik.iverson.local'
-ACTING=1 bash $LIVE/exchange.sh $LIVE/kind-codes.json second $T $LIVE/acting.hdr -H 'Host: authentik.iverson.local'
+bash $LIVE/readtoken.sh $LIVE/kind-codes.json console $LIVE/console.hdr
+ACTING=1 bash $LIVE/readtoken.sh $LIVE/kind-codes.json second $LIVE/acting.hdr
 ( export CID="$(kubectl -n iverson get secret iverson-authentik-loadtest-client -o jsonpath='{.data.client-id}' | base64 -d)"
   export CSEC="$(kubectl -n iverson get secret iverson-authentik-loadtest-client -o jsonpath='{.data.client-secret}' | base64 -d)"
   curl -s -H 'Host: iverson-authentik:9000' -d grant_type=client_credentials -d client_id="$CID" --data-urlencode client_secret="$CSEC" -d scope="schema_admin tenant_id_loadtest" \
@@ -1076,17 +1094,15 @@ echo "console (default scheme): $(grpc http://127.0.0.1:18080 $LIVE/console.hdr)
 echo "acting user, real:        $(grpc http://127.0.0.1:18080 $LIVE/service.hdr $LIVE/acting.hdr)"
 echo "acting user, garbage:     $(grpc http://127.0.0.1:18080 $LIVE/service.hdr $LIVE/acting-garbage.hdr)"
 rm -f $LIVE/console.hdr $LIVE/acting.hdr $LIVE/service.hdr $LIVE/kind-codes.json
-kubectl -n iverson logs deploy/iverson-api | grep -c "IDX10205\|IDX10500"
 ```
 
 Expected:
-- the notes show TOTP enrolment, `console: code received` and `second: code received`;
+- the notes show TOTP enrolment, `console: code received`, `console: token received`, `second: code received` and `second: token received`;
 - no `notFound` paths in the login and logout phases;
-- both exchanges print `iss=http://authentik.iverson.local/ False`;
-- `console (default scheme)`: a `grpc-status` other than `16`;
-- `acting user, real`: other than `16`;
-- `acting user, garbage`: `16` with `Acting-user token is invalid.`;
-- the IDX count is `0` (no issuer or signature rejections).
+- both `readtoken.sh` calls print `iss=http://authentik.iverson.local/ False`;
+- `console (default scheme)`: `HTTP/2 200` with `grpc-status: 0`;
+- `acting user, real`: `HTTP/2 200` with a `grpc-status` other than `16`;
+- `acting user, garbage`: `HTTP/2 200` with `grpc-status: 16` and `Acting-user token is invalid.`
 
 - [ ] **Step 12: kind: a recovery link from `CreateTenant` on the public host, 15 minutes, ending at the console.**
 
@@ -1138,7 +1154,7 @@ rm -f $LIVE/link.txt $LIVE/kind-codes2.json
 Expected:
 - `link host=http://authentik.iverson.local path=/if/flow/iverson-recovery/`;
 - `minutes to expiry:` between 14 and 15;
-- `recovery ended at http://iverson.local/admin/`;
+- `recovery left Authentik for http://iverson.local/admin/` (the `recovery ended at` note is informational: on the laptop profile ingress-nginx redirects `iverson.local` to https, which the proxied browser cannot follow);
 - no `notFound` paths in the recovery phase.
 
 
