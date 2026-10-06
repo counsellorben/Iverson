@@ -366,8 +366,12 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
             || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
             return link;
         var publicBase = new Uri(publicBaseUrl);
-        var schemeEnd = link.IndexOf("://", StringComparison.Ordinal) + 3;
-        var pathStart = link.IndexOfAny(['/', '?', '#'], schemeEnd);
+        // Uri also accepts forms without a literal "://" (backslashes, for one); splicing those by
+        // offset would be wrong, so they are returned as Authentik built them.
+        var separator = link.IndexOf("://", StringComparison.Ordinal);
+        if (separator < 0)
+            return link;
+        var pathStart = link.IndexOfAny(['/', '?', '#'], separator + 3);
         return publicBase.GetLeftPart(UriPartial.Authority) + (pathStart < 0 ? "/" : link[pathStart..]);
     }
 

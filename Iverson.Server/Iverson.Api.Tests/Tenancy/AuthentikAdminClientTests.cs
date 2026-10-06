@@ -86,7 +86,7 @@ public sealed class AuthentikAdminClientTests
         JsonResponse(HttpStatusCode.OK,
             """{"pagination":{"next":0},"results":[{"pk":"11111111-1111-1111-1111-111111111111","name":"tenant-admins"}]}"""),
         JsonResponse(HttpStatusCode.Created, """{"pk":42,"username":"new-user","email":"new-user@example.invalid"}"""),
-        JsonResponse(HttpStatusCode.OK, $$"""{"link":"{{link}}"}"""),
+        JsonResponse(HttpStatusCode.OK, $$"""{"link":{{JsonSerializer.Serialize(link)}}}"""),
     ];
 
     [Fact]
@@ -118,6 +118,8 @@ public sealed class AuthentikAdminClientTests
     [Theory]
     [InlineData("https://authentik.iverson.example.com", "/if/flow/iverson-recovery/?flow_token=abc123")]
     [InlineData("", "https://iverson-authentik:8443/if/flow/iverson-recovery/?flow_token=abc123")]
+    [InlineData("https://authentik.iverson.example.com", "http:/iverson-authentik/if/flow/iverson-recovery/?flow_token=abc123")]
+    [InlineData("https://authentik.iverson.example.com", @"http:\\iverson-authentik/if/flow/iverson-recovery/?flow_token=abc123")]
     public async Task CreateUserAsync_LeavesTheLinkUnchangedWhenItCannotOrNeedNotBeRewritten(string publicBaseUrl, string link)
     {
         var configuration = new ConfigurationBuilder()
