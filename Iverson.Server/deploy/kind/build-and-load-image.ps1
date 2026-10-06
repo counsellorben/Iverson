@@ -34,18 +34,27 @@ if ($ModelImages) {
     # Dockerfiles). Rebuild the packaged subcharts first: a stale charts/*.tgz would render the tag
     # of an older Dockerfile.
     Push-Location $chart
-    try { helm dependency build | Out-Null } finally { Pop-Location }
+    try { helm dependency build | Out-Null; Assert-Native "helm dependency build" } finally { Pop-Location }
     $render = helm template iverson $chart -f $valuesPath | Out-String
+    Assert-Native "helm template"
+    if ([string]::IsNullOrWhiteSpace($render)) { throw "helm template rendered nothing" }
+
+    # $ErrorActionPreference does not cover a native command's exit code, so check it explicitly.
+    function Assert-Native($what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
 
     function Build-And-Load($img, $dockerfile, $contextDir, $buildArgs) {
         Write-Host "Building $img..."
         docker build --memory 3g -t $img @buildArgs -f $dockerfile $contextDir
+        Assert-Native "docker build"
         $qualified = "docker.io/library/$img"
         docker tag $img $qualified   # same docker.io/library qualification as the app image, below
+        Assert-Native "docker tag"
         # Stage on disk: the Ollama image is ~5.7 GB and a RAM-backed temp dir may not hold it.
         $archive = Join-Path ([IO.Path]::GetTempPath()) (($img -replace '[:/]','_') + '.tar')
         docker save -o $archive $qualified
+        Assert-Native "docker save"
         kind load image-archive $archive --name $ClusterName
+        Assert-Native "kind load image-archive"
         Remove-Item $archive
     }
 
