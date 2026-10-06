@@ -121,7 +121,7 @@ entries:
     identifiers:
       name: iverson-recovery-user-login
 
-  # Stage chain: prompt (0) -> MFA validation (1) -> user_write (2) -> user_login (3).
+  # Stage chain: prompt (0) -> MFA validation (1) -> user_write (2) -> user_login (3) -> redirect to the console (4).
   #
   # `order` lives in attrs, NOT in identifiers (authentik's own default blueprints put it in
   # identifiers, but they only ever APPEND stages at sparse orders). Inserting the MFA stage
@@ -158,6 +158,24 @@ entries:
       stage: !KeyOf iverson-recovery-user-login
     attrs:
       order: 3
+
+  # CSR round-10 #4/#16: end the flow on the console, not on Authentik's user interface, which the
+  # public listener does not serve. Helm renders the profile's console URL in place of this !Env
+  # (blueprints-configmap.yaml); compose and the test fixture resolve the default, compose's console.
+  - id: iverson-recovery-redirect-console
+    model: authentik_stages_redirect.redirectstage
+    identifiers:
+      name: iverson-recovery-redirect-console
+    attrs:
+      mode: static
+      target_static: !Env [IVERSON_CONSOLE_URL, "http://localhost:5173/"]
+
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf flow
+      stage: !KeyOf iverson-recovery-redirect-console
+    attrs:
+      order: 4
 
   # Partial update of the existing default brand: attrs carries only flow_recovery,
   # which authentik merges, leaving flow_authentication/flow_invalidation/etc intact.

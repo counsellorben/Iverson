@@ -415,6 +415,8 @@ services:
       IVERSON_BYPASS_PASSWORD: ${IVERSON_BYPASS_PASSWORD:?run scripts/generate-compose-secrets.sh first}
       IVERSON_ADMIN_ORCHESTRATOR_PASSWORD: ${IVERSON_ADMIN_ORCHESTRATOR_PASSWORD:?run scripts/generate-compose-secrets.sh first}
       IVERSON_ADMIN_ORCHESTRATOR_TOKEN: ${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
+      # CSR round-10 #4/#16: where the recovery flow sends an invitee (recovery-flow.yaml's !Env).
+      IVERSON_CONSOLE_URL: http://localhost:5173/
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
     depends_on:
