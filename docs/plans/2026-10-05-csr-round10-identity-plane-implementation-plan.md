@@ -988,9 +988,14 @@ source $SCR/c1/live/env.sh
   export IVERSON_TOKEN_ENDPOINT=http://localhost:9000/application/o/token/ IVERSON_CLIENT_SCOPE="admin schema_admin tenant_id_admin"
   export IVERSON_ACTING_USER_PASSWORD="$(val IVERSON_SMOKE_TEST_PASSWORD)" IVERSON_ACTING_USER_BYPASS_PASSWORD="$(val IVERSON_BYPASS_PASSWORD)"
   export IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD="$(openssl rand -base64 24)aA1!"
-  # Authentik applies blueprints asynchronously: wait until the admin-automation client stops answering invalid_client.
-  until [ "$(curl -s -d grant_type=client_credentials -d client_id="$IVERSON_CLIENT_ID" --data-urlencode client_secret="$IVERSON_CLIENT_SECRET" \
-      -d scope="$IVERSON_CLIENT_SCOPE" "$IVERSON_TOKEN_ENDPOINT" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("error",""))')" != invalid_client ]; do sleep 10; done
+  # Authentik applies blueprints asynchronously: wait (up to 10 minutes) until the admin-automation client is known.
+  # An unreachable endpoint or a non-JSON answer counts as not ready; any other answer ends the wait and LoadTest reports it.
+  for i in $(seq 1 60); do
+    e=$(curl -s -d grant_type=client_credentials -d client_id="$IVERSON_CLIENT_ID" --data-urlencode client_secret="$IVERSON_CLIENT_SECRET" \
+        -d scope="$IVERSON_CLIENT_SCOPE" "$IVERSON_TOKEN_ENDPOINT" | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("error") or "ok")
+except Exception: print("unreachable")')
+    [ "$e" != invalid_client ] && [ "$e" != unreachable ] && break; sleep 10; done
   # write-path, not seed: seed ignores --count and always writes 400,000 articles (DirectSeeder.cs:27), which exhausts the VM.
   cd $BR/Iverson.Server && systemd-run --user --scope -q -p MemoryMax=4G dotnet run --project Iverson.LoadTest -- write-path --count 10 --concurrency 1 ) > $LIVE/loadtest.out 2>&1; echo "loadtest exit=$?"
 grep -E "recovery link|Logged the tenant admin in|ready\.|failed" $LIVE/loadtest.out
