@@ -193,9 +193,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         options.BackchannelHttpHandler = Iverson.Api.Tenancy.AuthentikTrust.CreateHandler(cfg["Authentik:CaCertificatePath"]);
         if (cfg["Authentication:ActingUser:MetadataAddress"] is { Length: > 0 } actingMetadataAddress)
             options.MetadataAddress = actingMetadataAddress;
-        // See the default scheme: acting-user tokens minted on 9000 carry the internal issuer.
-        if (cfg["Authentication:InternalIssuer"] is { Length: > 0 } internalIssuer)
-            options.TokenValidationParameters.ValidIssuers = [internalIssuer];
+        // See the default scheme: acting-user tokens minted on 9000 carry the internal issuer, and
+        // tokens minted through the public host carry the external one (Authentik's global issuer mode
+        // stamps the host's root).
+        string[] actingIssuers = [.. new[] { cfg["Authentication:InternalIssuer"], cfg["Authentication:ExternalIssuer"] }
+            .OfType<string>().Where(issuer => issuer.Length > 0)];
+        if (actingIssuers.Length > 0)
+            options.TokenValidationParameters.ValidIssuers = actingIssuers;
         options.MapInboundClaims = false;
         // gRPC metadata IS the HTTP/2 header set — same mechanism the default scheme already
         // relies on for the "authorization" key. This scheme reads a different key so it

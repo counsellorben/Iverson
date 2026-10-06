@@ -233,6 +233,23 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
             .Which.SslOptions.RemoteCertificateValidationCallback.Should().NotBeNull();
     }
 
+    [Theory]
+    [InlineData(JwtBearerDefaults.AuthenticationScheme)]
+    [InlineData("ActingUser")]
+    public void BothSchemes_AcceptTheExternalIssuer(string scheme)
+    {
+        // Authentik's global issuer mode stamps tokens minted through the public host with that host's
+        // root, so each scheme must accept it next to the internal issuer.
+        using var factory = _baseFactory.WithWebHostBuilder(b => b
+            .UseSetting("Authentication:InternalIssuer", "http://iverson-authentik:9000/")
+            .UseSetting("Authentication:ExternalIssuer", "https://authentik.iverson.example.com/"));
+
+        var opts = factory.Services.GetRequiredService<IOptionsMonitor<JwtBearerOptions>>().Get(scheme);
+
+        opts.TokenValidationParameters.ValidIssuers.Should()
+            .Contain("https://authentik.iverson.example.com/").And.Contain("http://iverson-authentik:9000/");
+    }
+
     [Fact]
     public void IdpAdminClient_ReachesAuthentikThroughTheCaTrustingHandler()
     {
