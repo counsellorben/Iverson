@@ -29,7 +29,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: revoke-cross-db
-          image: "postgres:16"
+          image: {{ .Values.revokeCrossDb.image | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

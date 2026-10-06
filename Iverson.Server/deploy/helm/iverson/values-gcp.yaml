@@ -128,7 +128,6 @@ worker:
     targetCPUUtilization: 70
 
 prometheus:
-  imageTag: "v2.55.1"
   storageSize: "20Gi"
   storageClassName: "iverson-prometheus"
   resources:
@@ -137,14 +136,12 @@ prometheus:
   nodeSelector: {}
 
 redis:
-  imageTag: "7.4-alpine"
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "250m", memory: "256Mi" }
   nodeSelector: {}
 
 authentik:
-  imageTag: "2026.5.3"
   resources:
     server:
       requests: { cpu: "250m", memory: "512Mi" }

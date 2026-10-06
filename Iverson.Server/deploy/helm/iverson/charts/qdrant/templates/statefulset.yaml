@@ -42,7 +42,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: qdrant
-          image: "qdrant/qdrant:{{ .Values.imageTag }}"
+          image: {{ .Values.image | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

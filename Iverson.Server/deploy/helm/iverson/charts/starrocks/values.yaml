@@ -17,3 +17,5 @@ be:
     limits: { cpu: "8", memory: "64Gi" }
   nodeSelector: {}
   tolerations: []
+createUser:
+  image: "mysql:8.0.46"

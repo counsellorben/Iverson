@@ -1,4 +1,8 @@
-imageTag: "2026.5.3"
+image: "ghcr.io/goauthentik/server:2026.5.3"
+tlsProxy:
+  image: "nginxinc/nginx-unprivileged:1.30.5-alpine"
+revokeCrossDb:
+  image: "postgres:16.15"
 resources:
   server:
     requests: { cpu: "250m", memory: "512Mi" }

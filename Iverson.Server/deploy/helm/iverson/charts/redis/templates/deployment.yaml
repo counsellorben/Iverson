@@ -34,7 +34,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: redis
-          image: "redis:{{ .Values.imageTag }}"
+          image: {{ .Values.image | quote }}
           # Disables RDB snapshotting entirely: this deployment mounts no volume at /data (no
           # PVC, cache-only by design), so the image's default periodic `save` directives would
           # otherwise fail every snapshot attempt against a read-only root filesystem with no

@@ -34,7 +34,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: jaeger
-          image: "jaegertracing/all-in-one:{{ .Values.imageTag }}"
+          image: {{ .Values.image | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

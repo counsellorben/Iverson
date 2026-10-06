@@ -51,7 +51,7 @@ spec:
       # bare command. Idempotent: a re-run exits 0 with "No migrations to apply."
       initContainers:
         - name: migrate
-          image: "ghcr.io/goauthentik/server:{{ .Values.imageTag }}"
+          image: {{ .Values.image | quote }}
           command: ["python", "-m", "lifecycle.migrate"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -81,7 +81,7 @@ spec:
               memory: {{ .Values.resources.server.limits.memory | quote }}
       containers:
         - name: server
-          image: "ghcr.io/goauthentik/server:{{ .Values.imageTag }}"
+          image: {{ .Values.image | quote }}
           # `args`, not `command`: the image's own ENTRYPOINT already wraps every invocation in
           # its `ak` lifecycle script — `args: ["server"]` overrides only the CMD, matching the
           # official `command: server` docker-compose shorthand. Setting `command:` here instead
@@ -147,7 +147,7 @@ spec:
         # and (identity-plane change) also carries the public 9080 listener behind the Ingress.
         # Authentik's own 9443 listener serves a self-signed fallback and is never exposed.
         - name: tls-proxy
-          image: "nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0"
+          image: {{ .Values.tlsProxy.image | quote }}
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

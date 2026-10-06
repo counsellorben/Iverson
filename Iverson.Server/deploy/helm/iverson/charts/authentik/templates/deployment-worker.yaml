@@ -24,7 +24,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: worker
-          image: "ghcr.io/goauthentik/server:{{ .Values.imageTag }}"
+          image: {{ .Values.image | quote }}
           args: ["worker"]
           securityContext:
             allowPrivilegeEscalation: false

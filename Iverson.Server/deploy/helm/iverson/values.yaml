@@ -148,13 +148,15 @@ starrocks:
       limits: { cpu: "8", memory: "64Gi" }
     nodeSelector: {}
     tolerations: []
+  createUser:
+    image: "mysql:8.0.46"
 
 qdrant:
   enabled: true
   replicas: 2
   storageSize: 500Gi
   storageClassName: ""
-  imageTag: "v1.18.2"
+  image: "qdrant/qdrant:v1.18.2"
   resources:
     requests: { cpu: "8", memory: "64Gi", ephemeral-storage: "2Gi" }
     limits: { cpu: "8", memory: "64Gi", ephemeral-storage: "4Gi" }
@@ -239,14 +241,14 @@ worker:
     targetCPUUtilization: 70
 
 jaeger:
-  imageTag: "1.62.0"
+  image: "jaegertracing/all-in-one:1.62.0"
   resources:
     requests: { cpu: "2", memory: "4Gi", ephemeral-storage: "1Gi" }
     limits: { cpu: "2", memory: "4Gi", ephemeral-storage: "2Gi" }
   nodeSelector: {}
 
 prometheus:
-  imageTag: "v2.55.1"
+  image: "prom/prometheus:v2.55.1"
   storageSize: "20Gi"
   storageClassName: ""
   resources:
@@ -256,7 +258,7 @@ prometheus:
 
 redis:
   enabled: true
-  imageTag: "7.4-alpine"
+  image: "redis:7.4.11-alpine"
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "250m", memory: "256Mi" }
@@ -280,7 +282,11 @@ adminUi:
 
 authentik:
   enabled: true
-  imageTag: "2026.5.3"
+  image: "ghcr.io/goauthentik/server:2026.5.3"
+  tlsProxy:
+    image: "nginxinc/nginx-unprivileged:1.30.5-alpine"
+  revokeCrossDb:
+    image: "postgres:16.15"
   resources:
     server:
       requests: { cpu: "250m", memory: "512Mi" }

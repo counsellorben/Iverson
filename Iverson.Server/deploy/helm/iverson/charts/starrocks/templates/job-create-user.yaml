@@ -28,7 +28,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: create-user
-          image: "mysql:8.0"
+          image: {{ .Values.createUser.image | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
