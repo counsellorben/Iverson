@@ -137,6 +137,10 @@ These were verified by `thorough-brainstorming` and three design reviews, and ar
 | 32 | Command | `docker compose config -q` needs the untracked `Iverson.Server/.env`; `--no-interpolate -q` validates without it and still rejects a malformed `image:` line | `git archive` copy: plain `config` exits non-zero, `--no-interpolate` → `compose-ok` (UIP run); malformed-line rejection (CIR-1 §2.6) |
 | 33 | Code | `curlimages/curl:8.18.0` has BusyBox `nc` (`-z -w`) and `nslookup`; a pod selected only by `default-deny` has no egress | `docker run … nc -z -w 2 127.0.0.1 1` → `closed-rc=1`; BusyBox v1.37.0 (UIP run); laptop render: only `iverson-default-deny` selects `app=csr10d-outsider` (CIR-1 §2.1) |
 | 34 | Code | With the plan's `.dockerignore`, `.env*` files inside `Iverson.AdminUI/` and `Iverson.Server/Iverson.Api/` (incl. the tracked `.env.development`) never reach a build that copies those directories; with `HEAD`'s they do | canary build copying both directories: no `.env*` with the plan's additions (UIP run); `HEAD`'s `.dockerignore` let `/api/.env`, `/src/.env.development`, `/src/.env.local` through (CIR-1 §2.4) |
+| 35 | Command | `kind` with no `KIND_EXPERIMENTAL_PROVIDER` set picks podman on this host, so `kind load` / `kind delete` in Task 10 reach the podman-created cluster | `kind get clusters` with no env prints `enabling experimental podman provider` (CIR-2 run; same line seen at plan time) |
+| 36 | Path | The `iverson` namespace exists before Task 10's `helm upgrade -n iverson` (no `--create-namespace`) | `setup.sh:55` creates it (CIR-2 read) |
+| 37 | Code | `build-and-load-image.ps1` does not parse while `$ErrorActionPreference = "Stop"` precedes `param(...)`; with it moved below `param(...)`, both the existing build path and the `-ModelImages` switch run | read: line 1 vs `param(` at line 13; CIR-2 runs on PowerShell 7.6.6: `ParserError … :14 The assignment expression is not valid` on `HEAD`; moved version ran through `docker`/`kind` shims (`docker build` → `docker tag` → `kind load docker-image`; `-ModelImages` bound). Windows PowerShell 5.1 not run |
+| 38 | Code | An image present before Step 5's snapshot and deleted before Step 7's comparison makes `comm -23` non-empty; deleting it after the comparison keeps `no-image-removed-or-repointed` | podman probe with a throwaway `:check` tag (UIP-2 run): rmi-before-compare printed the tag; compare-first printed `no-image-removed-or-repointed`, then the tag was removed |
 
 ## Tasks
 
@@ -667,6 +671,7 @@ fi
 ```
 
 - [ ] **Step 8: `build-and-load-image.ps1` parity.**
+  - First, move `$ErrorActionPreference = "Stop"` from line 1 to directly after the `param(...)` block. A script's `param` block must be its first statement, after comments only; today the file fails to parse (`The assignment expression is not valid`, plan row 37), so neither the existing build nor the new mode can run.
   - Add `[switch]$ModelImages` and `[string]$Values = "Iverson.Server/deploy/helm/iverson/values-laptop.yaml"` to `param(...)`, and document them in the usage header.
   - When `$ModelImages` is set, run the same logic in PowerShell:
     - `Push-Location` to the chart, `helm dependency build`, `Pop-Location`.
@@ -681,7 +686,7 @@ fi
       - `kind load image-archive $archive --name $ClusterName`;
       - `Remove-Item $archive`.
     - Then `exit 0`.
-  - `pwsh` is not installed here (plan row 20), so this file gets a static review only: every `bash` step in Step 7 has a matching PowerShell line.
+  - `pwsh` is not installed here (plan row 20), so this file gets a static review: every `bash` step in Step 7 has a matching PowerShell line. If `pwsh` is available, also check it parses: `pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile("<abs path>/Iverson.Server/deploy/kind/build-and-load-image.ps1",[ref]$null,[ref]$e); $e.Count'` prints `0`.
 
 - [ ] **Step 9: Setup notes.** Replace the closing `Note:` line in `setup.sh` (line 180) with:
 
@@ -1551,7 +1556,7 @@ Expected:
 
 ```bash
 kind delete cluster --name iverson; kind get clusters
-docker rmi docker.io/library/iverson-api:csr10d localhost/iverson-api:csr10d docker.io/library/iverson-admin-ui:csr10d localhost/iverson-admin-ui:csr10d csr10d-api:check csr10d-adminui:check >/dev/null 2>&1
+docker rmi docker.io/library/iverson-api:csr10d localhost/iverson-api:csr10d docker.io/library/iverson-admin-ui:csr10d localhost/iverson-admin-ui:csr10d >/dev/null 2>&1
 docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'iverson-(tei|ollama)-model' | xargs -r docker rmi >/dev/null
 docker ps -a --format '{{.Names}}' | sort | diff $SCR/csr10d/before-containers.txt - && echo containers-unchanged
 docker volume ls -q | sort | diff $SCR/csr10d/before-volumes.txt - && echo volumes-unchanged
@@ -1559,9 +1564,10 @@ docker network ls --format '{{.Name}}' | sort | diff $SCR/csr10d/before-networks
 docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort > $SCR/csr10d/after-images.txt
 [ -z "$(comm -23 $SCR/csr10d/before-images.txt $SCR/csr10d/after-images.txt)" ] && echo no-image-removed-or-repointed
 comm -13 $SCR/csr10d/before-images.txt $SCR/csr10d/after-images.txt   # additions: kind's node image, build stages
+docker rmi csr10d-api:check csr10d-adminui:check >/dev/null   # last: they predate the Step 5 snapshot
 ```
 
-Expected: `containers-unchanged`, `volumes-unchanged`, `networks-unchanged` and `no-image-removed-or-repointed`. The `comm -13` additions are expected (`kind create` pulls a `kindest/node` image; builds leave stages). Remove an added image only after checking its creation time is from this task.
+Expected: `containers-unchanged`, `volumes-unchanged`, `networks-unchanged` and `no-image-removed-or-repointed`. The `comm -13` additions are expected (`kind create` pulls a `kindest/node` image; builds leave stages). Remove an added image only after checking its creation time is from this task. The two `:check` images from Task 5 are removed last, after the comparison, because they predate the Step 5 snapshot (plan row 38).
 
 - [ ] **Step 8: No commit** (verification only). Record results in the SDD ledger.
 
