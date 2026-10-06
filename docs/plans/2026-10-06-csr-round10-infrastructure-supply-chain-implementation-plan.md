@@ -131,6 +131,12 @@ These were verified by `thorough-brainstorming` and three design reviews, and ar
 | 26 | Behaviour | LoadTest `write-path` cannot run against kind from the host: its closing Kafka lag report (`WritePathRunner.cs:218-237`) connects to Kafka, whose brokers advertise in-cluster addresses. §5b pass 1 uses checks proven on kind instead (spec amended `52275c13`, the user's choice) | read; memory of the unexercised kind target |
 | 27 | Behaviour | gRPC through ingress-nginx on kind needs TLS with ALPN h2 on 8443 | spec 2026-09-24 api-ingress-nginx-grpc, live verified there |
 | 28 | Path | The user's compose stack is not running now; ports 8080/8443 are free | `docker ps` empty; `ss -ltn` no match |
+| 29 | Ordering | Without `depends_on = [module.cluster]`, no `module.operators` resource waits for `azurerm_role_assignment.deployer_cluster_admin`; with it, they all do. The operators module has no `data` sources | `terraform graph` (Terraform 1.9.8) on the patched azure root: 0 operator→`deployer_cluster_admin` edges before, 12 after; `validate` passes; `grep -c '^data ' modules/operators/*.tf` → 0 (CIR-1 §2.2, re-run at UIP) |
+| 30 | Ordering | In one bootstrap apply, the storage account is updated before `deployer_state_data` is created, and the container waits for the role | `terraform graph`: `deployer_state_data -> azurerm_storage_account.state`, `azurerm_storage_container.state -> deployer_state_data` (CIR-1 §2.3, re-run at UIP) |
+| 31 | Command | `terraform validate -no-color` output ends in a blank line, so `\| tail -1` prints nothing; `\| head -1` prints `Success! …` | `od -c`: `…is valid.\n\n` (CIR-1 §2.8, re-run at UIP) |
+| 32 | Command | `docker compose config -q` needs the untracked `Iverson.Server/.env`; `--no-interpolate -q` validates without it and still rejects a malformed `image:` line | `git archive` copy: plain `config` exits non-zero, `--no-interpolate` → `compose-ok` (UIP run); malformed-line rejection (CIR-1 §2.6) |
+| 33 | Code | `curlimages/curl:8.18.0` has BusyBox `nc` (`-z -w`) and `nslookup`; a pod selected only by `default-deny` has no egress | `docker run … nc -z -w 2 127.0.0.1 1` → `closed-rc=1`; BusyBox v1.37.0 (UIP run); laptop render: only `iverson-default-deny` selects `app=csr10d-outsider` (CIR-1 §2.1) |
+| 34 | Code | With the plan's `.dockerignore`, `.env*` files inside `Iverson.AdminUI/` and `Iverson.Server/Iverson.Api/` (incl. the tracked `.env.development`) never reach a build that copies those directories; with `HEAD`'s they do | canary build copying both directories: no `.env*` with the plan's additions (UIP run); `HEAD`'s `.dockerignore` let `/api/.env`, `/src/.env.development`, `/src/.env.local` through (CIR-1 §2.4) |
 
 ## Tasks
 
@@ -465,9 +471,14 @@ for x in yaml.safe_load_all(sys.stdin):
     if x and x.get("kind") == "NetworkPolicy":
         for r in x["spec"].get("egress") or []:
             if r.get("to") == []: print(x["metadata"]["name"], sorted(p["port"] for p in r["ports"]))'
+helm template iverson . -f values-laptop.yaml --set networkPolicy.dnsAnyDestination=true | python3 -c '
+import sys, yaml
+ports = {tuple(sorted((p["protocol"], p["port"]) for p in r["ports"])) for x in yaml.safe_load_all(sys.stdin)
+         if x and x.get("kind") == "NetworkPolicy" for r in x["spec"].get("egress") or [] if r.get("to") == []}
+print("dns fallback port sets:", sorted(ports))'
 ```
 
-Expected: both guard messages print, and the fallback prints only `iverson-postgres-egress [443, 6443]` and `iverson-kafka-egress [443, 6443]`, plus the TEI/Ollama 443 rules until Task 3.
+Expected: both guard messages print; the API-server fallback prints only `iverson-postgres-egress [443, 6443]` and `iverson-kafka-egress [443, 6443]` (plus the TEI/Ollama 443 rules until Task 3); and the DNS fallback prints `dns fallback port sets: [(('TCP', 53), ('UDP', 53))]` (plus TEI/Ollama's `(('TCP', 443),)` until Task 3).
 
 - [ ] **Step 8: Commit.** `git add` the helpers, `networkpolicies.yaml`, `values.yaml` and the 5 overlays, then `git commit -m "scope DNS egress to kube-dns and API-server egress to per-profile ranges, with values-only fallbacks"`.
 
@@ -838,7 +849,7 @@ COPY Iverson.Clients/Common/Proto/ Iverson.Clients/Common/Proto/
 | 334, 352, 395 | `ghcr.io/goauthentik/server:2026.5.3@sha256:377ee38726785f98aafc3665202ad198a366fa979b0f61c0660a9c05e3a9b1b3` |
 | 442 | `nginxinc/nginx-unprivileged:1.30.5-alpine@sha256:15c994d10d6d78658721c3bcafff14cb281fba2a4bdf9d5ba92c416a472516e3` |
 
-Lines 484 and 608 (`iverson-api`) are first-party and unchanged. Before editing, re-resolve any digest older than a day with `scratchpad`'s `digest.sh` equivalent: a `HEAD` request on `/v2/<repo>/manifests/<tag>` with the OCI index Accept header, reading `Docker-Content-Digest`. Then validate with `docker compose -f Iverson.Server/docker-compose.yml config -q && echo compose-ok`, which validates only and starts nothing.
+Lines 484 and 608 (`iverson-api`) are first-party and unchanged. Before editing, re-resolve any digest older than a day with `scratchpad`'s `digest.sh` equivalent: a `HEAD` request on `/v2/<repo>/manifests/<tag>` with the OCI index Accept header, reading `Docker-Content-Digest`. Then validate with `docker compose -f Iverson.Server/docker-compose.yml config --no-interpolate -q && echo compose-ok`, which validates structure and image syntax without the untracked `Iverson.Server/.env` (absent from a fresh worktree) and starts nothing.
 
 - [ ] **Step 6: `.pyc`.** `git rm --cached Iverson.Server/deploy/scripts/__pycache__/mint_acting_user_token.cpython-314.pyc`. `.gitignore:82-83` already ignores it.
 
@@ -863,7 +874,7 @@ docker run --rm -d --name csr10d-ui -p 127.0.0.1:18099:8080 -e OIDC_CLIENT_ID=x 
 sleep 3; curl -s -o /dev/null -w 'console %{http_code}\n' http://127.0.0.1:18099/; docker rm -f csr10d-ui >/dev/null
 ```
 
-Expected: both builds succeed, and `console 200`. Keep `csr10d-api:check` for Task 10, where it is retagged.
+Expected: both builds succeed, and `console 200`. Keep `csr10d-api:check` and `csr10d-adminui:check` for Task 10, where they are retagged and loaded into kind (no second, uncapped build).
 
 - [ ] **Step 9: Commit.** `git add` the two `.dockerignore` files, the three Dockerfiles, `docker-compose.yml`, `package.json` and `package-lock.json`, with the `.pyc` removal staged by Step 6. Then `git commit -m "keep secrets out of build contexts, move the console to Node 22 and nginx 1.30, pin compose images by digest, drop unused console packages"`.
 
@@ -1116,6 +1127,7 @@ output "cluster_ca_certificate" { value = azurerm_kubernetes_cluster.this.kube_c
 - [ ] **Step 4: `azure/main.tf`.**
   - In the backend block, add `use_azuread_auth = true` under `key`.
   - Add `variable "cluster_admin_group_object_ids" { type = list(string) }`, with a one-line comment, after `key_vault_authorized_ip_ranges`, and pass it into `module "cluster"`.
+  - Add to `module "operators"`, as its first argument: `depends_on = [module.cluster]` with the comment `# The deploying principal's Kubernetes RBAC role must exist before any operator resource.` Without it, no operator resource waits for `azurerm_role_assignment.deployer_cluster_admin` (plan row 29).
   - Replace both provider blocks with the code below.
   - Keep `output "kubeconfig_command"`. With Entra it fetches the user kubeconfig, which uses kubelogin.
 
@@ -1193,7 +1205,7 @@ resource "azurerm_role_assignment" "deployer_state_data" {
 
 ```bash
 cd Iverson.Server/deploy/terraform && terraform fmt -check -recursive . && echo fmt-ok
-for d in azure bootstrap/azure; do (cd $d && terraform init -backend=false -lockfile=readonly >/dev/null && terraform validate -no-color | tail -1); done
+for d in azure bootstrap/azure; do (cd $d && terraform init -backend=false -lockfile=readonly >/dev/null && terraform validate -no-color | head -1); done
 tfsec . --no-color | tail -2
 find . -type d -name .terraform -prune -exec rm -rf {} +; find . -name .terraform.lock.hcl -newer azure/main.tf -print   # lockfiles must be unchanged
 git status --short .
@@ -1294,8 +1306,13 @@ In `helm_release.aws_load_balancer_controller`, after the `clusterName` `set` bl
      - Afterwards, run `az aks rotate-certs -g <rg> -n <cluster>` once, so certificates copied from old state stop working.
      - `az aks get-credentials` now returns a kubelogin-based kubeconfig.
   7. **Terraform state account:**
-     - For an existing account: run the bootstrap apply with your IP in `state_authorized_ip_ranges`.
-     - The data role assignment is created before shared keys are disabled. If the container step fails with 403, wait and re-apply.
+     - In a single apply, Terraform updates the account (shared keys off, network deny) before it creates the data role (plan row 30), so an existing account needs the role first, out of band.
+     - For an existing account, in order:
+       1. `az role assignment create --role "Storage Blob Data Contributor" --assignee <deployer object id> --scope <state storage account id>`.
+       2. Wait about five minutes for the assignment to propagate.
+       3. `terraform import azurerm_role_assignment.deployer_state_data <assignment id>` in `bootstrap/azure` (the id printed by step 1).
+       4. Apply `bootstrap/azure` with your IP in `state_authorized_ip_ranges`.
+     - A new account needs none of this: the single apply creates the account, the role and then the container.
      - Then `terraform init -reconfigure` in `azure/`. The backend now uses Entra auth (`use_azuread_auth`).
   8. **EKS:**
      - The hop-limit change replaces the node groups' launch template version, so nodes roll.
@@ -1337,6 +1354,18 @@ if "iverson-prometheus-ingress" in nps:
     peers = [p for r in nps["iverson-prometheus-ingress"]["spec"]["ingress"] for p in r["from"]]
     if peers != [{"podSelector": {"matchLabels": {"app": "iverson-api"}}}]: fails.append(f"prometheus peers {peers}")
 if any(p["port"] == 9000 for r in nps["iverson-authentik-ingress"]["spec"]["ingress"] for p in r["ports"]): fails.append("authentik 9000")
+API = {"values-aws": ["10.0.0.0/20", "10.0.16.0/20", "10.0.128.0/20", "10.0.144.0/20", "10.100.0.1/32", "172.20.0.1/32"],
+       "values-azure": ["10.1.17.0/28"], "values-gcp": ["172.16.0.0/28"],
+       "values-laptop": ["172.18.0.0/16", "10.89.0.0/16"], "values-local": ["172.18.0.0/16", "10.89.0.0/16"]}[name]
+for n, d in nps.items():   # API-server rules carry exactly the profile's apiServerCidrs
+    for r in d["spec"].get("egress") or []:
+        if sorted((p["protocol"], p["port"]) for p in r.get("ports", [])) == [("TCP", 443), ("TCP", 6443)]:
+            got = [p["ipBlock"]["cidr"] for p in r["to"] if "ipBlock" in p]
+            if got != API: fails.append(f"{n}: API cidrs {got}")
+for n, port in (("iverson-api-ingress", 8080), ("iverson-api-ingress", 8081), ("iverson-admin-ui-ingress", 8080), ("iverson-authentik-ingress", 9080)):
+    rules = [r for r in nps[n]["spec"]["ingress"] if any(p["port"] == port for p in r["ports"])]
+    got = sorted(p["ipBlock"]["cidr"] for r in rules for p in r["from"] if "ipBlock" in p)
+    if got != sorted(EXPECT): fails.append(f"{n}:{port} cidrs {got}")   # load-balancer ranges present, not just none unexpected
 for d in docs:
     spec = d.get("spec", {}); tpl = (spec.get("template") or {}).get("spec") or {}
     for c in (tpl.get("initContainers") or []) + (tpl.get("containers") or []):
@@ -1375,15 +1404,16 @@ Expected:
 
 ```bash
 mkdir -p $SCR/csr10d/ctx && git archive HEAD | tar -x -C $SCR/csr10d/ctx
-cd $SCR/csr10d/ctx && echo CANARY > .env && echo CANARY > Iverson.Server/.env.canary && mkdir -p .worktrees/x .claude/w && echo CANARY > .worktrees/x/.env && echo CANARY > .claude/w/f
+cd $SCR/csr10d/ctx && echo CANARY > .env && echo CANARY > Iverson.Server/.env.canary && mkdir -p .worktrees/x .claude/w && echo CANARY > .worktrees/x/.env && echo CANARY > .claude/w/f && echo CANARY > Iverson.AdminUI/.env.local && echo CANARY > Iverson.Server/Iverson.Api/.env
 docker build --memory 4g --target build -f Iverson.Server/Iverson.Api/Dockerfile -t csr10d-ctx-api . >/dev/null
 docker run --rm --entrypoint sh csr10d-ctx-api -c 'grep -rl CANARY /src 2>/dev/null | head; echo api-canaries-done'
 docker build --memory 2g --target build -f Iverson.AdminUI/Dockerfile -t csr10d-ctx-ui . >/dev/null
 docker run --rm --entrypoint sh csr10d-ctx-ui -c 'grep -rl CANARY / --exclude-dir=proc --exclude-dir=sys 2>/dev/null | head; echo ui-canaries-done'
+docker run --rm --entrypoint sh csr10d-ctx-ui -c 'test ! -e /src/.env.development && echo tracked-env-excluded'
 docker rmi csr10d-ctx-api csr10d-ctx-ui >/dev/null; rm -rf $SCR/csr10d/ctx
 ```
 
-Expected: no file paths before `api-canaries-done` or before `ui-canaries-done`.
+Expected: no file paths before `api-canaries-done` or before `ui-canaries-done`, then `tracked-env-excluded`. The two in-directory canaries (`Iverson.AdminUI/.env.local`, `Iverson.Server/Iverson.Api/.env`) are what make each check falsifiable: they sit inside directories the builds copy, so only `.dockerignore`'s `**/.env*` keeps them out (plan row 34).
 
   **(b) Model images and the digest-failure check.** Run these after Task 10's kind cluster exists, inside Step 5 (`--model-images`). Separately, run this once without a cluster:
 
@@ -1406,14 +1436,23 @@ rm -rf /var/tmp/csr10d
 Record the totals. A non-zero total is a finding to report, not a step failure: CI gates on it, and fixing base-image CVEs is a Dependabot bump.
 
 - [ ] **Step 5: §5b pass 1 on kind** (`values-laptop`; heavy; `free -g` ≥ 6 GB first).
-  - Record the user's state: `docker ps -a`, `docker volume ls -q`, `docker network ls`, `docker images` into `$SCR/csr10d/before-*.txt`.
+  - Record the user's state with exactly Step 7's commands:
+
+```bash
+mkdir -p $SCR/csr10d
+docker ps -a --format '{{.Names}}' | sort > $SCR/csr10d/before-containers.txt
+docker volume ls -q | sort > $SCR/csr10d/before-volumes.txt
+docker network ls --format '{{.Name}}' | sort > $SCR/csr10d/before-networks.txt
+docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort > $SCR/csr10d/before-images.txt
+```
+
   - Then run, slow steps with `run_in_background`:
 
 ```bash
 cd <worktree root>
 KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --name iverson --config Iverson.Server/deploy/kind/kind-config.yaml
 bash Iverson.Server/deploy/kind/setup.sh
-TMPDIR=/var/tmp bash Iverson.Server/deploy/kind/build-and-load-image.sh csr10d iverson
+docker tag csr10d-api:check docker.io/library/iverson-api:csr10d && TMPDIR=/var/tmp kind load docker-image docker.io/library/iverson-api:csr10d --name iverson   # Task 5's capped build; no uncapped rebuild
 bash Iverson.Server/deploy/kind/build-and-load-image.sh csr10d iverson --model-images
 cd Iverson.Server/deploy/helm/iverson && helm dependency build . >/dev/null
 helm upgrade --install iverson . -n iverson -f values-laptop.yaml \
@@ -1432,27 +1471,39 @@ probe() { # name labels image cmd...
     --overrides='{"spec":{"containers":[{"name":"'$n'","image":"'$img'","command":["sleep","3600"],"readinessProbe":{"exec":{"command":["false"]}}}]}}' >/dev/null
   kubectl -n iverson wait --for=jsonpath='{.status.phase}'=Running pod/$n --timeout=120s >/dev/null; }
 CURL=curlimages/curl:8.18.0@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+# The outsider needs egress of its own, or default-deny makes every refusal below vacuous.
+outsider_egress() { kubectl -n iverson apply -f - >/dev/null <<'NP'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: csr10d-outsider-egress }
+spec:
+  podSelector: { matchLabels: { app: csr10d-outsider } }
+  policyTypes: ["Egress"]
+  egress: [{}]
+NP
+}
+outsider_egress
 probe outsider app=csr10d-outsider $CURL
-for t in "iverson-api:8080" "iverson-api:8081" "iverson-authentik:9000" "iverson-authentik:9080"; do
-  kubectl -n iverson exec outsider -- curl -s -m 5 -o /dev/null -w "outsider -> $t %{http_code}\n" http://$t/ || echo "outsider -> $t refused/timeout"; done
-kubectl -n iverson exec outsider -- nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1 && echo "dns via kube-dns ok"
-kubectl -n iverson exec outsider -- nslookup example.com 8.8.8.8 >/dev/null 2>&1 && echo "OUTSIDE RESOLVER REACHABLE (fail)" || echo "outside resolver blocked"
+for t in "iverson-api 8080" "iverson-api 8081" "iverson-authentik 9000" "iverson-authentik 9080"; do set -- $t
+  kubectl -n iverson exec outsider -- nc -z -w 5 $1 $2 && echo "outsider -> $1:$2 ADMITTED (fail)" || echo "outsider -> $1:$2 refused/timeout"; done
 probe apiprobe app=iverson-api $CURL
+kubectl -n iverson exec apiprobe -- nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1 && echo "dns via kube-dns ok"
+kubectl -n iverson exec apiprobe -- nslookup example.com 8.8.8.8 >/dev/null 2>&1 && echo "OUTSIDE RESOLVER REACHABLE (fail)" || echo "outside resolver blocked"
 kubectl -n iverson exec apiprobe -- curl -s -m 30 http://iverson-tei-bge-base:8080/embed -H content-type:application/json -d '{"inputs":"hi"}' | head -c 40; echo
 kubectl -n iverson exec apiprobe -- curl -s -m 300 http://iverson-ollama:11434/api/generate -d '{"model":"qwen2.5:3b","prompt":"hi","stream":false,"options":{"num_predict":1}}' | head -c 80; echo
 probe teiprobe iverson.io/component=tei $CURL
 kubectl -n iverson exec teiprobe -- curl -s -m 5 -o /dev/null -w '%{http_code}\n' https://huggingface.co/ || echo "tei-labelled egress blocked"
 probe ollamaprobe app=iverson-ollama $CURL
 kubectl -n iverson exec ollamaprobe -- curl -s -m 5 -o /dev/null -w '%{http_code}\n' https://registry.ollama.ai/ || echo "ollama-labelled egress blocked"
-kubectl -n iverson delete pod outsider apiprobe teiprobe ollamaprobe --wait=false
+kubectl -n iverson delete pod outsider apiprobe teiprobe ollamaprobe --wait=false; kubectl -n iverson delete networkpolicy csr10d-outsider-egress
 kubectl -n iverson port-forward svc/iverson-authentik 19000:9000 > $SCR/csr10d/pf.log 2>&1 & echo $! > $SCR/csr10d/pf.pid; sleep 3
 curl -s -o /dev/null -w 'port-forward 9000: %{http_code}\n' -H 'Host: iverson-authentik:9000' http://127.0.0.1:19000/-/health/live/
 kill $(cat $SCR/csr10d/pf.pid)
 ```
 
 Expected:
-- `outsider -> …` refused or timed out for all four.
-- `dns via kube-dns ok` and `outside resolver blocked`.
+- `outsider -> …:… refused/timeout` for all four (no `ADMITTED (fail)`).
+- `dns via kube-dns ok` and `outside resolver blocked`, both from `apiprobe`, whose only DNS rule is the kube-dns helper.
 - A JSON vector prefix from TEI and a JSON `"response"` from Ollama.
 - `tei-labelled egress blocked` and `ollama-labelled egress blocked`.
 - `port-forward 9000: 200` (or `204`).
@@ -1471,27 +1522,28 @@ Expected:
 
 Expected: `HTTP/2 200` followed by a `grpc-status:` header (any value). The API answered through ingress-nginx on 8080 (an unreachable backend yields an nginx 502/503 with no `grpc-status`), and the token was minted through the Authentik public listener (9080) via ingress-nginx.
 
-- [ ] **Step 6: §5b pass 2.** In a new shell, re-define `probe` and `CURL` from Step 5 first.
+- [ ] **Step 6: §5b pass 2.** In a new shell, re-define `probe`, `outsider_egress` and `CURL` from Step 5 first.
 
 ```bash
-TMPDIR=/var/tmp bash Iverson.Server/deploy/kind/build-and-load-image.sh csr10d iverson --dockerfile Iverson.AdminUI/Dockerfile --image-name iverson-admin-ui
+docker tag csr10d-adminui:check docker.io/library/iverson-admin-ui:csr10d && TMPDIR=/var/tmp kind load docker-image docker.io/library/iverson-admin-ui:csr10d --name iverson   # Task 5's capped build
 cd Iverson.Server/deploy/helm/iverson && helm upgrade --install iverson . -n iverson -f values-laptop.yaml \
   --set api.hpa.maxReplicas=1 --set api.image.tag=csr10d --set worker.image.tag=csr10d --set adminUi.image.tag=csr10d \
   --set global.prometheusEnabled=true --set adminUi.enabled=true --set adminUi.ingress.className=nginx \
   --set prometheus.storageClassName=standard --set ollama.enabled=false --wait --timeout 30m
 kubectl -n iverson get pods --no-headers | awk '$3!="Running" && $3!="Completed"{print "NOT READY:", $0}'
+outsider_egress
 probe outsider app=csr10d-outsider $CURL
-for t in "iverson-prometheus:9090" "iverson-admin-ui:8080"; do
-  kubectl -n iverson exec outsider -- curl -s -m 5 -o /dev/null -w "outsider -> $t %{http_code}\n" http://$t/ || echo "outsider -> $t refused/timeout"; done
+for t in "iverson-prometheus 9090" "iverson-admin-ui 8080"; do set -- $t
+  kubectl -n iverson exec outsider -- nc -z -w 5 $1 $2 && echo "outsider -> $1:$2 ADMITTED (fail)" || echo "outsider -> $1:$2 refused/timeout"; done
 probe apiprobe app=iverson-api $CURL
 kubectl -n iverson exec apiprobe -- curl -s -m 10 -o /dev/null -w 'api -> prometheus:9090 %{http_code}\n' http://iverson-prometheus:9090/-/ready
 curl -s -o /dev/null -w 'ingress /admin %{http_code}\n' -H 'Host: iverson.local' http://127.0.0.1:8080/admin/
-kubectl -n iverson delete pod outsider apiprobe --wait=false
+kubectl -n iverson delete pod outsider apiprobe --wait=false; kubectl -n iverson delete networkpolicy csr10d-outsider-egress
 ```
 
 Expected:
 - no `NOT READY` lines;
-- both outsider requests refused or timed out;
+- both outsider probes print `refused/timeout` (no `ADMITTED (fail)`);
 - `api -> prometheus:9090 200`;
 - `ingress /admin 200`.
 
@@ -1504,10 +1556,12 @@ docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'iverson-(tei|ollama
 docker ps -a --format '{{.Names}}' | sort | diff $SCR/csr10d/before-containers.txt - && echo containers-unchanged
 docker volume ls -q | sort | diff $SCR/csr10d/before-volumes.txt - && echo volumes-unchanged
 docker network ls --format '{{.Name}}' | sort | diff $SCR/csr10d/before-networks.txt - && echo networks-unchanged
-docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort | diff $SCR/csr10d/before-images.txt - && echo images-unchanged
+docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort > $SCR/csr10d/after-images.txt
+[ -z "$(comm -23 $SCR/csr10d/before-images.txt $SCR/csr10d/after-images.txt)" ] && echo no-image-removed-or-repointed
+comm -13 $SCR/csr10d/before-images.txt $SCR/csr10d/after-images.txt   # additions: kind's node image, build stages
 ```
 
-Expected: all four `*-unchanged`, with any difference explained by dangling build stages created during this task. Check creation times before removing any image.
+Expected: `containers-unchanged`, `volumes-unchanged`, `networks-unchanged` and `no-image-removed-or-repointed`. The `comm -13` additions are expected (`kind create` pulls a `kindest/node` image; builds leave stages). Remove an added image only after checking its creation time is from this task.
 
 - [ ] **Step 8: No commit** (verification only). Record results in the SDD ledger.
 
