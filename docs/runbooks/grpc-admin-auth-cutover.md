@@ -55,16 +55,14 @@ Authentik applies blueprint changes **asynchronously** via a worker task queue â
 something's broken:
 
 ```bash
-TOKEN=$(kubectl -n <ns> get secret <release>-authentik-app -o jsonpath='{.data.bootstrap-token}' | base64 -d)
 LOADTEST_SECRET_ID=$(kubectl -n <ns> get secret <release>-authentik-loadtest-client -o jsonpath='{.data.client-id}' | base64 -d)
-curl -s -H "Authorization: Bearer $TOKEN" "http://<authentik-host>:9000/api/v3/providers/oauth2/" \
-  | python3 -c "
-import json,sys
-d = json.load(sys.stdin)
-p = next(x for x in d['results'] if x['name']=='iverson-loadtest')
-print('matches secret:', p['client_id'] == '$LOADTEST_SECRET_ID')
+kubectl -n <ns> exec deploy/<release>-authentik-worker -- ak shell -c "
+from authentik.providers.oauth2.models import OAuth2Provider
+print('matches secret:', OAuth2Provider.objects.get(name='iverson-loadtest').client_id == '$LOADTEST_SECRET_ID')
 "
 ```
+
+The check reads the provider inside the worker pod, so it needs no Authentik API token (the chart no longer provisions the bootstrap token, CSR round-10 #4).
 
 If still `False` after ~2 minutes, force a re-scan rather than waiting indefinitely:
 ```bash

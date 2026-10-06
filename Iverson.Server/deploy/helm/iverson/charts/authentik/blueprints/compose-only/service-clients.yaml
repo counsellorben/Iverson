@@ -140,6 +140,19 @@ entries:
     attrs:
       name: iverson-admin-automation
       provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-admin-automation]]
+  # CSR round-10 #4 parity with Helm: compose has no public listener, so the marker never appears and the policy always passes.
+  - model: authentik_policies_expression.expressionpolicy
+    id: admin-automation-in-cluster-only
+    identifiers:
+      name: iverson-admin-automation-in-cluster-only
+    attrs:
+      expression: |
+        return "HTTP_X_IVERSON_PUBLIC_INGRESS" not in request.http_request.META
+  - model: authentik_policies.policybinding
+    identifiers:
+      policy: !KeyOf admin-automation-in-cluster-only
+      target: !Find [authentik_core.application, [slug, iverson-admin-automation]]
+      order: 0
   - model: authentik_providers_oauth2.oauth2provider
     identifiers:
       name: iverson-oidc-default
@@ -163,7 +176,7 @@ entries:
       client_id: "dev-iverson-human-oidc-client-id"
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       issuer_mode: global
-      grant_types: ["authorization_code", "refresh_token"]
+      grant_types: ["authorization_code"]
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, tenant_id]]
