@@ -22,6 +22,7 @@ kubectl create namespace tigera-operator --dry-run=client -o yaml | kubectl appl
 # disabled values) to add the CRs now that the CRDs exist.
 helm upgrade --install calico tigera-operator `
   --repo https://docs.tigera.io/calico/charts `
+  --version v3.32.2 `
   --namespace tigera-operator `
   --set installation.enabled=false `
   --set apiServer.enabled=false `
@@ -38,6 +39,7 @@ for ($i = 0; $i -lt 30; $i++) {
 kubectl wait --for=condition=Established crd/installations.operator.tigera.io --timeout=60s
 helm upgrade --install calico tigera-operator `
   --repo https://docs.tigera.io/calico/charts `
+  --version v3.32.2 `
   --namespace tigera-operator `
   --reset-values `
   --wait
@@ -49,6 +51,7 @@ kubectl label namespace iverson pod-security.kubernetes.io/enforce=baseline --ov
 Write-Host "Installing ingress-nginx..."
 helm upgrade --install ingress-nginx ingress-nginx `
   --repo https://kubernetes.github.io/ingress-nginx `
+  --version 4.12.8 `
   --namespace ingress-nginx --create-namespace `
   --set controller.hostPort.enabled=true `
   --set controller.service.type=ClusterIP `
@@ -57,6 +60,7 @@ helm upgrade --install ingress-nginx ingress-nginx `
 Write-Host "Installing CloudNativePG operator..."
 helm upgrade --install cnpg cloudnative-pg `
   --repo https://cloudnative-pg.github.io/charts `
+  --version 0.29.0 `
   --namespace cnpg-system --create-namespace `
   --wait
 
@@ -73,6 +77,7 @@ Write-Host "Installing Strimzi operator..."
 # 0 broker pods forever, no error, no event, nothing to grep for.
 helm upgrade --install strimzi strimzi-kafka-operator `
   --repo https://strimzi.io/charts/ `
+  --version 1.1.0 `
   --namespace kafka --create-namespace `
   --set watchNamespaces="{iverson}" `
   --wait
@@ -81,6 +86,7 @@ Write-Host "Installing StarRocks operator..."
 # Chart was renamed upstream from "kube-starrocks-operator" to "operator".
 helm upgrade --install starrocks-operator operator `
   --repo https://starrocks.github.io/starrocks-kubernetes-operator `
+  --version 1.11.5 `
   --namespace starrocks --create-namespace `
   --wait
 
@@ -93,6 +99,7 @@ Write-Host "Installing metrics-server..."
 # metrics-server will otherwise reject.
 helm upgrade --install metrics-server metrics-server `
   --repo https://kubernetes-sigs.github.io/metrics-server/ `
+  --version 3.9.0 `
   --namespace kube-system `
   --set 'args={--kubelet-insecure-tls}' `
   --wait

@@ -1,0 +1,64 @@
+name: Image Scan
+
+# CSR round-10 #19. First-party images fail on fixable HIGH/CRITICAL findings; the third-party
+# images the chart deploys are scanned and reported only, since a fix there means a version bump.
+# trivy-action is pinned by commit SHA above the 2026-03 compromise's affected range
+# (GHSA-69fq-xp46-6x23); the trivy version is pinned too.
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 5 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  first-party:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: iverson-api, dockerfile: Iverson.Server/Iverson.Api/Dockerfile }
+          - { name: iverson-admin-ui, dockerfile: Iverson.AdminUI/Dockerfile }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build ${{ matrix.name }}
+        run: docker build -f ${{ matrix.dockerfile }} -t ${{ matrix.name }}:scan .
+      - name: Scan ${{ matrix.name }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ matrix.name }}:scan
+          version: v0.75.0
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  third-party:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - name: List the chart's third-party images
+        run: |
+          set -e
+          C=Iverson.Server/deploy/helm/iverson
+          helm dependency build "$C"
+          for v in values-aws values-azure values-gcp; do
+            helm template iverson "$C" -f "$C/$v.yaml" -f "$C/$v.ci-override.yaml"
+          done | sed -n 's/^ *image: "\{0,1\}\([^" ]*\)"\{0,1\}$/\1/p' \
+               | grep -v -E '(^|/)iverson-' | sort -u > images.txt
+          cat images.txt
+      - name: Scan (report only)
+        run: |
+          set -e
+          for img in $(cat images.txt); do
+            echo "::group::$img"
+            docker run --rm aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
+              image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 --no-progress "$img"
+            echo "::endgroup::"
+          done

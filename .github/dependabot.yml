@@ -32,3 +32,35 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  - package-ecosystem: "docker"
+    directories:
+      - "/Iverson.AdminUI"
+      - "/Iverson.Server/Iverson.Api"
+      - "/Iverson.Server/Iverson.Launcher"
+      - "/Iverson.Server/Iverson.Events"
+      - "/Iverson.Server/Iverson.Sql"
+      - "/Iverson.Server/Iverson.Vector"
+      - "/Iverson.Server/deploy/helm/iverson/charts/tei/model-image"
+      - "/Iverson.Server/deploy/helm/iverson/charts/ollama/model-image"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "docker-compose"
+    directory: "/Iverson.Server"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "terraform"
+    directories:
+      - "/Iverson.Server/deploy/terraform/aws"
+      - "/Iverson.Server/deploy/terraform/azure"
+      - "/Iverson.Server/deploy/terraform/gcp"
+      - "/Iverson.Server/deploy/terraform/bootstrap/aws"
+      - "/Iverson.Server/deploy/terraform/bootstrap/azure"
+      - "/Iverson.Server/deploy/terraform/bootstrap/gcp"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "helm"
+    directories:
+      - "/Iverson.Server/deploy/helm/iverson"
+      - "/Iverson.Server/deploy/helm/iverson/charts/*"
+    schedule:
+      interval: "weekly"
