@@ -7,6 +7,8 @@
 # are always admitted. See values.yaml's networkPolicy comment.
 networkPolicy:
   clusterCidrs: ["130.211.0.0/22", "35.191.0.0/16"]
+  # modules/cluster-gcp's master_ipv4_cidr_block (private cluster internal endpoint).
+  apiServerCidrs: ["172.16.0.0/28"]
 
 global:
   ingressHost: "iverson.example.com"

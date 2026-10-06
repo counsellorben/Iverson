@@ -46,3 +46,36 @@ The global embedding fallback: the first tei entry's headless Service, on the co
 {{- $first := index .Values.global.embeddingModels 0 -}}
 http://{{ .Release.Name }}-tei-{{ $first.slug }}:8080
 {{- end -}}
+
+{{/*
+The DNS egress rule every NetworkPolicy with policyTypes Egress needs: kube-dns pods only, on
+53. Matched by the kube-dns Service's own selector (k8s-app=kube-dns), which EKS's network-policy
+agent requires for traffic sent to a Service address. networkPolicy.dnsAnyDestination is the
+first-deploy fallback: any destination on 53.
+*/}}
+{{- define "iverson.dnsEgress" -}}
+{{- if .Values.networkPolicy.dnsAnyDestination }}
+- to: []   # DNS (fallback: networkPolicy.dnsAnyDestination)
+{{- else }}
+- to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }, podSelector: { matchLabels: { k8s-app: kube-dns } } }]   # DNS
+{{- end }}
+  ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+{{- end -}}
+
+{{/*
+The Kubernetes API server egress rule for operator-managed pods that call it directly (CNPG,
+Strimzi): networkPolicy.apiServerCidrs on 443 and 6443. Both ports: kind/kubeadm serve the API on
+6443, and engines that match after the Service address is rewritten see the endpoint's port.
+networkPolicy.apiServerAnyDestination is the first-deploy fallback: any destination.
+*/}}
+{{- define "iverson.apiServerEgress" -}}
+{{- if .Values.networkPolicy.apiServerAnyDestination }}
+- to: []   # Kubernetes API server (fallback: networkPolicy.apiServerAnyDestination)
+{{- else }}
+- to:   # Kubernetes API server
+  {{- range .Values.networkPolicy.apiServerCidrs }}
+  - ipBlock: { cidr: {{ . }} }
+  {{- end }}
+{{- end }}
+  ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 6443 }]
+{{- end -}}

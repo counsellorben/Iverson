@@ -19,8 +19,18 @@
 # fails the render with `fail` (not `required`, which lets an empty list through) if this is
 # left unset or contains a blank entry (the shape `--set clusterCidrs={}` produces), rather
 # than silently rendering an ingress rule that matches every source.
+#
+# networkPolicy.apiServerCidrs has no default either. It lists the address ranges Postgres
+# (CNPG) and Kafka (Strimzi) pods may reach on 443/6443 to talk to the Kubernetes API server,
+# guarded the same way. Every overlay sets its own.
+#
+# networkPolicy.dnsAnyDestination and networkPolicy.apiServerAnyDestination are first-deploy
+# fallbacks only (docs/runbooks/csr10-infrastructure-cutover.md): true renders the port-only
+# `to: []` rule for DNS (53) or the API server (443/6443) instead of the scoped one.
 networkPolicy:
   enabled: true
+  dnsAnyDestination: false
+  apiServerAnyDestination: false
 
 # global values are visible to every subchart (unlike top-level keys like `api:`,
 # which are scoped only to the matching subchart) — used here so the authentik

@@ -16,6 +16,9 @@
 # network, which nothing else needs.
 networkPolicy:
   clusterCidrs: ["172.18.0.0/16"]
+  # kind's node network under docker (172.18.0.0/16) and podman (its default pool,
+  # 10.89.0.0/16); the control plane serves on 6443.
+  apiServerCidrs: ["172.18.0.0/16", "10.89.0.0/16"]
 
 global:
   # Restated explicitly even though it matches values.yaml's own default (true) — this profile

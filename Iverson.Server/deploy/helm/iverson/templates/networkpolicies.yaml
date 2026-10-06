@@ -3,6 +3,14 @@
 {{- if not .Values.networkPolicy.clusterCidrs }}
 {{- fail "networkPolicy.clusterCidrs must list at least one CIDR; an empty list renders an allow-all ingress rule" }}
 {{- end }}
+{{- if not .Values.networkPolicy.apiServerCidrs }}
+{{- fail "networkPolicy.apiServerCidrs must list at least one CIDR; it scopes the Postgres and Kafka API-server egress rules" }}
+{{- end }}
+{{- range .Values.networkPolicy.apiServerCidrs }}
+{{- if not (trim (toString .)) }}
+{{- fail "networkPolicy.apiServerCidrs contains a blank entry; every entry must be a CIDR" }}
+{{- end }}
+{{- end }}
 {{- range .Values.networkPolicy.clusterCidrs }}
 {{- if not (trim (toString .)) }}
 {{- fail "networkPolicy.clusterCidrs contains a blank entry; every entry must be a CIDR (note: helm's --set x={} produces a one-element list [\"\"], not an empty list — use --set-json or a values file for a true empty list)" }}
@@ -87,8 +95,7 @@ spec:
                # serve live status on the admin console landing page.
       ports: [{ protocol: TCP, port: 9090 }]
 {{- end }}
-    - to: []   # DNS — every egress policy needs this or in-cluster name resolution breaks
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
 ---
 # worker is the Kafka-consumer/background-processing counterpart to api (same image,
 # WORKLOAD_ROLE=worker) — it needs the same datastore/backing-service egress as api,
@@ -118,8 +125,7 @@ spec:
       ports: [{ protocol: TCP, port: 11434 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-jaeger } } }]
       ports: [{ protocol: TCP, port: 4317 }]
-    - to: []   # DNS — every egress policy needs this or in-cluster name resolution breaks
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -178,29 +184,13 @@ spec:
     matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres }
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]   # streaming replication
       ports: [{ protocol: TCP, port: 5432 }]
-    - to: []   # Kubernetes API server: CNPG's own initdb/bootstrap job (baked into the
-               # postgres image, not a sidecar) calls back to the API server directly to
-               # sync Cluster status — without this it times out forever and the Cluster
-               # never leaves "Setting up primary". This is a different scoping problem
-               # than api-ingress's ipBlock rules above: those cover node/pod-IP traffic
-               # inside the per-profile `.Values.networkPolicy.clusterCidrs` range, but
-               # the control-plane API server isn't guaranteed to live inside that range —
-               # on managed control planes (EKS/AKS/GKE) it's provider-operated
-               # infrastructure, not a normal in-cluster pod, and its address varies in a
-               # way no single CIDR (per-profile or otherwise) reliably covers. So this
-               # stays a port-only `to: []` rule rather than an ipBlock/podSelector one.
-               # Both 443 and 6443 are listed because NetworkPolicy enforcement happens
-               # after kube-proxy's Service DNAT rewrites the destination port: the
-               # `kubernetes` Service is always :443, but self-hosted/kubeadm-style
-               # control planes (kind included) back it with the apiserver's real port,
-               # 6443 — a rule scoped to 443 alone silently never matches that traffic.
-               # Managed control planes (EKS/AKS/GKE) commonly proxy straight through on
-               # 443 with no rewrite, so both must stay allowed.
-      ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 6443 }]
+    # Kubernetes API server: CNPG's instance manager (baked into the postgres image, not a
+    # sidecar) calls it directly to sync Cluster status; without it the Cluster never leaves
+    # "Setting up primary".
+    {{- include "iverson.apiServerEgress" . | nindent 4 }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -244,8 +234,7 @@ spec:
     matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka }
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]   # broker/controller peers
                # 9093 (tcp-clientstls, external/API traffic) alone isn't enough: the
                # entity-operator (Topic/User operators, also selected by this same
@@ -253,16 +242,10 @@ spec:
                # tcp-replication listener on 9091 to fetch cluster metadata — without it,
                # its AdminClient never gets past "Timed out waiting to send the call".
       ports: [{ protocol: TCP, port: 9091 }, { protocol: TCP, port: 9093 }]
-    - to: []   # Kubernetes API server: the broker process resolves ${strimziSecretName:...}
-               # config placeholders (e.g. iverson-kafka-trustbundle) via Strimzi's
-               # KubernetesSecretConfigProvider, which calls the API server directly at
-               # startup — without this it times out and the broker crash-loops before it
-               # ever gets to storage format/listener startup. Same 443+6443 reasoning as
-               # the postgres-egress rule above: the `kubernetes` Service is :443, but
-               # self-hosted/kubeadm control planes (kind included) back it on :6443 because
-               # NetworkPolicy enforcement runs after kube-proxy's Service DNAT rewrites the
-               # destination port.
-      ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 6443 }]
+    # Kubernetes API server: the broker resolves ${strimziSecretName:...} config placeholders
+    # through Strimzi's KubernetesSecretConfigProvider at startup; without it the broker
+    # crash-loops before storage format/listener startup.
+    {{- include "iverson.apiServerEgress" . | nindent 4 }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -325,8 +308,7 @@ spec:
         values: ["{{ .Release.Name }}-starrocks-fe", "{{ .Release.Name }}-starrocks-be"]
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to:   # FE/BE peers
         - podSelector:
             matchExpressions:
@@ -363,8 +345,7 @@ spec:
     matchLabels: { job-name: {{ .Release.Name }}-starrocks-create-user }
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: [{ podSelector: { matchLabels: { app.starrocks.ownerreference/name: {{ .Release.Name }}-starrocks-fe } } }]
                # the create-user job's `mysql -h <fe-service>` call only ever reaches FE, never
                # BE — see the starrocks-egress note above on app.starrocks.io/cluster vs the
@@ -388,8 +369,7 @@ spec:
     matchLabels: { job-name: {{ .Release.Name }}-authentik-revoke-cross-db }
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]
       ports: [{ protocol: TCP, port: 5432 }]
 ---
@@ -418,8 +398,7 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-qdrant }
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]   # Raft peers
       ports: [{ protocol: TCP, port: 6335 }]
 ---
@@ -446,8 +425,7 @@ spec:
     matchLabels: { iverson.io/component: tei }
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: []   # huggingface.co: the first start downloads the model weights into the PVC. No
                # portable pod/namespaceSelector target exists for an external host.
       ports: [{ protocol: TCP, port: 443 }]
@@ -475,8 +453,7 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-ollama }
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: []   # model registry (registry.ollama.ai): the pull-model init container fetches
                # the generative model from there on every start — same external-pull need as
                # docker-compose's ollama-init container. No portable pod/namespaceSelector
@@ -530,8 +507,7 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-jaeger }
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
 {{- end }}
 {{- if .Values.global.prometheusEnabled }}
 ---
@@ -544,8 +520,7 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-prometheus }
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
@@ -604,8 +579,7 @@ spec:
         values: ["{{ .Release.Name }}-authentik-server", "{{ .Release.Name }}-authentik-worker"]
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]
       ports: [{ protocol: TCP, port: 5432 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-redis } } }]
@@ -634,6 +608,5 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-redis }
   policyTypes: ["Egress"]
   egress:
-    - to: []   # DNS
-      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    {{- include "iverson.dnsEgress" . | nindent 4 }}
 {{- end }}

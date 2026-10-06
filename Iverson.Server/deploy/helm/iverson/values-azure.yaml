@@ -5,6 +5,8 @@
 # (Azure CNI), so they are not admitted. See values.yaml's networkPolicy comment.
 networkPolicy:
   clusterCidrs: ["10.1.16.0/24"]
+  # The API Server VNet Integration subnet (modules/cluster-azure).
+  apiServerCidrs: ["10.1.17.0/28"]
 
 global:
   ingressHost: "iverson.example.com"

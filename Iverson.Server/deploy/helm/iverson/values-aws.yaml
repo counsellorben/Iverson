@@ -6,6 +6,10 @@
 # admitted. See values.yaml's networkPolicy comment.
 networkPolicy:
   clusterCidrs: ["10.0.128.0/20", "10.0.144.0/20"]
+  # The four cluster subnets EKS places its control-plane interfaces in, plus the `kubernetes`
+  # Service ClusterIP for both service ranges EKS may pick (cluster-aws sets none): the VPC
+  # CNI network-policy agent matches pod egress before the Service address is rewritten.
+  apiServerCidrs: ["10.0.0.0/20", "10.0.16.0/20", "10.0.128.0/20", "10.0.144.0/20", "10.100.0.1/32", "172.20.0.1/32"]
 
 global:
   ingressHost: "iverson.example.com"
