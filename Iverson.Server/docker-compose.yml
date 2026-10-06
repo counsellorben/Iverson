@@ -530,6 +530,7 @@ services:
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=https://authentik-server:8443
+      - Authentik__PublicBaseUrl=http://localhost:9000
       - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
       - Authentication__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
       - Authentication__ActingUser__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
@@ -640,6 +641,7 @@ services:
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=https://authentik-server:8443
+      - Authentik__PublicBaseUrl=http://localhost:9000
       - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
       - Authentication__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
       - Authentication__ActingUser__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration

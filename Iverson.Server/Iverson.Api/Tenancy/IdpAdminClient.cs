@@ -38,9 +38,13 @@ namespace Iverson.Api.Tenancy;
 /// recognise (missing "pagination", missing/non-numeric "next", or a negative "next") rather
 /// than treating an unrecognised shape as end-of-list.
 /// </summary>
-public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger<IdpAdminClient> logger) : IIdpAdminClient
+public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger<IdpAdminClient> logger, IConfiguration configuration) : IIdpAdminClient
 {
     public const string HttpClientName = "iverson.authentik";
+
+    // CSR round-10 #16: an invite link is a bearer credential until first use; 15 minutes, not the
+    // tenant default of 30.
+    internal const string RecoveryLinkDuration = "minutes=15";
 
     public async Task<CreateUserResult> CreateUserAsync(
         string username,
@@ -102,7 +106,7 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
     {
         using var recoveryResponse = await client.PostAsync(
             $"/api/v3/core/users/{userId}/recovery/",
-            JsonBody(new { }));
+            JsonBody(new { token_duration = RecoveryLinkDuration }));
         await EnsureSuccessWithBodyAsync(recoveryResponse, "create recovery link");
 
         await using var recoveryStream = await recoveryResponse.Content.ReadAsStreamAsync();
@@ -111,7 +115,7 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
         if (recoveryDoc.RootElement.TryGetProperty("link", out var linkProp) &&
             linkProp.ValueKind == JsonValueKind.String)
         {
-            var link = linkProp.GetString();
+            var link = PublicLink(linkProp.GetString()!);
             logger.LogInformation(
                 "[IdpAdminClient] recovery link created for new user {UserId} " +
                 "(link returned to caller, not logged)",
@@ -347,6 +351,17 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
             JsonSerializer.Serialize(body, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
             System.Text.Encoding.UTF8,
             "application/json");
+
+    // Authentik builds the link from the host this client called, which is the in-cluster address an
+    // invited user cannot open. Authentik:PublicBaseUrl is the host they can; without it (Development,
+    // tests) the link is returned as Authentik built it.
+    private string PublicLink(string link)
+    {
+        if (configuration["Authentik:PublicBaseUrl"] is not { Length: > 0 } publicBaseUrl)
+            return link;
+        var publicBase = new Uri(publicBaseUrl);
+        return new UriBuilder(new Uri(link)) { Scheme = publicBase.Scheme, Host = publicBase.Host, Port = publicBase.Port }.Uri.AbsoluteUri;
+    }
 
     /// <summary>
     /// EnsureSuccessStatusCode() discards the response body, and Authentik's DRF layer puts its

@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Iverson.Api.Tenancy;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -72,7 +73,8 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
 
         return new IdpAdminClient(
             services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>(),
-            NullLogger<IdpAdminClient>.Instance);
+            NullLogger<IdpAdminClient>.Instance,
+            new ConfigurationBuilder().Build());
     }
 
     private HttpClient RawClient(string token)

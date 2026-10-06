@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Iverson.Api.Tenancy;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Xunit;
@@ -62,7 +63,8 @@ public sealed class AuthentikAdminClientTests
     private static IdpAdminClient CreateClient(
         FakeHttpMessageHandler handler,
         out FakeHttpMessageHandler exposedHandler,
-        out ILogger<IdpAdminClient> logger)
+        out ILogger<IdpAdminClient> logger,
+        IConfiguration? configuration = null)
     {
         exposedHandler = handler;
         var factory = Substitute.For<IHttpClientFactory>();
@@ -70,11 +72,48 @@ public sealed class AuthentikAdminClientTests
             .CreateClient(IdpAdminClient.HttpClientName)
             .Returns(_ => new HttpClient(handler) { BaseAddress = new Uri("http://authentik.local") });
         logger = Substitute.For<ILogger<IdpAdminClient>>();
-        return new IdpAdminClient(factory, logger);
+        return new IdpAdminClient(factory, logger, configuration ?? new ConfigurationBuilder().Build());
     }
+
+    private static IdpAdminClient CreateClient(FakeHttpMessageHandler handler, IConfiguration configuration, out FakeHttpMessageHandler exposedHandler) =>
+        CreateClient(handler, out exposedHandler, out _, configuration);
 
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string json) =>
         new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+
+    private static HttpResponseMessage[] OnboardingResponses(string link) =>
+    [
+        JsonResponse(HttpStatusCode.OK,
+            """{"pagination":{"next":0},"results":[{"pk":"11111111-1111-1111-1111-111111111111","name":"tenant-admins"}]}"""),
+        JsonResponse(HttpStatusCode.Created, """{"pk":42,"username":"new-user","email":"new-user@example.invalid"}"""),
+        JsonResponse(HttpStatusCode.OK, $$"""{"link":"{{link}}"}"""),
+    ];
+
+    [Fact]
+    public async Task CreateUserAsync_AsksForAFifteenMinuteRecoveryLink()
+    {
+        var sut = CreateClient(new FakeHttpMessageHandler(OnboardingResponses("http://authentik.local/if/flow/iverson-recovery/?flow_token=abc123")), out var handler);
+
+        await sut.CreateUserAsync("new-user", "new-user@example.invalid", "tenant-a", ["tenant-admins"]);
+
+        using var body = JsonDocument.Parse(handler.RequestBodies[2]!);
+        body.RootElement.GetProperty("token_duration").GetString().Should().Be("minutes=15");
+    }
+
+    [Theory]
+    [InlineData("https://authentik.iverson.example.com", "https://authentik.iverson.example.com/if/flow/iverson-recovery/?flow_token=abc123")]
+    [InlineData("http://localhost:9000", "http://localhost:9000/if/flow/iverson-recovery/?flow_token=abc123")]
+    public async Task CreateUserAsync_ReturnsTheLinkOnThePublicAuthentikHost(string publicBaseUrl, string expected)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Authentik:PublicBaseUrl"] = publicBaseUrl }).Build();
+        var sut = CreateClient(new FakeHttpMessageHandler(OnboardingResponses("https://iverson-authentik:8443/if/flow/iverson-recovery/?flow_token=abc123")),
+            configuration, out _);
+
+        var result = await sut.CreateUserAsync("new-user", "new-user@example.invalid", "tenant-a", ["tenant-admins"]);
+
+        result.RecoveryLink.Should().Be(expected);
+    }
 
     [Fact]
     public async Task CreateUserAsync_ResolvesGroupThenCreatesUserThenTriggersRecovery()

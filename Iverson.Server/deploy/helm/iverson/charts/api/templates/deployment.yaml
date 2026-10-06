@@ -185,6 +185,9 @@ spec:
             {{- end }}
             - name: Authentik__BaseUrl
               value: "https://{{ .Release.Name }}-authentik:8443"
+            # CSR round-10 #16: the host invited users open recovery links on.
+            - name: Authentik__PublicBaseUrl
+              value: "{{ .Values.global.externalScheme }}://authentik.{{ .Values.global.ingressHost }}"
             - name: Authentik__AdminToken
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-admin-orchestrator-token, key: token-key }
