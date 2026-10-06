@@ -1,23 +1,74 @@
-$ErrorActionPreference = "Stop"
-
 # Builds the iverson-api image and loads it into the kind cluster's containerd, for local
 # testing of the api/worker split (and any other kind-based smoke test that needs the app
 # image). Always re-tags with the fully-qualified docker.io/library/... reference before
 # `kind load docker-image` -- see the comment below for why this step is not optional.
 #
-# Usage: deploy/kind/build-and-load-image.ps1 [-Tag <tag>] [-ClusterName <name>]
+# Usage: deploy/kind/build-and-load-image.ps1 [-Tag <tag>] [-ClusterName <name>] [-ModelImages] [-Values <path>]
 #   Tag         defaults to 0.1.0 -- must match api.image.tag / worker.image.tag in
 #               values.yaml (and values-local.yaml if it overrides them)
 #   ClusterName defaults to iverson -- must match the -Name used for `kind create cluster`
+#   ModelImages builds and loads the TEI and Ollama model images (weights baked in, CSR
+#               round-10 #17) instead of the app image. Tag is ignored in this mode;
+#               ClusterName still applies.
+#   Values      overlay whose model pins the images are built from; defaults to
+#               Iverson.Server/deploy/helm/iverson/values-laptop.yaml (repo-root-relative or
+#               absolute). Only used with -ModelImages.
 
 param(
     [string]$Tag = "0.1.0",
-    [string]$ClusterName = "iverson"
+    [string]$ClusterName = "iverson",
+    [switch]$ModelImages,
+    [string]$Values = "Iverson.Server/deploy/helm/iverson/values-laptop.yaml"
 )
+
+$ErrorActionPreference = "Stop"
 
 $ImageLocal = "iverson-api:$Tag"
 $ImageQualified = "docker.io/library/iverson-api:$Tag"
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "../../..")
+
+if ($ModelImages) {
+    $chart = Join-Path $RepoRoot "Iverson.Server/deploy/helm/iverson"
+    if ([IO.Path]::IsPathRooted($Values)) { $valuesPath = $Values } else { $valuesPath = Join-Path $RepoRoot $Values }
+    # The chart is the single source of the model pins and of the image tags (which hash the model
+    # Dockerfiles). Rebuild the packaged subcharts first: a stale charts/*.tgz would render the tag
+    # of an older Dockerfile.
+    Push-Location $chart
+    try { helm dependency build | Out-Null } finally { Pop-Location }
+    $render = helm template iverson $chart -f $valuesPath | Out-String
+
+    function Build-And-Load($img, $dockerfile, $contextDir, $buildArgs) {
+        Write-Host "Building $img..."
+        docker build --memory 3g -t $img @buildArgs -f $dockerfile $contextDir
+        $qualified = "docker.io/library/$img"
+        docker tag $img $qualified   # same docker.io/library qualification as the app image, below
+        # Stage on disk: the Ollama image is ~5.7 GB and a RAM-backed temp dir may not hold it.
+        $archive = Join-Path ([IO.Path]::GetTempPath()) (($img -replace '[:/]','_') + '.tar')
+        docker save -o $archive $qualified
+        kind load image-archive $archive --name $ClusterName
+        Remove-Item $archive
+    }
+
+    # TEI: one image per embeddingModels entry; each image line pairs with the next args line.
+    $teiImages = [regex]::Matches($render, 'image: "([^"]*iverson-tei-model:[^"]*)"')
+    $teiArgs = [regex]::Matches($render, 'args: \["--model-id", "([^"]+)", "--revision", "([^"]+)"')
+    for ($i = 0; $i -lt $teiImages.Count; $i++) {
+        Build-And-Load $teiImages[$i].Groups[1].Value (Join-Path $chart "charts/tei/model-image/Dockerfile") (Join-Path $chart "charts/tei/model-image") @(
+            "--build-arg", "MODEL_ID=$($teiArgs[$i].Groups[1].Value)",
+            "--build-arg", "REVISION=$($teiArgs[$i].Groups[2].Value)")
+    }
+
+    # Ollama: image plus the model and full digest from the StatefulSet's annotations.
+    $ollamaImage = [regex]::Match($render, 'image: "([^"]*iverson-ollama-model:[^"]*)"')
+    if ($ollamaImage.Success) {
+        $model = [regex]::Match($render, 'iverson\.io/model: "([^"]+)"').Groups[1].Value
+        $digest = [regex]::Match($render, 'iverson\.io/model-digest: "([^"]+)"').Groups[1].Value
+        Build-And-Load $ollamaImage.Groups[1].Value (Join-Path $chart "charts/ollama/model-image/Dockerfile") (Join-Path $chart "charts/ollama/model-image") @(
+            "--build-arg", "MODEL=$model",
+            "--build-arg", "DIGEST=$digest")
+    }
+    exit 0
+}
 
 Write-Host "Building $ImageLocal from $RepoRoot..."
 docker build -f (Join-Path $RepoRoot "Iverson.Server/Iverson.Api/Dockerfile") -t $ImageLocal $RepoRoot

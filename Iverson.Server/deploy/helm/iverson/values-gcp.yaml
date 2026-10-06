@@ -66,7 +66,6 @@ qdrant:
       effect: "NoSchedule"
 
 ollama:
-  storageClassName: "iverson-ollama"
   nodeSelector:
     iverson.io/node-pool: ollama
   tolerations:
@@ -76,7 +75,6 @@ ollama:
       effect: "NoSchedule"
 
 tei:
-  storageClassName: "iverson-tei"
   nodeSelector:
     iverson.io/node-pool: tei
   tolerations:

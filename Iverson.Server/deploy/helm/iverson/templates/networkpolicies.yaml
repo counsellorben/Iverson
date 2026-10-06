@@ -424,11 +424,8 @@ spec:
   podSelector:
     matchLabels: { iverson.io/component: tei }
   policyTypes: ["Egress"]
-  egress:
-    {{- include "iverson.dnsEgress" . | nindent 4 }}
-    - to: []   # huggingface.co: the first start downloads the model weights into the PVC. No
-               # portable pod/namespaceSelector target exists for an external host.
-      ports: [{ protocol: TCP, port: 443 }]
+  # The weights are baked into the image (charts/tei/model-image), so TEI needs no egress at all.
+  egress: []
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -452,13 +449,8 @@ spec:
   podSelector:
     matchLabels: { app: {{ .Release.Name }}-ollama }
   policyTypes: ["Egress"]
-  egress:
-    {{- include "iverson.dnsEgress" . | nindent 4 }}
-    - to: []   # model registry (registry.ollama.ai): the pull-model init container fetches
-               # the generative model from there on every start — same external-pull need as
-               # docker-compose's ollama-init container. No portable pod/namespaceSelector
-               # target exists for an external registry.
-      ports: [{ protocol: TCP, port: 443 }]
+  # The model is baked into the image (charts/ollama/model-image), so Ollama needs no egress at all.
+  egress: []
 ---
 # admin-ui is a static nginx server reachable from outside the namespace through
 # ingress-nginx (local/laptop) or the profile's load balancer (`clusterCidrs`), on 8080.

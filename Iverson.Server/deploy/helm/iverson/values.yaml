@@ -47,21 +47,24 @@ global:
   # templates. Default matches the kind/local profile; cloud profiles set "https".
   externalScheme: "http"
   # The generative model used for ingest enrichment. Lives under `global` (not under
-  # `ollama:`) because two subcharts must agree on it: the ollama subchart PULLS it, and
+  # `ollama:`) because two subcharts must agree on it: the ollama model image BAKES it in, and
   # the api/worker subcharts REQUEST it via Enrichment__ModelId. Scoping it to one subchart
   # would let the pulled model and the requested model drift apart, which fails at runtime
   # with a 404 from Ollama on every generative call.
   generativeModel: "qwen2.5:3b"
-  # Pins the model-registry pull above (CSR round-2 finding #6): the ollama subchart's
-  # pull-model initContainer pulls the floating tag "qwen2.5:3b" (registry.ollama.ai has no
-  # supported CLI/API syntax to pull by digest directly — Ollama's own model-name parser
-  # documents digest support as removed pending a future re-add), so instead it verifies the
-  # digest the registry actually served against this pinned value and refuses to start on a
-  # mismatch. This is the manifest digest reported by the registry for "qwen2.5:3b" as of
-  # 2026-09-10 (also the short ID `ollama list` reports locally): confirmed against
+  # Pins the model-registry pull above (CSR round-2 finding #6): the ollama model
+  # image build (charts/ollama/model-image/Dockerfile) pulls the floating tag "qwen2.5:3b"
+  # (registry.ollama.ai has no supported CLI/API syntax to pull by digest directly — Ollama's
+  # own model-name parser documents digest support as removed pending a future re-add) and
+  # fails unless the pulled manifest's full SHA-256 equals this value. This is the manifest
+  # digest reported by the registry for "qwen2.5:3b" as of 2026-09-10: confirmed against
   # registry.ollama.ai/v2/library/qwen2.5/manifests/3b (Ollama-Content-Digest response
   # header). Bump this deliberately if the upstream tag is ever intentionally re-pointed.
   generativeModelDigest: "357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b"
+  # Registry prefix for the two model images built from charts/{tei,ollama}/model-image (CSR
+  # round-10 #17), e.g. "123456789012.dkr.ecr.us-east-1.amazonaws.com/". Empty on kind, where
+  # deploy/kind/build-and-load-image.sh --model-images loads them into the cluster directly.
+  modelImageRegistry: ""
   # Every entry is served by the tei subchart (one StatefulSet + headless Service per entry). `slug`
   # is the DNS-safe suffix of that entry's objects: <release>-tei-<slug>. The prefix keys stay
   # three-state (omitted = derive from the model family; "" = deliberately none).
@@ -161,9 +164,6 @@ qdrant:
 ollama:
   enabled: true
   replicas: 2
-  storageSize: 20Gi
-  storageClassName: ""
-  imageTag: "0.12.11"
   resources:
     requests: { cpu: "8", memory: "16Gi", ephemeral-storage: "2Gi" }
     limits: { cpu: "8", memory: "16Gi", ephemeral-storage: "4Gi" }
@@ -173,9 +173,6 @@ ollama:
 tei:
   enabled: true
   replicas: 2
-  storageSize: 2Gi            # bge-base weights are 0.44 GB
-  storageClassName: ""
-  imageTag: "cpu-1.8"
   resources:
     requests: { cpu: "2", memory: "2Gi", ephemeral-storage: "1Gi" }
     limits: { cpu: "4", memory: "4Gi", ephemeral-storage: "2Gi" }

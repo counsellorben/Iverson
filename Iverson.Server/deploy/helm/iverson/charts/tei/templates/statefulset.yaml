@@ -44,7 +44,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: tei
-          image: "ghcr.io/huggingface/text-embeddings-inference:{{ $.Values.imageTag }}"
+          image: "{{ $.Values.global.modelImageRegistry }}iverson-tei-model:{{ .slug }}-{{ trunc 12 .revision }}-{{ $.Files.Get "model-image/Dockerfile" | sha256sum | trunc 12 }}"
           imagePullPolicy: IfNotPresent
           # --port 8080: the image listens on 80, which uid 1000 cannot bind. --auto-truncate: without it
           # TEI answers 413 above 512 tokens (Phase 1 spec §3.4). --revision: pins the model-registry
@@ -67,8 +67,7 @@ spec:
               cpu: {{ $.Values.resources.limits.cpu | quote }}
               memory: {{ $.Values.resources.limits.memory | quote }}
               ephemeral-storage: {{ index $.Values.resources.limits "ephemeral-storage" | quote }}
-          # The first start downloads the weights from the Hub into /data; every later start loads
-          # them from the PVC in under a minute.
+          # The weights are baked into the image (charts/tei/model-image), so start-up only loads them.
           startupProbe:
             httpGet: { path: /health, port: 8080 }
             periodSeconds: 10
@@ -77,21 +76,10 @@ spec:
             httpGet: { path: /health, port: 8080 }
             periodSeconds: 10
           volumeMounts:
-            - name: tei-data
-              mountPath: /data
             - name: tmp
               mountPath: /tmp
       volumes:
         - name: tmp
           emptyDir: {}
-  volumeClaimTemplates:
-    - metadata:
-        name: tei-data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        storageClassName: {{ $.Values.storageClassName | quote }}
-        resources:
-          requests:
-            storage: {{ $.Values.storageSize }}
 ---
 {{- end }}

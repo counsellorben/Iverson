@@ -177,4 +177,4 @@ helm upgrade --install metrics-server metrics-server \
 
 echo "All operators installed."
 echo "Next: deploy/kind/build-and-load-image.sh to build+load the app image, then helm upgrade --install iverson . -f values-local.yaml -n iverson"
-echo "Note: if you later raise tei.storageSize (or ollama.storageSize while ollama is deployed) on an existing cluster, 'helm upgrade' will fail (StatefulSet volumeClaimTemplates are immutable) for iverson-tei-bge-base (or iverson-ollama) - see the comment next to storageSize in values-local.yaml."
+echo "Note: TEI and Ollama run model images with their weights baked in. Before installing the chart, build and load them: deploy/kind/build-and-load-image.sh 0.1.0 iverson --model-images (add --values <overlay> to match the overlay you install)."
