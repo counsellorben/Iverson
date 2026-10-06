@@ -20,7 +20,16 @@ COPY ["Iverson.Server/Iverson.Events/Iverson.Events.csproj",                    
 COPY ["Iverson.Clients/DotNet/Iverson.Client.Contracts/Iverson.Client.Contracts.csproj",             "Iverson.Clients/DotNet/Iverson.Client.Contracts/"]
 RUN dotnet restore "Iverson.Server/Iverson.Api/Iverson.Api.csproj"
 
-COPY . .
+# Explicit copies (CSR round-10 #19): only the projects the publish needs reach the build stage.
+COPY Iverson.Server/Iverson.Api/ Iverson.Server/Iverson.Api/
+COPY Iverson.Server/Iverson.Sql/ Iverson.Server/Iverson.Sql/
+COPY Iverson.Server/Iverson.StarRocks/ Iverson.Server/Iverson.StarRocks/
+COPY Iverson.Server/Iverson.Embeddings/ Iverson.Server/Iverson.Embeddings/
+COPY Iverson.Server/Iverson.Vector/ Iverson.Server/Iverson.Vector/
+COPY Iverson.Server/Iverson.Patterns/ Iverson.Server/Iverson.Patterns/
+COPY Iverson.Server/Iverson.Events/ Iverson.Server/Iverson.Events/
+COPY Iverson.Clients/DotNet/Iverson.Client.Contracts/ Iverson.Clients/DotNet/Iverson.Client.Contracts/
+COPY Iverson.Clients/Common/Proto/ Iverson.Clients/Common/Proto/
 RUN dotnet publish "Iverson.Server/Iverson.Api/Iverson.Api.csproj" -c Release -o /app/publish --no-restore
 
 # Pinned by digest (CSR round-3 finding #13) — same rationale as the sdk stage above.

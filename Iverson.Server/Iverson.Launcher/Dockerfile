@@ -4,7 +4,7 @@ WORKDIR /src
 COPY ["Iverson.Launcher/Iverson.Launcher.csproj", "Iverson.Launcher/"]
 RUN dotnet restore "Iverson.Launcher/Iverson.Launcher.csproj"
 
-COPY . .
+COPY Iverson.Launcher/ Iverson.Launcher/
 RUN dotnet publish "Iverson.Launcher/Iverson.Launcher.csproj" -c Release -o /app/publish --no-restore
 
 FROM mcr.microsoft.com/dotnet/runtime:10.0@sha256:8a153b5889d796b6450295b383596b13308c24c230515f8a7770ce1b94e0c460 AS runtime

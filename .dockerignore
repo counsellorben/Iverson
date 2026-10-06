@@ -6,3 +6,8 @@
 **/*.user
 **/.idea
 **/node_modules
+**/.env
+**/.env.*
+.claude/
+.worktrees/
+docs/
