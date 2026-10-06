@@ -104,7 +104,7 @@ resource "azurerm_key_vault_access_policy" "des" {
   key_permissions = ["Get", "WrapKey", "UnwrapKey"]
 }
 
-# Grants the AKS cluster's own (control-plane) system-assigned identity Reader
+# Grants the AKS cluster's control-plane identity (user-assigned, see below) Reader
 # access to the disk encryption set. Without this, disk.csi.azure.com cannot
 # create a managed disk referencing this DES and every Azure PVC stays
 # Pending. Per Microsoft's AKS BYOK documentation
@@ -119,7 +119,37 @@ resource "azurerm_key_vault_access_policy" "des" {
 resource "azurerm_role_assignment" "aks_data_volumes_des" {
   scope                = azurerm_disk_encryption_set.data_volumes.id
   role_definition_name = "Reader"
-  principal_id         = azurerm_kubernetes_cluster.this.identity[0].principal_id
+  principal_id         = azurerm_user_assigned_identity.control_plane.principal_id
+}
+
+# The control plane's identity is user-assigned so it can hold Network Contributor on both
+# subnets before the cluster is created: API Server VNet Integration needs those rights at
+# provisioning time, which a system-assigned identity (created with the cluster) cannot have.
+resource "azurerm_user_assigned_identity" "control_plane" {
+  name                = "${var.cluster_name}-control-plane"
+  location            = azurerm_resource_group.this.location
+  resource_group_name = azurerm_resource_group.this.name
+}
+
+resource "azurerm_role_assignment" "control_plane_aks_subnet" {
+  scope                = azurerm_subnet.aks.id
+  role_definition_name = "Network Contributor"
+  principal_id         = azurerm_user_assigned_identity.control_plane.principal_id
+}
+
+resource "azurerm_role_assignment" "control_plane_apiserver_subnet" {
+  scope                = azurerm_subnet.apiserver.id
+  role_definition_name = "Network Contributor"
+  principal_id         = azurerm_user_assigned_identity.control_plane.principal_id
+}
+
+# With local accounts disabled, Terraform itself authenticates through Entra (kubelogin) and
+# needs a Kubernetes data-plane role. A new assignment can take up to five minutes to apply;
+# docs/runbooks/csr10-infrastructure-cutover.md says to re-run a first apply that fails on it.
+resource "azurerm_role_assignment" "deployer_cluster_admin" {
+  scope                = azurerm_kubernetes_cluster.this.id
+  role_definition_name = "Azure Kubernetes Service RBAC Cluster Admin"
+  principal_id         = data.azurerm_client_config.current.object_id
 }
 
 resource "azurerm_virtual_network" "this" {
@@ -134,6 +164,24 @@ resource "azurerm_subnet" "aks" {
   resource_group_name  = azurerm_resource_group.this.name
   virtual_network_name = azurerm_virtual_network.this.name
   address_prefixes     = ["10.1.0.0/20"]
+}
+
+# API Server VNet Integration (CSR round-10 #17): projects the API server into this delegated
+# subnet, so networkPolicy.apiServerCidrs can name a fixed range instead of a public IP that may
+# change. One-way, and enabling it changes the API server's IP (the hostname stays).
+resource "azurerm_subnet" "apiserver" {
+  name                 = "${var.cluster_name}-apiserver-subnet"
+  resource_group_name  = azurerm_resource_group.this.name
+  virtual_network_name = azurerm_virtual_network.this.name
+  address_prefixes     = ["10.1.17.0/28"]
+
+  delegation {
+    name = "aks-apiserver"
+    service_delegation {
+      name    = "Microsoft.ContainerService/managedClusters"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/join/action"]
+    }
+  }
 }
 
 resource "azurerm_log_analytics_workspace" "this" {
@@ -160,6 +208,17 @@ resource "azurerm_kubernetes_cluster" "this" {
 
   role_based_access_control_enabled = true
 
+  # CSR round-10 #6: no local accounts, so no static cluster-admin certificate exists to copy
+  # out of state. `managed = true` is mandatory in azurerm 3.x for AKS-managed Entra integration.
+  local_account_disabled = true
+
+  azure_active_directory_role_based_access_control {
+    managed                = true
+    azure_rbac_enabled     = true
+    tenant_id              = data.azurerm_client_config.current.tenant_id
+    admin_group_object_ids = var.cluster_admin_group_object_ids
+  }
+
   default_node_pool {
     name              = "general"
     vm_size           = var.general_vm_size
@@ -173,8 +232,14 @@ resource "azurerm_kubernetes_cluster" "this" {
   }
 
   identity {
-    type = "SystemAssigned"
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.control_plane.id]
   }
+
+  depends_on = [
+    azurerm_role_assignment.control_plane_aks_subnet,
+    azurerm_role_assignment.control_plane_apiserver_subnet,
+  ]
 
   # network_policy = "azure" is what makes the companion Helm chart plan's
   # NetworkPolicy objects actually get enforced — without a network_profile
@@ -187,8 +252,12 @@ resource "azurerm_kubernetes_cluster" "this" {
 
   # Restricts which networks can reach the API server, same rationale as
   # EKS's public_access_cidrs — no default, see api_authorized_ip_ranges.
+  # vnet_integration_enabled and subnet_id are deprecated preview-API fields in azurerm 3.x;
+  # azurerm 4.46+ renames the first to virtual_network_integration_enabled.
   api_server_access_profile {
-    authorized_ip_ranges = var.api_authorized_ip_ranges
+    authorized_ip_ranges     = var.api_authorized_ip_ranges
+    vnet_integration_enabled = true
+    subnet_id                = azurerm_subnet.apiserver.id
   }
 
   ingress_application_gateway {

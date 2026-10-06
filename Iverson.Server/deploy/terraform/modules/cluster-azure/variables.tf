@@ -115,3 +115,12 @@ variable "general_max_count" {
   type    = number
   default = 5
 }
+
+# No default: the Entra group(s) whose members administer the cluster through Azure RBAC.
+variable "cluster_admin_group_object_ids" {
+  type = list(string)
+  validation {
+    condition     = length(var.cluster_admin_group_object_ids) > 0
+    error_message = "cluster_admin_group_object_ids must name at least one Entra group."
+  }
+}

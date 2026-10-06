@@ -9,7 +9,8 @@ terraform {
     # resource_group_name, storage_account_name, container_name are supplied
     # via -backend-config flags at `terraform init` time, using the outputs
     # from ../bootstrap/azure.
-    key = "iverson/azure/terraform.tfstate"
+    key              = "iverson/azure/terraform.tfstate"
+    use_azuread_auth = true
   }
 }
 
@@ -31,6 +32,9 @@ variable "api_authorized_ip_ranges" { type = list(string) }
 # See cluster-azure's key_vault_authorized_ip_ranges.
 variable "key_vault_authorized_ip_ranges" { type = list(string) }
 
+# Object IDs of the Entra group(s) that administer the cluster through Azure RBAC; no default.
+variable "cluster_admin_group_object_ids" { type = list(string) }
+
 provider "azurerm" {
   features {}
 }
@@ -41,25 +45,37 @@ module "cluster" {
   location                       = var.location
   api_authorized_ip_ranges       = var.api_authorized_ip_ranges
   key_vault_authorized_ip_ranges = var.key_vault_authorized_ip_ranges
+  cluster_admin_group_object_ids = var.cluster_admin_group_object_ids
 }
 
+# Entra authentication through kubelogin (must be on PATH): local accounts are disabled, so
+# there is no client certificate. --login azurecli uses the signed-in Azure CLI identity.
 provider "kubernetes" {
-  host                   = yamldecode(module.cluster.kube_config).clusters[0].cluster.server
-  client_certificate     = base64decode(yamldecode(module.cluster.kube_config).users[0].user.client-certificate-data)
-  client_key             = base64decode(yamldecode(module.cluster.kube_config).users[0].user.client-key-data)
-  cluster_ca_certificate = base64decode(yamldecode(module.cluster.kube_config).clusters[0].cluster.certificate-authority-data)
+  host                   = module.cluster.host
+  cluster_ca_certificate = base64decode(module.cluster.cluster_ca_certificate)
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "kubelogin"
+    args        = ["get-token", "--login", "azurecli", "--server-id", "6dae42f8-4368-4678-94ff-3960e28e3630"]
+  }
 }
 
 provider "helm" {
   kubernetes {
-    host                   = yamldecode(module.cluster.kube_config).clusters[0].cluster.server
-    client_certificate     = base64decode(yamldecode(module.cluster.kube_config).users[0].user.client-certificate-data)
-    client_key             = base64decode(yamldecode(module.cluster.kube_config).users[0].user.client-key-data)
-    cluster_ca_certificate = base64decode(yamldecode(module.cluster.kube_config).clusters[0].cluster.certificate-authority-data)
+    host                   = module.cluster.host
+    cluster_ca_certificate = base64decode(module.cluster.cluster_ca_certificate)
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "kubelogin"
+      args        = ["get-token", "--login", "azurecli", "--server-id", "6dae42f8-4368-4678-94ff-3960e28e3630"]
+    }
   }
 }
 
 module "operators" {
+  # The deploying principal's Kubernetes RBAC role must exist before any operator resource.
+  depends_on = [module.cluster]
+
   source       = "../modules/operators"
   cloud        = "azure"
   cluster_name = module.cluster.cluster_name
