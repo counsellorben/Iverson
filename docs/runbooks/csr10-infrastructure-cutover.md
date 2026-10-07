@@ -59,7 +59,8 @@ sed -n 's/.*iverson.io\/model: "\(.*\)"/\1/p' render.yaml | head -1
 sed -n 's/.*iverson.io\/model-digest: "\(.*\)"/\1/p' render.yaml | head -1
 ```
 
-For example, `values-azure.yaml` with `global.modelImageRegistry: myregistry.azurecr.io/` renders
+For example, Azure values (`values-azure.yaml` plus your real `ingressHost` and the other
+placeholders it requires) with `global.modelImageRegistry: myregistry.azurecr.io/` render
 the inputs below at the time of writing (the tags embed a hash of each Dockerfile, so take yours
 from the commands above):
 

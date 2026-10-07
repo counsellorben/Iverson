@@ -80,9 +80,11 @@ stage_and_load() {   # $1 = image as the chart renders it (bare name:tag)
   local qualified="docker.io/library/$1" archive
   archive="/var/tmp/$(echo "$1" | tr ':/' '__').tar"
   docker tag "$1" "${qualified}"   # same docker.io/library qualification as the app image, below
-  # Stage on disk: the Ollama image is ~5.7 GB and /tmp may be RAM-backed.
-  docker save -o "${archive}" "${qualified}"
-  kind load image-archive "${archive}" --name "${CLUSTER_NAME}"
+  # Stage on disk: the Ollama image is ~5.7 GB and /tmp may be RAM-backed. A failed save or load
+  # removes the (possibly partial) archive before failing, so no multi-GB file is left behind.
+  docker save -o "${archive}" "${qualified}" \
+    && kind load image-archive "${archive}" --name "${CLUSTER_NAME}" \
+    || { rm -f "${archive}"; return 1; }
   rm -f "${archive}"
 }
 
