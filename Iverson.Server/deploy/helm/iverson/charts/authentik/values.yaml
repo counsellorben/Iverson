@@ -1,5 +1,8 @@
 image: "ghcr.io/goauthentik/server:2026.5.3"
 tlsProxy:
+  # Was digest-pinned; an exact tag lets Dependabot's helm updater (it skips digest pins) track
+  # it, trading immutability for automated updates (spec §4d).
+  # No docker.io/ prefix: the helm updater would query docker.io as a registry host and fail.
   image: "nginxinc/nginx-unprivileged:1.30.5-alpine"
 revokeCrossDb:
   image: "postgres:16.15"

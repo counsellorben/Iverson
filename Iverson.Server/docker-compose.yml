@@ -439,7 +439,7 @@ services:
   # After authentik-server is restarted or recreated, restart authentik-tls-proxy too: it shares
   # that container's network namespace.
   authentik-tls-proxy:
-    image: nginxinc/nginx-unprivileged:1.30.5-alpine@sha256:15c994d10d6d78658721c3bcafff14cb281fba2a4bdf9d5ba92c416a472516e3
+    image: docker.io/nginxinc/nginx-unprivileged:1.30.5-alpine@sha256:15c994d10d6d78658721c3bcafff14cb281fba2a4bdf9d5ba92c416a472516e3
     container_name: iverson-authentik-tls-proxy
     restart: unless-stopped
     user: "1000:1000"

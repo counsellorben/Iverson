@@ -63,7 +63,7 @@ jobs:
           set -e
           for img in $(cat images.txt); do
             echo "::group::$img"
-            docker run --rm aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
+            docker run --rm docker.io/aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
               image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 --no-progress "$img"
             echo "::endgroup::"
           done

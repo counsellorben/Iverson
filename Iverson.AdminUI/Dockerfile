@@ -22,7 +22,7 @@ RUN npm run build
 # Pinned by digest (CSR round-3 finding #13) — same rationale and same caveat about
 # platform-specific vs. manifest-list digests as the node stage above. Manifest-list
 # digest for docker.io/nginxinc/nginx-unprivileged:1.30.5-alpine as of 2026-10-06.
-FROM nginxinc/nginx-unprivileged:1.30.5-alpine@sha256:15c994d10d6d78658721c3bcafff14cb281fba2a4bdf9d5ba92c416a472516e3 AS runtime
+FROM docker.io/nginxinc/nginx-unprivileged:1.30.5-alpine@sha256:15c994d10d6d78658721c3bcafff14cb281fba2a4bdf9d5ba92c416a472516e3 AS runtime
 # The base image already sets USER 101 as its own default, but /usr/share/nginx/html
 # is baked into that base image as root:root 755 — COPY (even with --chown on the
 # copied files) never retroactively chowns a pre-existing destination directory
