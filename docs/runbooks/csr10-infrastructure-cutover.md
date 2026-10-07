@@ -5,6 +5,15 @@ instead of at pod start, moves AKS and the Terraform state account to Entra-only
 pins build inputs. Several steps are one-way or need an ordering that a plain `helm upgrade` or
 `terraform apply` will not give you. Work through the sections in order for the clouds you run.
 
+**AKS: order.** On an existing AKS cluster, do not work through the sections in numbered order.
+Use this order instead: §7 (state account) → §6 (Terraform: the Entra and API Server VNet
+Integration apply, including the `terraform init -reconfigure` that the backend change forces) →
+§2 and §3 → §4 → §5. Two dependencies drive it. The Azure overlay's `networkPolicy.apiServerCidrs`
+(`10.1.17.0/28`) is the VNet Integration subnet that the §6 Terraform change creates, so a Helm
+upgrade before that apply allows no API-server traffic. The Azure backend authenticates with Entra
+(`use_azuread_auth = true`), which needs the data-plane role that §7 grants, so §6 cannot
+initialise before §7. EKS and GKE keep the numbered order.
+
 ## 1. Prerequisites
 
 - `kubelogin` on PATH for the Azure root (`azure/`). The kubeconfig that `az aks get-credentials`
@@ -52,6 +61,8 @@ Expected: `helm template` renders `image: "<registry>/iverson-tei-model:..."` an
 `image: "<registry>/iverson-ollama-model:..."`, and each tag exists in the registry.
 
 ## 3. Upgrading an existing release
+
+On AKS, do this section only after §6 and §7; see "AKS: order" at the top.
 
 The model StatefulSets' `volumeClaimTemplates` changed, and that field is immutable. Delete the
 StatefulSets and their PVCs, then upgrade. The model data is re-created from the images.
@@ -104,6 +115,8 @@ probe timeouts, Azure NPM is not exempting node traffic. Add the node subnet `10
 `networkPolicy.clusterCidrs` in the Azure values and upgrade.
 
 ## 6. AKS Entra cutover
+
+On an existing cluster, do §7 first and this section before §2 and §3; see "AKS: order" at the top.
 
 The first apply of `azure/` after this change:
 
