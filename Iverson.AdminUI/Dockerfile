@@ -11,7 +11,7 @@
 # digest) when a newer 22-alpine patch is wanted; the tag is kept alongside the
 # digest for human readability only — the digest is what's actually resolved.
 # Node 22: package.json requires >=22.22.0 and Node 20 is end-of-life (CSR round-10 #19).
-FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS build
+FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80 AS build
 WORKDIR /src
 COPY Iverson.AdminUI/package.json Iverson.AdminUI/package-lock.json ./
 RUN npm ci
