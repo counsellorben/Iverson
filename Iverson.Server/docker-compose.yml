@@ -226,7 +226,7 @@ services:
       start_period: 25m
 
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.0@sha256:9babd1c0beaf93189982bdbb9fe4bf194a2730298b640c057817746c19838866
+    image: confluentinc/cp-zookeeper:7.9.1@sha256:7610a50b13e7e9f6dc0dd00585ffdcb0bbed27392bef6b45791ef4087b2a746c
     container_name: iverson-zookeeper
     restart: unless-stopped
     environment:
