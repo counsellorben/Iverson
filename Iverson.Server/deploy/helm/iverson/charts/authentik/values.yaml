@@ -3,7 +3,7 @@ tlsProxy:
   # Was digest-pinned; an exact tag lets Dependabot's helm updater (it skips digest pins) track
   # it, trading immutability for automated updates (spec §4d).
   # No docker.io/ prefix: the helm updater would query docker.io as a registry host and fail.
-  image: "nginxinc/nginx-unprivileged:1.30.5-alpine"
+  image: "nginxinc/nginx-unprivileged:1.31.5"
 revokeCrossDb:
   image: "postgres:16.15"
 resources:
