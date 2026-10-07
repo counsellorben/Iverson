@@ -161,7 +161,7 @@ services:
   # a named volume, never /tmp (a 4.9 GB tmpfs on the dev box, spec §7.6.3). --auto-truncate is the
   # stated head-truncation policy (§3.5); the harness records /info in each run's sidecar.
   reranker:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3@sha256:8de25e75ce39617f17f2f6c77d60a4f75b65e779ed5005420eb1400072a15c1c
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4@sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d
     container_name: iverson-reranker
     profiles: ["reranker"]
     command: ["--model-id", "${RERANKER_MODEL_ID:-cross-encoder/ms-marco-MiniLM-L-6-v2}", "--auto-truncate"]
@@ -179,7 +179,7 @@ services:
   # served per container). --auto-truncate is required: SciFact abstracts exceed the 512-token
   # window and TEI answers 413 without it. Model cache is a named volume, never /tmp.
   tei-embed:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3@sha256:8de25e75ce39617f17f2f6c77d60a4f75b65e779ed5005420eb1400072a15c1c
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4@sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d
     container_name: iverson-tei-embed
     restart: unless-stopped
     # TEI's default max_batch_tokens (16384) OOM-kills warm-up for gte-modernbert-base on the 9 GB box
