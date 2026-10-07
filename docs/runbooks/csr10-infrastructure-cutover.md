@@ -6,8 +6,8 @@ pins build inputs. Several steps are one-way or need an ordering that a plain `h
 `terraform apply` will not give you. Work through the sections in order for the clouds you run.
 
 **AKS: order.** On an existing AKS cluster, do not work through the sections in numbered order.
-Use this order instead: §7 (state account) → §6 (Terraform: the Entra and API Server VNet
-Integration apply, including the `terraform init -reconfigure` that the backend change forces) →
+Use this order instead: §7 (state account, ending with the `terraform init -reconfigure` that the
+backend change forces) → §6 (Terraform: the Entra and API Server VNet Integration apply) →
 §2 and §3 → §4 → §5. Two dependencies drive it. The Azure overlay's `networkPolicy.apiServerCidrs`
 (`10.1.17.0/28`) is the VNet Integration subnet that the §6 Terraform change creates, so a Helm
 upgrade before that apply allows no API-server traffic. The Azure backend authenticates with Entra
@@ -41,21 +41,39 @@ Iverson.Server/deploy/kind/build-and-load-image.sh 0.1.0 <cluster> --model-image
 # PowerShell: build-and-load-image.ps1 -ModelImages -ClusterName <cluster> -Values <overlay>
 ```
 
-**Cloud:** run the same `docker build` for each image with `-t <registry>/<image>:<tag>`, then
-`docker push`. Read the inputs from the rendered chart rather than copying them by hand:
+**Cloud:** set `global.modelImageRegistry` to the registry prefix **with its trailing `/`**
+(for example `myregistry.azurecr.io/`) in the values you deploy with. The default is empty (local
+images). Then build and push each image with the inputs the chart renders, read the same way
+`build-and-load-image.sh --model-images` reads them, rather than copying them by hand:
 
 ```bash
-helm dependency build Iverson.Server/deploy/helm/iverson
-helm template <release> Iverson.Server/deploy/helm/iverson -f <values-file> | less
+C=Iverson.Server/deploy/helm/iverson
+helm dependency build "$C"
+helm template <release> "$C" -f <values-file> > render.yaml
+# TEI, one line per embedding model: <image>|<MODEL_ID>|<REVISION>
+awk '/image: "[^"]*iverson-tei-model:/ { match($0, /"[^"]+"/); img = substr($0, RSTART+1, RLENGTH-2) }
+     /args: \["--model-id"/ { split($0, a, "\""); print img "|" a[4] "|" a[8] }' render.yaml
+# Ollama: the image, then MODEL and DIGEST from the StatefulSet annotations
+sed -n 's/.*image: "\([^"]*iverson-ollama-model:[^"]*\)".*/\1/p' render.yaml | head -1
+sed -n 's/.*iverson.io\/model: "\(.*\)"/\1/p' render.yaml | head -1
+sed -n 's/.*iverson.io\/model-digest: "\(.*\)"/\1/p' render.yaml | head -1
 ```
 
-- TEI build args `MODEL_ID` and `REVISION`: from the TEI StatefulSet args.
-- Ollama build args `MODEL` and `DIGEST`: from the Ollama StatefulSet annotations
-  `iverson.io/model` and `iverson.io/model-digest`.
-- The tag is whatever the chart renders in the pod `image:` field.
+For example, `values-azure.yaml` with `global.modelImageRegistry: myregistry.azurecr.io/` renders
+the inputs below at the time of writing (the tags embed a hash of each Dockerfile, so take yours
+from the commands above):
 
-Set `global.modelImageRegistry` to the registry prefix **with its trailing `/`**
-(for example `myregistry.azurecr.io/`). The default is empty (local images).
+```bash
+docker build --memory 3g -t myregistry.azurecr.io/iverson-tei-model:bge-base-a5beb1e3e68b-e8355217f84b \
+  --build-arg MODEL_ID=BAAI/bge-base-en-v1.5 --build-arg REVISION=a5beb1e3e68b9ab74eb54cfd186867f64f240e1a \
+  -f "$C/charts/tei/model-image/Dockerfile" "$C/charts/tei/model-image"
+docker push myregistry.azurecr.io/iverson-tei-model:bge-base-a5beb1e3e68b-e8355217f84b
+
+docker build --memory 3g -t myregistry.azurecr.io/iverson-ollama-model:qwen2.5-3b-357c53fb659c-e21831a0bbe1 \
+  --build-arg MODEL=qwen2.5:3b --build-arg DIGEST=357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b \
+  -f "$C/charts/ollama/model-image/Dockerfile" "$C/charts/ollama/model-image"
+docker push myregistry.azurecr.io/iverson-ollama-model:qwen2.5-3b-357c53fb659c-e21831a0bbe1
+```
 
 Expected: `helm template` renders `image: "<registry>/iverson-tei-model:..."` and
 `image: "<registry>/iverson-ollama-model:..."`, and each tag exists in the registry.
@@ -71,6 +89,10 @@ StatefulSets and their PVCs, then upgrade. The model data is re-created from the
 kubectl -n <ns> delete sts <release>-ollama <release>-tei-<slug>   # one TEI StatefulSet per embedding model slug
 kubectl -n <ns> delete pvc -l app=<release>-ollama
 kubectl -n <ns> delete pvc -l app=<release>-tei-<slug>
+# If the label selectors match nothing, delete the claims by name (one per replica ordinal):
+kubectl -n <ns> get pvc -o name \
+  | grep -E '/(ollama-data-<release>-ollama|tei-data-<release>-tei-<slug>)-[0-9]+$' \
+  | xargs -r kubectl -n <ns> delete
 helm upgrade <release> Iverson.Server/deploy/helm/iverson -f <values-file> -n <ns>
 ```
 
