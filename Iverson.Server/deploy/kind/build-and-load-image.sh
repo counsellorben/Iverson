@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds an app image (defaults to iverson-api) and loads it into the kind cluster's
-# containerd, for local testing of the api/worker/admin-ui images (and any other
-# kind-based smoke test that needs one of these images). Always re-tags with the fully
-# qualified docker.io/library/... reference before `kind load docker-image` — see the
-# comment below for why this step is not optional.
+# Builds images and loads them into the kind cluster's containerd, in one of two modes:
+#   - default: one app image (defaults to iverson-api), for local testing of the
+#     api/worker/admin-ui images (and any other kind-based smoke test that needs one of them).
+#     Loaded with `kind load docker-image`.
+#   - --model-images: the TEI and Ollama model images, with the image references, model pins and
+#     build args read from a `helm template` render of the chart with the --values overlay. Each
+#     image is staged as an archive under /var/tmp (never /tmp, which may be RAM-backed) and
+#     loaded with `kind load image-archive`.
+# Both modes re-tag with the fully qualified docker.io/library/... reference before loading — see
+# the comment below for why this step is not optional.
 #
 # Usage: deploy/kind/build-and-load-image.sh [tag] [cluster-name] [--dockerfile PATH] [--image-name NAME] [--model-images] [--values PATH]
 #   tag          defaults to 0.1.0 — must match api.image.tag / worker.image.tag /
@@ -82,13 +87,14 @@ stage_and_load() {   # $1 = image as the chart renders it (bare name:tag)
 }
 
 # TEI: one image per embeddingModels entry; image and --model-id/--revision come from the render.
-while IFS='|' read -r image model_id revision; do
+# The loop reads fd 3, so docker build and kind load cannot consume its input from stdin.
+while IFS='|' read -r -u 3 image model_id revision; do
   [ -n "${image}" ] || continue
   echo "Building ${image}..."
   docker build --memory 3g -t "${image}" --build-arg MODEL_ID="${model_id}" --build-arg REVISION="${revision}" \
     -f "${CHART}/charts/tei/model-image/Dockerfile" "${CHART}/charts/tei/model-image"
   stage_and_load "${image}"
-done < <(printf '%s\n' "${RENDER}" | awk '
+done 3< <(printf '%s\n' "${RENDER}" | awk '
   /image: "[^"]*iverson-tei-model:/ { match($0, /"[^"]+"/); img = substr($0, RSTART+1, RLENGTH-2) }
   /args: \["--model-id"/ { split($0, a, "\""); print img "|" a[4] "|" a[8] }')
 
