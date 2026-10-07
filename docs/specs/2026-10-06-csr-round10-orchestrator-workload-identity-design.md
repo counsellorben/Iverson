@@ -91,7 +91,7 @@ Authentik 2026.5.3 checks only the signature and `exp` of a federated JWT. The a
 
 ### 2a. A separate federation blueprint (`orchestrator-federation.yaml`)
 
-The federation objects get a blueprint file of their own, delivered through `templates/blueprints-configmap.yaml`. It holds no credentials, so it goes in the ConfigMap like the other structural blueprints.
+The federation objects get a blueprint of their own, rendered inline as a templated key, `orchestrator-federation.yaml`, appended after the `range` in `templates/blueprints-configmap.yaml`, the way `secret-service-clients.yaml` renders `service-clients.yaml`. It holds no credentials, so it goes in the ConfigMap. It is not a file under `charts/authentik/blueprints/`: compose and the Api.Tests fixture mount that directory, where nothing serves the JWKS, and the ConfigMap emits those files without rendering the namespace or release (Verified assumption 39). The worker mounts the ConfigMap at `/blueprints/custom`, so the blueprint's path is `custom/orchestrator-federation.yaml`.
 
 The reason for a separate file: a blueprint that fails validation applies none of its entries (Verified assumption 27). Saving the source fetches the JWKS, so if the relay were unreachable and these entries sat inside `service-clients.yaml`, none of the OAuth clients could be created or updated. With a separate file, a relay outage delays only federation, and Authentik re-applies the failed blueprint at its hourly discovery run.
 
@@ -101,7 +101,7 @@ The reason for a separate file: a blueprint that fails validation applies none o
 | OAuth source `iverson-k8s-workload` | `provider_type: openidconnect`; `oidc_jwks_url: http://127.0.0.1:8001/openid/v1/jwks`; blank authorization, token and profile URLs; no login or enrolment flow; `user_property_mappings` set to the mapping above. It exists only as the trust anchor for federation. |
 | OAuth2 provider `iverson-admin-orchestrator` | `client_type: confidential`; `client_id: iverson-admin-orchestrator`; `grant_types: ["client_credentials"]`; `jwt_federation_sources` set to the source; `property_mappings` set to the managed `goauthentik.io/api` scope; `access_token_validity: minutes=5`; the same flows, signing key and `issuer_mode: global` as the existing service clients |
 | Application `iverson-admin-orchestrator` | Uses the provider above, with `policy_engine_mode: all`. The default `any` would let either binding alone pass. |
-| Expression policy `iverson-admin-orchestrator-workload`, binding order 0 | Passes only when `sub` equals `system:serviceaccount:<namespace>:<release>-api` and `aud` (a list or a string) contains `iverson-authentik-orchestrator`. Helm renders the namespace and release name. |
+| Expression policy `iverson-admin-orchestrator-workload`, binding order 0 | Passes only when `sub` equals `system:serviceaccount:<namespace>:<release>-api` and `aud` (a list or a string) contains `iverson-authentik-orchestrator`, and `ak_user_by(username="iverson-admin-orchestrator-workload")` returns a user for which `ak_is_group_member(user, name="iverson-admin-orchestrators")` is true. Until `service-clients.yaml` has pre-created that user, every exchange is refused with `invalid_grant` and creates nothing, whichever blueprint applies first (Verified assumption 38). Helm renders the namespace and release name. |
 | Expression policy `iverson-admin-orchestrator-in-cluster-only`, binding order 1 | `return "HTTP_X_IVERSON_PUBLIC_INGRESS" not in request.http_request.META`. This is the same single-line rule as C1's admin-automation policy, kept as its own object so this blueprint doesn't depend on another blueprint's apply order. The public listener sets the header on every path it forwards, `/application/` included (`configmap-tls-proxy.yaml:26-37`). |
 
 ### 2b. Changes to `service-clients.yaml` (no dependency on the relay)
@@ -115,9 +115,10 @@ Removing the static credential must never depend on the relay, so these changes 
     - A user created by an exchange instead gets an `expires` attribute, and Authentik deletes it once the assertion expires.
     - A user created that way also gets no group.
     - A pre-created user keeps its group through every exchange. An exchange overwrites only its name, email, path, type and attributes, and adds no `expires` (Verified assumption 12).
+    - The workload policy (§2a) refuses every exchange until it exists, so no exchange can create it.
 - **Remove the old user and its token.** The `iverson-admin-orchestrator` user and its `iverson-admin-orchestrator-token` token become `state: absent` entries, token first. Deleting the user deletes its password hash with it.
 - **No re-granting.** The role's per-user permissions on users the old identity created survive the deletion, because InitialPermissions grants to the role, not to a user (`secret-service-clients.yaml:606-640`; Verified assumption 17). Nothing needs re-granting.
-- **Remove the credential templates.** The `$adminOrchestratorPassword` and `$adminOrchestratorTokenKey` computations and the two Secrets (`secret-service-clients.yaml:95-110, 190-210`) are deleted. Helm deletes the Secrets on upgrade.
+- **Remove the credential templates.** The `$adminOrchestratorPassword` and `$adminOrchestratorTokenKey` computations and the two Secrets (`secret-service-clients.yaml:95-110, 190-210`) are deleted. Both Secrets carry `helm.sh/resource-policy: keep`, so an upgrade leaves them in place; the cutover runbook deletes `<release>-authentik-admin-orchestrator-token` and `<release>-authentik-admin-orchestrator-user` after the upgrade. A fresh install never creates them (Verified assumption 37).
 - **Comments.** The comment block that explained why the token never expires (`:675-682`) goes. The `RESIDUAL` note about `add_user` stays.
 
 ### 2c. The JWKS relay (`templates/deployment-worker.yaml`)
@@ -175,30 +176,34 @@ The Api.Tests Authentik fixture keeps using compose's static path for its existi
 - federated mode without a client ID: rejected;
 - the worker role and Development: skipped.
 
-**Integration (`AuthentikContainerFixture`, live Authentik 2026.5.3).** The test generates an RSA keypair and creates the source with a static `oidc_jwks`, using the fixture's bootstrap token. It also creates the provider, the application and both policies, then mints through the real handler and checks:
+**Integration (`AuthentikContainerFixture`, live Authentik 2026.5.3).** The test generates an RSA keypair and creates the source with a static `oidc_jwks`, using the fixture's bootstrap token. It also creates the username property mapping (as the source's `user_property_mappings`), the provider, the application and both policies. It first checks that, before the workload user exists, a correct `sub`/`aud` gets `invalid_grant` and creates no user (§2a). It then uses the bootstrap token to pre-create `iverson-admin-orchestrator-workload` as a member of `iverson-admin-orchestrators`, mirroring §2b, and mints through the real handler, checking:
 - the right `sub` and `aud`: `POST users` and `recovery` succeed, and `rbac/roles` is refused;
 - a wrong `sub`, a wrong `aud`, or the public-ingress marker header: `invalid_grant`, with no new Authentik user created.
 
 **Live on kind (laptop profile, during plan execution):**
-- the full chart installs;
+- the current `main` chart installs, then upgrades to this chart;
 - the relay serves the JWKS, and the source holds the cluster's key ID;
 - `CreateTenant` returns a recovery link;
 - a token for another service account gets `invalid_grant`;
-- both orchestrator Secrets and the `iverson-admin-orchestrator` user are absent.
+- after the runbook's Secret deletion, both orchestrator Secrets and the `iverson-admin-orchestrator` user are absent.
 
 **Cloud overlays:** render, kubeconform and the guards only.
 
 ### 3c. Upgrading an existing cluster
 
-A single `helm upgrade` switches everything over. During the rollout, `CreateTenant` and `InviteUser` can fail for a short window, for two reasons:
+A single `helm upgrade` switches everything over. During the rollout, `CreateTenant` and `InviteUser` can fail for a window, for two reasons:
 - old API pods hold a token that `service-clients.yaml` deletes;
 - new API pods can't mint until the worker has applied `orchestrator-federation.yaml`.
 
+The window ends when `service-clients.yaml` and `orchestrator-federation.yaml` have both applied in the new worker. That normally happens at the new worker's startup, but if the old worker, which has no relay, took the apply task, it waits for the next hourly discovery (Verified assumption 40).
+
 No data is affected.
 
-A new section in `docs/runbooks/csr10-infrastructure-cutover.md` says three things:
+A new section in `docs/runbooks/csr10-infrastructure-cutover.md` says five things:
 - don't provision tenants while the upgrade rolls out;
-- afterwards, confirm with one `InviteUser` that a recovery link comes back;
+- after the rollout, apply both blueprints in the new worker container: `ak apply_blueprint custom/service-clients/service-clients.yaml custom/orchestrator-federation.yaml`;
+- delete the two orchestrator Secrets, which `helm.sh/resource-policy: keep` leaves behind;
+- confirm with one `InviteUser` that a recovery link comes back;
 - confirm that both orchestrator Secrets are gone.
 
 ## Verified assumptions
@@ -241,12 +246,18 @@ A new section in `docs/runbooks/csr10-infrastructure-cutover.md` says three thin
 | 34 | The LoadTest and conformance tooling don't use the orchestrator token | grep: LoadTest mentions only `ak shell` help text (`Iverson.LoadTest/Program.cs:377`) |
 | 35 | Native sidecars are on in every target Kubernetes version | Kubernetes docs: beta and on by default from 1.29, GA in 1.33. Terraform defaults to 1.30 on AWS, Azure and GCP (`modules/cluster-*/variables.tf`); kind ran 1.31 |
 | 36 | Managed clusters rotate their signing keys, so a static JWKS snapshot would go stale | AWS EKS docs (irsa-fetch-keys): "rotates the OIDC signing key every seven days"; HashiCorp KB: EKS and AKS rotate automatically |
+| 37 | Both orchestrator Secrets carry `helm.sh/resource-policy: keep`, so an upgrade leaves them in place | `secret-service-clients.yaml:196,206`; CDR-1 P1 (Helm v3.16.4, kind v1.31): after an upgrade that stopped rendering them, the keep-annotated Secret survived and a plain Secret was deleted |
+| 38 | A policy gated on the pre-created user refuses early exchanges and creates nothing | `lib/expression/evaluator.py:68,71` (2026.5.3) put `ak_is_group_member` and `ak_user_by` in the evaluator globals. CDR-1 P3, live exchange: user absent gave `invalid_grant` and 0 users; user present without the group gave `invalid_grant`; user in the group gave `access_token`, `expires_in: 300`; wrong `sub` gave `invalid_grant`. Without the gate (P5), an early exchange created an expiring groupless user that `clean_temporary_users` deleted and the next exchange recreated groupless |
+| 39 | Compose and the Api.Tests fixture load every file under `charts/authentik/blueprints/`, and the ConfigMap renders those files only through a glob | `docker-compose.yml:378,421` (`./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro`); `AuthentikContainerFixture.cs:253`; `blueprints-configmap.yaml:12-19` (`range … .Files.Glob "blueprints/*.yaml"`, only recovery-flow gets a `replace`); `deployment-worker.yaml:83-84` mounts the ConfigMap at `/blueprints/custom` |
+| 40 | During a rollout the old, relay-less worker can take a blueprint apply, and `ak apply_blueprint` re-applies on demand | `deployment-worker.yaml:6` (`replicas: 1`, no `strategy`, so the default RollingUpdate); CDR-1 P4: two workers on one queue, and the relay-less worker ran 6 of 12 applies, each ending in `error`; `blueprints/management/commands/apply_blueprint.py` (2026.5.3) takes several paths, applies them in order and exits 1 on the first invalid one; mounts at `deployment-worker.yaml:84,87` |
+| 41 | The relay runs inside the Authentik worker's pod securityContext, and a newer `kubectl` serves the JWKS from an older API server | CDR-1 P2 on kind: `kubectl` v1.37.1 relay in a pod with `fsGroup: 1000` and a uid-1000 main container, against a v1.31.0 API server; the exec startup probe passed and the JWKS returned 200 |
 
 ## Known issues / accepted as out of scope
 
 - **New signing keys on managed clusters (unverified).** Whether EKS, AKS and GKE publish a new signing key before they start signing with it can't be checked without a cloud account. If a cluster signs with a key Authentik hasn't fetched yet, exchanges fail with `invalid_grant` until the next 3-hourly refresh, and tenant provisioning fails during that window.
 - **Relay down while the blueprint applies.** Federation waits for the hourly re-apply. `service-clients.yaml` and the removal of the static credential are unaffected.
-- **Rollout window.** Tenant provisioning can fail briefly during the upgrade (§3c).
+- **Rollout window.** Tenant provisioning can fail during the upgrade until both blueprints have applied in the new worker, which can wait for the next hourly discovery unless the runbook's `ak apply_blueprint` step runs (§3c).
+- **Managed API servers' JWKS (unverified).** Whether the EKS, AKS and GKE API servers serve `/openid/v1/jwks` with the keys that sign projected tokens can't be checked without a cloud account; cloud profiles get static verification only.
 - **Compose keeps the static, never-expiring token** (user decision).
 - **The orchestrator role's global `add_user`** can still create a user directly into a non-superuser group. That is an Authentik permission-model limit that C1 recorded and left as is. It is unchanged here.
 - **One new third-party image,** `registry.k8s.io/kubectl`, pinned and tracked by Dependabot.
