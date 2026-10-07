@@ -182,24 +182,6 @@ resource "kubernetes_storage_class" "kafka" {
   volume_binding_mode = "WaitForFirstConsumer"
 }
 
-resource "kubernetes_storage_class" "ollama" {
-  metadata {
-    name = "iverson-ollama"
-  }
-  storage_provisioner = var.storage_class_config.provisioner
-  parameters          = var.storage_class_config.parameters
-  volume_binding_mode = "WaitForFirstConsumer"
-}
-
-resource "kubernetes_storage_class" "tei" {
-  metadata {
-    name = "iverson-tei"
-  }
-  storage_provisioner = var.storage_class_config.provisioner
-  parameters          = var.storage_class_config.parameters
-  volume_binding_mode = "WaitForFirstConsumer"
-}
-
 resource "kubernetes_storage_class" "prometheus" {
   metadata {
     name = "iverson-prometheus"
@@ -223,8 +205,6 @@ resource "helm_release" "pvc_storageclass_policy" {
       kubernetes_storage_class.starrocks.metadata[0].name,
       kubernetes_storage_class.qdrant.metadata[0].name,
       kubernetes_storage_class.kafka.metadata[0].name,
-      kubernetes_storage_class.ollama.metadata[0].name,
-      kubernetes_storage_class.tei.metadata[0].name,
       kubernetes_storage_class.prometheus.metadata[0].name,
     ]
   })]

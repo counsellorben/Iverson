@@ -68,7 +68,7 @@ Expected: `rotation_period = "7776000s"` (90 days) and `destroy_scheduled_durati
 
 ## 2. Uniform application
 
-Confirms all seven StorageClasses — the entire allow-list, per Section 7's negative check — carry
+Confirms all five StorageClasses — the entire allow-list, per Section 7's negative check — carry
 the encryption parameter and key reference, not just the ones an auditor happens to sample.
 
 ```bash
@@ -76,7 +76,7 @@ kubectl get storageclass -o yaml
 ```
 
 On AWS, every one of `iverson-postgres`, `iverson-starrocks`, `iverson-qdrant`, `iverson-kafka`,
-`iverson-ollama`, `iverson-tei`, `iverson-prometheus` shows:
+`iverson-prometheus` shows:
 
 ```yaml
 provisioner: ebs.csi.aws.com
@@ -92,7 +92,7 @@ that part is never optional — so `diskEncryptionSetID` isn't what makes encryp
 it's what switches the key from platform-managed to this customer-managed one (see
 `azurerm_disk_encryption_set.data_volumes`). On GCP the provisioner is
 `pd.csi.storage.gke.io` with a `disk-encryption-kms-key` parameter. In all three cases, confirm the
-key/set reference is identical across all seven classes — seven classes pointing at six different keys
+key/set reference is identical across all five classes — five classes pointing at four different keys
 would still fail this check even though each individual class looks encrypted.
 
 ## 3. Provider attestation
@@ -134,9 +134,9 @@ done
 
 ## 4. No volume escaped the set
 
-Confirms every PVC in the namespace is bound to one of the seven encrypted StorageClasses — a PVC
+Confirms every PVC in the namespace is bound to one of the five encrypted StorageClasses — a PVC
 created against `standard` or left with no `storageClassName` (falling through to a cluster
-default) would slip past checks 1–3 entirely since those only look at the seven classes this control
+default) would slip past checks 1–3 entirely since those only look at the five classes this control
 defines.
 
 ```bash
@@ -144,10 +144,9 @@ kubectl get pvc -n iverson -o custom-columns='NAME:.metadata.name,STORAGECLASS:.
   | awk '{print $2}' | sort -u
 ```
 
-Expected: the output is a subset of exactly these seven values —
-`iverson-postgres`, `iverson-starrocks`, `iverson-qdrant`, `iverson-kafka`, `iverson-ollama`, `iverson-tei`,
-`iverson-prometheus`. Any other value, including a blank line (no StorageClass set), is an escape
-and fails this check.
+Expected: the output is a subset of exactly these five values —
+`iverson-postgres`, `iverson-starrocks`, `iverson-qdrant`, `iverson-kafka`, `iverson-prometheus`.
+Any other value, including a blank line (no StorageClass set), is an escape and fails this check.
 
 The allow-list is enforced, not only enumerated. Show the policy and its binding:
 
@@ -156,7 +155,7 @@ kubectl get validatingadmissionpolicies iverson-pvc-storageclass -o yaml
 kubectl get validatingadmissionpolicybindings iverson-pvc-storageclass -o yaml
 ```
 
-Expected: the policy's `validations[0].expression` names the same seven classes check 2 lists,
+Expected: the policy's `validations[0].expression` names the same five classes check 2 lists,
 and the binding carries `validationActions: [Deny]` with a `namespaceSelector` matching
 `kubernetes.io/metadata.name: iverson`.
 

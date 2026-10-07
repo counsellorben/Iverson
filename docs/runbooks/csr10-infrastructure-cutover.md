@@ -78,6 +78,10 @@ Expected: the PVCs (`ollama-data-<release>-ollama-0`, `tei-data-<release>-tei-<s
 gone before the upgrade, and the new StatefulSets reach Ready. Embedding and generation are
 unavailable between the delete and Ready.
 
+Terraform (every cloud): the next `terraform apply` deletes the now-unused `iverson-ollama` and
+`iverson-tei` StorageClasses and drops them from the PVC StorageClass allow-list. Already-bound
+volumes are unaffected, and the model PVCs are removed by the commands above.
+
 ## 4. First-deploy gate (every cloud)
 
 Network policy now scopes DNS and API-server egress. Before declaring the deploy good, on each
