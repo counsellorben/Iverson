@@ -2,7 +2,7 @@
 # round-10 #17). The chart derives this image's tag from the model slug, the pinned revision and
 # a hash of this file; deploy/kind/build-and-load-image.sh --model-images builds it.
 # Base pinned by multi-arch index digest (resolved 2026-10-06).
-FROM ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3@sha256:8de25e75ce39617f17f2f6c77d60a4f75b65e779ed5005420eb1400072a15c1c AS fetch
+FROM ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4@sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d AS fetch
 ARG MODEL_ID
 ARG REVISION
 ENV HUGGINGFACE_HUB_CACHE=/models
@@ -13,6 +13,6 @@ RUN set -e; text-embeddings-router --model-id "$MODEL_ID" --revision "$REVISION"
     kill $pid; wait $pid || true; [ "${ok:-}" = 1 ] || { tail -20 /tmp/log; exit 1; }; \
     find /models -name '*.lock' -delete
 
-FROM ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3@sha256:8de25e75ce39617f17f2f6c77d60a4f75b65e779ed5005420eb1400072a15c1c
+FROM ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4@sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d
 COPY --from=fetch /models /models
 ENV HUGGINGFACE_HUB_CACHE=/models HF_HUB_OFFLINE=1
