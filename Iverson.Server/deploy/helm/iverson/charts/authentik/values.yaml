@@ -5,7 +5,7 @@ tlsProxy:
   # No docker.io/ prefix: the helm updater would query docker.io as a registry host and fail.
   image: "nginxinc/nginx-unprivileged:1.30.5-alpine"
 revokeCrossDb:
-  image: "postgres:16.15"
+  image: "postgres:18.4"
 resources:
   server:
     requests: { cpu: "250m", memory: "512Mi" }
