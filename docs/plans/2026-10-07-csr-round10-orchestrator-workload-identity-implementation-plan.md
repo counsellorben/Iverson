@@ -44,6 +44,7 @@ Copied from the spec, plus the session rules every task must hold to.
   - Add the task's files by explicit path. Never use `-A` or `.`, and never touch `.superpowers/` or `docs/security/tma.md`.
   - Messages are lowercase imperative and end with `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
 - **Scratch.** Scratch files go under `$SCR=/tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd` (create it), never in the repo.
+- **Shell state.** Each bash block runs in a fresh shell: no variable or working directory carries over from an earlier block (plan row 33). Blocks that use `$SCR`, `$WT` or `$LIVE` start with `source /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd/env.sh`, which Task 0 writes. Blocks with repo-relative paths start with a `cd` to the worktree (or its `Iverson.Server`).
 
 ## File Structure
 
@@ -152,6 +153,11 @@ The spec's 45 verified assumptions (`docs/specs/2026-10-06-csr-round10-orchestra
 | 29 | Command | `kubectl create token <sa> --audience …` mints a projected-shape token | The spec's brainstorming probe used it on kind v1.31 for every assertion |
 | 30 | Command | Commit messages are lowercase imperative | `git log --oneline -8` on `main` |
 | 31 | Ordering | T2 and T3 use T1's class; T4 and T5 are independent of T1–T3; T6 runs last | T2's `Program.cs` and the T3 test construct `AuthentikOrchestratorTokenHandler` (T1). T4 touches only chart files, T5 only the runbook |
+| 32 | Behaviour | Authentik drops a chunked request body and accepts a length-delimited one, so T3's admin-API helper must send `Json(JsonSerializer.Serialize(body))`, not `PostAsJsonAsync` | `IdpAdminClient.cs:339-347` (documents the trap). CIR-1 P5, the live fixture (2026.5.3): the `PostAsJsonAsync` body got 400 `{"name":["This field is required."],"expression":["This field is required."]}`. P6: the same object through `Json(...)` was accepted and the class passed 10/10. P7: Step 4's mutation still fails at the exchange (`invalid_grant`) |
+| 33 | Command | Each Bash call starts in a fresh shell: variables from an earlier block are unset and the cwd is the main checkout | CIR-1 P11: a variable set in one call was empty in the next and the cwd reset to `/home/ben/repositories/Iverson`; T1's `git add --dry-run` exited 0 only from the worktree root (128 from the main checkout and from `<wt>/Iverson.Server`). P16: with the env line, T4 S4's and T6 S6's commands resolved to absolute, writable paths in an `env -i` shell |
+| 34 | Behaviour | The Helm-rendered `service-clients.yaml` and `orchestrator-federation.yaml` apply in a real 2026.5.3 through the runbook's `ak apply_blueprint`, and the old orchestrator user and token are removed | CIR-1 P9: an isolated Authentik loaded with the chart's rendered blueprints; `ak apply_blueprint custom/service-clients/service-clients.yaml custom/orchestrator-federation.yaml` exited 0, the old user and token were then absent, and the workload user was in `iverson-admin-orchestrators` |
+| 35 | Command | T6 Step 5's `ak shell … \| tail -3` prints the three expected lines | CIR-1 P9: the same `ak shell -c` in the worker container printed the `source kids`, `old user/old token` and `workload groups` lines |
+| 36 | Behaviour | The API container reads its token at the mounted path | CIR-1 T4h/P16 read chain: the rendered `Authentik__OrchestratorAssertionPath` equals the projected volume's mount path plus `/token` (`equal: True`), `Program.cs` passes that value to the handler, and the handler reads exactly that file. The file permission rests on spec VA41 and T6's live check |
 
 ## Tasks
 
@@ -163,6 +169,11 @@ The spec's 45 verified assumptions (`docs/specs/2026-10-06-csr-round10-orchestra
 cd /home/ben/repositories/Iverson
 git worktree add -b csr10-orchestrator-workload-identity .worktrees/csr10-orchestrator-workload-identity main
 mkdir -p /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd
+cat > /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd/env.sh <<'X'
+SCR=/tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd
+WT=/home/ben/repositories/Iverson/.worktrees/csr10-orchestrator-workload-identity
+LIVE=$SCR/live
+X
 ```
 
 Expected: the worktree is on the new branch, and HEAD equals `main`.
@@ -530,6 +541,7 @@ Expected: `Passed!  - Failed:     0, Passed:     9`.
 - [ ] **Step 5: Commit.**
 
 ```bash
+cd /home/ben/repositories/Iverson/.worktrees/csr10-orchestrator-workload-identity
 git add Iverson.Server/Iverson.Api/Tenancy/AuthentikOrchestratorTokenHandler.cs Iverson.Server/Iverson.Api.Tests/Tenancy/AuthentikOrchestratorTokenHandlerTests.cs
 git commit -m "add the federated authentik orchestrator token handler
 
@@ -728,6 +740,7 @@ builder.Services.AddSingleton<Iverson.Api.Tenancy.IIdpAdminClient, Iverson.Api.T
 - [ ] **Step 5: Run the tests.** Use the same command as Step 2, then run the handler tests again.
 
 ```bash
+cd /home/ben/repositories/Iverson/.worktrees/csr10-orchestrator-workload-identity/Iverson.Server
 systemd-run --user --scope -q -p MemoryMax=6G dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~AuthentikOrchestratorTokenHandlerTests|FullyQualifiedName~Tenancy.AuthentikTrustTests" 2>&1 | command grep -E '^(Passed|Failed)!'
 ```
 
@@ -736,6 +749,7 @@ Expected: `Passed!  - Failed:     0, Passed:    42`. The full suites run in Task
 - [ ] **Step 6: Commit.**
 
 ```bash
+cd /home/ben/repositories/Iverson/.worktrees/csr10-orchestrator-workload-identity
 git add Iverson.Server/Iverson.Api/Program.cs Iverson.Server/Iverson.Api/Tenancy/AuthentikTrust.cs Iverson.Server/Iverson.Api.Tests/Tenancy/AuthentikTrustTests.cs
 git commit -m "wire the federated orchestrator credential and require exactly one mode
 
@@ -903,7 +917,7 @@ This test goes in the existing class, not a new one. The class's remarks explain
 
     private static async Task<JsonElement> PostAsync(HttpClient admin, string path, object body)
     {
-        using var response = await admin.PostAsJsonAsync(path, body);
+        using var response = await admin.PostAsync(path, Json(JsonSerializer.Serialize(body)));
         var text = await response.Content.ReadAsStringAsync();
         response.IsSuccessStatusCode.Should().BeTrue($"POST {path} returned {(int)response.StatusCode}: {text}");
         return JsonDocument.Parse(text).RootElement.Clone();
@@ -942,7 +956,7 @@ systemd-run --user --scope -q -p MemoryMax=7G dotnet test Iverson.Api.Tests/Iver
 
 Expected: `Passed!`, 0 failed. That covers the existing facts plus `OrchestratorFederation_MintsOnlyForThePinnedWorkload_OnceTheUserExists`.
 
-If the new fact fails at a `POST … returned` assertion, the message carries Authentik's validation error. Fix the payload field it names; the routes and fields themselves were verified (plan rows 11–14).
+If the new fact fails at a `POST … returned` assertion, the message carries Authentik's validation error. Every body must be length-delimited, as `IdpAdminClient.cs:339-347` records: a chunked body (`PostAsJsonAsync`/`JsonContent`) reaches Authentik empty, so every field is reported missing although it was sent (plan row 32). The routes and fields themselves were verified (plan rows 11–14).
 
 - [ ] **Step 4: Prove the fact can fail.**
   1. Change the pin policy's `jwt.get("sub") == "{{FederatedSubject}}"` to compare against `"x"`.
@@ -952,6 +966,7 @@ If the new fact fails at a `POST … returned` assertion, the message carries Au
 - [ ] **Step 5: Commit.**
 
 ```bash
+cd /home/ben/repositories/Iverson/.worktrees/csr10-orchestrator-workload-identity
 git add Iverson.Server/Iverson.Api.Tests/Tenancy/AuthentikRecoveryFlowIntegrationTests.cs
 git commit -m "cover the orchestrator federation against a live authentik
 
@@ -1441,6 +1456,7 @@ Expected: `checker fails on base (expected)` ×5.
 - [ ] **Step 4: Apply the edits.**
 
 ```bash
+source /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd/env.sh
 python3 $SCR/t4_edits.py $WT/Iverson.Server/deploy/helm/iverson
 ```
 
@@ -1449,6 +1465,7 @@ Expected: `t4 edits applied`.
 - [ ] **Step 5: Verify.**
 
 ```bash
+source /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd/env.sh
 cd $WT/Iverson.Server/deploy/helm/iverson && helm dependency build . >/dev/null
 for v in values-local values-laptop values-aws values-azure values-gcp; do o="-f $v.yaml"; [ -f $v.ci-override.yaml ] && o="$o -f $v.ci-override.yaml"
   helm template iverson . -n iverson $o > $SCR/new-$v.yaml
@@ -1473,6 +1490,7 @@ The relay's 5 criticals are known and accepted (plan row 22). Three of them alre
 - [ ] **Step 6: Commit.**
 
 ```bash
+source /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd/env.sh
 cd $WT && C=Iverson.Server/deploy/helm/iverson
 git add $C/charts/authentik/values.yaml $C/charts/authentik/templates/deployment-worker.yaml $C/charts/authentik/templates/blueprints-configmap.yaml \
   $C/charts/authentik/templates/secret-service-clients.yaml $C/templates/networkpolicies.yaml $C/charts/api/templates/deployment.yaml
@@ -1516,6 +1534,7 @@ The API now authenticates to Authentik's admin API with its own Kubernetes servi
 - [ ] **Step 2: Commit.**
 
 ```bash
+cd /home/ben/repositories/Iverson/.worktrees/csr10-orchestrator-workload-identity
 git add -f docs/runbooks/csr10-infrastructure-cutover.md
 git commit -m "add the c2 orchestrator workload identity cutover to the runbook
 
@@ -1552,6 +1571,7 @@ docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort > $LIVE/before-
 - [ ] **Step 3: Install `main`'s chart with the branch's API image.** The branch image runs the static mode that `main`'s chart configures. Ollama is off, because `CreateTenant` needs no model; TEI stays on, as in D's live check. Run the slow steps with `run_in_background`.
 
 ```bash
+source /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd/env.sh
 cd $WT
 KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --name iverson --config Iverson.Server/deploy/kind/kind-config.yaml
 bash Iverson.Server/deploy/kind/setup.sh
@@ -1570,6 +1590,7 @@ Expected: every pod is Running and ready. Both Secrets are listed, which is the 
 - [ ] **Step 4: Upgrade to the branch chart and run the runbook.**
 
 ```bash
+source /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd/env.sh
 cd $WT/Iverson.Server/deploy/helm/iverson && helm dependency build . >/dev/null
 helm upgrade iverson . -n iverson -f values-laptop.yaml --set ollama.enabled=false \
   --set api.hpa.maxReplicas=1 --set api.image.tag=csr10c2 --set worker.image.tag=csr10c2 --wait --timeout 30m
@@ -1591,6 +1612,7 @@ Expected:
 - [ ] **Step 5: Live checks.**
 
 ```bash
+source /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd/env.sh
 kubectl -n iverson port-forward svc/iverson-authentik 19000:9000 > $LIVE/pf-ak.log 2>&1 & echo $! > $LIVE/pf-ak.pid
 kubectl -n iverson port-forward svc/iverson-api 18080:8080 > $LIVE/pf-api.log 2>&1 & echo $! > $LIVE/pf-api.pid
 sleep 3
@@ -1628,6 +1650,7 @@ Expected:
 - [ ] **Step 6: `CreateTenant` through the federated credential.** Build C1's scratch console, pointing it at this worktree:
 
 ```bash
+source /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd/env.sh
 mkdir -p $LIVE/createtenant && cd $LIVE/createtenant
 cat > createtenant.csproj <<'X'
 <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
@@ -1657,6 +1680,7 @@ Expected: `link host=http://authentik.iverson.local path=/if/flow/iverson-recove
 - [ ] **Step 7: Tear kind down and diff the user's state.**
 
 ```bash
+source /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/c2-sdd/env.sh
 kill $(cat $LIVE/pf-ak.pid) $(cat $LIVE/pf-api.pid) 2>/dev/null
 kind delete cluster --name iverson; kind get clusters
 docker rmi docker.io/library/iverson-api:csr10c2 localhost/iverson-api:csr10c2 >/dev/null 2>&1; true
