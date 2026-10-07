@@ -236,9 +236,11 @@ resource "azurerm_kubernetes_cluster" "this" {
     identity_ids = [azurerm_user_assigned_identity.control_plane.id]
   }
 
+  # The DES Reader grant goes first too, so disk.csi.azure.com never runs without it.
   depends_on = [
     azurerm_role_assignment.control_plane_aks_subnet,
     azurerm_role_assignment.control_plane_apiserver_subnet,
+    azurerm_role_assignment.aks_data_volumes_des,
   ]
 
   # network_policy = "azure" is what makes the companion Helm chart plan's
