@@ -54,9 +54,9 @@ agent requires for traffic sent to a Service address. networkPolicy.dnsAnyDestin
 first-deploy fallback: any destination on 53.
 */}}
 {{- define "iverson.dnsEgress" -}}
-{{- if .Values.networkPolicy.dnsAnyDestination }}
+{{- if .Values.networkPolicy.dnsAnyDestination -}}
 - to: []   # DNS (fallback: networkPolicy.dnsAnyDestination)
-{{- else }}
+{{- else -}}
 - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }, podSelector: { matchLabels: { k8s-app: kube-dns } } }]   # DNS
 {{- end }}
   ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
@@ -69,9 +69,9 @@ Strimzi): networkPolicy.apiServerCidrs on 443 and 6443. Both ports: kind/kubeadm
 networkPolicy.apiServerAnyDestination is the first-deploy fallback: any destination.
 */}}
 {{- define "iverson.apiServerEgress" -}}
-{{- if .Values.networkPolicy.apiServerAnyDestination }}
+{{- if .Values.networkPolicy.apiServerAnyDestination -}}
 - to: []   # Kubernetes API server (fallback: networkPolicy.apiServerAnyDestination)
-{{- else }}
+{{- else -}}
 - to:   # Kubernetes API server
   {{- range .Values.networkPolicy.apiServerCidrs }}
   - ipBlock: { cidr: {{ . }} }
