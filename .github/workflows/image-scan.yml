@@ -45,13 +45,18 @@ jobs:
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
       - name: List the chart's third-party images
         run: |
-          set -e
+          set -eo pipefail
           C=Iverson.Server/deploy/helm/iverson
           helm dependency build "$C"
-          for v in values-aws values-azure values-gcp; do
-            helm template iverson "$C" -f "$C/$v.yaml" -f "$C/$v.ci-override.yaml"
-          done | sed -n 's/^ *image: "\{0,1\}\([^" ]*\)"\{0,1\}$/\1/p' \
-               | grep -v -E '(^|/)iverson-' | sort -u > images.txt
+          {
+            for v in values-aws values-azure values-gcp; do
+              helm template iverson "$C" -f "$C/$v.yaml" -f "$C/$v.ci-override.yaml"
+            done | sed -n 's/^ *image: "\{0,1\}\([^" ]*\)"\{0,1\}$/\1/p' \
+                 | grep -v -E '(^|/)iverson-'
+            # The model images' base references (fully qualified and digest-pinned).
+            sed -n 's/^FROM \([^ ]*\)\( AS .*\)\{0,1\}$/\1/p' "$C"/charts/*/model-image/Dockerfile
+          } | sort -u > images.txt
+          test -s images.txt
           cat images.txt
       - name: Scan (report only)
         run: |
