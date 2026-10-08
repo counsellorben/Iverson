@@ -6,6 +6,10 @@ tlsProxy:
   image: "nginxinc/nginx-unprivileged:1.30.5-alpine"
 revokeCrossDb:
   image: "postgres:16.15"
+# CSR round-10 #4 (C2): the worker's JWKS relay. A nested key named `image`, so Dependabot's helm
+# updater tracks it.
+jwksRelay:
+  image: "registry.k8s.io/kubectl:v1.37.1"
 resources:
   server:
     requests: { cpu: "250m", memory: "512Mi" }
@@ -16,6 +20,9 @@ resources:
   tlsProxy:
     requests: { cpu: "10m", memory: "16Mi" }
     limits: { cpu: "100m", memory: "64Mi" }
+  jwksRelay:
+    requests: { cpu: "10m", memory: "32Mi" }
+    limits: { memory: "64Mi" }
 nodeSelector: {}
 bootstrapEmail: "admin@iverson.local"
 ingress:

@@ -17,3 +17,104 @@ data:
 {{- end }}
 {{ $content | indent 4 }}
 {{- end }}
+  {{- /* CSR round-10 #4 (C2): rendered here, not kept under blueprints/, because compose and the
+     Api.Tests fixture mount that directory (where nothing serves the JWKS) and the pinned subject
+     needs the release namespace and name. A file of its own because one failing entry stops a
+     whole blueprint: if the relay cannot fetch the JWKS, only federation waits for the hourly
+     re-apply. */}}
+  orchestrator-federation.yaml: |
+    version: 1
+    metadata:
+      name: Iverson - orchestrator workload identity
+    entries:
+      # Every accepted assertion maps to the one pre-created user (service-clients.yaml). Runs only
+      # after both policies below have passed.
+      - id: workload-username
+        model: authentik_sources_oauth.oauthsourcepropertymapping
+        identifiers:
+          name: "Iverson: k8s workload username"
+        attrs:
+          expression: 'return {"username": "iverson-admin-orchestrator-workload"}'
+      # Trust anchor only: the cluster's service-account keys, through the worker's JWKS relay. No
+      # login or enrolment flow.
+      - id: k8s-workload-source
+        model: authentik_sources_oauth.oauthsource
+        identifiers:
+          slug: iverson-k8s-workload
+        attrs:
+          name: iverson-k8s-workload
+          provider_type: openidconnect
+          enabled: true
+          consumer_key: iverson-k8s-workload
+          consumer_secret: unused
+          authorization_url: ""
+          access_token_url: ""
+          profile_url: ""
+          oidc_jwks_url: http://127.0.0.1:8001/openid/v1/jwks
+          user_property_mappings:
+            - !KeyOf workload-username
+      - model: authentik_providers_oauth2.oauth2provider
+        identifiers:
+          name: iverson-admin-orchestrator
+        attrs:
+          authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+          invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+          client_type: confidential
+          client_id: iverson-admin-orchestrator
+          redirect_uris: []
+          grant_types: ["client_credentials"]
+          signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+          issuer_mode: global
+          access_token_validity: "minutes=5"
+          property_mappings:
+            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, goauthentik.io/api]]
+          jwt_federation_sources:
+            - !KeyOf k8s-workload-source
+      # all, not the default any: both bindings must pass.
+      - id: orchestrator-app
+        model: authentik_core.application
+        identifiers:
+          slug: iverson-admin-orchestrator
+        attrs:
+          name: iverson-admin-orchestrator
+          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-admin-orchestrator]]
+          policy_engine_mode: all
+      # Authentik checks only a federated JWT's signature and expiry, so the subject and audience are
+      # pinned here. The user check refuses every exchange until service-clients.yaml has pre-created
+      # the user, so no exchange can create it (one created that way has an expiry and no group).
+      - id: orchestrator-workload
+        model: authentik_policies_expression.expressionpolicy
+        identifiers:
+          name: iverson-admin-orchestrator-workload
+        attrs:
+          expression: |
+            jwt = request.context.get("oauth_jwt") or {}
+            aud = jwt.get("aud")
+            auds = aud if isinstance(aud, list) else [aud]
+            user = ak_user_by(username="iverson-admin-orchestrator-workload")
+            return (
+                jwt.get("sub") == "system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-api"
+                and "iverson-authentik-orchestrator" in auds
+                and user is not None
+                and ak_is_group_member(user, name="iverson-admin-orchestrators")
+            )
+      # Refuses exchanges that came through the public listener. The same rule as the
+      # admin-automation policy, kept as its own object so this blueprint does not depend on
+      # service-clients.yaml's apply order.
+      - id: orchestrator-in-cluster-only
+        model: authentik_policies_expression.expressionpolicy
+        identifiers:
+          name: iverson-admin-orchestrator-in-cluster-only
+        attrs:
+          expression: |
+            return "HTTP_X_IVERSON_PUBLIC_INGRESS" not in request.http_request.META
+      - model: authentik_policies.policybinding
+        identifiers:
+          policy: !KeyOf orchestrator-workload
+          target: !KeyOf orchestrator-app
+          order: 0
+      - model: authentik_policies.policybinding
+        identifiers:
+          policy: !KeyOf orchestrator-in-cluster-only
+          target: !KeyOf orchestrator-app
+          order: 1

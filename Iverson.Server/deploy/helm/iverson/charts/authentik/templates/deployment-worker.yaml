@@ -22,6 +22,48 @@ spec:
         runAsGroup: 1000
         fsGroup: 1000
         seccompProfile: { type: RuntimeDefault }
+      # CSR round-10 #4 (C2): serves the cluster's service-account signing keys (JWKS) on loopback, for
+      # the iverson-k8s-workload source in orchestrator-federation.yaml. A native sidecar, so it is
+      # listening before the worker applies blueprints. It authenticates with its own projected token
+      # (the default issuer-discovery binding lets any service account read the JWKS) and answers only
+      # the JWKS path. The startup probe reads /ready/, which kubectl proxy serves from the empty
+      # jwks-relay-www volume, so a refusing or unreachable API server delays only federation, never
+      # the worker's start. That volume must stay empty: --www is not filtered by --accept-paths.
+      initContainers:
+        - name: jwks-relay
+          image: {{ .Values.jwksRelay.image | quote }}
+          restartPolicy: Always
+          args:
+            - proxy
+            - --address=127.0.0.1
+            - --port=8001
+            - --accept-paths=^/openid/v1/jwks$
+            - --reject-methods=^(POST|PUT|PATCH|DELETE)$
+            - --www=/www
+            - --www-prefix=/ready/
+          startupProbe:
+            exec: { command: ["kubectl", "--server=http://127.0.0.1:8001", "get", "--raw", "/ready/"] }
+            periodSeconds: 1
+            failureThreshold: 30
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests:
+              cpu: {{ .Values.resources.jwksRelay.requests.cpu | quote }}
+              memory: {{ .Values.resources.jwksRelay.requests.memory | quote }}
+            limits:
+              memory: {{ .Values.resources.jwksRelay.limits.memory | quote }}
+          volumeMounts:
+            - name: jwks-relay-credential
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            - name: jwks-relay-www
+              mountPath: /www
+              readOnly: true
       containers:
         - name: worker
           image: {{ .Values.image | quote }}
@@ -93,3 +135,11 @@ spec:
         - name: blueprints-service-clients
           secret:
             secretName: {{ .Release.Name }}-authentik-blueprints-service-clients
+        - name: jwks-relay-credential
+          projected:
+            sources:
+              - serviceAccountToken: { path: token, expirationSeconds: 3600 }
+              - configMap: { name: kube-root-ca.crt, items: [{ key: ca.crt, path: ca.crt }] }
+              - downwardAPI: { items: [{ path: namespace, fieldRef: { fieldPath: metadata.namespace } }] }
+        - name: jwks-relay-www
+          emptyDir: {}

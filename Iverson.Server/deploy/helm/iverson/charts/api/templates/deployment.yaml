@@ -188,9 +188,12 @@ spec:
             # CSR round-10 #16: the host invited users open recovery links on.
             - name: Authentik__PublicBaseUrl
               value: "{{ .Values.global.externalScheme }}://authentik.{{ .Values.global.ingressHost }}"
-            - name: Authentik__AdminToken
-              valueFrom:
-                secretKeyRef: { name: {{ .Release.Name }}-authentik-admin-orchestrator-token, key: token-key }
+            # CSR round-10 #4 (C2): no static Authentik credential. The API exchanges the projected
+            # service-account token below for a short-lived access token (AuthentikOrchestratorTokenHandler).
+            - name: Authentik__OrchestratorAssertionPath
+              value: "/var/run/secrets/iverson/authentik-orchestrator/token"
+            - name: Authentik__OrchestratorClientId
+              value: "iverson-admin-orchestrator"
             - name: Authentication__MetadataAddress
               value: "https://{{ .Release.Name }}-authentik:8443/application/o/iverson-api/.well-known/openid-configuration"
             - name: Authentication__ActingUser__MetadataAddress
@@ -255,6 +258,9 @@ spec:
             - name: authentik-ca
               mountPath: /etc/iverson/authentik-ca
               readOnly: true
+            - name: authentik-orchestrator-token
+              mountPath: /var/run/secrets/iverson/authentik-orchestrator
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -279,5 +285,10 @@ spec:
             items:
               - key: ca.crt
                 path: ca.crt
+        # The pod's only Kubernetes credential: audience-scoped, so the API server refuses it.
+        - name: authentik-orchestrator-token
+          projected:
+            sources:
+              - serviceAccountToken: { path: token, audience: iverson-authentik-orchestrator, expirationSeconds: 600 }
         - name: tmp
           emptyDir: {}
