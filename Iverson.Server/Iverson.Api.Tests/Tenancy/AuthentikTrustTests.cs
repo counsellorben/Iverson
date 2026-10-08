@@ -216,12 +216,26 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
                 v["Authentik:OrchestratorAssertionPath"] = "/var/run/secrets/iverson/authentik-orchestrator/token";
                 v["Authentik:OrchestratorClientId"] = "iverson-admin-orchestrator";
             }), "api", Env("Production")))
-            .Should().Throw<InvalidOperationException>().WithMessage("*Authentik:AdminToken*Authentik:OrchestratorAssertionPath*");
+            .Should().Throw<InvalidOperationException>().WithMessage("Both *Authentik:AdminToken*Authentik:OrchestratorAssertionPath*");
 
     [Fact]
     public void Guard_RefusesNeitherCredentialMode() =>
         FluentActions.Invoking(() => AuthentikTrust.ValidateStartup(GoodConfig(v => v["Authentik:AdminToken"] = null), "api", Env("Production")))
-            .Should().Throw<InvalidOperationException>().WithMessage("*Authentik:AdminToken*Authentik:OrchestratorAssertionPath*");
+            .Should().Throw<InvalidOperationException>().WithMessage("Neither *Authentik:AdminToken*Authentik:OrchestratorAssertionPath*");
+
+    [Fact]
+    public void Guard_TreatsAWhitespaceStaticToken_AsUnset() =>
+        FluentActions.Invoking(() => AuthentikTrust.ValidateStartup(GoodConfig(v =>
+            {
+                v["Authentik:AdminToken"] = "   ";
+                v["Authentik:OrchestratorAssertionPath"] = "/var/run/secrets/iverson/authentik-orchestrator/token";
+                v["Authentik:OrchestratorClientId"] = "iverson-admin-orchestrator";
+            }), "api", Env("Production"))).Should().NotThrow();
+
+    [Fact]
+    public void Guard_TreatsAWhitespaceAssertionPath_AsUnset() =>
+        FluentActions.Invoking(() => AuthentikTrust.ValidateStartup(GoodConfig(v =>
+                v["Authentik:OrchestratorAssertionPath"] = "   "), "api", Env("Production"))).Should().NotThrow();
 
     [Fact]
     public void Guard_RefusesFederatedModeWithoutAClientId() =>

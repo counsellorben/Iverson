@@ -95,9 +95,12 @@ internal static class AuthentikTrust
 
         var hasStaticToken = !string.IsNullOrWhiteSpace(cfg["Authentik:AdminToken"]);
         var hasAssertion = !string.IsNullOrWhiteSpace(cfg["Authentik:OrchestratorAssertionPath"]);
-        if (hasStaticToken == hasAssertion)
+        if (hasStaticToken && hasAssertion)
             throw new InvalidOperationException(
-                "Exactly one of Authentik:AdminToken and Authentik:OrchestratorAssertionPath must be set outside Development.");
+                "Both Authentik:AdminToken and Authentik:OrchestratorAssertionPath are set; set exactly one outside Development.");
+        if (!hasStaticToken && !hasAssertion)
+            throw new InvalidOperationException(
+                "Neither Authentik:AdminToken nor Authentik:OrchestratorAssertionPath is set; set exactly one outside Development.");
         if (hasAssertion && string.IsNullOrWhiteSpace(cfg["Authentik:OrchestratorClientId"]))
             throw new InvalidOperationException("Authentik:OrchestratorClientId is required with Authentik:OrchestratorAssertionPath.");
     }
