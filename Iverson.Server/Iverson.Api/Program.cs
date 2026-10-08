@@ -384,7 +384,7 @@ builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>(
 // CSR round-10 #5: the admin token travels over TLS to the tls-proxy sidecar, trusting only the
 // deployment's CA. Authentik:BaseUrl has no fallback: the startup guard requires it outside
 // Development, and the Development test hosts register their own clients.
-builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName, client =>
+var authentikAdminClient = builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName, client =>
 {
     if (cfg["Authentik:BaseUrl"] is { Length: > 0 } authentikBaseUrl)
         client.BaseAddress = new Uri(authentikBaseUrl);
@@ -393,6 +393,12 @@ builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName
         client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", adminToken);
 }).ConfigurePrimaryHttpMessageHandler(() => Iverson.Api.Tenancy.AuthentikTrust.CreateHandler(cfg["Authentik:CaCertificatePath"]));
+// CSR round-10 #4 (C2): on Helm there is no static Authentik credential. The API exchanges its own
+// projected service-account token for a short-lived access token instead; the startup guard makes the
+// two modes mutually exclusive.
+if (cfg["Authentik:OrchestratorAssertionPath"] is { Length: > 0 } orchestratorAssertionPath)
+    authentikAdminClient.AddHttpMessageHandler(() => new Iverson.Api.Tenancy.AuthentikOrchestratorTokenHandler(
+        orchestratorAssertionPath, cfg["Authentik:OrchestratorClientId"]!, TimeProvider.System));
 builder.Services.AddSingleton<Iverson.Api.Tenancy.IIdpAdminClient, Iverson.Api.Tenancy.IdpAdminClient>();
 
 builder.Services.AddHttpClient("JaegerOtlpHttp", client =>

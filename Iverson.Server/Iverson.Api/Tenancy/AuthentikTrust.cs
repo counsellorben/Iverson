@@ -59,8 +59,11 @@ internal static class AuthentikTrust
     }
 
     /// <summary>
-    /// Outside Development the api role refuses to start unless every Authentik hop is https and the
-    /// CA is readable. The Helm worker carries no Authentik settings, and the guard never runs for the worker role
+    /// Outside Development the api role refuses to start unless every Authentik hop is https, the
+    /// CA is readable, and exactly one admin credential mode is configured: the static
+    /// <c>Authentik:AdminToken</c> (compose) or the federated <c>Authentik:OrchestratorAssertionPath</c>
+    /// with <c>Authentik:OrchestratorClientId</c> (Helm, CSR round-10 #4).
+    /// The Helm worker carries no Authentik settings, and the guard never runs for the worker role
     /// (the compose worker mirrors the API's settings).
     /// </summary>
     public static void ValidateStartup(IConfiguration cfg, string workloadRole, IHostEnvironment env)
@@ -89,6 +92,14 @@ internal static class AuthentikTrust
         {
             throw new InvalidOperationException($"Authentik:CaCertificatePath '{caPath}' is not a readable PEM certificate.", ex);
         }
+
+        var hasStaticToken = !string.IsNullOrWhiteSpace(cfg["Authentik:AdminToken"]);
+        var hasAssertion = !string.IsNullOrWhiteSpace(cfg["Authentik:OrchestratorAssertionPath"]);
+        if (hasStaticToken == hasAssertion)
+            throw new InvalidOperationException(
+                "Exactly one of Authentik:AdminToken and Authentik:OrchestratorAssertionPath must be set outside Development.");
+        if (hasAssertion && string.IsNullOrWhiteSpace(cfg["Authentik:OrchestratorClientId"]))
+            throw new InvalidOperationException("Authentik:OrchestratorClientId is required with Authentik:OrchestratorAssertionPath.");
     }
 
     private static void RequireHttps(IConfiguration cfg, string key)

@@ -166,6 +166,7 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
             ["Authentik:BaseUrl"] = "https://iverson-authentik:8443",
             ["Authentik:PublicBaseUrl"] = "https://authentik.iverson.example.com",
             ["Authentik:CaCertificatePath"] = WriteCaPem("guard-ca.crt"),
+            ["Authentik:AdminToken"] = "static-orchestrator-token",
         };
         change?.Invoke(values);
         return new ConfigurationBuilder().AddInMemoryCollection(values).Build();
@@ -207,6 +208,38 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
     [Fact]
     public void Guard_PassesAFullyConfiguredApiRole() =>
         FluentActions.Invoking(() => AuthentikTrust.ValidateStartup(GoodConfig(), "api", Env("Production"))).Should().NotThrow();
+
+    [Fact]
+    public void Guard_RefusesBothCredentialModes() =>
+        FluentActions.Invoking(() => AuthentikTrust.ValidateStartup(GoodConfig(v =>
+            {
+                v["Authentik:OrchestratorAssertionPath"] = "/var/run/secrets/iverson/authentik-orchestrator/token";
+                v["Authentik:OrchestratorClientId"] = "iverson-admin-orchestrator";
+            }), "api", Env("Production")))
+            .Should().Throw<InvalidOperationException>().WithMessage("*Authentik:AdminToken*Authentik:OrchestratorAssertionPath*");
+
+    [Fact]
+    public void Guard_RefusesNeitherCredentialMode() =>
+        FluentActions.Invoking(() => AuthentikTrust.ValidateStartup(GoodConfig(v => v["Authentik:AdminToken"] = null), "api", Env("Production")))
+            .Should().Throw<InvalidOperationException>().WithMessage("*Authentik:AdminToken*Authentik:OrchestratorAssertionPath*");
+
+    [Fact]
+    public void Guard_RefusesFederatedModeWithoutAClientId() =>
+        FluentActions.Invoking(() => AuthentikTrust.ValidateStartup(GoodConfig(v =>
+            {
+                v["Authentik:AdminToken"] = null;
+                v["Authentik:OrchestratorAssertionPath"] = "/var/run/secrets/iverson/authentik-orchestrator/token";
+            }), "api", Env("Production")))
+            .Should().Throw<InvalidOperationException>().WithMessage("*Authentik:OrchestratorClientId*");
+
+    [Fact]
+    public void Guard_PassesTheFederatedMode() =>
+        FluentActions.Invoking(() => AuthentikTrust.ValidateStartup(GoodConfig(v =>
+            {
+                v["Authentik:AdminToken"] = null;
+                v["Authentik:OrchestratorAssertionPath"] = "/var/run/secrets/iverson/authentik-orchestrator/token";
+                v["Authentik:OrchestratorClientId"] = "iverson-admin-orchestrator";
+            }), "api", Env("Production"))).Should().NotThrow();
 
     [Fact]
     public void Guard_SkipsDevelopment() =>
@@ -267,5 +300,29 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
 
         handler.Should().BeOfType<SocketsHttpHandler>()
             .Which.SslOptions.RemoteCertificateValidationCallback.Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void IdpAdminClient_UsesTheOrchestratorTokenHandler_OnlyInFederatedMode(bool federated)
+    {
+        using var factory = _baseFactory.WithWebHostBuilder(b =>
+        {
+            b.UseSetting("Authentik:BaseUrl", "https://iverson-authentik:8443");
+            if (federated)
+            {
+                b.UseSetting("Authentik:OrchestratorAssertionPath", "/var/run/secrets/iverson/authentik-orchestrator/token");
+                b.UseSetting("Authentik:OrchestratorClientId", "iverson-admin-orchestrator");
+            }
+        });
+
+        var handlers = new List<HttpMessageHandler>();
+        for (HttpMessageHandler? h = factory.Services.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(IdpAdminClient.HttpClientName);
+             h is not null; h = (h as DelegatingHandler)?.InnerHandler)
+            handlers.Add(h);
+
+        handlers.OfType<AuthentikOrchestratorTokenHandler>().Should().HaveCount(federated ? 1 : 0);
+        handlers[^1].Should().BeOfType<SocketsHttpHandler>("the exchange and the admin calls share the CA-trusting primary handler");
     }
 }
