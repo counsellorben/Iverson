@@ -148,8 +148,8 @@ So the direct grants are what a single-statement bypass, or a stolen query crede
 - **Helm.**
   - A new `<rel>-starrocks-provisioner` Secret, lookup-or-generate with `keep`. This follows round 10's precedent of new Secrets; adding a key to the existing Secret renders empty on upgrade (Verified assumption 16).
   - The worker deployment gets `ConnectionStrings__StarRocksProvisioner`.
-  - `job-create-user` creates the provisioner and revokes `iverson_app`'s direct grants, except `OPERATE ON SYSTEM`. `REVOKE` of a privilege or a role already gone is silent (Verified assumption 14), so the job stays safe to re-run on upgrades. The stale comment about `EnsureDatabaseAsync` (`:88-93`) is corrected.
-- **Compose.** `starrocks-init` mirrors the job. The provisioner uses a dev-only literal password, following the existing `iverson_app` literal (compose root is passwordless and loopback-only). The compose worker gets the provisioner connection string.
+  - `job-create-user` creates the provisioner and revokes `iverson_app`'s direct grants, except `OPERATE ON SYSTEM`. `REVOKE` of a privilege or a role already gone is silent (Verified assumption 14), so the job stays safe to re-run on upgrades. It keeps `CREATE DATABASE IF NOT EXISTS iverson` (as root) ahead of the revokes. A database-scoped `REVOKE` naming a database that doesn't exist fails and aborts the batch (Verified assumption 14), so a fresh install needs the empty `iverson` database to exist (CDR-2 §3.1, user choice B: verified, then kept). The stale comment about `EnsureDatabaseAsync` (`:88-93`) is corrected.
+- **Compose.** `starrocks-init` mirrors the job, including keeping `CREATE DATABASE IF NOT EXISTS iverson` ahead of the revokes. The provisioner uses a dev-only literal password, following the existing `iverson_app` literal (compose root is passwordless and loopback-only). The compose worker gets the provisioner connection string.
 - **Test fixtures.**
   - `TenantIsolationIntegrationTests` and `MatchRowsIntegrationTests` create both users and pass both connection strings.
   - Fixtures that run as root are unchanged.
@@ -287,6 +287,7 @@ After `DeactivateUserAsync` succeeds, `RemoveUser` calls `RevokeAsync(user.Uid)`
 - **`OPERATE ON SYSTEM` stays on `iverson_app`** (user decision, 2026-10-08). `SHOW BACKENDS` needs it, and it also permits `ADMIN SET FRONTEND CONFIG`, so a stolen query credential can change FE configuration. It gives no data access and can't create users or nodes (live probe). Expression injection can't issue statements, and putting it behind a role wouldn't stop a stolen credential.
 - **RegisterSchema's cross-owner PermissionDenied** (`SchemaRegistrationOrchestrator.cs:78-81`) still tells a SchemaAdmin that a foreign type exists. It is privileged-only.
 - **`POST /admin/reconcile/{typeName}`** resolves any registered type, foreign included. It is Operator-only and cross-tenant by design.
+- **An empty, ungranted `iverson` database remains on every install** (CDR-2 §3.1). The job and `starrocks-init` keep creating it, because their revokes name it and StarRocks refuses a revoke on a missing database (Verified assumption 14).
 - **Compose's provisioner password is a dev-only literal**, like `iverson_app`'s. Compose root is passwordless and loopback-only.
 - **`WidenLargeTextColumnsAsync`'s `ALTER`** had no proven privilege before this change. No test drives it today; §6 adds one.
 - **Plaintext StarRocks transport**, including the job's password literals, belongs to sub-project C (finding #4).
@@ -333,6 +334,7 @@ Evidence was gathered on 2026-10-08 at `19ab57c0` by reading code, rendering the
     - **Provisioner flow.** The provisioner (`user_admin` plus direct `CREATE DATABASE`) provisioned a new tenant and re-provisioned a pre-existing one, by granting the tenant role to itself and to `iverson_app`.
     - **Idempotence.** Re-grants are silent, and so is `REVOKE` of an absent privilege.
     - **Role revocation** (second probe, CDR-1 §3.2, same image). `REVOKE user_admin FROM <user>` exits 0 whether the user holds the role, held it before, or never had it. Revoking a custom role that was never granted also exits 0. In a multi-statement batch, a statement after the absent-role revoke still runs.
+    - **Missing database** (third probe, CDR-2 §3.1, same image, fresh instance with no `iverson` database). `REVOKE … ON iverson.*`, `REVOKE … ON DATABASE iverson` and `REVOKE … ON ALL TABLES IN DATABASE iverson` each fail with exit 1 (`cannot find db: iverson`), and the failure aborts the rest of a multi-statement batch.
     - **After revocation:**
       - a connection with `-D iverson` fails at handshake;
       - `SHOW BACKENDS` needs `OPERATE`/`NODE`;
