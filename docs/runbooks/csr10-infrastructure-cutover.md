@@ -224,7 +224,7 @@ The API now authenticates to Authentik's admin API with its own Kubernetes servi
    ```
 
    It exits non-zero if either blueprint is invalid. A failure that names `oidc_jwks_url` means the relay could not read the cluster's keys; check the `jwks-relay` container's log and the worker's API-server egress (§4).
-4. Delete the two orchestrator Secrets. They carry `helm.sh/resource-policy: keep`, so the upgrade leaves them behind:
+4. Delete the two orchestrator Secrets. They carry `helm.sh/resource-policy: keep`, so the upgrade leaves them behind. They exist only on clusters installed before this change; a fresh install never creates them, which is why the delete uses `--ignore-not-found`:
 
    ```bash
    kubectl -n <ns> delete secret --ignore-not-found <release>-authentik-admin-orchestrator-token <release>-authentik-admin-orchestrator-user
