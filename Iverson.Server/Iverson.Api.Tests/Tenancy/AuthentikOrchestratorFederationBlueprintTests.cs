@@ -90,6 +90,12 @@ public sealed class AuthentikOrchestratorFederationBlueprintTests
     }
 
     [Fact]
+    public void InClusterMarker_RefusesThePublicIngressHeader() =>
+        InClusterOnlyExpression().Trim()
+            .Should().Be("return \"HTTP_X_IVERSON_PUBLIC_INGRESS\" not in request.http_request.META",
+                "the marker is the only thing that refuses an exchange arriving through the public listener");
+
+    [Fact]
     public void Source_ReadsTheRelay_AndProviderFederatesFromIt()
     {
         var source = FederationEntry("slug: iverson-k8s-workload").Select(l => l.Trim()).ToList();
