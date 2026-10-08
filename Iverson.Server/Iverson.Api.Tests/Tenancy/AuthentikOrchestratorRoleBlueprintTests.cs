@@ -155,7 +155,7 @@ public sealed class AuthentikOrchestratorRoleBlueprintTests
     /// Resolves the chart directory from this source file's own path, so the test fails if the
     /// blueprints are moved rather than silently passing against nothing.
     /// </summary>
-    private static string AuthentikChartDirectory([CallerFilePath] string thisFilePath = "")
+    internal static string AuthentikChartDirectory([CallerFilePath] string thisFilePath = "")
     {
         var serverDir = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(thisFilePath)))!;
         return Path.Combine(serverDir, "deploy", "helm", "iverson", "charts", "authentik");

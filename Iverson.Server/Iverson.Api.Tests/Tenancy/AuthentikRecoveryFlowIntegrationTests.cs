@@ -153,7 +153,7 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
     {
         var key = rsa.ExportParameters(false);
         var mapping = await PostAsync(admin, "/api/v3/propertymappings/source/oauth/",
-            new { name = $"{kid} username", expression = $"return {{\"username\": \"{WorkloadUsername}\"}}" });
+            new { name = $"{kid} username", expression = AuthentikOrchestratorFederationBlueprintTests.UsernameMappingExpression() });
         var source = await PostAsync(admin, "/api/v3/sources/oauth/", new
         {
             name = kid, slug = kid, provider_type = "openidconnect", enabled = true,
@@ -176,26 +176,17 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
         });
         var app = await PostAsync(admin, "/api/v3/core/applications/",
             new { name = kid, slug = kid, provider = provider.GetProperty("pk"), policy_engine_mode = "all" });
+        // The expressions are the SHIPPED ones (orchestrator-federation.yaml), not a copy, so this
+        // fact fails if the template's pin, marker or mapping stops behaving as tested.
         var pin = await PostAsync(admin, "/api/v3/policies/expression/", new
         {
             name = $"{kid} workload",
-            expression = $$"""
-                jwt = request.context.get("oauth_jwt") or {}
-                aud = jwt.get("aud")
-                auds = aud if isinstance(aud, list) else [aud]
-                user = ak_user_by(username="{{WorkloadUsername}}")
-                return (
-                    jwt.get("sub") == "{{FederatedSubject}}"
-                    and "{{FederatedAudience}}" in auds
-                    and user is not None
-                    and ak_is_group_member(user, name="iverson-admin-orchestrators")
-                )
-                """,
+            expression = AuthentikOrchestratorFederationBlueprintTests.PinPolicyExpression(FederatedSubject),
         });
         var marker = await PostAsync(admin, "/api/v3/policies/expression/", new
         {
             name = $"{kid} in-cluster-only",
-            expression = "return \"HTTP_X_IVERSON_PUBLIC_INGRESS\" not in request.http_request.META",
+            expression = AuthentikOrchestratorFederationBlueprintTests.InClusterOnlyExpression(),
         });
         await PostAsync(admin, "/api/v3/policies/bindings/", new { policy = pin.GetProperty("pk"), target = app.GetProperty("pk"), order = 0, enabled = true });
         await PostAsync(admin, "/api/v3/policies/bindings/", new { policy = marker.GetProperty("pk"), target = app.GetProperty("pk"), order = 1, enabled = true });
