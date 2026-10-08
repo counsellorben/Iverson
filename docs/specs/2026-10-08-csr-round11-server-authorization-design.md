@@ -140,10 +140,15 @@ So the direct grants are what a single-statement bypass, or a stolen query crede
 **Wiring.**
 - **`AddStarRocks`** gains an optional trailing `string? provisionerConnectionString = null`. `EngagementRepository` gets a second connection factory, used only for provisioning.
 - **The `Program.cs:267-273` guard** becomes role-aware: the provisioner connection string is required only when the workload role is `worker` and Engagement is enabled. The API pod never receives it.
+- **First-upgrade gap** (CDR-1 §3.1, user choice B). The post-upgrade hook creates the provisioner after the upgraded worker is already serving, and the worker's provisioned set is per-process memory (Verified assumption 39).
+  - `EnsureTenantProvisionedAsync` wraps a `MySqlException { ErrorCode: AccessDenied }` from opening the provisioner connection as `EngagementNotReadyException`.
+  - `TransientFailures` classifies that exception as transient (`TransientFailures.cs:48`), so the consumer halts without committing and redelivers once the hook has run, instead of dead-lettering.
+  - This mirrors the readiness checker's AuthPending treatment of the same not-yet-created-by-hook case (`EngagementHealthChecker.cs:32-45`).
+  - Every other provisioning failure keeps its current classification.
 - **Helm.**
   - A new `<rel>-starrocks-provisioner` Secret, lookup-or-generate with `keep`. This follows round 10's precedent of new Secrets; adding a key to the existing Secret renders empty on upgrade (Verified assumption 16).
   - The worker deployment gets `ConnectionStrings__StarRocksProvisioner`.
-  - `job-create-user` creates the provisioner and revokes `iverson_app`'s direct grants, except `OPERATE ON SYSTEM`. `REVOKE` of a privilege already gone is silent, so the job stays safe to re-run on upgrades. The stale comment about `EnsureDatabaseAsync` (`:88-93`) is corrected.
+  - `job-create-user` creates the provisioner and revokes `iverson_app`'s direct grants, except `OPERATE ON SYSTEM`. `REVOKE` of a privilege or a role already gone is silent (Verified assumption 14), so the job stays safe to re-run on upgrades. The stale comment about `EnsureDatabaseAsync` (`:88-93`) is corrected.
 - **Compose.** `starrocks-init` mirrors the job. The provisioner uses a dev-only literal password, following the existing `iverson_app` literal (compose root is passwordless and loopback-only). The compose worker gets the provisioner connection string.
 - **Test fixtures.**
   - `TenantIsolationIntegrationTests` and `MatchRowsIntegrationTests` create both users and pass both connection strings.
@@ -169,8 +174,10 @@ So the direct grants are what a single-statement bypass, or a stolen query crede
 
 ### 4c. Enrichment (#11)
 `ValidateEnrichmentTargets` gains two rules, both InvalidArgument at registration. An empty role list means unrestricted, so each rule acts only on non-empty lists.
+Both rules use the evaluator's own comparisons (`RowFieldAuthorizationEvaluator.cs:35, 69-80`): a FieldPermission's `FieldName` matches a property `OrdinalIgnoreCase`, and role names compare ordinally, the way the evaluator matches `groups`.
+
 1. **Write.** No `FieldPermission` with a non-empty `WritableRoles` may name an enrichment target. The model is the target's only writer, so that restriction couldn't be enforced.
-2. **Read.** For each embedding or chunk source property whose `FieldPermission` has a non-empty `ReadableRoles`, every enrichment target must carry a `FieldPermission` with a non-empty `ReadableRoles` that is a subset of the source's. Role names are compared case-insensitively.
+2. **Read.** For **each** FieldPermission naming an embedding or chunk source property with a non-empty `ReadableRoles`, every enrichment target must carry **at least one** FieldPermission with a non-empty `ReadableRoles` that is an ordinal subset of that source FieldPermission's roles. The evaluator excludes a field when any FieldPermission naming it excludes the caller, so this condition is exactly "every reader of the target can read every source".
 
 No conformance, LoadTest or test model is rejected (Verified assumption 26).
 
@@ -196,7 +203,8 @@ The visibility check runs first in each RPC, before key extraction, the fetch an
 | Mapping Get, Mapping Delete | Completed call, `Success=false`, `Error = "'{request.TypeName}:{request.Key}' not found."`. This is exactly an absent key's answer (IVC-ERR-004's shape). Today an unregistered type answers FAILED_PRECONDITION. |
 | Mapping Update, Persistence Update | NOT_FOUND with the key-less message `"'{request.TypeName}' row not found."`. The key column of an invisible type is unknown, so no key is read. |
 | Retrieval Get / GetMany | `Found=false`, using the unregistered branch exactly: one result per raw `request.Keys` entry, no de-duplication, no GUID check. |
-| Mapping/Persistence Post; Search, Aggregate, GroupBy, Pipeline, SearchSimilar, SearchChunks, MatchPattern; any joined or pipeline source type | FAILED_PRECONDITION with the existing message `"No schema registered for '{typeName}'. Call RegisterSchema first."` (the joined form is unified to the same text). |
+| Mapping/Persistence Post; Search, Aggregate, GroupBy, Pipeline, SearchSimilar, SearchChunks, MatchPattern; any type named in Search, Aggregate or GroupBy `Joins` | FAILED_PRECONDITION with the existing message `"No schema registered for '{typeName}'. Call RegisterSchema first."` (the joined form is unified to the same text). |
+| A pipeline join source | INVALID_ARGUMENT with the builder's existing message, `"Step '{step}': join source '{source}' is neither an earlier step nor a registered type."` (`StarRocksPipelineBuilder.cs:342-345`). A pipeline source may be an earlier step's name, so the source filter drops invisible names rather than throwing, and the builder answers. Unregistered sources already get this answer today. |
 
 `request.TypeName` is echoed, never the canonical `schema.TypeName`, so a foreign type's casing doesn't leak.
 
@@ -218,7 +226,7 @@ After `DeactivateUserAsync` succeeds, `RemoveUser` calls `RevokeAsync(user.Uid)`
 - **The order.** The owner-mismatch check moves ahead of the tenant-immutability check (`:148-153`). On legacy schemas whose tenant column is client-declared, that check would otherwise answer PERMISSION_DENIED for another owner's row and NOT_FOUND for an absent one.
 
 ### 5e. Tenant lifecycle (#21)
-- **Terminal deletion.** `ReactivateTenant` refuses a tenant whose current status is `deleted`, with FAILED_PRECONDITION.
+- **Terminal deletion.** `SetStatusAsync` refuses, with FAILED_PRECONDITION, a tenant whose current status is `deleted`, before it writes. Both `SuspendTenant` and `ReactivateTenant` go through it (`TenantLifecycleGrpcService.cs:67-71`), so neither can revive a deleted tenant.
 - **`/v1/traces`.** After the `ConsoleClient` policy, the handler reads the token's `tenant_id`. When it is present and `TenantStatusCache.GetStatusAsync` doesn't return `active`, the answer is 403. A token with no `tenant_id` passes.
 - **`/admin/dlq` and `/admin/dlq/{id}/replay`.** The acting principal's `tenant_id`, when present, gets the same check.
 
@@ -241,17 +249,18 @@ After `DeactivateUserAsync` succeeds, `RemoveUser` calls `RevokeAsync(user.Uid)`
   - the quoting helper refuses `"` and NUL;
   - relation templates rejected;
   - a legacy stored relation template renders its relation segments empty and fetches nothing;
-  - both enrichment rules, including empty role lists passing.
+  - both enrichment rules, including empty role lists passing, a target role that differs from the source's only by case (rejected), and a source with two FieldPermissions where the target covers only one (rejected).
+- **Provisioning:** an AccessDenied from opening the provisioner connection surfaces as `EngagementNotReadyException`. Every other provisioning failure keeps its current exception.
 - **Runtime:**
-  - a table-driven test asserting identical status, detail and response shape for "unregistered" and "foreign-owned" on every RPC in §5a's table, including malformed keys and GetMany duplicates;
+  - a table-driven test asserting identical status, detail and response shape for "unregistered" and "foreign-owned" on every RPC in §5a's table, including malformed keys and GetMany duplicates. The pipeline-join-source row is asserted at builder level (`StarRocksPipelineBuilder.TrackAndValidate` with the visible-registry lambda, both cases), because an RPC test against a mocked search service can't observe the builder's answer;
   - an unowned type stays visible across tenants;
   - the step-name collision with a foreign type answers like an unregistered one;
   - the OneToMany skip and the catalog;
   - the RemoveUser double revoke;
   - Update owner-mismatch NOT_FOUND, including on a legacy tenant-column schema;
-  - Reactivate refusing a deleted tenant;
+  - Suspend and Reactivate refusing a deleted tenant;
   - the `/v1/traces` and `/admin/dlq*` tenant checks.
-- **Mutation proof.** For each new guard, its predicate is removed or inverted once, and a test must fail. The guards are the derived-table filter, each parser rule, relation identifier validation, template rejection, the enrichment rules, `TryGetVisible`, the OneToMany skip, the second revoke, owner-mismatch ordering, the deleted-terminal check, and both tenant checks.
+- **Mutation proof.** For each new guard, its predicate is removed or inverted once, and a test must fail. The guards are the derived-table filter, each parser rule, relation identifier validation, template rejection, the enrichment rules, `TryGetVisible`, the OneToMany skip, the second revoke, owner-mismatch ordering, the deleted-terminal check, both tenant checks, and the provisioner AccessDenied wrap.
 
 **Integration tests.** These use the StarRocks Testcontainers fixtures, one at a time, memory-capped.
 - A live RIGHT and FULL pipeline join returns only the caller's rows.
@@ -274,6 +283,7 @@ After `DeactivateUserAsync` succeeds, `RemoveUser` calls `RevokeAsync(user.Uid)`
 
 ## Known issues / accepted as out of scope
 
+- **A wrong provisioner password stalls the worker's engagement consumer** instead of dead-lettering (user choice, CDR-1 §3.1 B). AccessDenied is wire-level ambiguous: the same code covers "not yet created by the hook" and "wrong password". The readiness checker already accepts the same ambiguity (`EngagementHealthChecker.cs:32-45`).
 - **`OPERATE ON SYSTEM` stays on `iverson_app`** (user decision, 2026-10-08). `SHOW BACKENDS` needs it, and it also permits `ADMIN SET FRONTEND CONFIG`, so a stolen query credential can change FE configuration. It gives no data access and can't create users or nodes (live probe). Expression injection can't issue statements, and putting it behind a role wouldn't stop a stolen credential.
 - **RegisterSchema's cross-owner PermissionDenied** (`SchemaRegistrationOrchestrator.cs:78-81`) still tells a SchemaAdmin that a foreign type exists. It is privileged-only.
 - **`POST /admin/reconcile/{typeName}`** resolves any registered type, foreign included. It is Operator-only and cross-tenant by design.
@@ -322,6 +332,7 @@ Evidence was gathered on 2026-10-08 at `19ab57c0` by reading code, rendering the
 14. **Grant and revoke semantics (live probe):**
     - **Provisioner flow.** The provisioner (`user_admin` plus direct `CREATE DATABASE`) provisioned a new tenant and re-provisioned a pre-existing one, by granting the tenant role to itself and to `iverson_app`.
     - **Idempotence.** Re-grants are silent, and so is `REVOKE` of an absent privilege.
+    - **Role revocation** (second probe, CDR-1 §3.2, same image). `REVOKE user_admin FROM <user>` exits 0 whether the user holds the role, held it before, or never had it. Revoking a custom role that was never granted also exits 0. In a multi-statement batch, a statement after the absent-role revoke still runs.
     - **After revocation:**
       - a connection with `-D iverson` fails at handshake;
       - `SHOW BACKENDS` needs `OPERATE`/`NODE`;
@@ -359,10 +370,15 @@ Evidence was gathered on 2026-10-08 at `19ab57c0` by reading code, rendering the
 32. **OneToMany evaluation order.** The evaluator is a pure function of (schema, principal, action), so it can run before the OneToMany fetch. The catalog hook needs the child's decision. (`EntityRelationResolver.cs:220-262`; `SchemaCatalogReader.cs:53-104, 147-162`)
 33. **Repeat revocation.** `RevokeAsync` is an upsert where the later `now()` wins (`TokenRevocationRepository.cs:21-29`). `SetTenantAdmin` already revokes twice.
 34. **Owner-mismatch branch.** It is its own branch with its own audit reason. Tenant-immutability runs before it, which matters only for legacy tenant-column schemas. (`AuthorizationFieldMasking.cs:143-186`)
-35. **Reactivation.** `ReactivateTenant` routes through `SetStatusAsync`, which can read the current status first. (`TenantLifecycleGrpcService.cs:70-93`)
+35. **Status transitions.** `SuspendTenant` and `ReactivateTenant` both route through `SetStatusAsync`, which reads the current status before writing. `DeleteTenant` writes directly. (`TenantLifecycleGrpcService.cs:67-93`)
 36. **Tenant status cache.** `TenantStatusCache.GetStatusAsync(string)` is injectable into both handlers. (`TenantStatusCache.cs:18`)
 
 **Cross-cutting**
 
 37. **No proto or SDK change** is needed.
 38. **No production consumer** depends on FAILED_PRECONDITION for unregistered keyed RPCs, or on PERMISSION_DENIED for Update owner mismatch. The test fallout is listed in §2 and §6.
+39. **First-upgrade ordering** (CDR-1 §3.1).
+    - `job-create-user` is a `post-install,post-upgrade` hook (`job-create-user.yaml:6,15`), so it runs after the upgraded worker is serving.
+    - The worker's provisioned tenant/table set is per-process memory (`EngagementStoreConsumer.cs:19,68-72`), so the first event of each tenant and type after a rollout provisions again.
+    - `EngagementNotReadyException` is classified transient (`TransientFailures.cs:48`), and the transient arm halts without dead-lettering.
+    - The readiness checker already maps `MySqlErrorCode.AccessDenied` to AuthPending for the hook-not-yet-run case (`EngagementHealthChecker.cs:32-45`).
