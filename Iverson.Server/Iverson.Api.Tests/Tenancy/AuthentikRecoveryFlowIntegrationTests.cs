@@ -94,6 +94,9 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
 
     private const string FederatedSubject = "system:serviceaccount:iverson-test:iverson-api";
     private const string FederatedAudience = "iverson-authentik-orchestrator";
+    // Must equal the user the shipped blueprint's pin and mapping expressions name (both are read from
+    // the template, so they name this user, not a test copy). The fixture is shared across the class, so
+    // a second fact that pre-created this user would collide with this one.
     private const string WorkloadUsername = "iverson-admin-orchestrator-workload";
 
     [Fact]
@@ -123,7 +126,8 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
             var services = new ServiceCollection();
             services.AddHttpClient(IdpAdminClient.HttpClientName, client => client.BaseAddress = new Uri(_authentik.BaseUrl))
                 .AddHttpMessageHandler(() => new AuthentikOrchestratorTokenHandler(assertionFile, clientId, TimeProvider.System));
-            var factory = services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>();
+            using var provider = services.BuildServiceProvider();
+            var factory = provider.GetRequiredService<IHttpClientFactory>();
             var federated = new IdpAdminClient(factory, NullLogger<IdpAdminClient>.Instance, new ConfigurationBuilder().Build());
 
             var created = await federated.CreateUserAsync($"{kid}-tenant-admin", $"{kid}@example.invalid", $"tenant-{kid}", ["tenant-admins"]);
@@ -210,8 +214,20 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
         if (publicIngressMarker)
             request.Headers.Add("X-Iverson-Public-Ingress", "1");
         using var response = await client.SendAsync(request);
-        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        return (response.StatusCode, doc.RootElement.TryGetProperty("error", out var error) ? error.GetString() : null);
+        // A success body carries an access token, so a body that is not JSON is reported by status only.
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        }
+        catch (JsonException)
+        {
+            Assert.Fail($"The token endpoint answered HTTP {(int)response.StatusCode} with a body that is not JSON.");
+            throw;
+        }
+        using (doc)
+            return (response.StatusCode, doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("error", out var error) ? error.GetString() : null);
     }
 
     private static async Task<int> UserCountAsync(HttpClient admin)
