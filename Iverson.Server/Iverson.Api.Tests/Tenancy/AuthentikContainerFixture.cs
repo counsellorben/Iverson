@@ -112,7 +112,7 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
 
     /// <summary>
     /// The API token of the LEAST-PRIVILEGED <c>iverson-admin-orchestrator</c> service identity —
-    /// the credential Iverson.Api actually runs with (<c>Authentik__AdminToken</c>). This fixture
+    /// the credential Iverson.Api runs with in compose (<c>Authentik__AdminToken</c>, the static mode); Helm uses the federated credential, covered by the federation fact in <see cref="AuthentikRecoveryFlowIntegrationTests"/>. This fixture
     /// generates the value itself and threads it into the container as
     /// <c>IVERSON_ADMIN_ORCHESTRATOR_TOKEN</c>, which the shipped
     /// <c>compose-only/service-clients.yaml</c> blueprint's <c>!Env</c> tag reads (CSR round-4

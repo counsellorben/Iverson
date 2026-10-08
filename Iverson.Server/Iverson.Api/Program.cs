@@ -396,7 +396,7 @@ var authentikAdminClient = builder.Services.AddHttpClient(Iverson.Api.Tenancy.Id
 // CSR round-10 #4 (C2): on Helm there is no static Authentik credential. The API exchanges its own
 // projected service-account token for a short-lived access token instead; the startup guard makes the
 // two modes mutually exclusive.
-if (cfg["Authentik:OrchestratorAssertionPath"] is { Length: > 0 } orchestratorAssertionPath)
+if (cfg["Authentik:OrchestratorAssertionPath"] is { } orchestratorAssertionPath && !string.IsNullOrWhiteSpace(orchestratorAssertionPath))
     authentikAdminClient.AddHttpMessageHandler(() => new Iverson.Api.Tenancy.AuthentikOrchestratorTokenHandler(
         orchestratorAssertionPath, cfg["Authentik:OrchestratorClientId"]!, TimeProvider.System));
 builder.Services.AddSingleton<Iverson.Api.Tenancy.IIdpAdminClient, Iverson.Api.Tenancy.IdpAdminClient>();
