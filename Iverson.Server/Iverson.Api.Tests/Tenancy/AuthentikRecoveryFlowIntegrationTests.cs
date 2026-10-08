@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
@@ -83,6 +84,181 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return client;
     }
+
+    // ── CSR round-10 #4 (C2): workload-identity federation ─────────────────────────────────────
+    //
+    // The Helm profiles authenticate the API with its Kubernetes service-account token instead of a
+    // static Authentik token. This builds the same objects orchestrator-federation.yaml declares
+    // (static JWKS in place of the relay URL; names suffixed so the shared fixture stays clean),
+    // then drives the real AuthentikOrchestratorTokenHandler against this live Authentik.
+
+    private const string FederatedSubject = "system:serviceaccount:iverson-test:iverson-api";
+    private const string FederatedAudience = "iverson-authentik-orchestrator";
+    private const string WorkloadUsername = "iverson-admin-orchestrator-workload";
+
+    [Fact]
+    public async Task OrchestratorFederation_MintsOnlyForThePinnedWorkload_OnceTheUserExists()
+    {
+        using var rsa = RSA.Create(2048);
+        var kid = "c2-" + Guid.NewGuid().ToString("N")[..8];
+        using var admin = RawClient(_authentik.AdminToken);
+        var clientId = await CreateFederationObjectsAsync(admin, rsa, kid);
+        var assertion = Assertion(rsa, kid, FederatedSubject, FederatedAudience);
+
+        // Before the workload user exists the policy refuses, and the exchange creates nobody.
+        var usersBefore = await UserCountAsync(admin);
+        (await ExchangeAsync(clientId, assertion)).Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
+        (await UserCountAsync(admin)).Should().Be(usersBefore);
+
+        // Pre-create the user in the orchestrators group, as service-clients.yaml does.
+        var groupPk = await FirstAsync(admin, "/api/v3/core/groups/?name=iverson-admin-orchestrators", "pk");
+        await PostAsync(admin, "/api/v3/core/users/",
+            new { username = WorkloadUsername, name = "Iverson Admin Orchestrator (workload identity)", is_active = true, groups = new[] { groupPk } });
+
+        // Through the real handler: exactly the orchestrator role's rights.
+        var assertionFile = Path.Combine(Path.GetTempPath(), $"{kid}-assertion");
+        await File.WriteAllTextAsync(assertionFile, assertion);
+        try
+        {
+            var services = new ServiceCollection();
+            services.AddHttpClient(IdpAdminClient.HttpClientName, client => client.BaseAddress = new Uri(_authentik.BaseUrl))
+                .AddHttpMessageHandler(() => new AuthentikOrchestratorTokenHandler(assertionFile, clientId, TimeProvider.System));
+            var factory = services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>();
+            var federated = new IdpAdminClient(factory, NullLogger<IdpAdminClient>.Instance, new ConfigurationBuilder().Build());
+
+            var created = await federated.CreateUserAsync($"{kid}-tenant-admin", $"{kid}@example.invalid", $"tenant-{kid}", ["tenant-admins"]);
+            created.RecoveryLink.Should().NotBeNullOrEmpty("POST users and its recovery link both succeed with the federated token");
+
+            using var raw = factory.CreateClient(IdpAdminClient.HttpClientName);
+            (await raw.GetAsync("/api/v3/rbac/roles/")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        }
+        finally
+        {
+            File.Delete(assertionFile);
+        }
+
+        // Wrong subject, wrong audience, or arrival through the public listener: refused, nobody created.
+        var usersAfter = await UserCountAsync(admin);
+        (await ExchangeAsync(clientId, Assertion(rsa, kid, "system:serviceaccount:iverson-test:other", FederatedAudience)))
+            .Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
+        (await ExchangeAsync(clientId, Assertion(rsa, kid, FederatedSubject, "somebody-else")))
+            .Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
+        (await ExchangeAsync(clientId, assertion, publicIngressMarker: true))
+            .Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
+        (await UserCountAsync(admin)).Should().Be(usersAfter);
+    }
+
+    /// <summary>Creates the federation objects and returns the provider's client id.</summary>
+    private static async Task<string> CreateFederationObjectsAsync(HttpClient admin, RSA rsa, string kid)
+    {
+        var key = rsa.ExportParameters(false);
+        var mapping = await PostAsync(admin, "/api/v3/propertymappings/source/oauth/",
+            new { name = $"{kid} username", expression = $"return {{\"username\": \"{WorkloadUsername}\"}}" });
+        var source = await PostAsync(admin, "/api/v3/sources/oauth/", new
+        {
+            name = kid, slug = kid, provider_type = "openidconnect", enabled = true,
+            consumer_key = kid, consumer_secret = "unused",
+            authorization_url = "", access_token_url = "", profile_url = "",
+            oidc_jwks = new { keys = new[] { new { kty = "RSA", alg = "RS256", use = "sig", kid, n = Base64Url(key.Modulus!), e = Base64Url(key.Exponent!) } } },
+            user_property_mappings = new[] { mapping.GetProperty("pk") },
+        });
+        var provider = await PostAsync(admin, "/api/v3/providers/oauth2/", new
+        {
+            name = kid,
+            authorization_flow = await FirstAsync(admin, "/api/v3/flows/instances/?slug=default-provider-authorization-implicit-consent", "pk"),
+            invalidation_flow = await FirstAsync(admin, "/api/v3/flows/instances/?slug=default-provider-invalidation-flow", "pk"),
+            client_type = "confidential", client_id = kid, redirect_uris = Array.Empty<object>(),
+            grant_types = new[] { "client_credentials" },
+            signing_key = await FirstAsync(admin, "/api/v3/crypto/certificatekeypairs/?name=authentik%20Self-signed%20Certificate", "pk"),
+            issuer_mode = "global", access_token_validity = "minutes=5",
+            property_mappings = new[] { await FirstAsync(admin, "/api/v3/propertymappings/provider/scope/?scope_name=goauthentik.io/api", "pk") },
+            jwt_federation_sources = new[] { source.GetProperty("pk") },
+        });
+        var app = await PostAsync(admin, "/api/v3/core/applications/",
+            new { name = kid, slug = kid, provider = provider.GetProperty("pk"), policy_engine_mode = "all" });
+        var pin = await PostAsync(admin, "/api/v3/policies/expression/", new
+        {
+            name = $"{kid} workload",
+            expression = $$"""
+                jwt = request.context.get("oauth_jwt") or {}
+                aud = jwt.get("aud")
+                auds = aud if isinstance(aud, list) else [aud]
+                user = ak_user_by(username="{{WorkloadUsername}}")
+                return (
+                    jwt.get("sub") == "{{FederatedSubject}}"
+                    and "{{FederatedAudience}}" in auds
+                    and user is not None
+                    and ak_is_group_member(user, name="iverson-admin-orchestrators")
+                )
+                """,
+        });
+        var marker = await PostAsync(admin, "/api/v3/policies/expression/", new
+        {
+            name = $"{kid} in-cluster-only",
+            expression = "return \"HTTP_X_IVERSON_PUBLIC_INGRESS\" not in request.http_request.META",
+        });
+        await PostAsync(admin, "/api/v3/policies/bindings/", new { policy = pin.GetProperty("pk"), target = app.GetProperty("pk"), order = 0, enabled = true });
+        await PostAsync(admin, "/api/v3/policies/bindings/", new { policy = marker.GetProperty("pk"), target = app.GetProperty("pk"), order = 1, enabled = true });
+        return kid;
+    }
+
+    private async Task<(HttpStatusCode Status, string? Error)> ExchangeAsync(string clientId, string assertion, bool publicIngressMarker = false)
+    {
+        using var client = new HttpClient { BaseAddress = new Uri(_authentik.BaseUrl) };
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/application/o/token/")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["grant_type"] = "client_credentials",
+                ["client_id"] = clientId,
+                ["client_assertion_type"] = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                ["client_assertion"] = assertion,
+                ["scope"] = "goauthentik.io/api",
+            }),
+        };
+        if (publicIngressMarker)
+            request.Headers.Add("X-Iverson-Public-Ingress", "1");
+        using var response = await client.SendAsync(request);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return (response.StatusCode, doc.RootElement.TryGetProperty("error", out var error) ? error.GetString() : null);
+    }
+
+    private static async Task<int> UserCountAsync(HttpClient admin)
+    {
+        using var doc = JsonDocument.Parse(await admin.GetStringAsync("/api/v3/core/users/?page_size=1"));
+        return doc.RootElement.GetProperty("pagination").GetProperty("count").GetInt32();
+    }
+
+    private static async Task<JsonElement> PostAsync(HttpClient admin, string path, object body)
+    {
+        using var response = await admin.PostAsync(path, Json(JsonSerializer.Serialize(body)));
+        var text = await response.Content.ReadAsStringAsync();
+        response.IsSuccessStatusCode.Should().BeTrue($"POST {path} returned {(int)response.StatusCode}: {text}");
+        return JsonDocument.Parse(text).RootElement.Clone();
+    }
+
+    private static async Task<JsonElement> FirstAsync(HttpClient admin, string pathAndQuery, string property)
+    {
+        using var doc = JsonDocument.Parse(await admin.GetStringAsync(pathAndQuery));
+        var results = doc.RootElement.GetProperty("results");
+        results.GetArrayLength().Should().BeGreaterThan(0, $"GET {pathAndQuery} must find the object");
+        return results[0].GetProperty(property).Clone();
+    }
+
+    /// <summary>An RS256 JWT shaped like a kubelet-projected service-account token.</summary>
+    private static string Assertion(RSA rsa, string kid, string subject, string audience)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var header = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new { alg = "RS256", typ = "JWT", kid }));
+        var payload = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            iss = "https://kubernetes.default.svc.cluster.local", sub = subject, aud = new[] { audience }, iat = now, exp = now + 600,
+        }));
+        var signature = rsa.SignData(Encoding.ASCII.GetBytes($"{header}.{payload}"), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        return $"{header}.{payload}.{Base64Url(signature)}";
+    }
+
+    private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     private static StringContent Json(string json) => new(json, Encoding.UTF8, "application/json");
 
