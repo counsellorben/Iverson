@@ -395,10 +395,14 @@ var authentikAdminClient = builder.Services.AddHttpClient(Iverson.Api.Tenancy.Id
 }).ConfigurePrimaryHttpMessageHandler(() => Iverson.Api.Tenancy.AuthentikTrust.CreateHandler(cfg["Authentik:CaCertificatePath"]));
 // CSR round-10 #4 (C2): on Helm there is no static Authentik credential. The API exchanges its own
 // projected service-account token for a short-lived access token instead; the startup guard makes the
-// two modes mutually exclusive.
+// two modes mutually exclusive. One token cache serves every handler the factory builds, so a handler
+// rotation does not mint a new token.
 if (cfg["Authentik:OrchestratorAssertionPath"] is { } orchestratorAssertionPath && !string.IsNullOrWhiteSpace(orchestratorAssertionPath))
+{
+    var orchestratorTokenCache = new Iverson.Api.Tenancy.AuthentikOrchestratorTokenCache();
     authentikAdminClient.AddHttpMessageHandler(() => new Iverson.Api.Tenancy.AuthentikOrchestratorTokenHandler(
-        orchestratorAssertionPath, cfg["Authentik:OrchestratorClientId"]!, TimeProvider.System));
+        orchestratorAssertionPath, cfg["Authentik:OrchestratorClientId"]!, TimeProvider.System, orchestratorTokenCache));
+}
 builder.Services.AddSingleton<Iverson.Api.Tenancy.IIdpAdminClient, Iverson.Api.Tenancy.IdpAdminClient>();
 
 builder.Services.AddHttpClient("JaegerOtlpHttp", client =>

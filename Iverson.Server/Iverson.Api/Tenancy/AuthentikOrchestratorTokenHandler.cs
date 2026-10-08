@@ -11,15 +11,22 @@ namespace Iverson.Api.Tenancy;
 /// <see cref="RefreshMargin"/> before it expires. The exchange goes through this handler's own inner
 /// handler, so it uses the same CA-trusting hop as the admin calls.
 /// </summary>
-internal sealed class AuthentikOrchestratorTokenHandler(string assertionPath, string clientId, TimeProvider timeProvider)
+/// <remarks>
+/// The cache lives in an <see cref="AuthentikOrchestratorTokenCache"/> that outlives the handler, because
+/// <c>IHttpClientFactory</c> rebuilds the handler chain every couple of minutes. A token Authentik revokes
+/// early stays cached until it expires (at most 5 minutes), because the handler does not retry on an
+/// error status: Authentik answers an invalid bearer with 403, the same status as a permission refusal.
+/// </remarks>
+internal sealed class AuthentikOrchestratorTokenHandler(
+    string assertionPath, string clientId, TimeProvider timeProvider, AuthentikOrchestratorTokenCache cache)
     : DelegatingHandler
 {
     internal static readonly TimeSpan RefreshMargin = TimeSpan.FromSeconds(60);
 
-    private readonly SemaphoreSlim _mint = new(1, 1);
-    private CachedToken? _cached;
-
-    private sealed record CachedToken(string Value, DateTimeOffset ExpiresAt);
+    public AuthentikOrchestratorTokenHandler(string assertionPath, string clientId, TimeProvider timeProvider)
+        : this(assertionPath, clientId, timeProvider, new AuthentikOrchestratorTokenCache())
+    {
+    }
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -28,19 +35,19 @@ internal sealed class AuthentikOrchestratorTokenHandler(string assertionPath, st
         return await base.SendAsync(request, cancellationToken);
     }
 
-    private bool IsFresh(CachedToken? cached) =>
+    private bool IsFresh(AuthentikOrchestratorTokenCache.CachedToken? cached) =>
         cached is not null && timeProvider.GetUtcNow() < cached.ExpiresAt - RefreshMargin;
 
     private async Task<string> GetAccessTokenAsync(Uri requestUri, CancellationToken cancellationToken)
     {
-        var cached = _cached;
+        var cached = cache.Current;
         if (IsFresh(cached))
             return cached!.Value;
 
-        await _mint.WaitAsync(cancellationToken);
+        await cache.Mint.WaitAsync(cancellationToken);
         try
         {
-            cached = _cached;
+            cached = cache.Current;
             if (IsFresh(cached))
                 return cached!.Value;
 
@@ -76,21 +83,24 @@ internal sealed class AuthentikOrchestratorTokenHandler(string assertionPath, st
 
                 using var doc = ParseOrNull(body);
                 if (doc is null
+                    || doc.RootElement.ValueKind != JsonValueKind.Object
                     || !doc.RootElement.TryGetProperty("access_token", out var accessToken)
                     || accessToken.ValueKind != JsonValueKind.String
                     || accessToken.GetString() is not { Length: > 0 } value)
                     throw new InvalidOperationException("Authentik token exchange returned no access_token.");
 
-                var lifetime = doc.RootElement.TryGetProperty("expires_in", out var expiresIn) && expiresIn.TryGetInt32(out var seconds)
-                    ? TimeSpan.FromSeconds(seconds)
-                    : TimeSpan.Zero;
-                _cached = new CachedToken(value, timeProvider.GetUtcNow() + lifetime);
+                // Authentik always sends a positive integer expires_in; without one the token serves this call only.
+                if (doc.RootElement.TryGetProperty("expires_in", out var expiresIn)
+                    && expiresIn.ValueKind == JsonValueKind.Number
+                    && expiresIn.TryGetInt32(out var seconds)
+                    && seconds > 0)
+                    cache.Current = new AuthentikOrchestratorTokenCache.CachedToken(value, timeProvider.GetUtcNow() + TimeSpan.FromSeconds(seconds));
                 return value;
             }
         }
         finally
         {
-            _mint.Release();
+            cache.Mint.Release();
         }
     }
 
@@ -133,11 +143,24 @@ internal sealed class AuthentikOrchestratorTokenHandler(string assertionPath, st
             return null;
         }
     }
+}
 
-    protected override void Dispose(bool disposing)
+/// <summary>
+/// The orchestrator access token and the semaphore that serialises minting it, shared by every
+/// <see cref="AuthentikOrchestratorTokenHandler"/> the HTTP client factory builds. It lives for the
+/// process, so it is not disposed.
+/// </summary>
+internal sealed class AuthentikOrchestratorTokenCache
+{
+    private CachedToken? _current;
+
+    internal sealed record CachedToken(string Value, DateTimeOffset ExpiresAt);
+
+    internal SemaphoreSlim Mint { get; } = new(1, 1);
+
+    internal CachedToken? Current
     {
-        if (disposing)
-            _mint.Dispose();
-        base.Dispose(disposing);
+        get => Volatile.Read(ref _current);
+        set => Volatile.Write(ref _current, value);
     }
 }

@@ -37,6 +37,7 @@ public sealed class AuthentikOrchestratorTokenHandlerTests : IDisposable
         public HttpStatusCode TokenStatus { get; init; } = HttpStatusCode.OK;
         public string? TokenBody { get; init; }
         public bool ThrowOnToken { get; init; }
+        public bool TimeOutOnToken { get; init; }
         public TimeSpan Delay { get; init; }
 
         public int Mints => Requests.Count(r => r.Path == TokenPath);
@@ -53,6 +54,8 @@ public sealed class AuthentikOrchestratorTokenHandlerTests : IDisposable
                 return new HttpResponseMessage(HttpStatusCode.OK);
             if (ThrowOnToken)
                 throw new HttpRequestException("connection refused");
+            if (TimeOutOnToken)
+                throw new TaskCanceledException("The operation was canceled.", new TimeoutException("connect timed out"));
             if (TokenStatus != HttpStatusCode.OK)
                 return new HttpResponseMessage(TokenStatus)
                 {
@@ -61,7 +64,8 @@ public sealed class AuthentikOrchestratorTokenHandlerTests : IDisposable
             var n = Interlocked.Increment(ref _minted);
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent(TokenBody ?? $"{{\"access_token\":\"access-token-{n}\",\"token_type\":\"Bearer\",\"expires_in\":300,\"id_token\":\"id-token\"}}"),
+                Content = new StringContent(TokenBody?.Replace("{n}", n.ToString())
+                    ?? $"{{\"access_token\":\"access-token-{n}\",\"token_type\":\"Bearer\",\"expires_in\":300,\"id_token\":\"id-token\"}}"),
             };
         }
     }
@@ -75,6 +79,12 @@ public sealed class AuthentikOrchestratorTokenHandlerTests : IDisposable
 
     private HttpClient Client(string assertionPath, FakeHttpMessageHandler inner) =>
         new(new AuthentikOrchestratorTokenHandler(assertionPath, "iverson-admin-orchestrator", _clock) { InnerHandler = inner })
+        {
+            BaseAddress = new Uri("https://iverson-authentik:8443"),
+        };
+
+    private HttpClient Client(string assertionPath, FakeHttpMessageHandler inner, AuthentikOrchestratorTokenCache cache) =>
+        new(new AuthentikOrchestratorTokenHandler(assertionPath, "iverson-admin-orchestrator", _clock, cache) { InnerHandler = inner })
         {
             BaseAddress = new Uri("https://iverson-authentik:8443"),
         };
@@ -145,13 +155,68 @@ public sealed class AuthentikOrchestratorTokenHandlerTests : IDisposable
         inner.Mints.Should().Be(1);
     }
 
+    [Fact]
+    public async Task HandlersSharingOneCache_MintOnce()
+    {
+        // IHttpClientFactory rebuilds the handler chain every couple of minutes; the shared cache
+        // carries the token across the rotation.
+        var inner = new FakeHttpMessageHandler();
+        var path = WriteAssertion("projected-sa-token");
+        var cache = new AuthentikOrchestratorTokenCache();
+        using var first = Client(path, inner, cache);
+        using var second = Client(path, inner, cache);
+
+        await first.GetAsync("/a");
+        await second.GetAsync("/b");
+
+        inner.Mints.Should().Be(1);
+        inner.Requests[^1].Authorization.Should().Be("Bearer access-token-1");
+    }
+
+    public static TheoryData<string> UnusableExpiresIn() => new()
+    {
+        "{\"access_token\":\"access-token-{n}\",\"expires_in\":\"300\"}",
+        "{\"access_token\":\"access-token-{n}\"}",
+    };
+
+    [Theory]
+    [MemberData(nameof(UnusableExpiresIn))]
+    public async Task UnusableExpiresIn_UsesTheTokenOnce_WithoutCaching(string tokenBody)
+    {
+        var inner = new FakeHttpMessageHandler { TokenBody = tokenBody };
+        using var client = Client(WriteAssertion("projected-sa-token"), inner);
+
+        await client.GetAsync("/a");
+        await client.GetAsync("/b");
+
+        inner.Mints.Should().Be(2);
+        inner.Requests.Where(r => r.Path != TokenPath).Select(r => r.Authorization)
+            .Should().Equal("Bearer access-token-1", "Bearer access-token-2");
+    }
+
+    [Fact]
+    public async Task CallerCancellation_SurfacesAsCancellation()
+    {
+        var inner = new FakeHttpMessageHandler { Delay = TimeSpan.FromSeconds(30) };
+        using var client = Client(WriteAssertion("projected-sa-token"), inner);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        var thrown = await FluentActions.Awaiting(() => client.GetAsync("/a", cts.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+
+        thrown.Which.Should().NotBeAssignableTo<InvalidOperationException>();
+    }
+
     public static TheoryData<string, string> Failures() => new()
     {
         { "missing-file", "could not be read" },
         { "empty-file", "is empty" },
         { "http-400", "HTTP 400 invalid_grant" },
         { "network", "Authentik token exchange failed: connection refused" },
+        { "timeout", "Authentik token exchange failed" },
         { "no-access-token", "returned no access_token" },
+        { "numeric-access-token", "returned no access_token" },
+        { "non-object-body", "returned no access_token" },
     };
 
     [Theory]
@@ -169,6 +234,9 @@ public sealed class AuthentikOrchestratorTokenHandlerTests : IDisposable
         {
             "http-400" => new FakeHttpMessageHandler { TokenStatus = HttpStatusCode.BadRequest },
             "network" => new FakeHttpMessageHandler { ThrowOnToken = true },
+            "timeout" => new FakeHttpMessageHandler { TimeOutOnToken = true },
+            "numeric-access-token" => new FakeHttpMessageHandler { TokenBody = "{\"access_token\":12345,\"expires_in\":300,\"id_token\":\"id-token\"}" },
+            "non-object-body" => new FakeHttpMessageHandler { TokenBody = "[\"id-token\"]" },
             "no-access-token" => new FakeHttpMessageHandler { TokenBody = "{\"token_type\":\"Bearer\",\"id_token\":\"id-token\"}" },
             _ => new FakeHttpMessageHandler(),
         };
