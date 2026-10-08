@@ -8,7 +8,7 @@ pins build inputs. Several steps are one-way or need an ordering that a plain `h
 **AKS: order.** On an existing AKS cluster, do not work through the sections in numbered order.
 Use this order instead: §7 (state account, ending with the `terraform init -reconfigure` that the
 backend change forces) → §6 (Terraform: the Entra and API Server VNet Integration apply) →
-§2 and §3 → §4 → §5. Two dependencies drive it. The Azure overlay's `networkPolicy.apiServerCidrs`
+§2 and §3 → §4 → §5 → §9. Two dependencies drive it. The Azure overlay's `networkPolicy.apiServerCidrs`
 (`10.1.17.0/28`) is the VNet Integration subnet that the §6 Terraform change creates, so a Helm
 upgrade before that apply allows no API-server traffic. The Azure backend authenticates with Entra
 (`use_azuread_auth = true`), which needs the data-plane role that §7 grants, so §6 cannot
@@ -212,10 +212,11 @@ Expected: the load-balancer controller and EBS CSI pods are Running and a PVC re
 
 ## 9. Orchestrator workload identity (C2)
 
-The API now authenticates to Authentik's admin API with its own Kubernetes service-account token, exchanged for a 5-minute access token, and the static orchestrator token is removed. A single `helm upgrade` switches it over. Until both blueprints below have applied in the new Authentik worker, `CreateTenant` and `InviteUser` can fail; no data is affected. If the old worker (which has no JWKS relay) took the apply, that can last until the next hourly blueprint discovery, which step 2 shortcuts.
+The API now authenticates to Authentik's admin API with its own Kubernetes service-account token, exchanged for a 5-minute access token, and the static orchestrator token is removed. A single `helm upgrade` switches it over. Until both blueprints below have applied in the new Authentik worker, `CreateTenant` and `InviteUser` can fail; no data is affected. If the old worker (which has no JWKS relay) took the apply, that can last until the next hourly blueprint discovery, which step 3 shortcuts. This section follows the §3 upgrade on every profile, kind and laptop included.
 
 1. Do not provision tenants while the upgrade rolls out.
-2. After the rollout, apply both blueprints in the new worker container:
+2. Wait until the new worker pod is the only one. Run `kubectl -n <ns> rollout status deploy/<release>-authentik-worker`, then repeat `kubectl -n <ns> get pods -l app=<release>-authentik-worker` until it lists exactly one pod and that pod shows `2/2` (the new pod carries the `jwks-relay` sidecar; the old one shows `1/1`). `helm --wait` and `rollout status` both return while the old pod is still Terminating, and `kubectl exec deploy/…` can pick that old pod, which has no relay and may still mount the previous blueprints.
+3. Apply both blueprints in the new worker container:
 
    ```bash
    kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- \
@@ -223,11 +224,11 @@ The API now authenticates to Authentik's admin API with its own Kubernetes servi
    ```
 
    It exits non-zero if either blueprint is invalid. A failure that names `oidc_jwks_url` means the relay could not read the cluster's keys; check the `jwks-relay` container's log and the worker's API-server egress (§4).
-3. Delete the two orchestrator Secrets. They carry `helm.sh/resource-policy: keep`, so the upgrade leaves them behind:
+4. Delete the two orchestrator Secrets. They carry `helm.sh/resource-policy: keep`, so the upgrade leaves them behind:
 
    ```bash
-   kubectl -n <ns> delete secret <release>-authentik-admin-orchestrator-token <release>-authentik-admin-orchestrator-user
+   kubectl -n <ns> delete secret --ignore-not-found <release>-authentik-admin-orchestrator-token <release>-authentik-admin-orchestrator-user
    ```
 
-4. Confirm with one `InviteUser` (or `CreateTenant`) that a recovery link comes back.
-5. Confirm both Secrets are gone: `kubectl -n <ns> get secret <release>-authentik-admin-orchestrator-token <release>-authentik-admin-orchestrator-user` reports `NotFound` for each.
+5. Confirm with one `InviteUser` (or `CreateTenant`) that a recovery link comes back.
+6. Confirm both Secrets are gone: `kubectl -n <ns> get secret <release>-authentik-admin-orchestrator-token <release>-authentik-admin-orchestrator-user` reports `NotFound` for each.
