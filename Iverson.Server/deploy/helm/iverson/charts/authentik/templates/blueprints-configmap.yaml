@@ -45,6 +45,7 @@ data:
           name: iverson-k8s-workload
           provider_type: openidconnect
           enabled: true
+          # The OAuth source serializer requires these two; a JWT-federation-only source never uses them.
           consumer_key: iverson-k8s-workload
           consumer_secret: unused
           authorization_url: ""
