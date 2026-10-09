@@ -115,10 +115,10 @@ public class DocumentRerenderQueueWorkerTests
         await _queue.Received(1).DeleteRowAsync(row.Id);
     }
 
-    // ── Republished events carry SuppressRerenderCascade + Intelligence-only ─
+    // ── Republished events are Intelligence-only and round-trip ───────────
 
     [Fact]
-    public async Task TickAsync_EntityRow_PublishesWithSuppressCascadeAndIntelligenceOnlyTarget()
+    public async Task TickAsync_EntityRow_PublishesWithIntelligenceOnlyTarget_AndRoundTripsThroughTheSerializer()
     {
         RegisterArticle();
         var row = EntityRow();
@@ -132,8 +132,24 @@ public class DocumentRerenderQueueWorkerTests
         await BuildSut().TickAsync(CancellationToken.None);
 
         published.Should().NotBeNull();
-        published!.SuppressRerenderCascade.Should().BeTrue();
-        published.TargetStores.Should().Be(StoreTarget.Intelligence);
+        published!.TargetStores.Should().Be(StoreTarget.Intelligence);
+
+        // Same wire shape the producer writes and the consumers read (PascalCase out, camelCase
+        // case-insensitive in).
+        var wire = System.Text.Json.JsonSerializer.Serialize(published);
+        var back = System.Text.Json.JsonSerializer.Deserialize<EntityEvent>(
+            wire,
+            new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                PropertyNameCaseInsensitive = true
+            });
+        back.Should().Be(published);
+
+        // An event written by an older pod still carries the removed member; it is ignored.
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<EntityEvent>(
+            wire.TrimEnd('}') + ",\"SuppressRerenderCascade\":true}");
+        legacy.Should().Be(published);
     }
 
     // ── Failure recording ────────────────────────────────────────────────────

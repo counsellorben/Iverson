@@ -453,7 +453,7 @@ public class PopularitySignalConsumerTests
         var sut = BuildSut(OptionsWith("Article", "Comments"));
 
         var act = () => sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
-        await act.Should().NotThrowAsync("DispatchAsync isolates per-signal failures the same way DocumentRerenderConsumer isolates per-dependent failures");
+        await act.Should().NotThrowAsync("DispatchAsync isolates per-signal failures the same way the former DocumentRerenderConsumer isolated per-dependent failures");
     }
 
     // ── Unresolvable tenant skips without calling AggregateAsync at all ────
@@ -466,7 +466,7 @@ public class PopularitySignalConsumerTests
 
         // The Comment row was deleted between the Created event being published and this
         // consumer reading it, so tenant re-derivation finds nothing — mirrors
-        // DocumentRerenderConsumerTests.Dispatch_AuthoritativeRowGone_EnqueuesNothing.
+        // the former DocumentRerenderConsumer's authoritative-row-gone test (deleted with that consumer).
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns((string?)null);
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";

@@ -13,11 +13,9 @@ namespace Iverson.Api.Reconciliation;
 /// document. For a type-level row (EntityKey null, a backfill/expansion registered when the key
 /// set wasn't yet known), pages through the type's keys and expands each into a per-entity row.
 ///
-/// Every republished event carries <see cref="EntityEvent.SuppressRerenderCascade"/> = true and
-/// <see cref="StoreTarget.Intelligence"/> only: this is a document re-render, not a full
-/// re-projection, so it must not re-run the Postgres/StarRocks projections. The flag's former
-/// reader, relation-dependent re-render detection, was removed; the flag still marks a republish
-/// as a re-render rather than a client write.
+/// Every republished event carries <see cref="StoreTarget.Intelligence"/> only: this is a
+/// document re-render, not a full re-projection, so it must not re-run the Postgres/StarRocks
+/// projections.
 ///
 /// Mirrors <see cref="ReconciliationQueueWorker"/>'s poll-loop shape and
 /// <see cref="ReconciliationService"/>'s re-fetch-before-publish and exhaustion-warning patterns.
@@ -113,8 +111,7 @@ internal sealed class DocumentRerenderQueueWorker(
                     "1",
                     DateTimeOffset.UtcNow,
                     StoreTarget.Intelligence,
-                    null,
-                    SuppressRerenderCascade: true));
+                    null));
 
             await queue.DeleteRowAsync(row.Id);
         }
