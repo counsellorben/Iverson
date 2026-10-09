@@ -116,7 +116,7 @@ internal static class SqlExpressionLexer
         // is refused, so the literal and the parsed value must agree once insignificant zeros are dropped.
         if (WithoutInsignificantZeros(spelling) != WithoutInsignificantZeros(value.ToString(CultureInfo.InvariantCulture)))
             throw new EngagementQueryTranslationException(
-                $"{errorContext}: number '{spelling}' at position {start} is out of range.");
+                $"{errorContext}: number '{spelling}' at position {start} has more digits than can be held exactly.");
 
         return new SqlToken(SqlTokenKind.Number, spelling, start, value);
     }

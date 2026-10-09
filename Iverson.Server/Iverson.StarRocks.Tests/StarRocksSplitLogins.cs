@@ -5,9 +5,9 @@ namespace Iverson.StarRocks.Tests;
 /// <summary>
 /// The two StarRocks logins production uses (CSR round 11 §3), set up through the fixture's root
 /// repository with the job-create-user.yaml grant set, excluding the job's root SET PASSWORD and the
-/// trailing ALTER USER 'iverson_app' SET PROPERTIES session caps (query timeout and memory limit). iverson_app runs queries and keeps
-/// OPERATE ON SYSTEM as its only direct grant; iverson_provisioner provisions tenants and holds
-/// user_admin plus a direct CREATE DATABASE.
+/// trailing ALTER USER 'iverson_app' SET PROPERTIES session caps (query timeout and memory limit).
+/// iverson_app runs queries and keeps OPERATE ON SYSTEM as its only direct grant;
+/// iverson_provisioner provisions tenants and holds user_admin plus a direct CREATE DATABASE.
 ///
 /// <para><b>Why one helper.</b> The users live in the one container every class in
 /// <see cref="StarRocksCollection"/> shares, so they outlive any one class. Every class that needs them

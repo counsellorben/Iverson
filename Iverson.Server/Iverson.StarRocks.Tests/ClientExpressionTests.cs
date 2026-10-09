@@ -162,7 +162,7 @@ public class ClientExpressionTests
     [InlineData("1.00000000000000000000000000000001")]
     public void Lexer_RefusesANumberWithMoreDigitsThanItCanHoldExactly(string literal) =>
         Rejection(literal, ExpressionContext.Derive)
-            .Should().Be($"{Context}: number '{literal}' at position 0 is out of range.");
+            .Should().Be($"{Context}: number '{literal}' at position 0 has more digits than can be held exactly.");
 
     [Theory]
     [InlineData("1234567890123456789012345678", "1234567890123456789012345678")]
@@ -195,14 +195,14 @@ public class ClientExpressionTests
         Rejection(text, ExpressionContext.Derive).Should().Be($"{Context}: {expected}.");
 
     [Theory]
-    [InlineData("NULLIF(Amount)", "NULLIF", "2")]
-    [InlineData("NULLIF(Amount, 0, 1)", "NULLIF", "2")]
-    [InlineData("ABS(Amount, 1)", "ABS", "1")]
-    [InlineData("ROUND(Amount, 1, 2)", "ROUND", "1 to 2")]
+    [InlineData("NULLIF(Amount)", "NULLIF", "2", 1)]
+    [InlineData("NULLIF(Amount, 0, 1)", "NULLIF", "2", 3)]
+    [InlineData("ABS(Amount, 1)", "ABS", "1", 2)]
+    [InlineData("ROUND(Amount, 1, 2)", "ROUND", "1 to 2", 3)]
     public void Parser_RefusesAScalarFunctionCalledWithTheWrongNumberOfArguments(
-        string text, string function, string expected) =>
-        Rejection(text, ExpressionContext.Derive).Should().StartWith(
-            $"{Context}: function '{function}' at position 0 takes {expected} argument(s), not ");
+        string text, string function, string expected, int actual) =>
+        Rejection(text, ExpressionContext.Derive).Should().Be(
+            $"{Context}: function '{function}' at position 0 takes {expected} argument(s), not {actual}.");
 
     [Fact]
     public void Parser_RefusesWrongArityInsideAnAggregateArgument() =>

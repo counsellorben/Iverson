@@ -226,6 +226,8 @@ internal sealed class SqlExpressionParser
 
         if (!isAggregate && (arguments.Count < arity.Min || arguments.Count > arity.Max))
         {
+            // The "at least" branch is unreachable today: no scalar function has an unbounded arity
+            // that an empty list could violate, and the grammar refuses an empty argument list.
             var expected = arity.Max == int.MaxValue ? $"at least {arity.Min}"
                 : arity.Min == arity.Max ? $"{arity.Min}" : $"{arity.Min} to {arity.Max}";
             throw Invalid($"function '{function}' at position {name.Position} takes {expected} " +
