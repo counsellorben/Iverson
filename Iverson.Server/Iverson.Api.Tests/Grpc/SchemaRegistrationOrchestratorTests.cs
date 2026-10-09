@@ -1312,6 +1312,23 @@ public class SchemaRegistrationOrchestratorTests
     }
 
     [Fact]
+    public async Task RegisterAsync_EnrichmentTargetReadableByARoleTheSourceIsNot_ThrowsInvalidArgument()
+    {
+        // The target shares "editors" with the source but also admits "viewers", who cannot read
+        // the source: overlap is not enough, the target's roles must be a subset of the source's.
+        var td = EnrichedWidget(
+            new Client.Contracts.FieldPermission { FieldName = "Body", ReadableRoles = { "editors" } },
+            new Client.Contracts.FieldPermission { FieldName = "Summary", ReadableRoles = { "editors", "viewers" } });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("a subset of them");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
     public async Task RegisterAsync_EnrichmentTargetCoveringOnlyOneOfTwoSourcePermissions_ThrowsInvalidArgument()
     {
         // Two permissions name Body, so a reader must pass both. The target is covered against the
