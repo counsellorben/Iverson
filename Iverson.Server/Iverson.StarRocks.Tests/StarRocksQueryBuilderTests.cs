@@ -175,7 +175,7 @@ public class StarRocksQueryBuilderTests
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
-        sql.Should().Contain("SUM(Rating * 2)");
+        sql.Should().Contain("SUM(`Rating` * 2)");
         sql.Should().NotContain("SUM(`Rating`)");
     }
 
@@ -843,13 +843,10 @@ public class StarRocksQueryBuilderTests
         act.Should().NotThrow();
     }
 
-    // ── BuildAggregate — Expression forbidden-character denylist (CSR Finding #3) ──
-    // spec.Expression previously only ran the TokenRx identifier allow-list check (see the
-    // tests above), which inspects identifier-shaped substrings only — punctuation, quotes,
-    // semicolons, and SQL comment sequences pass through unchecked because they never match
-    // TokenRx in the first place. These tests lock in the stricter denylist (shared with
-    // StarRocksPipelineBuilder.ValidateDeriveExpr via RejectForbiddenCharacters) that closes
-    // that gap.
+    // ── BuildAggregate — Expression characters outside the grammar (CSR Finding #3) ──
+    // spec.Expression is lexed by ClientExpression, which refuses every character outside its
+    // grammar (quotes, backslash, ';', '#') and the comment openers "--" and "/*" before any
+    // column is resolved.
 
     [Theory]
     [InlineData("Rating -- drop everything")]
@@ -864,7 +861,7 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
         act.Should().Throw<EngagementQueryTranslationException>()
-            .Where(e => e.Message.Contains("forbidden character"));
+            .Where(e => e.Message.Contains("is not allowed in an expression"));
     }
 
     [Fact]
@@ -886,7 +883,7 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
 
         act.Should().Throw<EngagementQueryTranslationException>()
-            .Where(e => e.Message.Contains("forbidden character"));
+            .Where(e => e.Message.Contains("is not allowed in an expression"));
     }
 
     [Fact]
@@ -900,7 +897,7 @@ public class StarRocksQueryBuilderTests
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("articles", schema, null, spec);
 
-        sql.Should().Contain("SUM(WordCount * 2) AS metric_val");
+        sql.Should().Contain("SUM(`WordCount` * 2) AS metric_val");
     }
 
     [Fact]
@@ -929,12 +926,12 @@ public class StarRocksQueryBuilderTests
     }
 
     [Theory]
-    [InlineData("SUM(Amount)")]
-    [InlineData("SUM (Amount)")]
-    [InlineData("SUM\t(Amount)")]
-    [InlineData("SUM\n(Amount)")]
-    [InlineData("sum(Amount)")]
-    [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
+    [InlineData("ABS(Amount)")]
+    [InlineData("ABS (Amount)")]
+    [InlineData("ABS\t(Amount)")]
+    [InlineData("ABS\n(Amount)")]
+    [InlineData("abs(Amount)")]
+    [InlineData("ROUND(NULLIF(Amount, 0), 2)")]
     public void BuildAggregate_ExpressionCallsFunction_DoesNotThrow(string expr)
     {
         var spec = new AggregationDescriptor("total", AggregationKind.Avg, "Amount", Expression: expr);
@@ -955,7 +952,7 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildAggregate("ledgers", LedgerSchema(), null, spec);
 
         act.Should().Throw<EngagementQueryTranslationException>()
-            .Where(e => e.Message.Contains("forbidden character"));
+            .Where(e => e.Message.Contains("is not allowed in an expression"));
     }
 
     // ── BuildSearch — Equals clause (parameterization) ─────────────────────────
@@ -2165,10 +2162,8 @@ public class StarRocksQueryBuilderTests
         request.Metrics.Add(new MetricSpec { Name = "count_star",   Type = AggregationType.Count });
         request.Metrics.Add(new MetricSpec { Name = "net_rating",   Type = AggregationType.Sum,   Expression = "Rating * (1 - 0)" });
         request.Metrics.Add(new MetricSpec { Name = "charge",       Type = AggregationType.Sum,   Expression = "Rating * (1 - 0) * (1 + 0)" });
-        // COALESCE is a DeriveFunctions-recognized function (unlike LENGTH, which the new
-        // authz-driven expression-token check below would now reject as an unresolvable,
-        // non-whitelisted identifier) — swapped in here so this pre-existing structural test
-        // keeps passing under Task 4's stricter Expression validation.
+        // COALESCE is on the expression parser's scalar allow-list (LENGTH is not, and is
+        // rejected as an unknown function).
         request.Metrics.Add(new MetricSpec { Name = "avg_name_len", Type = AggregationType.Avg,   Expression = "COALESCE(Rating, 0)" });
         request.OrderBy.Add(new SearchSort { Property = "Name" });
         request.OrderBy.Add(new SearchSort { Property = "Rating", Descending = true });
@@ -2195,9 +2190,9 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("MAX(`authors`.`Rating`) AS `max_rating`");
         sql.Should().Contain("COUNT(`authors`.`Rating`) AS `count_rating`");
         sql.Should().Contain("COUNT(*) AS `count_star`");
-        sql.Should().Contain("SUM(Rating * (1 - 0)) AS `net_rating`");
-        sql.Should().Contain("SUM(Rating * (1 - 0) * (1 + 0)) AS `charge`");
-        sql.Should().Contain("AVG(COALESCE(Rating, 0)) AS `avg_name_len`");
+        sql.Should().Contain("SUM(`authors`.`Rating` * (1 - 0)) AS `net_rating`");
+        sql.Should().Contain("SUM(`authors`.`Rating` * (1 - 0) * (1 + 0)) AS `charge`");
+        sql.Should().Contain("AVG(COALESCE(`authors`.`Rating`, 0)) AS `avg_name_len`");
         sql.Should().Contain("FROM `authors`");
         sql.Should().Contain("GROUP BY `authors`.`Name`, `authors`.`Rating`");
         sql.Should().Contain("ORDER BY `authors`.`Name` ASC, `authors`.`Rating` DESC");
@@ -2254,14 +2249,12 @@ public class StarRocksQueryBuilderTests
 
         var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
-        sql.Should().Contain("SUM(Rating * 2) AS `revenue`");
+        sql.Should().Contain("SUM(`authors`.`Rating` * 2) AS `revenue`");
         sql.Should().NotContain("SUM(`Rating`)");
     }
 
-    // ── BuildGroupBy — MetricSpec.expression forbidden-character denylist (CSR Finding #3) ──
-    // Same gap as BuildAggregate's spec.Expression above: metric.Expression previously only
-    // ran the TokenRx identifier allow-list, which never inspects punctuation/quotes/semicolons/
-    // comment sequences because they don't match the identifier pattern to begin with.
+    // ── BuildGroupBy — MetricSpec.expression characters outside the grammar (CSR Finding #3) ──
+    // Same lexer as BuildAggregate's spec.Expression above.
 
     [Fact]
     public void BuildGroupBy_MetricExpressionWithSqlComment_ThrowsTranslationException()
@@ -2278,7 +2271,7 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
         act.Should().Throw<EngagementQueryTranslationException>()
-            .Where(e => e.Message.Contains("forbidden character"));
+            .Where(e => e.Message.Contains("is not allowed in an expression"));
     }
 
     [Fact]
@@ -2305,7 +2298,7 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
 
         act.Should().Throw<EngagementQueryTranslationException>()
-            .Where(e => e.Message.Contains("forbidden character"));
+            .Where(e => e.Message.Contains("is not allowed in an expression"));
     }
 
     [Fact]
@@ -2880,12 +2873,12 @@ public class StarRocksQueryBuilderTests
     }
 
     [Theory]
-    [InlineData("SUM(Amount)")]
-    [InlineData("SUM (Amount)")]
-    [InlineData("SUM\t(Amount)")]
-    [InlineData("SUM\n(Amount)")]
-    [InlineData("sum(Amount)")]
-    [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
+    [InlineData("ABS(Amount)")]
+    [InlineData("ABS (Amount)")]
+    [InlineData("ABS\t(Amount)")]
+    [InlineData("ABS\n(Amount)")]
+    [InlineData("abs(Amount)")]
+    [InlineData("ROUND(NULLIF(Amount, 0), 2)")]
     public void BuildGroupBy_MetricExpressionCallsFunction_DoesNotThrow(string expr)
     {
         var act = () => StarRocksQueryBuilder.BuildGroupBy(
@@ -2903,7 +2896,7 @@ public class StarRocksQueryBuilderTests
             "ledgers", LedgerSchema(), LedgerRequest(expr), BuildRegistry(LedgerSchema()));
 
         act.Should().Throw<EngagementQueryTranslationException>()
-            .Where(e => e.Message.Contains("forbidden character"));
+            .Where(e => e.Message.Contains("is not allowed in an expression"));
     }
 
     // ── BuildGroupBy — ORDER BY field reject-on-reference ──────────────────────
@@ -3297,7 +3290,7 @@ public class StarRocksQueryBuilderTests
     public void BuildAggregate_ExpressionReferencingTheTenantColumn_IsRejected()
     {
         var spec = new AggregationDescriptor(
-            "smuggled", AggregationKind.Count, "Name", Expression: $"COUNT({TenantCol})");
+            "smuggled", AggregationKind.Count, "Name", Expression: $"COALESCE({TenantCol}, 0)");
 
         var act = () => StarRocksQueryBuilder.BuildAggregate(
             "authors", TenantAuthorSchema(), null, spec, authz: TenantAuthz("Author"));

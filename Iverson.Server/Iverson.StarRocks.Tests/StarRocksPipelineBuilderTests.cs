@@ -422,7 +422,7 @@ public class StarRocksPipelineBuilderTests
 
         var n = NormalizeWs(sql);
         n.Should().Contain("SUM(`n`) OVER (ORDER BY `PublishedAt_month` ASC) AS `running_total`");
-        n.Should().Contain("(100.0 * n / SUM(n) OVER ()) AS `pct`");
+        n.Should().Contain("(100.0 * `n` / SUM(`n`) OVER ()) AS `pct`");
     }
 
     [Fact]
@@ -436,7 +436,7 @@ public class StarRocksPipelineBuilderTests
         var (sql, _, _) = StarRocksPipelineBuilder.Build(
             ArticleSchema(), Request(a, b), EmptyRegistry());
 
-        NormalizeWs(sql).Should().Contain("`b` AS (SELECT *, (WordCount + 2) AS `y` FROM `base`)");
+        NormalizeWs(sql).Should().Contain("`b` AS (SELECT *, (`WordCount` + 2) AS `y` FROM `base`)");
     }
 
     [Fact]
@@ -714,15 +714,15 @@ public class StarRocksPipelineBuilderTests
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
         act.Should().Throw<EngagementQueryTranslationException>()
-            .Where(e => e.Message.Contains("forbidden character")
-                     && e.Message.Contains("SQL comment sequences"));
+            .Where(e => e.Message.Contains("comment sequence")
+                     && e.Message.Contains("is not allowed in an expression"));
     }
 
     [Fact]
     public void Build_DeriveExprWithHashLineCommentToken_Throws()
     {
         // CSR finding #9: '#' is a third SQL line-comment introducer in StarRocks/MySQL's
-        // dialect, alongside "--" and "/* */" — RejectForbiddenCharacters previously missed it.
+        // dialect, alongside "--" and "/* */"; the expression lexer refuses it like every other character outside its grammar.
         var step = new PipelineStep { Name = "s1" };
         step.Derive.Add(new DeriveColumn { Alias = "d", Expr = "WordCount # drop everything after this" });
 
@@ -732,7 +732,7 @@ public class StarRocksPipelineBuilderTests
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
         act.Should().Throw<EngagementQueryTranslationException>()
-            .Where(e => e.Message.Contains("forbidden character"));
+            .Where(e => e.Message.Contains("is not allowed in an expression"));
     }
 
     [Fact]
@@ -750,14 +750,10 @@ public class StarRocksPipelineBuilderTests
             .Where(e => e.Message.Contains("exceeds 1000 characters"));
     }
 
-    // ── Metric expression forbidden-character denylist (Task 9 / CSR Finding #3) ──
-    // m.Expression previously only ran the TokenRx identifier allow-list check (see the
-    // "Authorization — metric MetricSpec.Expression check" tests below), which inspects
-    // identifier-shaped substrings only — punctuation, quotes, semicolons, and SQL comment
-    // sequences pass through unchecked because they never match TokenRx in the first place.
-    // These tests lock in the stricter denylist (RejectForbiddenCharacters, shared with
-    // ValidateDeriveExpr and StarRocksQueryBuilder's BuildAggregate/BuildMetricExpr) applied
-    // to this third call site.
+    // ── Metric expression characters outside the grammar (Task 9 / CSR Finding #3) ──
+    // m.Expression goes through the same expression lexer as derive expressions and
+    // StarRocksQueryBuilder's BuildAggregate/BuildMetricExpr, which refuses every character
+    // outside its grammar and the comment openers "--" and "/*".
 
     [Theory]
     [InlineData("WordCount -- drop everything")]
@@ -770,7 +766,7 @@ public class StarRocksPipelineBuilderTests
         step.Metrics.Add(new MetricSpec { Name = "m", Type = AggregationType.Sum, Expression = expr });
 
         AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
-            ArticleSchema(), Request(step), EmptyRegistry()), "forbidden character");
+            ArticleSchema(), Request(step), EmptyRegistry()), "is not allowed in an expression");
     }
 
     [Fact]
@@ -790,7 +786,7 @@ public class StarRocksPipelineBuilderTests
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), Request(step), EmptyRegistry());
 
         act.Should().Throw<EngagementQueryTranslationException>()
-            .Where(e => e.Message.Contains("forbidden character"));
+            .Where(e => e.Message.Contains("is not allowed in an expression"));
     }
 
     [Fact]
@@ -804,7 +800,7 @@ public class StarRocksPipelineBuilderTests
 
         var (sql, _, _) = StarRocksPipelineBuilder.Build(ArticleSchema(), Request(step), EmptyRegistry());
 
-        NormalizeWs(sql).Should().Contain("SUM(WordCount * 2) AS `wc2`");
+        NormalizeWs(sql).Should().Contain("SUM(`WordCount` * 2) AS `wc2`");
     }
 
     // ── Authorization — column-introduction filtering (Step 1) ─────────────────
@@ -1008,12 +1004,12 @@ public class StarRocksPipelineBuilderTests
     }
 
     [Theory]
-    [InlineData("SUM(Amount)")]
-    [InlineData("SUM (Amount)")]
-    [InlineData("SUM\t(Amount)")]
-    [InlineData("SUM\n(Amount)")]
-    [InlineData("sum(Amount)")]
-    [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
+    [InlineData("ABS(Amount)")]
+    [InlineData("ABS (Amount)")]
+    [InlineData("ABS\t(Amount)")]
+    [InlineData("ABS\n(Amount)")]
+    [InlineData("abs(Amount)")]
+    [InlineData("ROUND(NULLIF(Amount, 0), 2)")]
     public void Validate_MetricExpressionCallsFunction_DoesNotThrow(string expr)
     {
         var act = () => StarRocksPipelineBuilder.TrackAndValidate(
@@ -1027,7 +1023,7 @@ public class StarRocksPipelineBuilderTests
     [InlineData("Amount \\ 2")]
     public void Validate_MetricExpressionWithDoubleQuoteOrBackslash_Throws(string expr) =>
         AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
-            LedgerSchema(), LedgerRequest(MetricStep(expr)), EmptyRegistry()), "forbidden character");
+            LedgerSchema(), LedgerRequest(MetricStep(expr)), EmptyRegistry()), "is not allowed in an expression");
 
     [Fact]
     public void Validate_DeriveUsesRestrictedColumnNamedLikeFunction_Throws()
@@ -1040,11 +1036,6 @@ public class StarRocksPipelineBuilderTests
     }
 
     [Theory]
-    [InlineData("SUM(Amount)")]
-    [InlineData("SUM (Amount)")]
-    [InlineData("SUM\t(Amount)")]
-    [InlineData("SUM\n(Amount)")]
-    [InlineData("sum(Amount)")]
     [InlineData("SUM(Amount) OVER (PARTITION BY Region ORDER BY Amount DESC)")]
     public void Validate_DeriveCallsFunction_DoesNotThrow(string expr)
     {
@@ -1054,12 +1045,25 @@ public class StarRocksPipelineBuilderTests
         act.Should().NotThrow();
     }
 
+    // A derive step has no GROUP BY, so an aggregate without OVER is invalid SQL; it is now
+    // InvalidArgument instead of an engine error.
+    [Theory]
+    [InlineData("SUM(Amount)")]
+    [InlineData("SUM (Amount)")]
+    [InlineData("SUM\t(Amount)")]
+    [InlineData("SUM\n(Amount)")]
+    [InlineData("sum(Amount)")]
+    public void Validate_DeriveCallsAggregateWithoutOver_Throws(string expr) =>
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            LedgerSchema(), LedgerRequest(DeriveStep(expr)), EmptyRegistry(), LedgerAuthzWithoutSum()),
+            "Step 'd': derive 'x': aggregate function 'SUM' at position 0 requires an OVER clause.");
+
     [Theory]
     [InlineData("COALESCE(Amount, \"a\")")]
     [InlineData("Amount \\ 2")]
     public void Validate_DeriveWithDoubleQuoteOrBackslash_Throws(string expr) =>
         AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
-            LedgerSchema(), LedgerRequest(DeriveStep(expr)), EmptyRegistry()), "forbidden character");
+            LedgerSchema(), LedgerRequest(DeriveStep(expr)), EmptyRegistry()), "is not allowed in an expression");
 
     // ── Authorization — "all: true" scoping (Step 2) ────────────────────────────
 

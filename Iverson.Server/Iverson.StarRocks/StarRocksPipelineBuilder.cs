@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Dapper;
 using Iverson.Client.Contracts;
+using Iverson.StarRocks.Expressions;
 
 namespace Iverson.StarRocks;
 
@@ -9,7 +10,16 @@ namespace Iverson.StarRocks;
 /// One pipeline step's output column set: <see cref="Columns"/> maps a referenced
 /// name (case-insensitive) to the canonical output column name emitted in SQL.
 /// </summary>
-internal sealed record StepColumns(string Name, Dictionary<string, string> Columns);
+internal sealed record StepColumns(string Name, Dictionary<string, string> Columns)
+{
+    /// <summary>
+    /// This step's derive expressions as SQL, in <c>derive</c> order. The expression parser writes
+    /// them during validation, against the scope each one was checked in. That scope is the input
+    /// columns, this step's select outputs and window aliases, and earlier derive aliases, and it
+    /// exists only during validation.
+    /// </summary>
+    public IReadOnlyList<string> DeriveSql { get; init; } = [];
+}
 
 /// <summary>
 /// Compiles a <see cref="PipelineRequest"/> into a single StarRocks CTE-chain query.
@@ -21,36 +31,6 @@ internal static class StarRocksPipelineBuilder
     internal const string BaseStepName = "base";
 
     private static readonly Regex IdentifierRx = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
-    internal static readonly Regex TokenRx      = new("[A-Za-z_][A-Za-z0-9_]*", RegexOptions.Compiled);
-
-    // Identifiers a raw expression may use besides input columns. Anything else — including
-    // SELECT/FROM/WHERE, which blocks subqueries — fails validation. A function name counts
-    // only when called (see IsNonColumnToken): a column can share a function's name, and a bare
-    // reference to it must be checked as a column. Keywords can't be unquoted column names.
-    private static readonly HashSet<string> DeriveFunctions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "SUM", "AVG", "MIN", "MAX", "COUNT", "COALESCE", "NULLIF", "ROUND", "ABS"
-    };
-
-    private static readonly HashSet<string> DeriveKeywords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "OVER", "PARTITION", "BY", "ORDER", "ASC", "DESC", "AND", "OR", "NOT", "NULL"
-    };
-
-    /// <summary>
-    /// True when <paramref name="token"/> (a <see cref="TokenRx"/> match in <paramref name="expr"/>)
-    /// is a whitelisted keyword, or a whitelisted function name whose next non-whitespace
-    /// character is <c>(</c>. Every other token is the caller's to resolve as a column.
-    /// </summary>
-    internal static bool IsNonColumnToken(string expr, Match token)
-    {
-        if (DeriveKeywords.Contains(token.Value)) return true;
-        if (!DeriveFunctions.Contains(token.Value)) return false;
-
-        var i = token.Index + token.Length;
-        while (i < expr.Length && char.IsWhiteSpace(expr[i])) i++;
-        return i < expr.Length && expr[i] == '(';
-    }
 
     // Column-introduction filtering (authorization Task 5, Step 1): when constraint carries a
     // non-null AllowedFields, any column name not in it is omitted from the returned dictionary
@@ -125,8 +105,7 @@ internal static class StarRocksPipelineBuilder
         {
             ValidateStepName(step, steps, registry);
             var input = ResolveInput(step, steps);
-            var output = ValidateStepAndComputeOutput(step, input, steps, registry, authz);
-            steps.Add(new StepColumns(step.Name, output));
+            steps.Add(ValidateStepAndComputeOutput(step, input, steps, registry, authz));
         }
 
         // Final ORDER BY resolves against the last step's output.
@@ -162,7 +141,7 @@ internal static class StarRocksPipelineBuilder
                 $"Step '{step.Name}': reads '{step.Reads}' does not name an earlier step.");
     }
 
-    private static Dictionary<string, string> ValidateStepAndComputeOutput(
+    private static StepColumns ValidateStepAndComputeOutput(
         PipelineStep step,
         StepColumns input,
         List<StepColumns> earlier,
@@ -237,22 +216,13 @@ internal static class StarRocksPipelineBuilder
                 else if (string.IsNullOrEmpty(m.Expression) && m.Type != AggregationType.Count)
                     throw Invalid($"Step '{step.Name}': metric '{m.Name}' requires a field or expression.");
                 if (!string.IsNullOrEmpty(m.Expression))
-                {
-                    RejectForbiddenCharacters(m.Expression, $"Step '{step.Name}': metric '{m.Name}' expression");
-                    foreach (Match tok in TokenRx.Matches(m.Expression))
-                    {
-                        if (IsNonColumnToken(m.Expression, tok)) continue;
-                        if (!input.Columns.ContainsKey(tok.Value))
-                            throw Invalid($"Step '{step.Name}': metric '{m.Name}' expression references " +
-                                          $"'{tok.Value}', which is neither an input column nor a whitelisted function.");
-                    }
-                }
+                    MetricExpressionSql(step.Name, m, input.Columns);
                 AddOutput(m.Name);
             }
             var metricAliases = new Dictionary<string, string>(output, StringComparer.OrdinalIgnoreCase);
             foreach (var h in step.Having)
                 RequireColumn(step.Name, metricAliases, h.Property);
-            return output;
+            return new StepColumns(step.Name, output);
         }
 
         // Non-aggregate step.
@@ -313,16 +283,17 @@ internal static class StarRocksPipelineBuilder
         // Derive sees input columns plus window aliases already added this step.
         var deriveScope = new Dictionary<string, string>(output, StringComparer.OrdinalIgnoreCase);
         foreach (var kv in input.Columns) deriveScope.TryAdd(kv.Key, kv.Value);
+        var deriveSql = new List<string>();
         foreach (var d in step.Derive)
         {
             if (string.IsNullOrEmpty(d.Alias) || !IdentifierRx.IsMatch(d.Alias))
                 throw Invalid($"Step '{step.Name}': derive alias '{d.Alias}' is not a valid identifier.");
-            ValidateDeriveExpr(step.Name, d, deriveScope);
+            deriveSql.Add(DeriveExpressionSql(step.Name, d, deriveScope));
             AddOutput(d.Alias);
             deriveScope.TryAdd(d.Alias, d.Alias);
         }
 
-        return output;
+        return new StepColumns(step.Name, output) { DeriveSql = deriveSql };
     }
 
     private static Dictionary<string, StepColumns> ResolveJoinSources(
@@ -383,43 +354,30 @@ internal static class StarRocksPipelineBuilder
     }
 
     /// <summary>
-    /// Rejects a raw SQL fragment that contains a semicolon, quote (single or double), backtick,
-    /// backslash, or SQL comment sequence — characters that a token-shaped identifier allow-list
-    /// (<see cref="TokenRx"/>/<see cref="IsNonColumnToken"/>) alone would never inspect, since
-    /// none of them ever match an identifier pattern in the first place. Shared by every
-    /// raw-expression field spliced into generated SQL (<see cref="ValidateDeriveExpr"/> below,
-    /// and <c>StarRocksQueryBuilder.BuildAggregate</c>/<c>BuildMetricExpr</c>) so all such fields
-    /// get the same defense-in-depth denylist, not just whichever one a reviewer happened to
-    /// look at most recently.
+    /// A pipeline metric's expression as SQL. <see cref="TrackAndValidate"/> calls it to reject a
+    /// bad expression before any SQL is built, and <see cref="EmitMetric"/> calls it again to emit.
+    /// Both passes use the same input-column scope, so they cannot disagree. Column access is
+    /// already authorized: <see cref="ColumnsFor"/> leaves restricted fields out of every step's
+    /// columns.
     /// </summary>
-    internal static void RejectForbiddenCharacters(string expr, string errorContext)
-    {
-        const int MaxExpressionLength = 1000;
-        if (expr.Length > MaxExpressionLength)
-            throw Invalid($"{errorContext}: expression exceeds {MaxExpressionLength} characters.");
+    private static string MetricExpressionSql(string stepName, MetricSpec m, Dictionary<string, string> input) =>
+        ClientExpression.ToSql(
+            m.Expression, ExpressionContext.AggregateArgument,
+            name => input.TryGetValue(name, out var column)
+                ? $"`{column}`"
+                : throw Invalid($"Step '{stepName}': metric '{m.Name}' expression references " +
+                                $"'{name}', which is neither an input column nor a whitelisted function."),
+            $"Step '{stepName}': metric '{m.Name}' expression");
 
-        // CSR finding #9: '#' is a third SQL line-comment introducer alongside "--" and "/* */"
-        // in StarRocks' MySQL-derived dialect — omitting it left the same comment-injection class
-        // this denylist otherwise closes reachable via a single character.
-        if (expr.Contains(';') || expr.Contains('\'') || expr.Contains('"') || expr.Contains('`') ||
-            expr.Contains('\\') || expr.Contains('#') ||
-            expr.Contains("--") || expr.Contains("/*") || expr.Contains("*/"))
-            throw Invalid($"{errorContext} contains a forbidden character " +
-                          "(no semicolons, quotes (single or double), backticks, backslashes, or SQL comment sequences, including '#').");
-    }
-
-    private static void ValidateDeriveExpr(
-        string stepName, DeriveColumn d, Dictionary<string, string> available)
-    {
-        RejectForbiddenCharacters(d.Expr, $"Step '{stepName}': derive '{d.Alias}'");
-        foreach (Match m in TokenRx.Matches(d.Expr))
-        {
-            if (IsNonColumnToken(d.Expr, m)) continue;
-            if (available.ContainsKey(m.Value)) continue;
-            throw Invalid($"Step '{stepName}': derive '{d.Alias}' references '{m.Value}', which is " +
-                          "neither an input column nor a whitelisted function.");
-        }
-    }
+    private static string DeriveExpressionSql(
+        string stepName, DeriveColumn d, Dictionary<string, string> available) =>
+        ClientExpression.ToSql(
+            d.Expr, ExpressionContext.Derive,
+            name => available.TryGetValue(name, out var column)
+                ? $"`{column}`"
+                : throw Invalid($"Step '{stepName}': derive '{d.Alias}' references '{name}', which is " +
+                                "neither an input column nor a whitelisted function."),
+            $"Step '{stepName}': derive '{d.Alias}'");
 
     internal static string OutputNameFor(GroupKey key, Dictionary<string, string> input) =>
         key.DateTrunc == DateTrunc.None
@@ -511,7 +469,8 @@ internal static class StarRocksPipelineBuilder
             sb.Append($", `{step.Name}` AS (");
             EmitStep(
                 sb, step, input, emitted, registry, param, stepIdx: i + 1,
-                outputAliases: byName[step.Name].Columns, authz: authz, tenantDatabase: tenantDatabase);
+                outputAliases: byName[step.Name].Columns, deriveSql: byName[step.Name].DeriveSql,
+                authz: authz, tenantDatabase: tenantDatabase);
             sb.Append(')');
             prev = step.Name;
             emitted.Add(byName[step.Name]);
@@ -543,6 +502,7 @@ internal static class StarRocksPipelineBuilder
         DynamicParameters param,
         int stepIdx,
         IReadOnlyDictionary<string, string> outputAliases,
+        IReadOnlyList<string> deriveSql,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
         string? tenantDatabase = null)
     {
@@ -572,7 +532,7 @@ internal static class StarRocksPipelineBuilder
                     groupCols.Add($"`{alias}`");
                 }
             }
-            var metricExprs = step.Metrics.Select(m => EmitMetric(m, input.Columns));
+            var metricExprs = step.Metrics.Select(m => EmitMetric(step.Name, m, input.Columns));
 
             sb.Append($"SELECT {string.Join(", ", keyExprs.Concat(metricExprs))} FROM `{input.Name}`");
             if (where.Length > 0) sb.Append($" WHERE {where}");
@@ -619,8 +579,9 @@ internal static class StarRocksPipelineBuilder
 
         foreach (var w in step.Windows)
             selectParts.Add(EmitWindow(w, input.Columns));
-        foreach (var d in step.Derive)
-            selectParts.Add($"({d.Expr}) AS `{d.Alias}`");
+        // The parser's SQL from TrackAndValidate, never d.Expr itself.
+        for (var k = 0; k < step.Derive.Count; k++)
+            selectParts.Add($"({deriveSql[k]}) AS `{step.Derive[k].Alias}`");
 
         sb.Append($"SELECT {string.Join(", ", selectParts)} FROM `{input.Name}`");
 
@@ -686,7 +647,7 @@ internal static class StarRocksPipelineBuilder
         if (nonAggWhere.Length > 0) sb.Append($" WHERE {nonAggWhere}");
     }
 
-    private static string EmitMetric(MetricSpec m, Dictionary<string, string> input)
+    private static string EmitMetric(string stepName, MetricSpec m, Dictionary<string, string> input)
     {
         var quotedName = $"`{m.Name.Replace("`", "``")}`";
         var isCountAll = m.Type == AggregationType.Count
@@ -705,12 +666,9 @@ internal static class StarRocksPipelineBuilder
         };
         // m.Expression is a client-settable field on the public PipelineStep.metrics proto
         // contract (reuses MetricSpec, same as GroupByRequest.metrics) — it IS reachable by any
-        // caller with read access to this type via the Pipeline RPC. Validated during step
-        // processing (ValidateStepAndComputeOutput, called from TrackAndValidate — always run
-        // before Build reaches this method) via RejectForbiddenCharacters + the
-        // TokenRx/IsNonColumnToken identifier allow-list; do not weaken either check based on an
-        // assumption that this field is trusted or server-only.
-        var arg = !string.IsNullOrEmpty(m.Expression) ? m.Expression : $"`{input[m.Field]}`";
+        // caller with read access to this type via the Pipeline RPC. Only its parsed, re-emitted
+        // form reaches the SQL; never splice m.Expression itself.
+        var arg = !string.IsNullOrEmpty(m.Expression) ? MetricExpressionSql(stepName, m, input) : $"`{input[m.Field]}`";
         return $"{fn}({arg}) AS {quotedName}";
     }
 

@@ -1,8 +1,9 @@
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
-using System.Text.RegularExpressions;
 using Dapper;
 using Iverson.Client.Contracts;
+using Iverson.StarRocks.Expressions;
 
 
 namespace Iverson.StarRocks;
@@ -245,14 +246,21 @@ internal static class StarRocksQueryBuilder
         {
             CheckFieldAllowed(spec.Field);
         }
+        // spec.Expression is parsed, and its SQL is written from the parse tree: every column goes
+        // through CheckFieldAllowed and comes back quoted. It is parsed for every kind, although
+        // only Avg/Sum/Min/Max/Count emit it, so a disallowed reference is rejected whichever kind
+        // carries it.
+        string? expressionSql = null;
         if (!string.IsNullOrEmpty(spec.Expression))
         {
-            StarRocksPipelineBuilder.RejectForbiddenCharacters(spec.Expression, $"Aggregation '{spec.Name}' expression");
-            foreach (Match m in StarRocksPipelineBuilder.TokenRx.Matches(spec.Expression))
-            {
-                if (StarRocksPipelineBuilder.IsNonColumnToken(spec.Expression, m)) continue;
-                CheckFieldAllowed(m.Value);
-            }
+            expressionSql = ClientExpression.ToSql(
+                spec.Expression, ExpressionContext.AggregateArgument,
+                field =>
+                {
+                    CheckFieldAllowed(field);
+                    return Quote(ResolveStrict(field)!);
+                },
+                $"Aggregation '{spec.Name}' expression");
         }
 
         if (spec.GroupByFields is { Count: > 0 })
@@ -332,17 +340,15 @@ internal static class StarRocksQueryBuilder
 
             // spec.Expression is a client-settable field on the public AggregateRequest proto
             // contract (object_search.proto's AggregationSpec.expression) — it IS reachable by
-            // any caller with read access to this type via the Aggregate RPC. Validated above via
-            // RejectForbiddenCharacters + the TokenRx/IsNonColumnToken identifier allow-list before
-            // being spliced into the aggregate function; do not weaken either check based on an
-            // assumption that this field is trusted or server-only.
-            AggregationKind.Avg   => $"SELECT AVG({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
-            AggregationKind.Sum   => $"SELECT SUM({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
-            AggregationKind.Min   => $"SELECT MIN({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
-            AggregationKind.Max   => $"SELECT MAX({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            // any caller with read access to this type via the Aggregate RPC. Only its parsed,
+            // re-emitted form (expressionSql, above) reaches the SQL; never splice spec.Expression.
+            AggregationKind.Avg   => $"SELECT AVG({expressionSql ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            AggregationKind.Sum   => $"SELECT SUM({expressionSql ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            AggregationKind.Min   => $"SELECT MIN({expressionSql ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            AggregationKind.Max   => $"SELECT MAX({expressionSql ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
             AggregationKind.Count => isCountAll
                 ? $"SELECT COUNT(*) AS metric_val {from}{wc}{hc}"
-                : $"SELECT COUNT(DISTINCT {spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+                : $"SELECT COUNT(DISTINCT {expressionSql ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
 
             _ => throw new ArgumentOutOfRangeException(nameof(spec.Kind))
         };
@@ -471,11 +477,10 @@ internal static class StarRocksQueryBuilder
 
     // metric.expression is a client-settable field on the public GroupByRequest proto contract
     // (object_search.proto's MetricSpec.expression) — it IS reachable by any caller with read
-    // access to this type via the GroupBy RPC. Validated below via RejectForbiddenCharacters +
-    // the TokenRx/IsNonColumnToken identifier allow-list, and subject to the same field
-    // reject-on-reference check as metric.Field (see remarks ahead of that check for why the
-    // two are validated independently); do not weaken any of these based on an assumption that
-    // this field is trusted or server-only.
+    // access to this type via the GroupBy RPC. It is parsed by ClientExpression and its SQL is
+    // written from the parse tree, each column resolved and field-checked like metric.Field (see
+    // remarks ahead of that check for why the two are validated independently). Never splice
+    // metric.Expression itself.
     private static string BuildMetricExpr(
         MetricSpec metric,
         EngagementQuerySchema schema,
@@ -525,21 +530,21 @@ internal static class StarRocksQueryBuilder
 
         if (!string.IsNullOrEmpty(metric.Expression))
         {
-            StarRocksPipelineBuilder.RejectForbiddenCharacters(metric.Expression, $"Metric '{metric.Name}' expression");
-            foreach (Match m in StarRocksPipelineBuilder.TokenRx.Matches(metric.Expression))
-            {
-                if (StarRocksPipelineBuilder.IsNonColumnToken(metric.Expression, m)) continue;
-                var resolvedToken = ResolveColumn(tableMap, m.Value)
-                    ?? throw new EngagementQueryTranslationException(
-                        $"Metric '{metric.Name}' expression references unknown field '{m.Value}'.");
-                if (!IsFieldAllowed(resolvedToken, schema, tableMap, authz, out var typeName))
-                    throw new EngagementQueryTranslationException(
-                        $"Field '{m.Value}' on '{typeName}' referenced by metric '{metric.Name}' expression is not authorized for this caller.");
-            }
+            var expressionSql = ClientExpression.ToSql(
+                metric.Expression, ExpressionContext.AggregateArgument,
+                field =>
+                {
+                    var resolvedToken = ResolveColumn(tableMap, field)
+                        ?? throw new EngagementQueryTranslationException(
+                            $"Metric '{metric.Name}' expression references unknown field '{field}'.");
+                    if (!IsFieldAllowed(resolvedToken, schema, tableMap, authz, out var typeName))
+                        throw new EngagementQueryTranslationException(
+                            $"Field '{field}' on '{typeName}' referenced by metric '{metric.Name}' expression is not authorized for this caller.");
+                    return QuoteQualified(resolvedToken);
+                },
+                $"Metric '{metric.Name}' expression");
+            return $"{fn}({expressionSql}) AS {quotedName}";
         }
-
-        if (!string.IsNullOrEmpty(metric.Expression))
-            return $"{fn}({metric.Expression}) AS {quotedName}";
 
         if (resolvedField is not null)
             return $"{fn}({QuoteQualified(resolvedField)}) AS {quotedName}";
@@ -997,10 +1002,13 @@ internal static class StarRocksQueryBuilder
 
         var cases = buckets.Select((b, i) =>
         {
+            // lower/upper, not from/to: BuildRangeSql's own `from` parameter is the FROM clause.
+            var lower = b.From is { } f ? RangeBound(f, i) : null;
+            var upper = b.To is { } t ? RangeBound(t, i) : null;
             var when =
-                b.From is null && b.To is not null     ? $"WHEN {quotedCol} < {b.To.Value}"
-                : b.From is not null && b.To is null    ? $"WHEN {quotedCol} >= {b.From.Value}"
-                : b.From is not null && b.To is not null ? $"WHEN {quotedCol} >= {b.From.Value} AND {quotedCol} < {b.To.Value}"
+                lower is null && upper is not null     ? $"WHEN {quotedCol} < {upper}"
+                : lower is not null && upper is null    ? $"WHEN {quotedCol} >= {lower}"
+                : lower is not null && upper is not null ? $"WHEN {quotedCol} >= {lower} AND {quotedCol} < {upper}"
                 : null;
             if (when is null)
                 return null;   // a bucket with neither bound is meaningless — skip it, and bind no parameter for it
@@ -1011,6 +1019,15 @@ internal static class StarRocksQueryBuilder
         return $"SELECT CASE {string.Join(" ", cases)} END AS bucket_key, " +
                $"COUNT(*) AS doc_count {from}{wc} GROUP BY bucket_key{hc}";
     }
+
+    // A range bound is spliced as a numeric literal, so it is printed with the invariant culture
+    // (a decimal comma would split it into two tokens) and must be finite: NaN and ±Infinity have
+    // no literal form and would come out as bare words.
+    private static string RangeBound(double value, int bucketIndex) =>
+        double.IsFinite(value)
+            ? value.ToString(CultureInfo.InvariantCulture)
+            : throw new EngagementQueryTranslationException(
+                $"Range bucket {bucketIndex} has a non-finite bound; bounds must be finite numbers.");
 
     /// <summary>
     /// Maps one <see cref="SearchClause"/> to a SQL condition fragment, given an already-resolved
