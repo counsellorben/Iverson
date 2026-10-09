@@ -49,13 +49,10 @@ public sealed class AggregateReader(
     /// </summary>
     public async Task<TypeRowCount> CountRowsAsync(string typeName, ClaimsPrincipal? actingUser)
     {
-        var schema = registry.Get(typeName);
-        if (schema is null)
-            return TypeRowCount.UnknownType;
-
         // Another tenant's schema is ABSENT, not denied: Denied would tell this caller the type
-        // exists. See SchemaTenantScope.
-        if (schema.IsForeignTo(actingUser))
+        // exists. TryGetVisible answers null for both, so both report UnknownType.
+        var schema = registry.TryGetVisible(typeName, actingUser);
+        if (schema is null)
             return TypeRowCount.UnknownType;
 
         var decision = authEvaluator.Evaluate(schema, actingUser, AuthorizationAction.Read);
