@@ -1090,7 +1090,7 @@ public class SchemaRegistrationOrchestratorTests
     // different incompatible models. Phase 3 would then register them in sequence, the second silently
     // overwriting the first -- exactly the outcome this guard exists to prevent, reached through one request
     // instead of two. The guard now checks batchDescriptors (populated after BuildDescriptor, below) before
-    // falling back to registry.Get, mirroring phase 2's effectiveDescriptors move.
+    // falling back to registry.Get: the registry alone is stale during a batch.
     [Fact]
     public async Task RegisterAsync_SameTypeNameTwiceInOneRequestWithDifferentModels_ThrowsFailedPrecondition()
     {

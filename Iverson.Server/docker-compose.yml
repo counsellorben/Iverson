@@ -597,7 +597,7 @@ services:
 
   # The worker role. Every Kafka consumer and background reconciliation worker in Iverson.Api is
   # gated on `workloadRole == "worker"` (Iverson.Api/Program.cs) — IntelligenceStoreConsumer,
-  # DocumentRerenderConsumer, the DLQ/reconciliation workers, and AddEngagementStoreConsumer's
+  # the DLQ/reconciliation and document re-render workers, and AddEngagementStoreConsumer's
   # hosted consumer. Without this service NO asynchronous projection is ever populated: Qdrant
   # stays empty, StarRocks stays empty, and every read served from a projection returns nothing
   # while the write path looks perfectly healthy. The Helm chart has always deployed a worker

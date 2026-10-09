@@ -110,7 +110,7 @@ public class IntelligenceStoreConsumerTests
             _resolver,
             _registry,
             _entities,
-            new DocumentRenderer(_registry, _entities),
+            new DocumentRenderer(),
             new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
             _enrichment,
             Options.Create(_enrichmentOptions),
@@ -2329,6 +2329,63 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("body_vector")),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    [Fact]
+    public async Task HandleCreated_LegacyTemplateWithRelationSegments_RendersOwnPropertiesOnly_AndFetchesNoRelatedRows()
+    {
+        // A descriptor stored before relation placeholders were refused at registration, round-
+        // tripped through JSON the way SchemaRegistry stores it, still carries parsed OneHop and
+        // Block segments. Both relation targets are registered and the entity store would answer
+        // for them, so any related-row fetch, or any related text in the document, shows up below.
+        const string relatedId = "00000000-0000-0000-0000-000000000002";
+        var legacy = TemplateOnlyDocSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Tagline", "text", true),
+                new ColumnDescriptor("AuthorId", "uuid", true),
+                new ColumnDescriptor("TagIds", "uuid[]", true)
+            ],
+            Relations =
+            [
+                new RelationDescriptor("Author", RelationKind.ManyToOne, "Author", "AuthorId"),
+                new RelationDescriptor("Tags", RelationKind.ManyToMany, "Tag", "TagIds")
+            ],
+            DocumentTemplate = DocumentTemplateParser.Parse("{Tagline}{Author.Name}{#Tags}[{Label}]{/Tags}")
+        };
+        var stored = JsonSerializer.Deserialize<SchemaDescriptor>(JsonSerializer.Serialize(legacy, JsonOptions), JsonOptions)!;
+        await _registry.RegisterAsync(stored);
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(SchemaFixtures.TagSchema());
+
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
+            .Returns([new KeyedRow(relatedId, $$"""{"Id":"{{relatedId}}","Name":"Related name","Label":"Related label"}""")]);
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns([$$"""{"Id":"{{relatedId}}","Name":"Related name","Label":"Related label"}"""]);
+
+        var payloads = new List<IReadOnlyDictionary<string, object>>();
+        _vectorWrite
+            .UpsertNamedAsync(
+                Arg.Any<string>(),
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => { if (p is not null) payloads.Add(p); }))
+            .Returns(Task.CompletedTask);
+
+        var ev = TemplatedDocEvent(
+            Guid.NewGuid().ToString(),
+            $$"""{"Tagline":"Plain tagline","AuthorId":"{{relatedId}}","TagIds":["{{relatedId}}"],"TenantId":"test-tenant"}""",
+            "trace-legacy-relation-template");
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        payloads
+            .Where(p => p.TryGetValue("field", out var field) && Equals(field, "Document"))
+            .Select(p => p["text"])
+            .Should().Equal("Plain tagline");
+        await _entities.DidNotReceiveWithAnyArgs().FetchManyByKeysAsync(default!, default!, default);
+        await _entities.DidNotReceiveWithAnyArgs().FetchByColumnAsync(default!, default!, default!, default);
     }
 
     [Fact]

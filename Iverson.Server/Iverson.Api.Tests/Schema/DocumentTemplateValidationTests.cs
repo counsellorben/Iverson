@@ -78,7 +78,7 @@ public class DocumentTemplateValidationTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
     }
 
-    // ── Rule 2: undeclared relation ─────────────────────────────────────────────
+    // ── Rule 2: relation placeholders are refused ───────────────────────────────
 
     [Fact]
     public async Task RegisterAsync_TemplateReferencesUndeclaredRelation_ThrowsInvalidArgument()
@@ -89,68 +89,39 @@ public class DocumentTemplateValidationTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        // Refused as a relation placeholder, whether or not the relation exists.
+        ex.Which.Status.Detail.Should().Contain("document templates may reference only the type's own properties.");
     }
 
-    // ── Rule 3: scalar not declared on the target type ──────────────────────────
-
-    [Fact]
-    public async Task RegisterAsync_OneHopScalarNotOnTargetType_ThrowsInvalidArgument()
+    [Theory]
+    [InlineData("{Owner.Name}")]
+    [InlineData("{#Children}{Name}{/Children}")]
+    [InlineData("{Name} by {Owner.Name}")]
+    public async Task RegisterAsync_TemplateWithARelationPlaceholder_ThrowsInvalidArgument(string template)
     {
-        var root = WidgetType("{Owner.Bio}"); // Owner (User) has no Bio property
+        // Both relations are declared and both targets are registered in the same request with no
+        // row-level authorization, so the placeholder is refused for what it is, not for what it
+        // would reach.
+        var root = WidgetType(template);
         root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
         root.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
         });
-
-        var dependent = SimpleType("User", "Name"); // no Bio
-
-        var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    // ── Rule 4: {Rel.Prop} on a collection relation ─────────────────────────────
-
-    [Fact]
-    public async Task RegisterAsync_OneHopOnCollectionRelation_ThrowsInvalidArgument()
-    {
-        var root = WidgetType("{Children.Name}");
         root.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Children", Kind = Client.Contracts.RelationKind.OneToMany, RelatedType = "Gadget", ForeignKey = "WidgetId"
         });
 
-        var dependent = SimpleType("Gadget", "Name");
-
         var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
+            new SchemaRequest { RootType = root, Dependents = { SimpleType("User", "Name"), SimpleType("Gadget", "Name") } },
+            null, CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    // ── Rule 5: {#Rel} on a single-valued relation ──────────────────────────────
-
-    [Fact]
-    public async Task RegisterAsync_BlockOnSingleValuedRelation_ThrowsInvalidArgument()
-    {
-        var root = WidgetType("{#Owner}{Name}{/Owner}");
-        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
-        root.Relations.Add(new Client.Contracts.RelationDescriptor
-        {
-            PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
-        });
-
-        var dependent = SimpleType("User", "Name");
-
-        var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("document templates may reference only the type's own properties.");
+        _registry.Get("Widget").Should().BeNull();
+        await _schemaManager.DidNotReceive().ApplySchemaAsync(Arg.Any<TableSchema>(), Arg.Any<SchemaDriftPolicy>());
     }
 
     // ── Rule 6: derived-vector-name collision, including a lowercase "document" property ──
@@ -192,132 +163,6 @@ public class DocumentTemplateValidationTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
     }
 
-    // ── Rule 8: the same, on a one-hop target ───────────────────────────────────
-
-    [Fact]
-    public async Task RegisterAsync_TemplateReferencesFieldPermissionCarryingPropertyOnOneHopTarget_ThrowsInvalidArgument()
-    {
-        var root = WidgetType("{Owner.Name}");
-        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
-        root.Relations.Add(new Client.Contracts.RelationDescriptor
-        {
-            PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
-        });
-
-        var dependent = SimpleType("User", "Name");
-        dependent.Authorization = new Client.Contracts.AuthorizationRules
-        {
-            FieldPermissions =
-            {
-                new Client.Contracts.FieldPermission { FieldName = "Name", ReadableRoles = { "admin" } }
-            }
-        };
-
-        var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    // ── Rule 11: template traverses a relation to a row-owned type (OwnerField) ──
-
-    [Fact]
-    public async Task RegisterAsync_OneHopTraversesToRowOwnedTypeWithOwnerField_ThrowsInvalidArgument()
-    {
-        var root = WidgetType("{Owner.Name}");
-        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
-        root.Relations.Add(new Client.Contracts.RelationDescriptor
-        {
-            PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
-        });
-
-        var dependent = SimpleType("User", "Name");
-        dependent.Authorization = new Client.Contracts.AuthorizationRules
-        {
-            OwnerField = "Name"
-        };
-
-        var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    [Fact]
-    public async Task RegisterAsync_OneHopTraversesToRowOwnedTypeWithRowPermissions_ThrowsInvalidArgument()
-    {
-        var root = WidgetType("{Owner.Name}");
-        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
-        root.Relations.Add(new Client.Contracts.RelationDescriptor
-        {
-            PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
-        });
-
-        var dependent = SimpleType("User", "Name");
-        dependent.Authorization = new Client.Contracts.AuthorizationRules
-        {
-            RowPermissions =
-            {
-                new Client.Contracts.RowPermission { Role = "admin", CanReadAll = true }
-            }
-        };
-
-        var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    [Fact]
-    public async Task RegisterAsync_BlockTraversesToRowOwnedTypeWithOwnerField_ThrowsInvalidArgument()
-    {
-        var root = WidgetType("{#Children}{Name}{/Children}");
-        root.Relations.Add(new Client.Contracts.RelationDescriptor
-        {
-            PropertyName = "Children", Kind = Client.Contracts.RelationKind.OneToMany, RelatedType = "Gadget", ForeignKey = "WidgetId"
-        });
-
-        var dependent = SimpleType("Gadget", "Name");
-        dependent.Authorization = new Client.Contracts.AuthorizationRules
-        {
-            OwnerField = "Name"
-        };
-
-        var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    [Fact]
-    public async Task RegisterAsync_BlockTraversesToRowOwnedTypeWithRowPermissions_ThrowsInvalidArgument()
-    {
-        var root = WidgetType("{#Children}{Name}{/Children}");
-        root.Relations.Add(new Client.Contracts.RelationDescriptor
-        {
-            PropertyName = "Children", Kind = Client.Contracts.RelationKind.OneToMany, RelatedType = "Gadget", ForeignKey = "WidgetId"
-        });
-
-        var dependent = SimpleType("Gadget", "Name");
-        dependent.Authorization = new Client.Contracts.AuthorizationRules
-        {
-            RowPermissions =
-            {
-                new Client.Contracts.RowPermission { Role = "admin", CanReadAll = true }
-            }
-        };
-
-        var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
     // ── Rule 9: a FieldPermission naming "Document" ─────────────────────────────
 
     [Fact]
@@ -338,53 +183,37 @@ public class DocumentTemplateValidationTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
     }
 
-    // ── Rule 10: re-registering a target type without a property a dependent's template references ──
+    // ── Other types' stored templates are not re-validated ──────────────────────
 
     [Fact]
-    public async Task RegisterAsync_RetargetingTypeDropsPropertyADependentTemplateReferences_ThrowsFailedPrecondition()
+    public async Task RegisterAsync_ReRegisteringATypeThatALegacyStoredTemplateReferences_Succeeds()
     {
-        // First: register User (with Bio) and Article (referencing {Author.Bio}) together —
-        // this must succeed, establishing Article's template as valid against User.Bio.
-        var user = SimpleType("User", "Name", "Bio");
-
-        var article = SimpleType("Article");
-        article.DocumentTemplate = "{Author.Bio}";
-        article.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
-        article.Relations.Add(new Client.Contracts.RelationDescriptor
+        // A descriptor stored before relation placeholders were refused: Article's parsed template
+        // still reads {Author.Bio} through a ManyToOne to User. Registration checks only the types
+        // in its own request, so dropping Bio from User is not blocked by that stored template.
+        await _registry.RegisterAsync(new SchemaDescriptor
         {
-            PropertyName = "Author", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
+            TypeName      = "Article",
+            TableName     = "articles",
+            KeyColumn     = new ColumnDescriptor("Id", "UUID", false),
+            ScalarColumns = [new ColumnDescriptor("UserId", "UUID", true)],
+            FkColumns     = [],
+            VectorFields  = [],
+            ChunkFields   = [new ChunkDescriptor("Document", 512, 64, "nomic-embed-text", 768)],
+            Relations     =
+            [
+                new Iverson.Api.Schema.RelationDescriptor(
+                    "Author", Iverson.Api.Schema.RelationKind.ManyToOne, "User", "UserId")
+            ],
+            TenantColumn           = SchemaDescriptor.TenantColumnName,
+            DocumentTemplate       = DocumentTemplateParser.Parse("{Author.Bio}"),
+            DocumentTemplateSource = "{Author.Bio}",
         });
-
         await _sut.RegisterAsync(
-            new SchemaRequest { RootType = article, Dependents = { user } }, null, CancellationToken.None);
-
-        // Now: re-register User alone, without Bio. Article (already registered, not part of
-        // this request) still references {Author.Bio} — this must be rejected, distinctly, as
-        // FailedPrecondition rather than InvalidArgument.
-        var userWithoutBio = SimpleType("User", "Name");
-
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = userWithoutBio }, null, CancellationToken.None);
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
-    }
-
-    // ── Plus: root template referencing a type that appears later in dependents ────
-
-    [Fact]
-    public async Task RegisterAsync_RootTemplateReferencesLaterDependent_Succeeds()
-    {
-        var root = WidgetType("{Owner.Name}");
-        root.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
-        root.Relations.Add(new Client.Contracts.RelationDescriptor
-        {
-            PropertyName = "Owner", Kind = Client.Contracts.RelationKind.ManyToOne, RelatedType = "User", ForeignKey = "UserId"
-        });
-
-        var dependent = SimpleType("User", "Name");
+            new SchemaRequest { RootType = SimpleType("User", "Name", "Bio") }, null, CancellationToken.None);
 
         var act = () => _sut.RegisterAsync(
-            new SchemaRequest { RootType = root, Dependents = { dependent } }, null, CancellationToken.None);
+            new SchemaRequest { RootType = SimpleType("User", "Name") }, null, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }

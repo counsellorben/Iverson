@@ -167,7 +167,6 @@ public interface IEntityRepository
     Task<string?> FetchByKeyAsync(TableSchema schema, string key, EntityAccess access);
     Task<IEnumerable<KeyedRow>> FetchManyByKeysAsync(TableSchema schema, IReadOnlyList<string> keys, EntityAccess access);
     Task<IEnumerable<string>> FetchByColumnAsync(TableSchema schema, string columnName, string value, EntityAccess access);
-    Task<IEnumerable<string>> FetchByArrayContainsAsync(TableSchema schema, string columnName, string value, EntityAccess access);
     Task<IEnumerable<string>> FetchAllAsync(TableSchema schema, EntityAccess access);
     Task<IEnumerable<KeyedTenantRow>> FetchKeysAndTenantsPagedAsync(TableSchema schema, string? afterKey, int pageSize, EntityAccess access);
     Task DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key, EntityAccess access);

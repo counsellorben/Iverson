@@ -15,9 +15,9 @@ namespace Iverson.Api.Reconciliation;
 ///
 /// Every republished event carries <see cref="EntityEvent.SuppressRerenderCascade"/> = true and
 /// <see cref="StoreTarget.Intelligence"/> only: this is a document re-render, not a full
-/// re-projection, so it must not re-run the Postgres/StarRocks projections, and it must not be
-/// picked back up by <see cref="DocumentRerenderConsumer"/> as a fresh dependency change — that
-/// would be an infinite loop.
+/// re-projection, so it must not re-run the Postgres/StarRocks projections. The flag's former
+/// reader, relation-dependent re-render detection, was removed; the flag still marks a republish
+/// as a re-render rather than a client write.
 ///
 /// Mirrors <see cref="ReconciliationQueueWorker"/>'s poll-loop shape and
 /// <see cref="ReconciliationService"/>'s re-fetch-before-publish and exhaustion-warning patterns.

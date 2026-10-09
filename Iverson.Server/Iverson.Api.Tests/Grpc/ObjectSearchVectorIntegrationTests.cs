@@ -272,7 +272,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             _resolver,
             _registry,
             entities,
-            new DocumentRenderer(_registry, entities),
+            new DocumentRenderer(),
             _tenantScope,
             Substitute.For<IEnrichmentService>(),
             Options.Create(new EnrichmentServiceOptions()),

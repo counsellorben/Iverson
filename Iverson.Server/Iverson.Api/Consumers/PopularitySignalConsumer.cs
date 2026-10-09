@@ -157,11 +157,11 @@ internal sealed class PopularitySignalUpdater(
 /// configured <see cref="PopularitySignalOptions.Signals"/> entry, and recomputes/writes the
 /// parent's popularity count via <see cref="PopularitySignalUpdater"/>.
 ///
-/// Structured on <see cref="DocumentRerenderConsumer"/>'s exact pattern for OneToMany FK
-/// extraction (current + prior payload, old/new parent on reassignment) and its Created/Updated-
-/// vs-Deleted tenant resolution split — but keyed off the configured signal list (via
-/// <see cref="SchemaDescriptor.Relations"/>) instead of <see cref="SchemaRegistry.GetDependents"/>,
-/// since only explicitly configured relations feed a popularity count.
+/// Structured on the former <c>DocumentRerenderConsumer</c>'s pattern (removed with document-
+/// template relation traversal) for OneToMany FK extraction (current + prior payload, old/new
+/// parent on reassignment) and its Created/Updated-vs-Deleted tenant resolution split — keyed off
+/// the configured signal list (via <see cref="SchemaDescriptor.Relations"/>), since only
+/// explicitly configured relations feed a popularity count.
 ///
 /// Internal (not public): it depends on the internal <see cref="PopularitySignalUpdater"/> as a
 /// constructor parameter, so it cannot itself be public (CS0051) — the same internal-worker
@@ -208,8 +208,7 @@ internal sealed class PopularitySignalConsumer(
         var tenantId = await ResolveTenantIdAsync(ev, childSchema, ct);
         if (tenantId is null)
         {
-            // mirrors DocumentRerenderConsumer.cs:68 — an unresolvable tenant must never reach a
-            // StarRocks-bound call downstream
+            // An unresolvable tenant must never reach a StarRocks-bound call downstream.
             logger.LogWarning(
                 "[PopularitySignal] Dropped event — no authoritative row for type={Type} key={Key}",
                 ev.TypeName.SanitizeForLog(), ev.Key.SanitizeForLog());
@@ -273,7 +272,6 @@ internal sealed class PopularitySignalConsumer(
             ? ProjectionTenantResolution.TenantFromSnapshot(ev.PayloadJson, changedSchema, ev.Key, "[PopularitySignal]")
             : (await ProjectionTenantResolution.FetchAuthoritativeRowAsync(entities, changedSchema, ev.Key, "[PopularitySignal]"))?.TenantId;
 
-    // Identical shape to DocumentRerenderConsumer.cs:195.
     private static EntityEvent Deserialize(string key, string value)
     {
         EntityEvent? ev;
@@ -289,10 +287,9 @@ internal sealed class PopularitySignalConsumer(
         return ev ?? throw new PoisonMessageException($"[PopularitySignal] Event deserialized to null key={key}");
     }
 
-    // A deliberate additional copy of the pattern in DocumentRerenderConsumer.cs (and
-    // DocumentRenderer.cs, EnrichmentConsumer.cs, IntelligenceStoreConsumer.cs) — the spec
-    // authorizes adding a copy here rather than extracting a shared helper and touching any of
-    // those files.
+    // A deliberate additional copy of the pattern in EnrichmentConsumer.cs and
+    // IntelligenceStoreConsumer.cs — the spec authorizes adding a copy here rather than
+    // extracting a shared helper and touching either of those files.
     private static string? ExtractString(JsonElement payload, string propertyName)
     {
         if (payload.TryGetProperty(propertyName, out var v))

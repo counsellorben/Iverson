@@ -39,21 +39,6 @@ public sealed class EntityRepository(IRecordStoreQueryExecutor sql) : IEntityRep
             new { Key = value }, access.Role, access.TenantId);
     }
 
-    // ManyToMany reverse lookup: the FK column is a uuid[] living on the DECLARING row (the
-    // opposite direction from FetchByColumnAsync's OneToMany usage), so finding declaring rows
-    // whose array contains a given target key needs Postgres array containment (@>), not
-    // equality. Guid[], not string[] — Npgsql sends string[] as text[], which blocks Postgres
-    // from using the uuid[] GIN/index for @> — see this plan's Global Constraints and
-    // FetchManyByKeysAsync above.
-    public Task<IEnumerable<string>> FetchByArrayContainsAsync(TableSchema schema, string columnName, string value, EntityAccess access)
-    {
-        var table  = PostgresIdentifier.Quote(schema.TableName);
-        var column = PostgresIdentifier.Quote(columnName);
-        return sql.QueryAsync<string>(
-            $"SELECT row_to_json(t)::text FROM {table} t WHERE {column} @> @Keys",
-            new { Keys = new[] { Guid.Parse(value) } }, access.Role, access.TenantId);
-    }
-
     public Task<IEnumerable<string>> FetchAllAsync(TableSchema schema, EntityAccess access) =>
         sql.QueryAsync<string>(
             $"SELECT row_to_json(t)::text FROM {PostgresIdentifier.Quote(schema.TableName)} t",

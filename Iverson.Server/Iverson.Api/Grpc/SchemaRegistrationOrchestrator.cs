@@ -53,10 +53,9 @@ public sealed class SchemaRegistrationOrchestrator(
 
     public async Task<IReadOnlyList<string>> RegisterAsync(SchemaRequest request, string? ownerTenantId, CancellationToken ct)
     {
-        // Phase 1: build + per-type validate. No DDL, no registry writes — a root's document
-        // template can reference a dependent that hasn't been built yet if this were a single
-        // pass, and applying/registering before every type in the request is known-good would
-        // persist an invalid template.
+        // Phase 1: build + per-type validate. No DDL, no registry writes — applying/registering
+        // before every type in the request is known-good would persist part of a request that is
+        // then rejected.
         var descriptors = new List<SchemaDescriptor>();
         var batchDescriptors = new Dictionary<string, SchemaDescriptor>(StringComparer.OrdinalIgnoreCase);
 
@@ -109,8 +108,7 @@ public sealed class SchemaRegistrationOrchestrator(
             // both, letting two different resolved models both slip past a null-vs-null or
             // null-vs-same comparison. batchDescriptors already holds the first occurrence's built
             // descriptor by the time a second is reached (populated below, after BuildDescriptor), so
-            // checking it first mirrors the phase-2 cross-validation's effectiveDescriptors move: the
-            // registry alone is stale during a batch.
+            // it is checked first: the registry alone is stale during a batch.
             var priorDescriptor = batchDescriptors.TryGetValue(typeDesc.TypeName, out var inBatch)
                 ? inBatch
                 : registry.Get(typeDesc.TypeName);
@@ -273,32 +271,11 @@ public sealed class SchemaRegistrationOrchestrator(
             batchDescriptors[descriptor.TypeName] = descriptor;
         }
 
-        // Phase 2: cross-type validate. Every type in this request is now built, so a root's
-        // {Rel.Prop} reference into a dependent (in either declaration order) can resolve.
-        // Resolution also reaches types already registered from an earlier call, not just this
-        // request's batch — effectiveDescriptors is the registry's current view with this
-        // request's freshly-built descriptors overlaid on top.
-        var effectiveDescriptors = new Dictionary<string, SchemaDescriptor>(registry.All, StringComparer.OrdinalIgnoreCase);
-        foreach (var (typeName, descriptor) in batchDescriptors)
-            effectiveDescriptors[typeName] = descriptor;
-
-        // This request's own descriptors: a validation failure here is this request's own bad
-        // submission.
+        // Phase 2: document templates. A template may reference only its own type's scalar
+        // properties, so each is checked against its own descriptor; no other registered type's
+        // template depends on anything this request changes.
         foreach (var descriptor in descriptors)
-            ValidateDocumentTemplate(descriptor, effectiveDescriptors, StatusCode.InvalidArgument);
-
-        // Every OTHER already-registered type that carries a document template: this request
-        // didn't touch it directly, but it may reference (via a one-hop/block relation) a type
-        // this request just changed. If its template no longer resolves against the effective
-        // view, this request is breaking an established contract — FailedPrecondition, the same
-        // status SchemaDriftException already uses below for breaking an existing schema.
-        foreach (var (typeName, descriptor) in effectiveDescriptors)
-        {
-            if (batchDescriptors.ContainsKey(typeName) || descriptor.DocumentTemplate is null)
-                continue;
-
-            ValidateDocumentTemplate(descriptor, effectiveDescriptors, StatusCode.FailedPrecondition);
-        }
+            ValidateDocumentTemplate(descriptor);
 
         // Capture which of this request's types have a changed document template, while
         // registry.Get still returns the PRIOR descriptor (registry.RegisterAsync in phase 3
@@ -374,16 +351,8 @@ public sealed class SchemaRegistrationOrchestrator(
     }
 
     // Sits beside ValidateFieldReference/ValidateEnrichmentTargets. The parser (T1) knows
-    // nothing about schemas — this is where "does this property/relation actually exist" is
-    // enforced. allDescriptors is the effective view for this call (registry ∪ this request's
-    // batch); a one-hop/block placeholder resolves its relation's target against it. statusCode
-    // is decided by the caller: InvalidArgument when descriptor itself is part of this request's
-    // own submission, FailedPrecondition when descriptor is an unrelated, already-registered
-    // type whose template broke because this request changed something it depends on.
-    private static void ValidateDocumentTemplate(
-        SchemaDescriptor descriptor,
-        IReadOnlyDictionary<string, SchemaDescriptor> allDescriptors,
-        StatusCode statusCode)
+    // nothing about schemas — this is where "does this property actually exist" is enforced.
+    private static void ValidateDocumentTemplate(SchemaDescriptor descriptor)
     {
         if (descriptor.DocumentTemplate is null)
             return;
@@ -394,7 +363,7 @@ public sealed class SchemaRegistrationOrchestrator(
             .FirstOrDefault(g => g.Count() > 1);
         if (duplicate is not null)
         {
-            throw new RpcException(new Status(statusCode,
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"'{descriptor.TypeName}' declares chunk fields " +
                 $"{string.Join(", ", duplicate.Select(c => $"'{c.PropertyName}'"))} that all derive the same " +
                 $"Qdrant vector name '{duplicate.Key}_vector'."));
@@ -406,20 +375,16 @@ public sealed class SchemaRegistrationOrchestrator(
         if (descriptor.Authorization?.FieldPermissions.Any(fp =>
                 string.Equals(fp.FieldName, "Document", StringComparison.OrdinalIgnoreCase)) == true)
         {
-            throw new RpcException(new Status(statusCode,
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"'{descriptor.TypeName}' declares a FieldPermission naming 'Document', which is reserved for " +
                 "the synthetic document chunk field and can never be excluded from a caller's AllowedFields."));
         }
 
         foreach (var segment in descriptor.DocumentTemplate.Segments)
-            ValidateDocumentSegment(segment, descriptor, allDescriptors, statusCode);
+            ValidateDocumentSegment(segment, descriptor);
     }
 
-    private static void ValidateDocumentSegment(
-        DocumentSegment segment,
-        SchemaDescriptor declaring,
-        IReadOnlyDictionary<string, SchemaDescriptor> allDescriptors,
-        StatusCode statusCode)
+    private static void ValidateDocumentSegment(DocumentSegment segment, SchemaDescriptor declaring)
     {
         switch (segment.Kind)
         {
@@ -427,50 +392,22 @@ public sealed class SchemaRegistrationOrchestrator(
                 break;
 
             case DocumentSegmentKind.Scalar:
-                RequireScalarProperty(declaring, segment.PropertyName!, statusCode);
+                RequireScalarProperty(declaring, segment.PropertyName!);
                 break;
 
+            // Relation placeholders were removed: the only targets the old guard admitted were
+            // types whose rows no caller may read. The parser still produces these segments and
+            // stored descriptors still carry them; DocumentRenderer renders them as empty.
             case DocumentSegmentKind.OneHop:
-            {
-                var relation = RequireRelation(declaring, segment.RelationName!, statusCode);
-                if (relation.Kind is Schema.RelationKind.OneToMany or Schema.RelationKind.ManyToMany)
-                {
-                    throw new RpcException(new Status(statusCode,
-                        $"Document template on '{declaring.TypeName}' uses '{{{segment.RelationName}.{segment.PropertyName}}}', " +
-                        $"but relation '{segment.RelationName}' ({relation.Kind}) is a collection relation; " +
-                        "one-hop placeholders require a single-valued relation."));
-                }
-
-                var target = RequireTargetDescriptor(declaring, relation, allDescriptors, statusCode);
-                RequireNotRowOwned(declaring, segment, target, statusCode);
-                RequireScalarProperty(target, segment.PropertyName!, statusCode);
-                break;
-            }
-
             case DocumentSegmentKind.Block:
-            {
-                var relation = RequireRelation(declaring, segment.RelationName!, statusCode);
-                if (relation.Kind is Schema.RelationKind.OneToOne or Schema.RelationKind.ManyToOne)
-                {
-                    throw new RpcException(new Status(statusCode,
-                        $"Document template on '{declaring.TypeName}' uses '{{#{segment.RelationName}}}', " +
-                        $"but relation '{segment.RelationName}' ({relation.Kind}) is a single-valued relation; " +
-                        "block sections require a collection relation."));
-                }
-
-                var target = RequireTargetDescriptor(declaring, relation, allDescriptors, statusCode);
-                RequireNotRowOwned(declaring, segment, target, statusCode);
-                foreach (var inner in segment.Inner ?? [])
-                    if (inner.Kind == DocumentSegmentKind.Scalar)
-                        RequireScalarProperty(target, inner.PropertyName!, statusCode);
-                break;
-            }
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    $"Document template on '{declaring.TypeName}' references relation '{segment.RelationName}': " +
+                    "document templates may reference only the type's own properties."));
         }
     }
 
-    // Shared by top-level {Prop} (context = declaring type) and one-hop/block-inner {Prop}
-    // (context = the relation's target type).
-    private static void RequireScalarProperty(SchemaDescriptor context, string propertyName, StatusCode statusCode)
+    // Resolves a top-level {Prop} against the declaring type.
+    private static void RequireScalarProperty(SchemaDescriptor context, string propertyName)
     {
         // ScalarColumns position: EXCLUDE __TenantId. A template referencing {__TenantId} would
         // render the server-owned tenant value into the chunk text that SearchChunks returns
@@ -483,7 +420,7 @@ public sealed class SchemaRegistrationOrchestrator(
             string.Equals(c.Name, propertyName, StringComparison.OrdinalIgnoreCase));
         if (column is null)
         {
-            throw new RpcException(new Status(statusCode,
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Document template references property '{propertyName}' on '{context.TypeName}', which is not " +
                 "a declared scalar property."));
         }
@@ -491,52 +428,10 @@ public sealed class SchemaRegistrationOrchestrator(
         if (context.Authorization?.FieldPermissions.Any(fp =>
                 string.Equals(fp.FieldName, propertyName, StringComparison.OrdinalIgnoreCase)) == true)
         {
-            throw new RpcException(new Status(statusCode,
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Document template references property '{propertyName}' on '{context.TypeName}', which " +
                 "carries a FieldPermission; a document template cannot selectively exclude fields per caller."));
         }
-    }
-
-    private static void RequireNotRowOwned(
-        SchemaDescriptor declaring, DocumentSegment segment, SchemaDescriptor target, StatusCode statusCode)
-    {
-        if (target.Authorization?.OwnerField is not null || target.Authorization?.RowPermissions.Count > 0)
-        {
-            throw new RpcException(new Status(statusCode,
-                $"Document template on '{declaring.TypeName}' traverses relation '{segment.RelationName}' to " +
-                $"'{target.TypeName}', which declares row-level authorization (OwnerField/RowPermissions); a " +
-                "document template cannot traverse a relation to a row-owned type."));
-        }
-    }
-
-    private static Schema.RelationDescriptor RequireRelation(SchemaDescriptor declaring, string relationName, StatusCode statusCode)
-    {
-        var relation = declaring.Relations.FirstOrDefault(r =>
-            string.Equals(r.PropertyName, relationName, StringComparison.OrdinalIgnoreCase));
-        if (relation is null)
-        {
-            throw new RpcException(new Status(statusCode,
-                $"Document template on '{declaring.TypeName}' references relation '{relationName}', which is " +
-                "not a declared relation."));
-        }
-
-        return relation;
-    }
-
-    private static SchemaDescriptor RequireTargetDescriptor(
-        SchemaDescriptor declaring,
-        Schema.RelationDescriptor relation,
-        IReadOnlyDictionary<string, SchemaDescriptor> allDescriptors,
-        StatusCode statusCode)
-    {
-        if (!allDescriptors.TryGetValue(relation.RelatedTypeName, out var target))
-        {
-            throw new RpcException(new Status(statusCode,
-                $"Document template on '{declaring.TypeName}' references relation '{relation.PropertyName}', " +
-                $"whose related type '{relation.RelatedTypeName}' is not registered."));
-        }
-
-        return target;
     }
 
     /// <summary>
@@ -596,10 +491,9 @@ public sealed class SchemaRegistrationOrchestrator(
         //     Relations[].PropertyName, Authorization.OwnerField,
         //     Authorization.FieldPermissions[].FieldName.
         //   CHECKED ELSEWHERE: TenantField (RejectDeclaredTenantField, run immediately before
-        //     this); DocumentTemplate placeholders ({Prop}, {Rel.Prop}, {#Rel}) —
-        //     RequireScalarProperty resolves scalar names against ScalarColumns with __TenantId
-        //     EXCLUDED, and the relation half resolves against Relations[].PropertyName, which
-        //     this method now covers.
+        //     this); DocumentTemplate placeholders — RequireScalarProperty resolves {Prop} against
+        //     ScalarColumns with __TenantId EXCLUDED, and relation placeholders ({Rel.Prop},
+        //     {#Rel}) are rejected outright by ValidateDocumentSegment.
         //   CANNOT REACH THE NAME BY CONSTRUCTION: TypeName and Relations[].RelatedType are TYPE
         //     names, never column names — a type named __TenantId cannot register at all
         //     (ValidateIdentifier forbids a leading underscore), the FK-naming rule derives
