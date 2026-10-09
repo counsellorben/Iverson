@@ -96,7 +96,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// tenant unconditionally, for every schema, legacy or fresh, so a wrong-tenant update would find no
 /// visible row whatever the schema's registration history. Either way neither the tenant MISMATCH nor
 /// the immutability refusal fires on this leg, and what it observes is the NOT_FOUND answer
-/// described below. The payload is otherwise one a conforming client would send.</para>
+/// described below. Apart from the deliberately wrong value in its user tenant column, the
+/// payload is one a conforming client would send.</para>
 ///
 /// <para><b>What a header-less caller and a wrong-tenant caller are answered.</b> The identity type
 /// is registered under tenant A's acting header, so tenant A owns it, and to any other caller it

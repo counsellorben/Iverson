@@ -1726,6 +1726,37 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
+    public async Task Get_AtDepth1_WithOneToManyForeignKeyMatchingTwoChildColumnsIgnoringCase_FetchesWithTheDeclaredName()
+    {
+        // Two child columns differ only in case, so the declaration names no single canonical
+        // column and is used as written. Built by hand: the schema builder does not produce this.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema() with
+        {
+            Relations =
+            [
+                new Iverson.Api.Schema.RelationDescriptor("UserArticles", Iverson.Api.Schema.RelationKind.OneToMany, "UserArticle", "ARTICLEID")
+            ]
+        });
+        await _registry.RegisterAsync(SchemaFixtures.UserArticleSchema() with
+        {
+            ScalarColumns = [new Iverson.Api.Schema.ColumnDescriptor("articleid", "uuid", true)]
+        });
+        _entities
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "articles"), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns($$"""{"Id":"{{ArticleId}}","Title":"Hello","TenantId":"test-tenant"}""");
+        _entities
+            .FetchByColumnAsync(Arg.Any<TableSchema>(), "ARTICLEID", ArticleId, Arg.Any<EntityAccess>())
+            .Returns(Array.Empty<string>());
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, MakeContext());
+
+        response.Success.Should().BeTrue();
+        await _entities.Received(1).FetchByColumnAsync(
+            Arg.Any<TableSchema>(), "ARTICLEID", ArticleId, Arg.Any<EntityAccess>());
+    }
+
+    [Fact]
     public async Task Get_AtDepth1_WithOneToManyForeignKeyMatchingNoChildColumn_FetchesWithTheDeclaredName()
     {
         // No child column matches even ignoring case, so the declared name is used unchanged.

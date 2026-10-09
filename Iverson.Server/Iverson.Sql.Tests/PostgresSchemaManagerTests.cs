@@ -75,8 +75,8 @@ public sealed class PostgresSchemaManagerTests
     [Fact]
     public async Task ApplySchemaAsync_TenantColumnContainingADoubleQuote_IsRefusedBeforeConnecting()
     {
-        // The tenant column is quoted only inside the policy DDL, which runs after the connection
-        // opens and the table exists. A connection error here would mean it was quoted that late.
+        // The tenant column must be quoted with the other names, before connecting; a connection
+        // error here would mean it is quoted only inside the policy DDL.
         var manager = new PostgresSchemaManager(
             "Host=127.0.0.1;Port=1;Database=none;Username=none;Password=none;Timeout=1",
             NullLogger<PostgresSchemaManager>.Instance);
