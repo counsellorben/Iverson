@@ -153,9 +153,10 @@
 - Modify: `Iverson.Server/Iverson.Api/Grpc/SchemaRegistrationOrchestrator.cs` — Phase-1 comment (orig. `:58-61`); the `priorDescriptor` comment's reference to phase 2's `effectiveDescriptors` (orig. `:102-104`); phase-2 cross-type block (orig. `:266-291`) replaced by a per-type template check; `ValidateDocumentTemplate`/`ValidateDocumentSegment`/`RequireScalarProperty` lose their `allDescriptors`/`statusCode` parameters and OneHop/Block are rejected (orig. `:366-488`); `RequireNotRowOwned`, `RequireRelation`, `RequireTargetDescriptor` deleted (orig. `:490-530`); closed-enumeration comment in `RejectReservedTenantName` (orig. `:590-594`).
 - Modify: `Iverson.Server/Iverson.Api/Consumers/DocumentRenderer.cs` (whole file) — parameterless; OneHop and Block render empty; the fetch helpers go.
 - Delete: `Iverson.Server/Iverson.Api/Consumers/DocumentRerenderConsumer.cs` — the relation-dependent enqueueing (the whole class is that).
+- Modify: `Iverson.Server/Iverson.Api.Tests/Grpc/SchemaRegistrationOrchestratorTests.cs` (`:1019` at `1b7968aa`) — one stale comment naming phase 2's `effectiveDescriptors`.
 - Modify: `Iverson.Server/Iverson.Api/Program.cs` (`:453` at `1b7968aa`; Task 3 edits `:267-306` first, so match on the quoted line) — its hosted-service registration.
 - Modify: `Iverson.Server/docker-compose.yml` (`:597-599` at `1b7968aa`; Task 4 edits other hunks of this file first, so match on the quoted text) — the worker-role comment that lists the deleted consumer.
-- Modify: `Iverson.Server/Iverson.Api/Schema/SchemaRegistry.cs:14-20, 75-81, 233, 246, 258-291` (line numbers at `1b7968aa`; Task 5 adds 7 lines at `:197`, so after it these are `:240, :253, :265-298`. Locate by the quoted text) — `_reverseIndex`, `GetDependents`, `RebuildReverseIndex` and its two calls; their only reader was the deleted consumer.
+- Modify: `Iverson.Server/Iverson.Api/Schema/SchemaRegistry.cs:14-20, 75-81, 233, 246, 258-291` (line numbers at `1b7968aa`; Task 5 adds 8 lines at `:197`, so after it these are `:241, :254, :266-299`. Locate by the quoted text) — `_reverseIndex`, `GetDependents`, `RebuildReverseIndex` and its two calls; their only reader was the deleted consumer.
 - Modify: `Iverson.Server/Iverson.Sql/IRecordStoreRoles.cs:170` and `Iverson.Server/Iverson.Sql/EntityRepository.cs` (`FetchByArrayContainsAsync` as Task 5 left it) — deleted; its only caller was the deleted consumer.
 - Modify: `Iverson.Server/Iverson.Api/Consumers/PopularitySignalConsumer.cs:160-164, 211-212, 276, 292-295` — comments and crefs naming the deleted class and `GetDependents`.
 - Modify: `Iverson.Server/Iverson.Api/Reconciliation/DocumentRerenderQueueWorker.cs:16-20` — doc comment cref to the deleted class. The worker and queue stay (type-level backfill).
@@ -530,6 +531,7 @@ These were newly introduced by this plan and verified at plan-write time, on 202
 | X6 | 5 | `DocumentTemplateValidationTests` deletions number 10 | HOLDS. Rules 3, 4, 5 and 8, four Rule-11 tests, Rule 10, and "root references later dependent" (`:97, 118, 138, 198, 226, 249, 275, 297, 344, 375`). |
 | X7 | 5 | Task 6 red/green claims | HOLDS. Today the undeclared-relation message is `"…which is not a declared relation."` (`:510`). The theory's three templates register today: User and Gadget are batched and carry `Name`, and no auth. The legacy re-registration gets FailedPrecondition from `:285-291`. The legacy renderer test is green today because `_registry` lacks the targets (`DocumentRenderer.cs:106-107, 135-136`). |
 | X8 | 5 | Task 7 mutation table | HOLDS. Each of M1-M11 was traced against the six tests and kills its named test (for example, M3 Ordinal `targetNames` misses `"summary"`, so the WritableRoles test registers; M8 Ordinal FieldName misses `"summary"`, so NoMoreReadable throws). |
+| X9 | 5 | The Task 5–7 mutation must-fail lists hold when executed | Executed at plan-update time (CIR-1 §3.2 A) in a scratch worktree, unit-only (`Category!=Integration`): T5 M1–M10, T6 M1/M3, T7 M1–M6/M8–M11, 22 runs on green baselines (T5 115 Api + 47 Sql, T6 124, T7 89). 19 matched exactly. T5 M4, T7 M2 and T7 M11 also failed further tests, which their rows now name. Every listed test fails under its mutation. Record: `scratchpad/csr11-a/uip1/mutations.md`. |
 
 ### Verified for Tasks 8, 9 and 10
 
@@ -3144,7 +3146,7 @@ The tests below build exactly that: first a table with `Body VARCHAR(65533)`, th
   - the configuration key `ConnectionStrings:StarRocksProvisioner` (env `ConnectionStrings__StarRocksProvisioner`), read only when `workloadRole == "worker"`;
   - the login name `iverson_provisioner`@`'%'`, hard-coded in the two new GRANT statements;
   - `AddStarRocks(..., string? provisionerConnectionString = null)`.
-- Consumed by: Task 4 (Helm and compose set the key and create the login) and Task 11 (kind live upgrade).
+- Consumed by: Task 4 (Helm and compose set the key and create the login) and Task 11 (the throwaway job-script run and the isolated compose live check).
 - **Ordering.** This task must land before Task 4 on the branch. Task 4's job revokes `iverson_app`'s `user_admin`, and the pre-split code provisions with it.
 - **Conflicts.** `Program.cs` is also edited by the §5e task (the `/v1/traces` handler), in a different region. Anchor these edits on the quoted text, not on line numbers.
 
@@ -3677,6 +3679,7 @@ cd /home/ben/repositories/Iverson/.worktrees/csr11-server-authz/Iverson.Server &
 Expected: the build fails. This is the red state; there is nothing to run yet.
 - `CS1739`: the best overload for `EngagementRepository` / `AddStarRocks` has no parameter named `provisionerConnectionString`. This hits `StarRocksSplitLogins`' callers in all three integration classes, and `ServiceCollectionExtensionsTests`.
 - `CS0117`: `EngagementRepository` does not contain a definition for `OpenProvisionerConnectionAsync`.
+- `CS1061`: `FunctionAssertions<?>` has no `ThrowAsync`, at the two `act.Should().ThrowAsync` lines in `EngagementRepositoryProvisioningTests` that call `OpenProvisionerConnectionAsync`. It cascades from the CS0117 and disappears once Step 3 adds the method.
 
 No other error should appear. Any other error means a test file is wrong; fix the test, not the expectation.
 
@@ -3959,7 +3962,7 @@ Two of the new tests depend on facts that only a live engine can confirm:
 
 - [ ] **Step 5: Mutation proof**
 
-Apply each mutation alone, run the named test, confirm it FAILS, then revert with `git checkout -- <file>` before the next. Record each output line in the report.
+Before the first mutation, run Step 6's `git add …` command now (not the `git commit`), so that `git checkout -- <file>` restores this task's staged version, new files included. Apply each mutation alone, run the named test, confirm it FAILS, then revert with `git checkout -- <file>` before the next. Record each output line in the report.
 
 | # | File | Mutation | Run (filter) | Must fail |
 |---|---|---|---|---|
@@ -3980,10 +3983,10 @@ cd /home/ben/repositories/Iverson/.worktrees/csr11-server-authz/Iverson.Server &
 Run the HEAVY mutations one at a time. After the last revert, check that the source is clean:
 
 ```bash
-cd /home/ben/repositories/Iverson/.worktrees/csr11-server-authz && git diff --stat
+cd /home/ben/repositories/Iverson/.worktrees/csr11-server-authz && git diff HEAD --stat
 ```
 
-Expected: only this task's files are listed, and the diff matches Step 3. There is no `Program.cs` guard test: no test hosts the worker role, and Task 11's live run boots the worker with the Secret.
+Expected: only this task's files are listed, and the diff matches Step 3. (Plain `git diff --stat` prints nothing here, because the task's files are staged.) There is no `Program.cs` guard test: no test hosts the worker role, and Task 11's isolated compose run boots the worker with compose's provisioner connection string (a dev-only literal; compose has no Secret).
 
 - [ ] **Step 6: Commit**
 
@@ -4030,8 +4033,8 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
   - the config key `ConnectionStrings__StarRocksProvisioner`;
   - the login name `iverson_provisioner`, which Task 3's code grants roles to;
   - the code no longer needing `Database=iverson`, `user_admin` or `CREATE DATABASE` on `iverson_app`.
-- Produces for Task 11 (kind live upgrade):
-  - the Secret `<rel>-starrocks-provisioner`, key `password`;
+- Produces for Task 11 (the throwaway job-script run and the isolated compose live check):
+  - the job script rendered from the local profile, reading `PROVISIONER_PW`;
   - the job's post-split grant set.
 - **Ordering.** Task 3 first: this task's job strips `iverson_app`'s `user_admin`.
 
@@ -4045,7 +4048,7 @@ SCR=/tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-8872
 Rules for these steps:
 - **Helm.** Run `helm dependency build` in the chart directory before every `helm template` or `helm lint`: a stale `charts/*.tgz` renders old subchart content.
 - **Cloud overlays.** Render each one with its `*.ci-override.yaml`, as `.github/workflows/deploy-validate.yml` and the round-10 plans do.
-- **No live cluster or stack.** Do not start, stop or modify any cluster or compose stack in this task; Task 11 does the kind live upgrade. `docker compose … config` below only parses the file.
+- **No live cluster or stack.** Do not start, stop or modify any cluster or compose stack in this task; Task 11 runs the rendered job script against a throwaway StarRocks, and the isolated compose live check. `docker compose … config` below only parses the file.
 
 - [ ] **Step 1: Write the failing checks**
 
@@ -4463,7 +4466,7 @@ Expected:
 
 - [ ] **Step 5: Mutation proof**
 
-Apply each mutation alone and re-render only `values-local`. Confirm the checker prints `FAIL` with the named message, then revert with `git checkout -- <file>`. For the new file, re-create it from Step 3(a).
+Before the first mutation, run Step 6's `git add …` command now (not the `git commit`), so that `git checkout -- <file>` restores this task's staged version, new files included. Apply each mutation alone and re-render only `values-local`. Confirm the checker prints `FAIL` with the named message, then revert with `git checkout -- <file>`, which restores the staged new file too.
 
 | # | Mutation | Expected checker message |
 |---|---|---|
@@ -5433,14 +5436,14 @@ Expected: 0 failures. If a container starts during a `Category!=Integration` run
 
 - [ ] **Step 5: Mutation proof**
 
-Apply each mutation alone, run the named test's command from Step 2 (or Step 4 for the container one), record the failing test names, and revert with `git checkout -- <file>` before the next.
+Before the first mutation, run Step 6's `git add …` command now (not the `git commit`), so that `git checkout -- <file>` restores this task's staged version, new files included. Apply each mutation alone, run the named test's command from Step 2 (or Step 4 for the container one), record the failing test names, and revert with `git checkout -- <file>` before the next.
 
 | # | Mutation (one line) | Must fail |
 |---|---|---|
 | M1 | Orchestrator: delete `ValidateIdentifier(relation.PropertyName, …)` | `RegisterAsync_ARelationNameThatIsNotAnIdentifier_IsRejectedForEveryKind` (the 4 `PropertyName` cases) |
 | M2 | Orchestrator: delete `ValidateIdentifier(relation.ForeignKey, …)` | same theory, the 4 `ForeignKey` cases |
 | M3 | Orchestrator: delete `ValidateIdentifier(relation.RelatedType, …)` | same theory, the 4 `RelatedType` cases |
-| M4 | Orchestrator: move `RejectReservedTenantName(typeDesc);` to just after the relation `foreach` | `RegisterAsync_ARelationForeignKeyNamedLikeTheTenantColumn_KeepsTheReservedNameMessageForEveryKind` (all 4) and the existing reserved-name relation tests |
+| M4 | Orchestrator: move `RejectReservedTenantName(typeDesc);` to just after the relation `foreach` | `RegisterAsync_ARelationForeignKeyNamedLikeTheTenantColumn_KeepsTheReservedNameMessageForEveryKind` (all 4); `RegisterAsync_WithARelationForeignKeyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument`; `RegisterAsync_WithARelationNavigationPropertyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument`; `RegisterAsync_ARelationNavigationPropertyNamedLikeTheTenantColumn_IsRejectedForEveryKind` (both cases); `RegisterAsync_RelationForeignKeyNamingTheServerOwnedTenantColumn_IsRejectedAsReserved`; and, because the property-name check also runs before the moved call, `RegisterAsync_WithAScalarPropertyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument`, `RegisterAsync_WithADifferentlyCasedTenantColumnProperty_ThrowsInvalidArgument`, `RegisterAsync_WithAKeyPropertyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument` and `RegisterAsync_WithADependentPropertyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument` (13 in all) |
 | M5 | SchemaRegistry: replace the `descriptor.Relations.Any(…)` clause with `false` | `LoadAsync_DescriptorWithNonIdentifierRelationName_IsSkippedAndLogsError` (all 3) |
 | M6 | PostgresIdentifier: `if (name.Contains('"') \|\| name.Contains('\0'))` → `if (name.Contains('\0'))` | `Quote_NameContainingADoubleQuote_IsRefused`, `FetchByColumnAsync_ColumnNameContainingADoubleQuote_IsRefusedBeforeAnyQuery`, `UpsertAndEnqueueOutboxAsync_ColumnNameContainingADoubleQuote_IsRefusedBeforeTheTransaction`, `ApplySchemaAsync_TableNameContainingADoubleQuote_IsRefusedBeforeConnecting` |
 | M7 | PostgresIdentifier: `if (name.Contains('"') \|\| name.Contains('\0'))` → `if (name.Contains('"'))` | `Quote_NameContainingANulCharacter_IsRefused` |
@@ -5484,9 +5487,10 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `Iverson.Server/Iverson.Api/Grpc/SchemaRegistrationOrchestrator.cs` — Phase-1 comment (orig. `:58-61`); the `priorDescriptor` comment's reference to phase 2's `effectiveDescriptors` (orig. `:102-104`); phase-2 cross-type block (orig. `:266-291`) replaced by a per-type template check; `ValidateDocumentTemplate`/`ValidateDocumentSegment`/`RequireScalarProperty` lose their `allDescriptors`/`statusCode` parameters and OneHop/Block are rejected (orig. `:366-488`); `RequireNotRowOwned`, `RequireRelation`, `RequireTargetDescriptor` deleted (orig. `:490-530`); closed-enumeration comment in `RejectReservedTenantName` (orig. `:590-594`).
 - Modify: `Iverson.Server/Iverson.Api/Consumers/DocumentRenderer.cs` (whole file) — parameterless; OneHop and Block render empty; the fetch helpers go.
 - Delete: `Iverson.Server/Iverson.Api/Consumers/DocumentRerenderConsumer.cs` — the relation-dependent enqueueing (the whole class is that).
+- Modify: `Iverson.Server/Iverson.Api.Tests/Grpc/SchemaRegistrationOrchestratorTests.cs` (`:1019` at `1b7968aa`) — one stale comment naming phase 2's `effectiveDescriptors`.
 - Modify: `Iverson.Server/Iverson.Api/Program.cs` (`:453` at `1b7968aa`; Task 3 edits `:267-306` first, so match on the quoted line) — its hosted-service registration.
 - Modify: `Iverson.Server/docker-compose.yml` (`:597-599` at `1b7968aa`; Task 4 edits other hunks of this file first, so match on the quoted text) — the worker-role comment that lists the deleted consumer.
-- Modify: `Iverson.Server/Iverson.Api/Schema/SchemaRegistry.cs:14-20, 75-81, 233, 246, 258-291` (line numbers at `1b7968aa`; Task 5 adds 7 lines at `:197`, so after it these are `:240, :253, :265-298`. Locate by the quoted text) — `_reverseIndex`, `GetDependents`, `RebuildReverseIndex` and its two calls; their only reader was the deleted consumer.
+- Modify: `Iverson.Server/Iverson.Api/Schema/SchemaRegistry.cs:14-20, 75-81, 233, 246, 258-291` (line numbers at `1b7968aa`; Task 5 adds 8 lines at `:197`, so after it these are `:241, :254, :266-299`. Locate by the quoted text) — `_reverseIndex`, `GetDependents`, `RebuildReverseIndex` and its two calls; their only reader was the deleted consumer.
 - Modify: `Iverson.Server/Iverson.Sql/IRecordStoreRoles.cs:170` and `Iverson.Server/Iverson.Sql/EntityRepository.cs` (`FetchByArrayContainsAsync` as Task 5 left it) — deleted; its only caller was the deleted consumer.
 - Modify: `Iverson.Server/Iverson.Api/Consumers/PopularitySignalConsumer.cs:160-164, 211-212, 276, 292-295` — comments and crefs naming the deleted class and `GetDependents`.
 - Modify: `Iverson.Server/Iverson.Api/Reconciliation/DocumentRerenderQueueWorker.cs:16-20` — doc comment cref to the deleted class. The worker and queue stay (type-level backfill).
@@ -6210,7 +6214,7 @@ with:
 - delete lines 75-81 plus the following blank line (the `GetDependents` doc comment and method, from `/// <summary>` / `/// The (declaringType, relation) pairs whose document template references …` to `_reverseIndex.TryGetValue(typeName, out var deps) ? deps : [];`);
 - in `LoadAsync`, delete `        RebuildReverseIndex();` and the blank line after it (just above `logger.LogInformation("SchemaRegistry loaded {Count} schema(s)", _schemas.Count);`);
 - in `RegisterAsync`, delete `        RebuildReverseIndex();` (between `_schemas[descriptor.TypeName] = descriptor;` and `logger.LogInformation("Registered schema for {TypeName}", descriptor.TypeName);`);
-- delete lines 258-291 at `1b7968aa` (265-298 after Task 5; locate by the quoted text) plus the blank line after (the `// Derived from schema.DocumentTemplate.Segments …` comment and the whole `RebuildReverseIndex` method), leaving `s_jsonOptions` as the last member.
+- delete lines 258-291 at `1b7968aa` (266-299 after Task 5; locate by the quoted text) plus the blank line after (the `// Derived from schema.DocumentTemplate.Segments …` comment and the whole `RebuildReverseIndex` method), leaving `s_jsonOptions` as the last member.
 
 `Iverson.Server/Iverson.Api.Tests/Schema/SchemaRegistryTests.cs` — delete `LoadAsync_RebuildsReverseIndex_SoStartupRehydratedTemplateDependentsAreFound` (the whole `[Fact]`, orig. `:210-246`).
 
@@ -6299,6 +6303,15 @@ with:
 /// as a re-render rather than a client write.
 ```
 
+In `Iverson.Server/Iverson.Api.Tests/Grpc/SchemaRegistrationOrchestratorTests.cs`, replace the comment line
+```
+    // falling back to registry.Get, mirroring phase 2's effectiveDescriptors move.
+```
+with
+```
+    // falling back to registry.Get: the registry alone is stale during a batch.
+```
+
 Then confirm nothing still names the removed members (expected: no output):
 ```bash
 cd /home/ben/repositories/Iverson/.worktrees/csr11-server-authz/Iverson.Server && command grep -rn --include=*.cs -e 'GetDependents' -e 'RebuildReverseIndex' -e 'FetchByArrayContainsAsync' -e 'RequireNotRowOwned' -e 'RequireTargetDescriptor' -e 'new DocumentRenderer(_' -e 'cref="DocumentRerenderConsumer' -e 'effectiveDescriptors' . | command grep -v '/bin/\|/obj/'; command grep -n 'DocumentRerenderConsumer' docker-compose.yml
@@ -6321,7 +6334,7 @@ Expected: 0 failures. Against the Task 5 baseline, the Api count drops by the de
 
 - [ ] **Step 5: Mutation proof**
 
-Apply each alone, run the Step 4 filtered command, record the failing tests, revert with `git checkout -- <file>`.
+Before the first mutation, run Step 6's `git add …` command now (not the `git commit`), so that `git checkout -- <file>` restores this task's staged version, new files included. Apply each alone, run the Step 4 filtered command, record the failing tests, revert with `git checkout -- <file>`.
 
 | # | Mutation (one line) | Must fail |
 |---|---|---|
@@ -6348,7 +6361,8 @@ cd /home/ben/repositories/Iverson/.worktrees/csr11-server-authz && git add \
   Iverson.Server/Iverson.Api.Tests/Consumers/DocumentRendererTests.cs \
   Iverson.Server/Iverson.Api.Tests/Consumers/IntelligenceStoreConsumerTests.cs \
   Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchVectorIntegrationTests.cs \
-  Iverson.Server/Iverson.Api.Tests/Schema/SchemaRegistryTests.cs
+  Iverson.Server/Iverson.Api.Tests/Schema/SchemaRegistryTests.cs \
+  Iverson.Server/Iverson.Api.Tests/Grpc/SchemaRegistrationOrchestratorTests.cs
 git commit -m "refuse relation placeholders in document templates and render legacy ones empty
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
@@ -6602,12 +6616,12 @@ Expected: 0 failures (no registered test model combines enrichment with a FieldP
 
 - [ ] **Step 5: Mutation proof**
 
-Apply each alone, run the Step 2 command, record the failing tests, revert with `git checkout -- Iverson.Server/Iverson.Api/Grpc/SchemaRegistrationOrchestrator.cs`.
+Before the first mutation, run Step 6's `git add …` command now (not the `git commit`), so that `git checkout -- <file>` restores this task's staged version, new files included. Apply each alone, run the Step 2 command, record the failing tests, revert with `git checkout -- Iverson.Server/Iverson.Api/Grpc/SchemaRegistrationOrchestrator.cs`.
 
 | # | Mutation (one line) | Must fail |
 |---|---|---|
 | M1 | `fp.WritableRoles.Count > 0 && targetNames.Contains(fp.FieldName)` → `false` | `RegisterAsync_EnrichmentTargetWithWritableRoles_ThrowsInvalidArgument` |
-| M2 | same expression → `targetNames.Contains(fp.FieldName)` (drops the non-empty test) | `RegisterAsync_EnrichmentPermissionsWithEmptyRoleLists_Registers` |
+| M2 | same expression → `targetNames.Contains(fp.FieldName)` (drops the non-empty test) | `RegisterAsync_EnrichmentPermissionsWithEmptyRoleLists_Registers`; `RegisterAsync_EnrichmentTargetCoveringOnlyOneOfTwoSourcePermissions_ThrowsInvalidArgument`; `RegisterAsync_EnrichmentTargetMoreReadableThanItsSource_ThrowsInvalidArgument(targetHasUnrestrictedPermission: True)`; `RegisterAsync_EnrichmentTargetNoMoreReadableThanItsSource_Registers`; `RegisterAsync_EnrichmentTargetRoleDifferingFromTheSourceOnlyByCase_ThrowsInvalidArgument` (5 in all) |
 | M3 | `.ToHashSet(StringComparer.OrdinalIgnoreCase)` → `.ToHashSet(StringComparer.Ordinal)` on **`targetNames`** | `RegisterAsync_EnrichmentTargetWithWritableRoles_ThrowsInvalidArgument` |
 | M4 | source filter `fp.ReadableRoles.Count > 0 && sourceNames.Contains(fp.FieldName)` → `sourceNames.Contains(fp.FieldName)` | `RegisterAsync_EnrichmentPermissionsWithEmptyRoleLists_Registers` |
 | M5 | `.ToHashSet(StringComparer.OrdinalIgnoreCase)` → `.ToHashSet(StringComparer.Ordinal)` on **`sourceNames`** | `RegisterAsync_EnrichmentTargetCoveringOnlyOneOfTwoSourcePermissions_ThrowsInvalidArgument` |
@@ -6616,7 +6630,7 @@ Apply each alone, run the Step 2 command, record the failing tests, revert with 
 | M8 | in `covered`, `StringComparison.OrdinalIgnoreCase` → `StringComparison.Ordinal` | `RegisterAsync_EnrichmentTargetNoMoreReadableThanItsSource_Registers` |
 | M9 | `source.ReadableRoles.Contains(role, StringComparer.Ordinal)` → `source.ReadableRoles.Contains(role, StringComparer.OrdinalIgnoreCase)` | `RegisterAsync_EnrichmentTargetRoleDifferingFromTheSourceOnlyByCase_ThrowsInvalidArgument` |
 | M10 | `fp.ReadableRoles.All(role => source.ReadableRoles.Contains(role, StringComparer.Ordinal))` → `source.ReadableRoles.All(role => fp.ReadableRoles.Contains(role, StringComparer.Ordinal))` (subset inverted) | `RegisterAsync_EnrichmentTargetNoMoreReadableThanItsSource_Registers` |
-| M11 | `if (!covered)` → `if (false)` | `RegisterAsync_EnrichmentTargetMoreReadableThanItsSource_ThrowsInvalidArgument` (both cases) |
+| M11 | `if (!covered)` → `if (false)` | `RegisterAsync_EnrichmentTargetMoreReadableThanItsSource_ThrowsInvalidArgument` (both cases); `RegisterAsync_EnrichmentTargetCoveringOnlyOneOfTwoSourcePermissions_ThrowsInvalidArgument`; `RegisterAsync_EnrichmentTargetRoleDifferingFromTheSourceOnlyByCase_ThrowsInvalidArgument` (4 in all) |
 
 - [ ] **Step 6: Commit**
 
@@ -9337,7 +9351,7 @@ docker rmi csr11a-api localhost/csr11a-api >/dev/null 2>&1; true
 docker ps -a --format '{{.Names}}' | sort | diff $LIVE/before-containers.txt - && echo containers-unchanged
 docker volume ls -q | sort | diff $LIVE/before-volumes.txt - && echo volumes-unchanged
 docker network ls --format '{{.Name}}' | sort | diff $LIVE/before-networks.txt - && echo networks-unchanged
-docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort | comm -23 $LIVE/before-images.txt - | head && echo no-image-removed-or-repointed
+out="$(docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort | comm -23 $LIVE/before-images.txt -)"; [ -z "$out" ] && echo no-image-removed-or-repointed || printf 'CHANGED:\n%s\n' "$out"
 ```
 
 Expected:
