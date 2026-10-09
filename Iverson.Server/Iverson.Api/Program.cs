@@ -634,9 +634,15 @@ app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantS
     // CSR round 11 #21: an acting user whose tenant is not active is refused, as on the gRPC
     // surfaces and the admin console. ActiveTenantEndpointFilter reads HttpContext.User, which here
     // is the service token, so the acting principal is checked inline. No tenant_id passes.
+    // The refusal is audited as the filter audits it, naming the acting principal, whose tenant
+    // is the one refused.
     if (!string.IsNullOrEmpty(actingTenantId)
         && await tenantStatusCache.GetStatusAsync(actingTenantId) is null or "suspended" or "deleted")
+    {
+        audit.Denied(actingUserResult.Principal, "Unauthorized",
+            httpContext.GetEndpoint()?.DisplayName ?? "unknown", null, "TenantNotActive");
         return Results.Forbid();
+    }
 
     // An acting user with NO tenant_id claim must not fall through as though they matched every
     // untenanted row: `r.TenantId == actingTenantId` is `null == null` (true) for every row whose
@@ -661,10 +667,14 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
         actingUserResult.Principal.FindFirst("scope")?.Value);
     var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
 
-    // Same inactive-tenant refusal as /admin/dlq (see comment there), BEFORE the row fetch.
+    // Same inactive-tenant refusal and audit as /admin/dlq (see comment there), BEFORE the row fetch.
     if (!string.IsNullOrEmpty(actingTenantId)
         && await tenantStatusCache.GetStatusAsync(actingTenantId) is null or "suspended" or "deleted")
+    {
+        audit.Denied(actingUserResult.Principal, "Unauthorized",
+            httpContext.GetEndpoint()?.DisplayName ?? "unknown", null, "TenantNotActive");
         return Results.Forbid();
+    }
 
     // Same null-tenant_id-claim bypass as /admin/dlq (see comment there), checked BEFORE the row
     // fetch below: a caller who fails this first-level check must never learn — via 404 vs.

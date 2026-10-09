@@ -3,11 +3,13 @@ using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text;
 using FluentAssertions;
+using Iverson.Api.Grpc;
 using Iverson.Api.Tenancy;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Sql;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Xunit;
 
@@ -22,6 +24,7 @@ namespace Iverson.Api.Tests;
 public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicationFactory>
 {
     private readonly AuthTestWebApplicationFactory _baseFactory;
+    private readonly ILogger<AuditLog> _auditLogger = Substitute.For<ILogger<AuditLog>>();
 
     public InactiveTenantHttpEndpointTests(AuthTestWebApplicationFactory factory) => _baseFactory = factory;
 
@@ -64,6 +67,8 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
             services.RemoveAll<IDlqRepository>();
             services.AddSingleton(dlq);
             services.AddHttpClient("JaegerOtlpHttp").ConfigurePrimaryHttpMessageHandler(() => jaeger);
+            services.RemoveAll<AuditLog>();
+            services.AddSingleton(new AuditLog(_auditLogger));
         }));
         return (factory.CreateClient(), jaeger, dlq);
     }
@@ -129,6 +134,21 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
 
     // ── /admin/dlq and /admin/dlq/{id}/replay ────────────────────────────────
 
+    /// <summary>
+    /// The entry <c>ActiveTenantEndpointFilter</c> writes for the same refusal, naming the acting
+    /// user's tenant. <paramref name="tenantId"/> null counts every such entry.
+    /// </summary>
+    private void AssertTenantNotActiveAudited(int count, string? tenantId = null) =>
+        _auditLogger.Received(count).Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains("[Audit.Denied]")
+                              && v.ToString()!.Contains("action=Unauthorized")
+                              && v.ToString()!.Contains("reason=TenantNotActive")
+                              && (tenantId == null || v.ToString()!.Contains($"tenant={tenantId} "))),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+
     [Theory]
     [InlineData("tenant_unknown")]
     [InlineData("tenant_suspended")]
@@ -141,6 +161,7 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         await dlq.DidNotReceive().ListUnreplayedAsync(Arg.Any<int>());
+        AssertTenantNotActiveAudited(1, tenantId);
     }
 
     [Theory]
@@ -154,6 +175,7 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         await dlq.Received(1).ListUnreplayedAsync(Arg.Any<int>());
+        AssertTenantNotActiveAudited(0);
     }
 
     [Theory]
@@ -169,6 +191,7 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         await dlq.DidNotReceive().GetUnreplayedByIdAsync(Arg.Any<Guid>());
+        AssertTenantNotActiveAudited(1, tenantId);
     }
 
     [Theory]
@@ -183,5 +206,6 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound); // past the gate; the fake has no row
         await dlq.Received(1).GetUnreplayedByIdAsync(Arg.Any<Guid>());
+        AssertTenantNotActiveAudited(0);
     }
 }
