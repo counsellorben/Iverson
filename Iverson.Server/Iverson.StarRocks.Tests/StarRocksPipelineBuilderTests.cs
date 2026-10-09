@@ -1181,7 +1181,7 @@ public class StarRocksPipelineBuilderTests
     }
 
     [Fact]
-    public void Build_JoinedTypeOwnership_AppendsOwnerConditionToJoinOn()
+    public void Build_JoinedTypeOwnership_FiltersTheJoinedTableInADerivedTable()
     {
         var authz = new Dictionary<string, AuthorizationConstraint>
         {
@@ -1192,7 +1192,7 @@ public class StarRocksPipelineBuilderTests
             ArticleSchema(), Request(JoinedStep()), RegistryWithAuthor(), authz);
 
         var n = NormalizeWs(sql);
-        n.Should().Contain("ON `base`.`AuthorId` = `Author`.`Id` AND `Author`.`OwnerId` = @s1_j0_owner");
+        n.Should().Contain("INNER JOIN (SELECT * FROM `authors` WHERE `OwnerId` = @s1_j0_owner) AS `Author` ON `base`.`AuthorId` = `Author`.`Id`)");
         var lookup = (SqlMapper.IParameterLookup)param;
         lookup["s1_j0_owner"].Should().Be("alice");
     }
@@ -1291,7 +1291,7 @@ public class StarRocksPipelineBuilderTests
     }
 
     [Fact]
-    public void Build_JoinedTypeTenant_AppendsTenantConditionToJoinOn()
+    public void Build_JoinedTypeTenant_FiltersTheJoinedTableInADerivedTable()
     {
         var authz = new Dictionary<string, AuthorizationConstraint>
         {
@@ -1302,7 +1302,7 @@ public class StarRocksPipelineBuilderTests
             ArticleSchema(), Request(JoinedStep()), RegistryWithAuthor(), authz);
 
         var n = NormalizeWs(sql);
-        n.Should().Contain("ON `base`.`AuthorId` = `Author`.`Id` AND `Author`.`TenantId` = @s1_j0_tenant");
+        n.Should().Contain("INNER JOIN (SELECT * FROM `authors` WHERE `TenantId` = @s1_j0_tenant) AS `Author` ON `base`.`AuthorId` = `Author`.`Id`)");
         var lookup = (SqlMapper.IParameterLookup)param;
         lookup["s1_j0_tenant"].Should().Be("tenant-1");
     }
@@ -1324,8 +1324,8 @@ public class StarRocksPipelineBuilderTests
             ArticleSchema(), Request(TwoJoinStep()), RegistryWithAuthorAndTag(), authz);
 
         var n = NormalizeWs(sql);
-        n.Should().Contain("ON `base`.`AuthorId` = `Author`.`Id` AND `Author`.`TenantId` = @s1_j0_tenant");
-        n.Should().Contain("ON `base`.`AuthorId` = `Tag`.`Id` AND `Tag`.`TenantId` = @s1_j1_tenant");
+        n.Should().Contain("INNER JOIN (SELECT * FROM `authors` WHERE `TenantId` = @s1_j0_tenant) AS `Author` ON `base`.`AuthorId` = `Author`.`Id`");
+        n.Should().Contain("INNER JOIN (SELECT * FROM `tags` WHERE `TenantId` = @s1_j1_tenant) AS `Tag` ON `base`.`AuthorId` = `Tag`.`Id`)");
         var lookup = (SqlMapper.IParameterLookup)param;
         lookup["s1_j0_tenant"].Should().Be("tenant-author");
         lookup["s1_j1_tenant"].Should().Be("tenant-tag");
@@ -1586,7 +1586,7 @@ public class StarRocksPipelineBuilderTests
             TenantArticleSchema(), Request(JoinedTypeWildcardStep()),
             RegistryWithTenantAuthor(), TenantAuthzWithAuthor());
 
-        sql.Should().Contain($"`Author`.`{TenantCol}` = @s1_j0_tenant");
+        sql.Should().Contain($"INNER JOIN (SELECT * FROM `authors` WHERE `{TenantCol}` = @s1_j0_tenant) AS `Author`");
         param!.Get<string>("s1_j0_tenant").Should().Be("tenant-a");
     }
 
@@ -1602,6 +1602,104 @@ public class StarRocksPipelineBuilderTests
         lastCols.Keys.Should().NotContain(TenantCol);
         lastCols.Keys.Should().Contain(["Title", "Id", "Name"]);
         sql.Should().NotContain(".*");
+    }
+
+    // ── Joined-type ownership: a fresh registered type joins as a filtered derived table ──
+    //
+    // RIGHT and FULL joins keep a joined-side row whose ON condition fails, NULL-extended, so an
+    // owner or tenant predicate placed in ON cannot keep another owner's or tenant's joined rows
+    // out of the result. A fresh registered type is therefore joined as a derived table that
+    // applies both predicates in its own WHERE, for every join kind.
+
+    private static Dictionary<string, AuthorizationConstraint> OwnerAndTenantAuthzFor(string typeName) =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            [typeName] = new AuthorizationConstraint(null, "OwnerId", "alice", "TenantId", "tenant-1")
+        };
+
+    private static PipelineStep JoinedStepOfKind(JoinKind kind)
+    {
+        var step = JoinedStep();
+        step.Joins[0].Kind = kind;
+        return step;
+    }
+
+    [Theory]
+    [InlineData(JoinKind.Inner, "INNER")]
+    [InlineData(JoinKind.Left, "LEFT")]
+    [InlineData(JoinKind.Right, "RIGHT")]
+    [InlineData(JoinKind.Full, "FULL")]
+    public void Build_JoinToOwnerAndTenantScopedType_JoinsAFilteredDerivedTable(JoinKind kind, string keyword)
+    {
+        var (sql, param, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(JoinedStepOfKind(kind)), RegistryWithAuthor(),
+            OwnerAndTenantAuthzFor("Author"), tenantDatabase: "tenant_db");
+
+        NormalizeWs(sql).Should().Be(
+            "WITH `base` AS (SELECT `Id`, `Title`, `Category`, `WordCount`, `IsPublished`, `PublishedAt`, `AuthorId` " +
+            "FROM `tenant_db`.`articles`), " +
+            "`named` AS (SELECT `base`.*, `Author`.`Name` AS `author_name` FROM `base` " +
+            $"{keyword} JOIN (SELECT * FROM `tenant_db`.`authors` WHERE `OwnerId` = @s1_j0_owner AND `TenantId` = @s1_j0_tenant) AS `Author` " +
+            "ON `base`.`AuthorId` = `Author`.`Id`) " +
+            "SELECT * FROM `named` LIMIT 10000");
+        param.Get<string>("s1_j0_owner").Should().Be("alice");
+        param.Get<string>("s1_j0_tenant").Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void Build_JoinToTheQueriedTypeItself_FiltersBothTheBaseAndTheJoinedCopy()
+    {
+        // The queried type is also the join source. The base CTE carries the primary predicates;
+        // the joined copy is a fresh registered type and gets its own derived table.
+        var step = new PipelineStep { Name = "peers" };
+        var join = new PipelineJoin { Source = "Article", Kind = JoinKind.Right };
+        join.On.Add(new JoinCondition { Left = "AuthorId", Right = "AuthorId" });
+        step.Joins.Add(join);
+        step.Select.Add(new SelectItem { Column = "Id" });
+        step.Select.Add(new SelectItem { Source = "Article", Column = "Id", Alias = "peer_id" });
+
+        var (sql, param, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(step), BuildRegistry(ArticleSchema()),
+            OwnerAndTenantAuthzFor("Article"), tenantDatabase: "tenant_db");
+
+        NormalizeWs(sql).Should().Be(
+            "WITH `base` AS (SELECT `Id`, `Title`, `Category`, `WordCount`, `IsPublished`, `PublishedAt`, `AuthorId` " +
+            "FROM `tenant_db`.`articles` WHERE (`OwnerId` = @__ownerVal) AND `TenantId` = @__tenantVal), " +
+            "`peers` AS (SELECT `base`.`Id`, `Article`.`Id` AS `peer_id` FROM `base` " +
+            "RIGHT JOIN (SELECT * FROM `tenant_db`.`articles` WHERE `OwnerId` = @s1_j0_owner AND `TenantId` = @s1_j0_tenant) AS `Article` " +
+            "ON `base`.`AuthorId` = `Article`.`AuthorId`) " +
+            "SELECT * FROM `peers` LIMIT 10000");
+        param.Get<string>("__ownerVal").Should().Be("alice");
+        param.Get<string>("__tenantVal").Should().Be("tenant-1");
+        param.Get<string>("s1_j0_owner").Should().Be("alice");
+        param.Get<string>("s1_j0_tenant").Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void Build_StepReadingAnOuterJoinedStep_AddsNoPredicateOfItsOwn()
+    {
+        // The derived table filters the joined rows once, inside the joining step. A later step
+        // reads that step's CTE, which is already filtered, so it adds nothing.
+        var kept = new PipelineStep { Name = "kept" };
+        kept.Where.Add(new SearchClause
+        {
+            Property = "author_name", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "Ann" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(JoinedStepOfKind(JoinKind.Full), kept), RegistryWithAuthor(),
+            OwnerAndTenantAuthzFor("Author"), tenantDatabase: "tenant_db");
+
+        NormalizeWs(sql).Should().Be(
+            "WITH `base` AS (SELECT `Id`, `Title`, `Category`, `WordCount`, `IsPublished`, `PublishedAt`, `AuthorId` " +
+            "FROM `tenant_db`.`articles`), " +
+            "`named` AS (SELECT `base`.*, `Author`.`Name` AS `author_name` FROM `base` " +
+            "FULL JOIN (SELECT * FROM `tenant_db`.`authors` WHERE `OwnerId` = @s1_j0_owner AND `TenantId` = @s1_j0_tenant) AS `Author` " +
+            "ON `base`.`AuthorId` = `Author`.`Id`), " +
+            "`kept` AS (SELECT * FROM `named` WHERE `author_name` = @s2_p0) " +
+            "SELECT * FROM `kept` LIMIT 10000");
+        param.Get<string>("s2_p0").Should().Be("Ann");
     }
 
     // ── A LEGACY schema: boundary on a CLIENT-DECLARED column, no server-owned one ────────────

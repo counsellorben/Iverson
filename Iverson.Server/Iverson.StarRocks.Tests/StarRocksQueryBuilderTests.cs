@@ -3733,4 +3733,39 @@ public class StarRocksQueryBuilderTests
 
         act.Should().NotThrow();
     }
+
+    // ── BuildSearch — outer joins keep the primary type's boundary in the outer WHERE ────
+    // A RIGHT or FULL join emits joined-side rows with no primary-side match, NULL-extended. The
+    // primary type's owner and tenant predicates sit in the outer WHERE, where a NULL primary
+    // column fails them, so those rows never come back. The joined type's predicates stay in ON.
+
+    [Theory]
+    [InlineData(JoinKind.Right, "RIGHT")]
+    [InlineData(JoinKind.Full, "FULL")]
+    public void BuildSearch_OuterJoin_KeepsPrimaryOwnerAndTenantPredicatesInOuterWhere(JoinKind kind, string keyword)
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = kind }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"]  = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1", TenantColumn: "TenantId", TenantValue: "tenant-1"),
+            ["Article"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1", TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, joins: joins, registry: registry, authz: authz);
+
+        sql.Should().Be(
+            "SELECT `authors`.`Id`, `authors`.`Name`, `authors`.`Bio`, `authors`.`Rating`, `authors`.`PublishedAt` " +
+            $"FROM `authors` {keyword} JOIN `articles` ON `authors`.`Id` = `articles`.`Id` " +
+            "AND `articles`.`OwnerId` = @__owner1 AND `articles`.`TenantId` = @__tenant1 " +
+            "WHERE (`authors`.`OwnerId` = @__ownerVal) AND `authors`.`TenantId` = @__tenantVal " +
+            "LIMIT 10 OFFSET 0");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__ownerVal"].Should().Be("user-1");
+        lookup["__tenantVal"].Should().Be("tenant-1");
+    }
 }

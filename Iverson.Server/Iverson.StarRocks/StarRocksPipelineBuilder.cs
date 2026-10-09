@@ -639,40 +639,47 @@ internal static class StarRocksPipelineBuilder
             // step sources are CTEs joined by their own name (no alias needed).
             var joinedSchema = registry(src.Name);
             var isFreshType = joinedSchema is not null && emitted.All(s => !s.Name.Equals(src.Name, StringComparison.OrdinalIgnoreCase));
-            var target = isFreshType
-                ? $"{TenantIdentifier.Qualify(tenantDatabase, joinedSchema!.TableName)} AS `{src.Name}`"
-                : $"`{src.Name}`";
             var conds = join.On.Select(c =>
                 $"`{input.Name}`.`{input.Columns[c.Left]}` = `{src.Name}`.`{src.Columns[c.Right]}`");
 
-            // Joined-type ownership: appended to this JOIN's own ON clause (never the outer
-            // WHERE) — same reasoning as BuildFromWithJoins in StarRocksQueryBuilder (a WHERE-
-            // clause condition on the joined side would collapse LEFT/RIGHT/FULL to INNER
-            // semantics). Only applies to a fresh registered type, never a prior step — a
-            // step-to-step join needs no new predicate; that source was already filtered
-            // upstream (same "already filtered upstream" reasoning already established for
-            // Pipeline steps' own `where`).
-            var ownerCond = "";
-            if (isFreshType && authz is not null && authz.TryGetValue(src.Name, out var joinedConstraint) && joinedConstraint.OwnerColumn is not null)
+            // Joined-type ownership and tenant boundary. A fresh registered type is joined as a
+            // derived table that applies both predicates in its own WHERE, so a row of the joined
+            // table that fails them never reaches the join. ON is not enough: a RIGHT or FULL join
+            // emits a joined-side row whose ON condition fails, NULL-extended, and this step's
+            // WHERE carries only the caller's own filters. Inside the derived table the predicates
+            // are unqualified, because the outer alias is not in scope there. The derived table
+            // selects *, but what the step may read from it is still ColumnsFor's tracked set, and
+            // EmitSelectItem expands a fresh type's wildcard from that set. A step-to-step join
+            // needs neither predicate: that source was already filtered upstream.
+            var sourcePredicates = new List<string>();
+            if (isFreshType && authz is not null && authz.TryGetValue(src.Name, out var joinedConstraint))
             {
-                var pName = $"s{stepIdx}_j{joinIdx}_owner";
-                param.Add(pName, joinedConstraint.OwnerValue);
-                ownerCond = $" AND `{src.Name}`.`{joinedConstraint.OwnerColumn}` = @{pName}";
+                if (joinedConstraint.OwnerColumn is not null)
+                {
+                    var pName = $"s{stepIdx}_j{joinIdx}_owner";
+                    param.Add(pName, joinedConstraint.OwnerValue);
+                    sourcePredicates.Add($"`{joinedConstraint.OwnerColumn}` = @{pName}");
+                }
+
+                // Tenant boundary is additive and unconditional — gated only on TenantColumn being
+                // present, independently of the ownership predicate above. The step/join-indexed
+                // parameter names are unique per join.
+                if (joinedConstraint.TenantColumn is not null)
+                {
+                    var tName = $"s{stepIdx}_j{joinIdx}_tenant";
+                    param.Add(tName, joinedConstraint.TenantValue);
+                    sourcePredicates.Add($"`{joinedConstraint.TenantColumn}` = @{tName}");
+                }
             }
 
-            // Tenant boundary is additive and unconditional — gated only on TenantColumn being
-            // present, independently of the ownership block above. Every joined type is now
-            // guaranteed to carry a tenant column; the step/join-indexed parameter name is
-            // already unique per join, mirroring the owner predicate's discipline.
-            var tenantCond = "";
-            if (isFreshType && authz is not null && authz.TryGetValue(src.Name, out var joinedTenantConstraint) && joinedTenantConstraint.TenantColumn is not null)
-            {
-                var tName = $"s{stepIdx}_j{joinIdx}_tenant";
-                param.Add(tName, joinedTenantConstraint.TenantValue);
-                tenantCond = $" AND `{src.Name}`.`{joinedTenantConstraint.TenantColumn}` = @{tName}";
-            }
+            var target = !isFreshType
+                ? $"`{src.Name}`"
+                : sourcePredicates.Count > 0
+                    ? $"(SELECT * FROM {TenantIdentifier.Qualify(tenantDatabase, joinedSchema!.TableName)} " +
+                      $"WHERE {string.Join(" AND ", sourcePredicates)}) AS `{src.Name}`"
+                    : $"{TenantIdentifier.Qualify(tenantDatabase, joinedSchema!.TableName)} AS `{src.Name}`";
 
-            sb.Append($" {kind} JOIN {target} ON {string.Join(" AND ", conds)}{ownerCond}{tenantCond}");
+            sb.Append($" {kind} JOIN {target} ON {string.Join(" AND ", conds)}");
             joinIdx++;
         }
 
