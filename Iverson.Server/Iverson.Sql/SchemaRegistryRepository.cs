@@ -3,14 +3,14 @@ namespace Iverson.Sql;
 public sealed class SchemaRegistryRepository(IRecordStoreQueryExecutor sql) : ISchemaRegistryRepository
 {
     public Task EnsureTableAsync() =>
-        sql.ExecuteAsync(
+        sql.ExecuteAsync(StartupDdl.Serialised("_iverson_schema",
             """
             CREATE TABLE IF NOT EXISTS _iverson_schema (
                 type_name  TEXT PRIMARY KEY,
                 schema_json JSONB NOT NULL,
                 updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
             )
-            """);
+            """));
 
     public async Task<IEnumerable<(string TypeName, string SchemaJson)>> LoadAllAsync()
     {

@@ -48,4 +48,27 @@ public sealed class PostgresSchemaManagerTests
 
         await act.Should().ThrowAsync<ArgumentException>();
     }
+
+    [Fact]
+    public async Task ApplySchemaAsync_ColumnNameContainingADoubleQuote_IsRefusedBeforeConnecting()
+    {
+        // Same observation as the table-name case: a connection error would mean a column name was
+        // only quoted after the connection opened. The bad column comes second, so the check also
+        // covers a refusal that follows a valid column.
+        var manager = new PostgresSchemaManager(
+            "Host=127.0.0.1;Port=1;Database=none;Username=none;Password=none;Timeout=1",
+            NullLogger<PostgresSchemaManager>.Instance);
+        var schema = new TableSchema(
+            "players",
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            new List<ColumnSchema>
+            {
+                new("name", "text", IsNullable: false),
+                new("ju\"ersey", "int", IsNullable: true)
+            });
+
+        var act = () => manager.ApplySchemaAsync(schema);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
 }

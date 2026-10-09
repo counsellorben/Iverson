@@ -14,7 +14,7 @@ public sealed class DocumentRerenderQueueRepository(IRecordStoreQueryExecutor sq
     public const string TableName = "DocumentRerenderQueue";
 
     public Task EnsureTableAsync() =>
-        sql.ExecuteAsync(
+        sql.ExecuteAsync(StartupDdl.Serialised(TableName,
             $"""
             CREATE TABLE IF NOT EXISTS "{TableName}" (
                 "Id"            uuid PRIMARY KEY,
@@ -35,7 +35,7 @@ public sealed class DocumentRerenderQueueRepository(IRecordStoreQueryExecutor sq
             CREATE UNIQUE INDEX IF NOT EXISTS ux_document_rerender_queue_type
                 ON "{TableName}" ("TypeName")
                 WHERE "EntityKey" IS NULL;
-            """);
+            """));
 
     public Task EnqueueEntityAsync(string? tenantId, string typeName, string entityKey) =>
         sql.ExecuteAsync(

@@ -83,6 +83,62 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     }
 
     [Fact]
+    public async Task ApplySchemaAsync_ColumnNameContainingADoubleQuote_OnExistingTable_IsRefusedAndAddsNoColumn()
+    {
+        var table = UniqueTable();
+        var key   = new ColumnSchema("id", "uuid", IsNullable: false);
+        await _schemaManager.ApplySchemaAsync(
+            new TableSchema(table, key, [new ColumnSchema("name", "text", IsNullable: false)]));
+
+        // The valid new column precedes the bad one, so only quoting every name up front keeps it
+        // from being added before the refusal.
+        var act = async () => await _schemaManager.ApplySchemaAsync(
+            new TableSchema(table, key,
+            [
+                new ColumnSchema("name", "text", IsNullable: false),
+                new ColumnSchema("nickname", "text", IsNullable: true),
+                new ColumnSchema("na\"me2", "text", IsNullable: true)
+            ]));
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        var columns = (await _repo.QueryAsync<string>(
+            $"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}' ORDER BY column_name")).ToList();
+        columns.Should().BeEquivalentTo(["id", "name"]);
+    }
+
+    [Fact]
+    public async Task EnsureTableAsync_RunConcurrentlyFromSeveralCallers_AgainstAFreshDatabase_NeverThrows()
+    {
+        // The api and the worker both run these on boot. Each round starts from absent tables so
+        // every caller reaches the cold-create path, where an unserialised CREATE ... IF NOT EXISTS
+        // loses the catalogue race with SQLSTATE 23505.
+        IReadOnlyList<Func<Task>> ensures =
+        [
+            () => new SchemaRegistryRepository(_repo).EnsureTableAsync(),
+            () => new EnrichmentStateRepository(_repo).EnsureTableAsync(),
+            () => new DocumentRerenderQueueRepository(_repo).EnsureTableAsync(),
+            () => new TokenRevocationRepository(_repo).EnsureTableAsync(),
+        ];
+
+        for (var round = 0; round < 3; round++)
+        {
+            await _repo.ExecuteAsync(
+                $"""
+                DROP TABLE IF EXISTS _iverson_schema, iverson_enrichment_state,
+                    iverson_token_revocations, "{DocumentRerenderQueueRepository.TableName}"
+                """);
+
+            var callers = Enumerable.Range(0, 8)
+                .SelectMany(_ => ensures)
+                .Select(ensure => Task.Run(ensure))
+                .ToArray();
+
+            var act = async () => await Task.WhenAll(callers);
+            await act.Should().NotThrowAsync();
+        }
+    }
+
+    [Fact]
     public async Task ApplySchemaAsync_IsIdempotent_WhenCalledTwice()
     {
         var table  = UniqueTable();

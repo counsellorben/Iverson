@@ -10,13 +10,13 @@ namespace Iverson.Sql;
 public sealed class TokenRevocationRepository(IRecordStoreQueryExecutor sql) : ITokenRevocationRepository
 {
     public Task EnsureTableAsync() =>
-        sql.ExecuteAsync(
+        sql.ExecuteAsync(StartupDdl.Serialised("iverson_token_revocations",
             """
             CREATE TABLE IF NOT EXISTS iverson_token_revocations (
                 sub        TEXT PRIMARY KEY,
                 revoked_at TIMESTAMPTZ NOT NULL
             )
-            """);
+            """));
 
     public Task RevokeAsync(string sub) =>
         sql.ExecuteAsync(

@@ -13,10 +13,14 @@ public sealed class PostgresSchemaManager(
 
     public async Task ApplySchemaAsync(TableSchema schema, SchemaDriftPolicy driftPolicy = SchemaDriftPolicy.Warn)
     {
-        // Quoted before any connection is opened, so a table or key name the helper refuses never
-        // reaches the advisory lock or any DDL. Column names are quoted where they are used.
+        // Every name is quoted before any connection is opened, so a name the helper refuses never
+        // reaches the advisory lock or any DDL. The column DDL below is non-transactional: quoting
+        // a later column mid-loop would leave the earlier ones already added.
         var table     = PostgresIdentifier.Quote(schema.TableName);
         var keyColumn = PostgresIdentifier.Quote(schema.KeyColumn.Name);
+        var quotedColumns = schema.Columns
+            .Select(c => (Column: c, Quoted: PostgresIdentifier.Quote(c.Name)))
+            .ToList();
 
         using var activity = Telemetry.Source.StartActivity("db.apply_schema", ActivityKind.Client);
         activity?.SetTag("db.system", "postgresql");
@@ -71,8 +75,8 @@ public sealed class PostgresSchemaManager(
             if (existingColumns.Count == 0)
             {
                 var keySql   = $"{keyColumn} {schema.KeyColumn.SqlType} PRIMARY KEY";
-                var colsSql  = schema.Columns.Select(c =>
-                    $"{PostgresIdentifier.Quote(c.Name)} {c.SqlType}{(c.IsNullable ? "" : " NOT NULL")}");
+                var colsSql  = quotedColumns.Select(q =>
+                    $"{q.Quoted} {q.Column.SqlType}{(q.Column.IsNullable ? "" : " NOT NULL")}");
 
                 var ddl = $"""
                     CREATE TABLE IF NOT EXISTS {table} (
@@ -116,11 +120,11 @@ public sealed class PostgresSchemaManager(
                     }
                 }
 
-                foreach (var col in schema.Columns.Where(c => !existingColumns.Contains(c.Name)))
+                foreach (var (col, quotedName) in quotedColumns.Where(q => !existingColumns.Contains(q.Column.Name)))
                 {
                     var alterSql = $"""
                         ALTER TABLE {table}
-                        ADD COLUMN IF NOT EXISTS {PostgresIdentifier.Quote(col.Name)} {col.SqlType}{(col.IsNullable ? "" : $" NOT NULL DEFAULT ('{GetDefaultForType(col.SqlType)}')")}
+                        ADD COLUMN IF NOT EXISTS {quotedName} {col.SqlType}{(col.IsNullable ? "" : $" NOT NULL DEFAULT ('{GetDefaultForType(col.SqlType)}')")}
                         """;
 
                     logger.LogInformation("Adding column {Column} to {Table}", col.Name, schema.TableName);
@@ -143,16 +147,15 @@ public sealed class PostgresSchemaManager(
                 }
             }
 
-            foreach (var col in schema
-                .Columns
-                .Where(c =>
-                    c.Name.EndsWith("Id", StringComparison.OrdinalIgnoreCase) ||
-                    c.Name.EndsWith("Ids", StringComparison.OrdinalIgnoreCase)))
+            foreach (var (col, quotedName) in quotedColumns
+                .Where(q =>
+                    q.Column.Name.EndsWith("Id", StringComparison.OrdinalIgnoreCase) ||
+                    q.Column.Name.EndsWith("Ids", StringComparison.OrdinalIgnoreCase)))
             {
                 var idxName = $"ix_{schema.TableName}_{col.Name}".ToLowerInvariant();
                 await conn.ExecuteAsync($"""
                     CREATE INDEX IF NOT EXISTS {PostgresIdentifier.Quote(idxName)}
-                    ON {table} ({PostgresIdentifier.Quote(col.Name)})
+                    ON {table} ({quotedName})
                     """);
             }
 

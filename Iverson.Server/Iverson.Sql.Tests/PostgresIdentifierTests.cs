@@ -22,6 +22,18 @@ public class PostgresIdentifierTests
     }
 
     [Fact]
+    public void Quote_RefusalReportsTheCallSiteExpression_NeverTheValue()
+    {
+        var tableName = "Na\"me";
+
+        var act = () => PostgresIdentifier.Quote(tableName);
+
+        var ex = act.Should().Throw<ArgumentException>().Which;
+        ex.ParamName.Should().Be("tableName");
+        ex.Message.Should().NotContain("Na\"me");
+    }
+
+    [Fact]
     public void Quote_NameContainingANulCharacter_IsRefused()
     {
         var act = () => PostgresIdentifier.Quote("Na\0me");

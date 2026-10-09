@@ -3,7 +3,7 @@ namespace Iverson.Sql;
 public sealed class EnrichmentStateRepository(IRecordStoreQueryExecutor sql) : IEnrichmentStateRepository
 {
     public Task EnsureTableAsync() =>
-        sql.ExecuteAsync(
+        sql.ExecuteAsync(StartupDdl.Serialised("iverson_enrichment_state",
             """
             CREATE TABLE IF NOT EXISTS iverson_enrichment_state (
                 tenant_id  TEXT NOT NULL,
@@ -13,7 +13,7 @@ public sealed class EnrichmentStateRepository(IRecordStoreQueryExecutor sql) : I
                 enriched_at TIMESTAMPTZ NOT NULL,
                 PRIMARY KEY (tenant_id, type_name, entity_key)
             )
-            """);
+            """));
 
     public Task<string?> GetHashAsync(string tenantId, string typeName, string entityKey) =>
         sql.QuerySingleOrDefaultAsync<string>(
