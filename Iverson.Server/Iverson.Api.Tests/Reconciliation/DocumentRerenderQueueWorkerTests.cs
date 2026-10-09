@@ -147,8 +147,9 @@ public class DocumentRerenderQueueWorkerTests
         back.Should().Be(published);
 
         // An event written by an older pod still carries the removed member; it is ignored.
-        var legacy = System.Text.Json.JsonSerializer.Deserialize<EntityEvent>(
-            wire.TrimEnd('}') + ",\"SuppressRerenderCascade\":true}");
+        var legacyPayload = System.Text.Json.Nodes.JsonNode.Parse(wire)!.AsObject();
+        legacyPayload["SuppressRerenderCascade"] = true;
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<EntityEvent>(legacyPayload.ToJsonString());
         legacy.Should().Be(published);
     }
 

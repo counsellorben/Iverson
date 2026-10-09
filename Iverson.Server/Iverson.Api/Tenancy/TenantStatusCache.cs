@@ -7,7 +7,9 @@ namespace Iverson.Api.Tenancy;
 /// Caches each tenant's status in this process for <see cref="Ttl"/>.
 /// <para>
 /// <c>TenantLifecycleGrpcService</c> calls <see cref="Invalidate"/> after every status write, so
-/// the replica that served the write sees a suspension, reactivation or deletion immediately.
+/// the replica that served the write normally sees a suspension, reactivation or deletion
+/// immediately. An in-flight <c>GetStatusAsync</c> that read before the write can repopulate the
+/// entry after <see cref="Invalidate"/>, so even that replica is bounded by <see cref="Ttl"/>.
 /// The cache is per process: every other replica keeps answering its cached status until the
 /// entry expires, up to <see cref="Ttl"/> after the write.
 /// </para>
