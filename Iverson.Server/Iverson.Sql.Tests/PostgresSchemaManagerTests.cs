@@ -71,4 +71,23 @@ public sealed class PostgresSchemaManagerTests
 
         await act.Should().ThrowAsync<ArgumentException>();
     }
+
+    [Fact]
+    public async Task ApplySchemaAsync_TenantColumnContainingADoubleQuote_IsRefusedBeforeConnecting()
+    {
+        // The tenant column is quoted only inside the policy DDL, which runs after the connection
+        // opens and the table exists. A connection error here would mean it was quoted that late.
+        var manager = new PostgresSchemaManager(
+            "Host=127.0.0.1;Port=1;Database=none;Username=none;Password=none;Timeout=1",
+            NullLogger<PostgresSchemaManager>.Instance);
+        var schema = new TableSchema(
+            "players",
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            new List<ColumnSchema> { new("name", "text", IsNullable: false) },
+            TenantColumn: "ten\"ant");
+
+        var act = () => manager.ApplySchemaAsync(schema);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
 }

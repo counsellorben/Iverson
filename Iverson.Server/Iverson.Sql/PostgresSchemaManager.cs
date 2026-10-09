@@ -21,6 +21,10 @@ public sealed class PostgresSchemaManager(
         var quotedColumns = schema.Columns
             .Select(c => (Column: c, Quoted: PostgresIdentifier.Quote(c.Name)))
             .ToList();
+        var quotedTenantColumn = schema.TenantColumn is null ? null : PostgresIdentifier.Quote(schema.TenantColumn);
+        var quotedPolicyName   = schema.TenantColumn is null
+            ? null
+            : PostgresIdentifier.Quote($"{schema.TableName}_tenant_isolation");
 
         using var activity = Telemetry.Source.StartActivity("db.apply_schema", ActivityKind.Client);
         activity?.SetTag("db.system", "postgresql");
@@ -179,8 +183,8 @@ public sealed class PostgresSchemaManager(
                     try
                     {
                         await conn.ExecuteAsync($"""
-                            CREATE POLICY {PostgresIdentifier.Quote(policyName)} ON {table}
-                            USING ({PostgresIdentifier.Quote(schema.TenantColumn)} = current_setting('app.tenant_id', true))
+                            CREATE POLICY {quotedPolicyName} ON {table}
+                            USING ({quotedTenantColumn} = current_setting('app.tenant_id', true))
                             """);
                     }
                     catch (PostgresException ex) when (ex.SqlState == "42710")
