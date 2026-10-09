@@ -403,6 +403,12 @@ public sealed class SchemaRegistrationOrchestrator(
                 throw new RpcException(new Status(StatusCode.InvalidArgument,
                     $"Document template on '{declaring.TypeName}' references relation '{segment.RelationName}': " +
                     "document templates may reference only the type's own properties."));
+
+            // Fail closed: a segment kind added later is rejected at registration until it is
+            // given an explicit validation arm here.
+            default:
+                throw new ArgumentOutOfRangeException(nameof(segment), segment.Kind,
+                    $"Unhandled {nameof(DocumentSegmentKind)} value — add a case above.");
         }
     }
 

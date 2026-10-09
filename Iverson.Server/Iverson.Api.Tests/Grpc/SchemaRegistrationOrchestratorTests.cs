@@ -1309,6 +1309,7 @@ public class SchemaRegistrationOrchestratorTests
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
         ex.Which.Status.Detail.Should().Contain("a subset of them");
+        _registry.Get("Widget").Should().BeNull();
     }
 
     [Fact]
@@ -1362,6 +1363,26 @@ public class SchemaRegistrationOrchestratorTests
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
         ex.Which.Status.Detail.Should().Contain("a subset of them");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_SecondEnrichmentTargetMoreReadableThanItsSource_ThrowsInvalidArgument()
+    {
+        // The first target (Summary) is no more readable than the restricted source; the second
+        // (Notes) has no read restriction at all. Every target is checked, not only the first.
+        var td = EnrichedWidget(
+            new Client.Contracts.FieldPermission { FieldName = "Body", ReadableRoles = { "editors" } },
+            new Client.Contracts.FieldPermission { FieldName = "Summary", ReadableRoles = { "editors" } });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Notes", ObjectType = ObjectType.String, IsSummaryTarget = true });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("Notes").And.Contain("a subset of them");
+        _registry.Get("Widget").Should().BeNull();
     }
 
     [Fact]
