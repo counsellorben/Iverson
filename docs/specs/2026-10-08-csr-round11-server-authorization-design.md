@@ -290,6 +290,7 @@ After `DeactivateUserAsync` succeeds, `RemoveUser` calls `RevokeAsync(user.Uid)`
 - **Compose's provisioner password is a dev-only literal**, like `iverson_app`'s. Compose root is passwordless and loopback-only.
 - **`WidenLargeTextColumnsAsync`'s `ALTER`** had no proven privilege before this change. No test drives it today; §6 adds one.
 - **Plaintext StarRocks transport**, including the job's password literals, belongs to sub-project C (finding #4).
+- **Two short first-upgrade windows, both recoverable.** (i) Inside the `job-create-user` batch, between creating `iverson_provisioner` and granting it `user_admin`, a provisioning attempt can fail with a not-granted error; that error is not classified transient, so the event dead-letters and DLQ replay recovers it. (ii) During pod rollover, pods from the previous release still use `Database=iverson` and the pre-split direct grants that the post-upgrade hook revokes, so their new connections fail until those pods are replaced; API reads answer Unavailable, and the old worker halts rather than dead-letters.
 
 ## Verified assumptions
 
