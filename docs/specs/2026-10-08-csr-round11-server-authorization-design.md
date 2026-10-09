@@ -273,13 +273,12 @@ After `DeactivateUserAsync` succeeds, `RemoveUser` calls `RevokeAsync(user.Uid)`
 
 **Deployment.**
 - **Render checks.** `helm template` and the round-10 guard scripts on all five profiles: the new Secret, worker-only provisioner wiring, `Database=` removed, and the job's grants and revokes.
-- **Live upgrade on a throwaway kind cluster:**
-  1. install `main`'s chart;
-  2. upgrade to the branch;
-  3. provision a tenant;
-  4. read and write through the API, including a pipeline join;
-  5. confirm the job is safe to re-run;
-  6. confirm `iverson_app`'s grants are tenant roles plus `OPERATE ON SYSTEM` only.
+- **Live checks** (user decision at plan time, CIR-1 §3.1 A; no kind cluster: the laptop kind profile has no StarRocks, and the local profile's StarRocks requests about 8Gi on a 9GB VM):
+  1. run the branch chart's `job-create-user` script, rendered from the local profile, against a throwaway StarRocks, as a fresh install and again as a re-run, and confirm `iverson_app`'s grants are tenant roles plus `OPERATE ON SYSTEM` only;
+  2. in an isolated compose project, re-run `starrocks-init` and check both logins' grants;
+  3. provision a tenant, then read and write through the API, including a pipeline join;
+  4. confirm owner isolation on a live RIGHT join.
+- **Not exercised live:** a Helm upgrade from `main`'s chart. Upgrade-path coverage rests on the split integration tests, which replay the pre-split grant set and then the job's statements through `EngagementRepository.ExecuteAsync` rather than the job's shell batch. The first-upgrade worker halt (§3, First-upgrade gap) rests on unit tests.
 
 ## Known issues / accepted as out of scope
 
