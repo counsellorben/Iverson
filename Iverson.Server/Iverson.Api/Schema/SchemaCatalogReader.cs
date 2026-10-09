@@ -52,10 +52,12 @@ public sealed class SchemaCatalogReader(
         // did not survive pass one — that cross-type check can't be made until every type has
         // been evaluated.
         var survivors = new List<(SchemaDescriptor Schema, List<SchemaField> Fields, AuthorizationDecision Decision)>();
-        // OrdinalIgnoreCase to match SchemaRegistry's own keying (SchemaRegistry.cs) and every
-        // other RelationDescriptor.RelatedTypeName lookup (EntityRelationResolver), so a relation
-        // declaring a differently-cased related type is not silently dropped from the catalog.
-        var survivingNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Each surviving type's Read decision, by name: pass two needs membership, and a OneToMany
+        // needs its related type's own decision. OrdinalIgnoreCase to match SchemaRegistry's own
+        // keying (SchemaRegistry.cs) and every other RelationDescriptor.RelatedTypeName lookup
+        // (EntityRelationResolver), so a relation declaring a differently-cased related type is not
+        // silently dropped from the catalog.
+        var survivingDecisions = new Dictionary<string, AuthorizationDecision>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var schema in registry.All.Values)
         {
@@ -84,7 +86,7 @@ public sealed class SchemaCatalogReader(
                 continue; // Fail-closed guard; the real evaluator always keeps the key column.
 
             survivors.Add((schema, fields, decision));
-            survivingNames.Add(schema.TypeName);
+            survivingDecisions[schema.TypeName] = decision;
         }
 
         var types = new List<SchemaType>();
@@ -98,10 +100,11 @@ public sealed class SchemaCatalogReader(
             schemaType.Fields.AddRange(fields);
             schemaType.Relations.AddRange(
                 schema.Relations
-                    // Two conditions. The related type must have survived pass one, and — only
-                    // where the FK column is local to this type — the FK must itself be readable.
-                    .Where(r => survivingNames.Contains(r.RelatedTypeName)
-                             && ForeignKeyIsReadable(r, decision))
+                    // Two conditions. The related type must have survived pass one, and the FK
+                    // must be readable under the decision that governs its column: this type's,
+                    // or for a OneToMany the related type's.
+                    .Where(r => survivingDecisions.ContainsKey(r.RelatedTypeName)
+                             && ForeignKeyIsReadable(r, decision, survivingDecisions))
                     .Select(r => new SchemaRelation
                     {
                         PropertyName = r.PropertyName,
@@ -127,32 +130,40 @@ public sealed class SchemaCatalogReader(
     /// Whether <paramref name="relation"/>'s foreign key may be disclosed to this caller.
     /// <para>
     /// Every FK property is also an ordinary scalar column, so a <c>FieldPermission</c> that removed
-    /// it from <c>fields</c> would otherwise still leak its exact name as <c>foreign_key</c>. But
-    /// that reasoning only holds where the FK column lives on the <em>declaring</em> type, which
-    /// depends on the relation kind (see <c>EntityRelationResolver</c>):
+    /// it from <c>fields</c> would otherwise still leak its exact name as <c>foreign_key</c>. Which
+    /// type's decision governs that column depends on the relation kind (see
+    /// <c>EntityRelationResolver</c>):
     /// </para>
     /// <list type="bullet">
     /// <item><c>OneToOne</c> / <c>ManyToOne</c> — reads <c>ForeignKey</c> off the declaring entity.</item>
     /// <item><c>ManyToMany</c> — reads <c>ForeignKey</c> as a list off the declaring entity.</item>
     /// <item><c>OneToMany</c> — <c>ForeignKey</c> is a column on the <em>related</em> type's table,
-    /// matched against this type's key. It is not a member of this schema at all.</item>
+    /// matched against this type's key, so the related type's own decision governs it (CSR round 11
+    /// #3). <c>EntityRelationResolver</c> skips the relation on the same test, so the catalog never
+    /// advertises an edge that hydration leaves absent.</item>
     /// </list>
     /// <para>
-    /// <c>AllowedFields</c> only ever holds the declaring schema's own members
-    /// (<c>RowFieldAuthorizationEvaluator</c>), so applying the check to <c>OneToMany</c> would drop
-    /// every such relation from the catalog whenever any <c>FieldPermission</c> is active — the
-    /// check can never be satisfied. Hence the kind gate.
+    /// <c>AllowedFields</c> only ever holds its own schema's members (<c>RowFieldAuthorizationEvaluator</c>),
+    /// which is why a OneToMany's FK is tested against the related type's decision, never this one's.
     /// </para>
     /// </summary>
     private static bool ForeignKeyIsReadable(
-        RelationDescriptor relation, AuthorizationDecision decision)
+        RelationDescriptor relation,
+        AuthorizationDecision decision,
+        IReadOnlyDictionary<string, AuthorizationDecision> survivingDecisions)
     {
+        if (relation.Kind == SchemaRelationKind.OneToMany)
+        {
+            // Present: the caller checked survivingDecisions.ContainsKey first.
+            var child = survivingDecisions[relation.RelatedTypeName];
+            return child.AllowedFields is null || child.AllowedFields.Contains(relation.ForeignKey);
+        }
+
         if (decision.AllowedFields is null)
             return true;
 
         return relation.Kind switch
         {
-            SchemaRelationKind.OneToMany => true, // FK belongs to the related type, not this one.
             SchemaRelationKind.OneToOne or
             SchemaRelationKind.ManyToOne or
             SchemaRelationKind.ManyToMany => decision.AllowedFields.Contains(relation.ForeignKey),

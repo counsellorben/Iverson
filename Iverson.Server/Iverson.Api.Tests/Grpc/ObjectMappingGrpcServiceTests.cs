@@ -384,6 +384,36 @@ public class ObjectMappingGrpcServiceTests
         oneToMany.ForeignKey.Should().Be("ArticleId");
     }
 
+    // UserArticle readable by the default caller, but its ArticleId (the FK of Article's OneToMany
+    // UserArticles) readable only by "editor".
+    private static SchemaDescriptor UserArticleWithUnreadableArticleId() => SchemaFixtures.UserArticleSchema() with
+    {
+        Authorization = new Iverson.Api.Schema.AuthorizationRules(
+            null,
+            new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+            new List<Iverson.Api.Schema.FieldPermission>
+            {
+                new("ArticleId", new List<string> { "editor" }, new List<string>())
+            })
+    };
+
+    [Fact]
+    public async Task GetSchema_WithOneToManyRelation_WhoseChildForeignKeyIsUnreadable_DropsTheRelation()
+    {
+        // CSR round 11 #3: a OneToMany's FK is a column on the CHILD, so the child's own decision
+        // governs it. Advertising the edge would name a column this caller cannot read, and would
+        // promise a relation that Get leaves absent.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(UserArticleWithUnreadableArticleId());
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema());
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        response.Types_.Select(t => t.Name).Should().Contain("UserArticle"); // the child itself survives
+        var article = response.Types_.Single(t => t.Name == "Article");
+        article.Relations.Should().ContainSingle().Which.PropertyName.Should().Be("Author");
+    }
+
     [Fact]
     public async Task GetSchema_WithUnmappedKeyColumnSqlType_FailsLoudly()
     {
@@ -1562,6 +1592,53 @@ public class ObjectMappingGrpcServiceTests
         response.Data.Fields.Should().ContainKey("Title");
         response.Data.Fields.Should().NotContainKey("AuthorId");
         response.Data.Fields.Should().NotContainKey("Author");
+    }
+
+    private const string UserArticleId = "55555555-0000-0000-0000-000000000005";
+
+    private void ArticleWithOneUserArticle()
+    {
+        _entities
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "articles"), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns($$"""{"Id":"{{ArticleId}}","Title":"Hello","TenantId":"test-tenant"}""");
+        _entities
+            .FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "user_articles"), "ArticleId", ArticleId, Arg.Any<EntityAccess>())
+            .Returns(new[] { $$"""{"Id":"{{UserArticleId}}","ArticleId":"{{ArticleId}}","TenantId":"test-tenant"}""" });
+    }
+
+    [Fact]
+    public async Task Get_AtDepth1_WithOneToManyChildForeignKeyUnreadable_OmitsTheRelationWithoutFetchingIt()
+    {
+        // CSR round 11 #3: the OneToMany fetch filters the child's table on its FK. A caller who may
+        // not read that column must not learn which children point at this entity, so the
+        // relation is skipped before the fetch and the property left absent.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema());
+        await _registry.RegisterAsync(UserArticleWithUnreadableArticleId());
+        ArticleWithOneUserArticle();
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().NotContainKey("UserArticles");
+        await _entities.DidNotReceive().FetchByColumnAsync(
+            Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
+    }
+
+    [Fact]
+    public async Task Get_AtDepth1_WithOneToManyChildForeignKeyReadable_ResolvesTheRelation()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema());
+        await _registry.RegisterAsync(SchemaFixtures.UserArticleSchema());
+        ArticleWithOneUserArticle();
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields["UserArticles"].ListValue.Values
+            .Should().ContainSingle()
+            .Which.StructValue.Fields["Id"].StringValue.Should().Be(UserArticleId);
     }
 
     // ── Get audit logging ────────────────────────────────────────────────────

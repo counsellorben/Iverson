@@ -234,13 +234,20 @@ public sealed class EntityRelationResolver(
         var relatedSchema = registry.TryGetVisible(relation.RelatedTypeName, actingUser);
         if (relatedSchema is null) return;
 
+        // The child's decision comes first (CSR round 11 #3). The fetch filters the child's table
+        // on relation.ForeignKey, so a caller field-restricted away from that column would learn
+        // which children reference this entity. Skipped, the property is left absent, as
+        // ResolveSingleRelationAsync leaves it when it resolves nothing. SchemaCatalogReader drops
+        // the same edge on the same test.
+        var decision = authEvaluator.Evaluate(relatedSchema, actingUser, AuthorizationAction.Read);
+        if (decision.AllowedFields is not null && !decision.AllowedFields.Contains(relation.ForeignKey))
+            return;
+
         var rows = await entities.FetchByColumnAsync(
             SchemaBuilder.ToTableSchema(relatedSchema),
             relation.ForeignKey,
             keyValue,
             EntityAccess.ForTenant(actingUser?.FindFirst("tenant_id")?.Value));
-
-        var decision = authEvaluator.Evaluate(relatedSchema, actingUser, AuthorizationAction.Read);
 
         var items = new List<Value>();
         foreach (var rowJson in rows)
