@@ -191,13 +191,18 @@ public sealed class EntityRelationResolver(
         var relatedSchema = registry.TryGetVisible(relation.RelatedTypeName, actingUser);
         if (relatedSchema is null) return;
 
+        // A related type this caller may not read at all leaves the property absent, without a
+        // fetch, as ResolveOneToManyAsync does. Every row would be refused, and an empty list would
+        // advertise an edge SchemaCatalogReader omits, because a denied type does not survive its
+        // first pass.
+        var decision = authEvaluator.Evaluate(relatedSchema, actingUser, AuthorizationAction.Read);
+        if (decision.Denied) return;
+
         var rows = await entities.FetchManyByKeysAsync(
             SchemaBuilder.ToTableSchema(relatedSchema),
             ids,
             EntityAccess.ForTenant(actingUser?.FindFirst("tenant_id")?.Value));
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
-
-        var decision = authEvaluator.Evaluate(relatedSchema, actingUser, AuthorizationAction.Read);
 
         var items = new List<Value>();
         foreach (var id in ids)
@@ -239,7 +244,13 @@ public sealed class EntityRelationResolver(
         // which children reference this entity. Skipped, the property is left absent, as
         // ResolveSingleRelationAsync leaves it when it resolves nothing. SchemaCatalogReader drops
         // the same edge on the same test.
+        //
+        // A child type this caller may not read at all is skipped the same way, before the fetch:
+        // every row would be refused anyway, and answering an empty list would advertise an edge
+        // SchemaCatalogReader omits, because a denied type does not survive its first pass.
         var decision = authEvaluator.Evaluate(relatedSchema, actingUser, AuthorizationAction.Read);
+        if (decision.Denied)
+            return;
         if (decision.AllowedFields is not null && !decision.AllowedFields.Contains(relation.ForeignKey))
             return;
 

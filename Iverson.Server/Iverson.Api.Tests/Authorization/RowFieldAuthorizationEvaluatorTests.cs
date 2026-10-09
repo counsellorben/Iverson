@@ -425,6 +425,33 @@ public class RowFieldAuthorizationEvaluatorTests
     }
 
     [Fact]
+    public void Evaluate_AllowedFieldsLookup_IgnoresCase_ForAllowedAndExcludedFieldsAlike()
+    {
+        // AllowedFields is matched against names a caller or a declaration spells in any casing
+        // (a OneToMany ForeignKey, a camelCase payload key). The lookup ignores case for a field
+        // that is allowed, and still refuses an excluded field in every casing.
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>(),
+            new List<FieldPermission>
+            {
+                new("Name", new List<string> { "editor" }, new List<string> { "editor" })
+            });
+        var schema = SchemaWithAuthorization(rules);
+        var user = ActingUser("user123", "viewer");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
+
+        result.AllowedFields.Should().NotBeNull();
+        result.AllowedFields!.Contains("OwnerId").Should().BeTrue();
+        result.AllowedFields.Contains("ownerId").Should().BeTrue();
+        result.AllowedFields.Contains("OWNERID").Should().BeTrue();
+        result.AllowedFields.Contains("Name").Should().BeFalse();
+        result.AllowedFields.Contains("name").Should().BeFalse();
+        result.AllowedFields.Contains("NAME").Should().BeFalse();
+    }
+
+    [Fact]
     public void Evaluate_WriteActionUsesWritableRolesNotReadableRoles()
     {
         var rules = new AuthorizationRules(

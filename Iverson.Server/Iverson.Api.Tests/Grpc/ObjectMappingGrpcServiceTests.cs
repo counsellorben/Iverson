@@ -1687,6 +1687,133 @@ public class ObjectMappingGrpcServiceTests
         response.Data.Fields["UserArticles"].ListValue.Values.Should().ContainSingle();
     }
 
+    // Article whose OneToMany declares its FK as `articleId`, a casing that differs from the
+    // child's `ArticleId` column.
+    private static SchemaDescriptor ArticleWithOneToManyDeclaringLowerCamelForeignKey() =>
+        SchemaFixtures.ArticleWithOneToManySchema() with
+        {
+            Relations =
+            [
+                new Iverson.Api.Schema.RelationDescriptor("Author",       Iverson.Api.Schema.RelationKind.ManyToOne, "Author",      "AuthorId"),
+                new Iverson.Api.Schema.RelationDescriptor("UserArticles", Iverson.Api.Schema.RelationKind.OneToMany, "UserArticle", "articleId")
+            ]
+        };
+
+    [Fact]
+    public async Task Get_AtDepth1_WithOneToManyForeignKeyDeclaredInAnotherCase_AndChildRestrictingAnotherField_ResolvesTheRelation()
+    {
+        // The child's field restriction is active but does not cover the FK. The FK test ignores
+        // case, as the restriction itself does, so the casing of the declaration does not drop it.
+        await _registry.RegisterAsync(ArticleWithOneToManyDeclaringLowerCamelForeignKey());
+        await _registry.RegisterAsync(UserArticleWithRestrictionOnAnotherField());
+        _entities
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "articles"), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns($$"""{"Id":"{{ArticleId}}","Title":"Hello","TenantId":"test-tenant"}""");
+        _entities
+            .FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "user_articles"), "articleId", ArticleId, Arg.Any<EntityAccess>())
+            .Returns(new[] { $$"""{"Id":"{{UserArticleId}}","ArticleId":"{{ArticleId}}","TenantId":"test-tenant"}""" });
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields["UserArticles"].ListValue.Values
+            .Should().ContainSingle()
+            .Which.StructValue.Fields["Id"].StringValue.Should().Be(UserArticleId);
+    }
+
+    [Fact]
+    public async Task Get_AtDepth1_WithOneToManyForeignKeyDeclaredInAnotherCase_AndChildForeignKeyUnreadable_OmitsTheRelationWithoutFetchingIt()
+    {
+        // The other direction: the child excludes `ArticleId`, and the declaration's `articleId`
+        // names the same column, so the relation is still skipped before the fetch.
+        await _registry.RegisterAsync(ArticleWithOneToManyDeclaringLowerCamelForeignKey());
+        await _registry.RegisterAsync(UserArticleWithUnreadableArticleId());
+        _entities
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "articles"), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns($$"""{"Id":"{{ArticleId}}","Title":"Hello","TenantId":"test-tenant"}""");
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().NotContainKey("UserArticles");
+        await _entities.DidNotReceive().FetchByColumnAsync(
+            Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
+    }
+
+    [Fact]
+    public async Task GetSchema_WithOneToManyForeignKeyDeclaredInAnotherCase_AndChildRestrictingAnotherField_KeepsTheRelation()
+    {
+        // The catalog applies the same FK test as hydration, so it advertises the edge hydration
+        // resolves.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(UserArticleWithRestrictionOnAnotherField());
+        await _registry.RegisterAsync(ArticleWithOneToManyDeclaringLowerCamelForeignKey());
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var article = response.Types_.Single(t => t.Name == "Article");
+        article.Relations.Should()
+            .ContainSingle(r => r.Kind == Iverson.Client.Contracts.RelationKind.OneToMany)
+            .Which.ForeignKey.Should().Be("articleId");
+    }
+
+    // No RowPermission matches the default caller's "test-bypass" and there is no OwnerField, so
+    // the evaluator denies the type outright.
+    private static Iverson.Api.Schema.AuthorizationRules DeniedToDefaultCaller() => new(
+        null,
+        new List<Iverson.Api.Schema.RowPermission> { new("some-other-role", true, true, true) },
+        new List<Iverson.Api.Schema.FieldPermission>());
+
+    [Fact]
+    public async Task Get_AtDepth1_WithOneToManyChildTypeDenied_OmitsTheRelationWithoutFetchingIt_AsTheCatalogDoes()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema());
+        await _registry.RegisterAsync(SchemaFixtures.UserArticleSchema() with { Authorization = DeniedToDefaultCaller() });
+        ArticleWithOneUserArticle();
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().NotContainKey("UserArticles");
+        await _entities.DidNotReceive().FetchByColumnAsync(
+            Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityAccess>());
+
+        var catalog = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+        catalog.Types_.Single(t => t.Name == "Article").Relations
+            .Should().NotContain(r => r.PropertyName == "UserArticles");
+    }
+
+    [Fact]
+    public async Task Get_AtDepth1_WithManyToManyRelatedTypeDenied_OmitsTheRelationWithoutFetchingIt_AsTheCatalogDoes()
+    {
+        var postId = "33333333-0000-0000-0000-000000000008";
+        var tagId  = "44444444-0000-0000-0000-000000000008";
+        await _registry.RegisterAsync(SchemaFixtures.PostWithTagsSchema());
+        await _registry.RegisterAsync(SchemaFixtures.TagSchema() with { Authorization = DeniedToDefaultCaller() });
+        _entities
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "posts"), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns($$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{tagId}}"],"TenantId":"test-tenant"}""");
+        _entities
+            .FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>())
+            .Returns(new[] { new KeyedRow(tagId, $$"""{"Id":"{{tagId}}","Label":"dotnet","TenantId":"test-tenant"}""") });
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Post", Key = postId, Depth = 1 }, MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().ContainKey("TagIds");
+        response.Data.Fields.Should().NotContainKey("Tags");
+        await _entities.DidNotReceive().FetchManyByKeysAsync(
+            Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<EntityAccess>());
+
+        var catalog = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+        catalog.Types_.Single(t => t.Name == "Post").Relations.Should().BeEmpty();
+    }
+
     // ── Get audit logging ────────────────────────────────────────────────────
 
     private void AssertAuditLogged(string expectedReasonSubstring) =>

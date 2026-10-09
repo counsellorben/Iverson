@@ -113,7 +113,12 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
                         .Where(r => r.Kind == RelationKind.OneToMany || !excluded.Contains(r.ForeignKey))
                         .Select(r => r.PropertyName));
 
-                allowedFields = allFields.Where(f => !excluded.Contains(f)).ToHashSet();
+                // OrdinalIgnoreCase, like `excluded`: every member already survived a
+                // case-insensitive exclusion test, so a case-insensitive lookup can only find a
+                // field that is not excluded under any casing. An ordinal set instead refused a
+                // permitted field named in another casing, such as a OneToMany ForeignKey declared
+                // `articleId` against the child's `ArticleId`.
+                allowedFields = allFields.Where(f => !excluded.Contains(f)).ToHashSet(StringComparer.OrdinalIgnoreCase);
             }
         }
 
