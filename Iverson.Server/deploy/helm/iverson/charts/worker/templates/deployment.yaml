@@ -82,7 +82,16 @@ spec:
                   name: {{ .Release.Name }}-starrocks-app
                   key: app-password
             - name: ConnectionStrings__StarRocks
-              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;Database=iverson;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);"
+              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);"
+            # CSR round 11 §3: tenant provisioning's own login. Only the worker provisions, so
+            # only the worker gets it; the api Deployment has no reference to this Secret.
+            - name: STARROCKS_PROVISIONER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-starrocks-provisioner
+                  key: password
+            - name: ConnectionStrings__StarRocksProvisioner
+              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;User Id=iverson_provisioner;Password=$(STARROCKS_PROVISIONER_PASSWORD);"
             {{- end }}
             - name: Engagement__Enabled
               value: {{ .Values.global.engagementEnabled | quote }}

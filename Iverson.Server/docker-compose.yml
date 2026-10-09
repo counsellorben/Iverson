@@ -79,14 +79,13 @@ services:
   # idempotent in StarRocks, so re-running this on an already-bootstrapped stack succeeds as a
   # no-op rather than erroring — required for `docker compose up -d` to stay safe to re-run.
   #
-  # Every grant here is carried over unweakened from the chart job, including
-  # `GRANT CREATE DATABASE ON CATALOG default_catalog`, which the chart's own comment explains is
-  # required because EngagementRepository.EnsureTenantProvisionedAsync issues
-  # `CREATE DATABASE IF NOT EXISTS` as iverson_app on every tenant's first provisioning, and
-  # StarRocks checks the catalog-level privilege before checking whether the database already
-  # exists. `GRANT user_admin TO 'iverson_app'@'%'` is likewise required: that same method runs
-  # `SET ROLE user_admin` on its connection, and the app's StarRocks connection string below
-  # authenticates as iverson_app (matching the chart's api/worker deployments), not root.
+  # Every statement here is carried over unweakened from the chart job, which explains each one
+  # (CSR round 11 §3): two logins, iverson_app for queries and iverson_provisioner for tenant
+  # provisioning; iverson_app keeps only OPERATE ON SYSTEM as a direct grant, and the REVOKEs
+  # strip what earlier versions of this service granted it. A REVOKE of something the user does
+  # not hold succeeds silently, but a database-scoped REVOKE on a missing database fails and
+  # aborts the batch, so `CREATE DATABASE IF NOT EXISTS iverson` stays ahead of them. Both
+  # passwords are dev-only literals: root is passwordless and published on loopback only.
   # The trailing ALTER USER ... SET PROPERTIES line (CSR finding #6, defense-in-depth) is
   # likewise carried over from the chart job — see its comment there for the rationale.
   starrocks-init:
@@ -101,12 +100,15 @@ services:
         set -e
         mysql -h starrocks -P 9030 -u root -e "
           CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY 'dev-only-not-for-production-starrocks-app-pw-0123456789';
+          CREATE USER IF NOT EXISTS 'iverson_provisioner'@'%' IDENTIFIED BY 'dev-only-not-for-production-starrocks-provisioner-pw-0123456789';
           CREATE DATABASE IF NOT EXISTS iverson;
-          GRANT SELECT, INSERT, UPDATE, DELETE ON iverson.* TO 'iverson_app'@'%';
-          GRANT CREATE TABLE, DROP, ALTER ON DATABASE iverson TO 'iverson_app'@'%';
           GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
-          GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_app'@'%';
-          GRANT user_admin TO 'iverson_app'@'%';
+          GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_provisioner'@'%';
+          GRANT user_admin TO 'iverson_provisioner'@'%';
+          REVOKE SELECT, INSERT, UPDATE, DELETE ON iverson.* FROM 'iverson_app'@'%';
+          REVOKE CREATE TABLE, DROP, ALTER ON DATABASE iverson FROM 'iverson_app'@'%';
+          REVOKE CREATE DATABASE ON CATALOG default_catalog FROM 'iverson_app'@'%';
+          REVOKE user_admin FROM 'iverson_app'@'%';
           ALTER USER 'iverson_app' SET PROPERTIES ('session.query_timeout' = '180', 'session.exec_mem_limit' = '4294967296');
         "
     restart: "no"
@@ -508,10 +510,9 @@ services:
       - Enrichment__ModelId=qwen2.5:3b
       - Kafka__BootstrapServers=kafka:29092
       # Matches the chart's api/worker deployments (deploy/helm/iverson/charts/api/templates/
-      # deployment.yaml): connect as iverson_app, the user starrocks-init provisions, not root —
-      # EngagementRepository.EnsureTenantProvisionedAsync's `SET ROLE user_admin` depends on
-      # authenticating as the user that role was granted to.
-      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
+      # deployment.yaml): connect as iverson_app, the query login starrocks-init creates, not root,
+      # and with no default database (iverson_app holds no grant on `iverson`).
+      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
       - Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ExternalIssuer=http://localhost:9000/
@@ -626,10 +627,12 @@ services:
       - Enrichment__ModelId=qwen2.5:3b
       - Kafka__BootstrapServers=kafka:29092
       # Matches the chart's api/worker deployments (deploy/helm/iverson/charts/api/templates/
-      # deployment.yaml): connect as iverson_app, the user starrocks-init provisions, not root —
-      # EngagementRepository.EnsureTenantProvisionedAsync's `SET ROLE user_admin` depends on
-      # authenticating as the user that role was granted to.
-      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
+      # deployment.yaml): connect as iverson_app, the query login starrocks-init creates, not root,
+      # and with no default database (iverson_app holds no grant on `iverson`).
+      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
+      # CSR round 11 §3: tenant provisioning's own login, as on the chart's worker. Only the
+      # worker provisions, so iverson-api has no provisioner connection string.
+      - ConnectionStrings__StarRocksProvisioner=Server=starrocks;Port=9030;Uid=iverson_provisioner;Pwd=dev-only-not-for-production-starrocks-provisioner-pw-0123456789;
       - Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ExternalIssuer=http://localhost:9000/

@@ -41,6 +41,8 @@ spec:
               valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-app, key: root-password } }
             - name: APP_PW
               valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-app, key: app-password } }
+            - name: PROVISIONER_PW
+              valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-provisioner, key: password } }
           command: ["sh", "-c"]
           args:
             - |
@@ -68,29 +70,35 @@ spec:
               mysql -h "$FE_HOST" -P 9030 -u root $AUTH -e "
                 SET PASSWORD FOR 'root' = PASSWORD('$ROOT_PW');
                 CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY '$APP_PW';
+                CREATE USER IF NOT EXISTS 'iverson_provisioner'@'%' IDENTIFIED BY '$PROVISIONER_PW';
                 CREATE DATABASE IF NOT EXISTS iverson;
-                GRANT SELECT, INSERT, UPDATE, DELETE ON iverson.* TO 'iverson_app'@'%';
-                GRANT CREATE TABLE, DROP, ALTER ON DATABASE iverson TO 'iverson_app'@'%';
                 GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
-                GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_app'@'%';
-                GRANT user_admin TO 'iverson_app'@'%';
+                GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_provisioner'@'%';
+                GRANT user_admin TO 'iverson_provisioner'@'%';
+                REVOKE SELECT, INSERT, UPDATE, DELETE ON iverson.* FROM 'iverson_app'@'%';
+                REVOKE CREATE TABLE, DROP, ALTER ON DATABASE iverson FROM 'iverson_app'@'%';
+                REVOKE CREATE DATABASE ON CATALOG default_catalog FROM 'iverson_app'@'%';
+                REVOKE user_admin FROM 'iverson_app'@'%';
                 ALTER USER 'iverson_app' SET PROPERTIES ('session.query_timeout' = '180', 'session.exec_mem_limit' = '4294967296');
               "
-              # StarRocks' GRANT dialect isn't MySQL's: DDL privileges (CREATE TABLE/DROP/ALTER)
-              # are scoped ON DATABASE, not ON db.*, and CREATE must be written as the two-word
-              # "CREATE TABLE" — a bare "CREATE" in the combined list used to fail with "No
-              # viable statement", confirmed empirically against a live FE (4.1.1).
-              # OPERATE ON SYSTEM is needed for `SHOW BACKENDS`, which
-              # EngagementRepository.IsHealthyAsync() runs as this user to back /health —
-              # without it every readiness probe fails with "Access denied; you need (at
-              # least one of) the OPERATE OR NODE privilege(s) on SYSTEM", confirmed
-              # empirically against a live FE (4.1.1).
-              # CREATE DATABASE ON CATALOG default_catalog is needed because
-              # EngagementRepository.EnsureDatabaseAsync() runs `CREATE DATABASE IF NOT
-              # EXISTS iverson` as iverson_app on every RegisterSchema call — StarRocks
-              # checks the privilege before checking whether the database already exists,
-              # so this failed on literally every schema registration even though the
-              # database this job already created was right there.
+              # CSR round 11 §3: two logins. iverson_app runs every query; iverson_provisioner
+              # runs only tenant provisioning (EngagementRepository.EnsureTenantProvisionedAsync),
+              # and only the worker is given its password.
+              # iverson_app keeps one direct grant, OPERATE ON SYSTEM, needed for `SHOW BACKENDS`:
+              # /health and every EngagementRepository's readiness gate run it as this user with
+              # no role active, and without it they fail with "Access denied; you need (at least
+              # one of) the OPERATE OR NODE privilege(s) on SYSTEM", confirmed empirically
+              # against a live FE (4.1.1). Its tenant roles are granted by the provisioner.
+              # iverson_provisioner holds user_admin and a direct CREATE DATABASE ON CATALOG
+              # default_catalog. The catalog privilege must be direct: provisioning runs
+              # `CREATE DATABASE IF NOT EXISTS` for each new tenant database, StarRocks checks the
+              # privilege before checking whether the database exists, and a role granted to a
+              # user is not active until SET ROLE names it.
+              # The REVOKEs remove what earlier versions of this job granted iverson_app. A REVOKE
+              # of a privilege or role the user does not hold succeeds silently, so they are safe
+              # on every run. A database-scoped REVOKE naming a database that does not exist fails
+              # and aborts the batch, so `CREATE DATABASE IF NOT EXISTS iverson` stays ahead of
+              # them; the database itself is empty and nothing is granted on it.
               # CSR finding #6 (defense-in-depth): session.query_timeout/session.exec_mem_limit
               # cap how long a query may run and how much memory it may use PER QUERY PER BE,
               # cluster-side, as a backstop behind the app-layer output caps in
