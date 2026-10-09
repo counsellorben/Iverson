@@ -251,12 +251,17 @@ public sealed class EntityRelationResolver(
         var decision = authEvaluator.Evaluate(relatedSchema, actingUser, AuthorizationAction.Read);
         if (decision.Denied)
             return;
-        if (decision.AllowedFields is not null && !decision.AllowedFields.Contains(relation.ForeignKey))
+
+        // The declared FK may differ from the child's column only in case, and the store compares
+        // column names case-sensitively. Both the readability test and the fetch use the child's
+        // own spelling; a declaration matching no column is used as written.
+        var foreignKey = CanonicalColumn(relatedSchema, relation.ForeignKey);
+        if (decision.AllowedFields is not null && !decision.AllowedFields.Contains(foreignKey))
             return;
 
         var rows = await entities.FetchByColumnAsync(
             SchemaBuilder.ToTableSchema(relatedSchema),
-            relation.ForeignKey,
+            foreignKey,
             keyValue,
             EntityAccess.ForTenant(actingUser?.FindFirst("tenant_id")?.Value));
 
@@ -279,5 +284,17 @@ public sealed class EntityRelationResolver(
         }
 
         entityStruct.Fields[relation.PropertyName] = Value.ForList(items.ToArray());
+    }
+
+    private static string CanonicalColumn(SchemaDescriptor schema, string declared)
+    {
+        var matches = schema.ScalarColumns.Select(c => c.Name)
+            .Append(schema.KeyColumn.Name)
+            .Concat(schema.FkColumns.Select(f => f.ColumnName))
+            .Where(n => string.Equals(n, declared, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.Ordinal)
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : declared;
     }
 }

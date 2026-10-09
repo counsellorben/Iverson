@@ -1710,7 +1710,7 @@ public class ObjectMappingGrpcServiceTests
             .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "articles"), Arg.Any<string>(), Arg.Any<EntityAccess>())
             .Returns($$"""{"Id":"{{ArticleId}}","Title":"Hello","TenantId":"test-tenant"}""");
         _entities
-            .FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "user_articles"), "articleId", ArticleId, Arg.Any<EntityAccess>())
+            .FetchByColumnAsync(Arg.Is<TableSchema>(s => s.TableName == "user_articles"), "ArticleId", ArticleId, Arg.Any<EntityAccess>())
             .Returns(new[] { $$"""{"Id":"{{UserArticleId}}","ArticleId":"{{ArticleId}}","TenantId":"test-tenant"}""" });
 
         var response = await _sut.Get(
@@ -1720,6 +1720,36 @@ public class ObjectMappingGrpcServiceTests
         response.Data.Fields["UserArticles"].ListValue.Values
             .Should().ContainSingle()
             .Which.StructValue.Fields["Id"].StringValue.Should().Be(UserArticleId);
+        // Column names are case-sensitive in the store, so the fetch uses the child's own spelling.
+        await _entities.DidNotReceive().FetchByColumnAsync(
+            Arg.Any<TableSchema>(), "articleId", Arg.Any<string>(), Arg.Any<EntityAccess>());
+    }
+
+    [Fact]
+    public async Task Get_AtDepth1_WithOneToManyForeignKeyMatchingNoChildColumn_FetchesWithTheDeclaredName()
+    {
+        // No child column matches even ignoring case, so the declared name is used unchanged.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema() with
+        {
+            Relations =
+            [
+                new Iverson.Api.Schema.RelationDescriptor("UserArticles", Iverson.Api.Schema.RelationKind.OneToMany, "UserArticle", "NoSuchColumn")
+            ]
+        });
+        await _registry.RegisterAsync(SchemaFixtures.UserArticleSchema());
+        _entities
+            .FetchByKeyAsync(Arg.Is<TableSchema>(s => s.TableName == "articles"), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns($$"""{"Id":"{{ArticleId}}","Title":"Hello","TenantId":"test-tenant"}""");
+        _entities
+            .FetchByColumnAsync(Arg.Any<TableSchema>(), "NoSuchColumn", ArticleId, Arg.Any<EntityAccess>())
+            .Returns(Array.Empty<string>());
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, MakeContext());
+
+        response.Success.Should().BeTrue();
+        await _entities.Received(1).FetchByColumnAsync(
+            Arg.Any<TableSchema>(), "NoSuchColumn", ArticleId, Arg.Any<EntityAccess>());
     }
 
     [Fact]
