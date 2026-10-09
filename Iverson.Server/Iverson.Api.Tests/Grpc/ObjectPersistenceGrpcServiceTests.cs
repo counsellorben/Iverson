@@ -567,7 +567,8 @@ public class ObjectPersistenceGrpcServiceTests
         var act = async () => await _sut.Update(request, TestServerCallContext.Create());
 
         await act.Should().ThrowAsync<RpcException>()
-            .Where(e => e.Status.StatusCode == StatusCode.FailedPrecondition);
+            .Where(e => e.Status.StatusCode == StatusCode.NotFound
+                     && e.Status.Detail == "'Ghost' row not found.");
     }
 
     // ── Update authorization ──────────────────────────────────────────────────

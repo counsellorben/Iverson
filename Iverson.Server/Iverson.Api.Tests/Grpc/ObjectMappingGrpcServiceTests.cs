@@ -1073,14 +1073,14 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
-    public async Task Get_WhenSchemaNotRegistered_ThrowsFailedPrecondition()
+    public async Task Get_WhenSchemaNotRegistered_AnswersLikeAnAbsentKey()
     {
-        var act = () => _sut.Get(
+        var response = await _sut.Get(
             new MappingGetRequest { TypeName = "Ghost", Key = AuthorId },
             TestServerCallContext.Create());
 
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        response.Success.Should().BeFalse();
+        response.Error.Should().Be($"'Ghost:{AuthorId}' not found.");
     }
 
     [Fact]
@@ -1756,7 +1756,7 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
-    public async Task Update_WhenSchemaNotRegistered_ThrowsFailedPrecondition()
+    public async Task Update_WhenSchemaNotRegistered_ThrowsNotFound()
     {
         var payload = MakePayload(new() { ["Id"] = Value.ForString(AuthorId) });
         var act = () => _sut.Update(
@@ -1764,7 +1764,8 @@ public class ObjectMappingGrpcServiceTests
             TestServerCallContext.Create());
 
         var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        ex.Which.StatusCode.Should().Be(StatusCode.NotFound);
+        ex.Which.Status.Detail.Should().Be("'Ghost' row not found.");
     }
 
     // ── Update authorization ──────────────────────────────────────────────────
@@ -2346,14 +2347,14 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
-    public async Task Delete_WhenSchemaNotRegistered_ThrowsFailedPrecondition()
+    public async Task Delete_WhenSchemaNotRegistered_AnswersLikeAnAbsentKey()
     {
-        var act = () => _sut.Delete(
+        var response = await _sut.Delete(
             new MappingDeleteRequest { TypeName = "Ghost", Key = AuthorId },
             TestServerCallContext.Create());
 
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        response.Success.Should().BeFalse();
+        response.Error.Should().Be($"'Ghost:{AuthorId}' not found.");
     }
 
     // ── Delete authorization ──────────────────────────────────────────────────

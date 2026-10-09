@@ -102,7 +102,7 @@ public sealed partial class ObjectSearchGrpcService(
                 request.PageSize,
                 fields: request.Fields.Count > 0 ? request.Fields : null,
                 joins: request.Joins,
-                registry: t => registry.Get(t) is { } d
+                registry: t => registry.TryGetVisible(t, actingUserAccessor.ActingUser) is { } d
                     ? SchemaBuilder.ToEngagementQuerySchema(d)
                     : null,
                 authz: auth.Constraints);
@@ -774,6 +774,7 @@ public sealed partial class ObjectSearchGrpcService(
             return await AggregateReader.RunAsync(
                 search,
                 registry,
+                actingUserAccessor.ActingUser,
                 schema,
                 query,
                 spec,
@@ -824,7 +825,7 @@ public sealed partial class ObjectSearchGrpcService(
             rows = await search.GroupByAsync(
                 SchemaBuilder.ToEngagementQuerySchema(schema),
                 request,
-                t => registry.Get(t) is { } d
+                t => registry.TryGetVisible(t, actingUserAccessor.ActingUser) is { } d
                     ? SchemaBuilder.ToEngagementQuerySchema(d)
                     : null,
                 authz: auth.Constraints);
@@ -875,12 +876,15 @@ public sealed partial class ObjectSearchGrpcService(
         // A PipelineJoin.Source can name either a registered type or a prior step (CTE) — only
         // the former needs an authorization check here; a step name is validated later by
         // StarRocksPipelineBuilder itself. Evaluated once across every step's joins, same as
-        // Search/Aggregate/GroupBy evaluate once across their own request-level Joins.
+        // Search/Aggregate/GroupBy evaluate once across their own request-level Joins. Only a type
+        // the caller can see counts: another tenant's type is dropped here like an unregistered
+        // name, and the builder, handed the same visible registry, answers both alike (CSR round 11
+        // #20).
         var joinedTypes = request.Steps
             .SelectMany(s => s.Joins)
             .Select(j => j.Source)
             .Distinct()
-            .Where(src => registry.Get(src) is not null);
+            .Where(src => registry.TryGetVisible(src, actingUserAccessor.ActingUser) is not null);
         var auth = EvaluateAuthorization(schema, joinedTypes);
         if (auth.PrimaryDenied)
             return; // empty stream — StarRocks never queried
@@ -902,7 +906,7 @@ public sealed partial class ObjectSearchGrpcService(
             rows = await search.PipelineAsync(
                 SchemaBuilder.ToEngagementQuerySchema(schema),
                 request,
-                t => registry.Get(t) is { } d
+                t => registry.TryGetVisible(t, actingUserAccessor.ActingUser) is { } d
                     ? SchemaBuilder.ToEngagementQuerySchema(d)
                     : null,
                 authz: auth.Constraints);
@@ -1064,8 +1068,9 @@ public sealed partial class ObjectSearchGrpcService(
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
+    // Another tenant's type gets the unregistered answer (CSR round 11 #20).
     private SchemaDescriptor RequireSchema(string typeName) =>
-        registry.Get(typeName) ?? throw new RpcException(
+        registry.TryGetVisible(typeName, actingUserAccessor.ActingUser) ?? throw new RpcException(
             new Status(
                 StatusCode.FailedPrecondition,
                 $"No schema registered for '{typeName}'. Call RegisterSchema first."));
@@ -1088,11 +1093,12 @@ public sealed partial class ObjectSearchGrpcService(
 
         foreach (var typeName in joinedTypeNames.Distinct().Where(t => !string.Equals(t, primary.TypeName, StringComparison.OrdinalIgnoreCase)))
         {
-            var joinedSchema = registry.Get(typeName)
+            // Same answer, and the same text, as an invisible primary type (CSR round 11 #20).
+            var joinedSchema = registry.TryGetVisible(typeName, actingUserAccessor.ActingUser)
                 ?? throw new RpcException(
                     new Status(
                         StatusCode.FailedPrecondition,
-                        $"No schema registered for '{typeName}'."));
+                        $"No schema registered for '{typeName}'. Call RegisterSchema first."));
             var decision = authEvaluator.Evaluate(joinedSchema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
             if (decision.Denied)
                 return new AuthzResult(false, typeName, constraints);

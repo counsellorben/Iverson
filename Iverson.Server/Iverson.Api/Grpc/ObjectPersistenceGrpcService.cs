@@ -95,7 +95,10 @@ public sealed class ObjectPersistenceGrpcService(
         PersistRequest request,
         ServerCallContext context)
     {
-        var schema = RequireSchema(request.TypeName);
+        // An invisible type, unregistered or another tenant's, is answered before the key is read
+        // (CSR round 11 #20). Its key column is unknown, so the message names no key.
+        var schema = registry.TryGetVisible(request.TypeName, actingUserAccessor.ActingUser)
+            ?? throw new RpcException(new Status(StatusCode.NotFound, $"'{request.TypeName}' row not found."));
 
         var key = keyAccessor.ExtractKey(request.Payload, schema.KeyColumn.Name);
         if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
@@ -166,8 +169,9 @@ public sealed class ObjectPersistenceGrpcService(
         };
     }
 
+    // Another tenant's type gets the unregistered answer (CSR round 11 #20).
     private SchemaDescriptor RequireSchema(string typeName) =>
-        registry.Get(typeName) ?? throw new RpcException(
+        registry.TryGetVisible(typeName, actingUserAccessor.ActingUser) ?? throw new RpcException(
             new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
 }

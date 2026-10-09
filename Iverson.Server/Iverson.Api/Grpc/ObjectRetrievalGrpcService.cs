@@ -27,7 +27,8 @@ public sealed class ObjectRetrievalGrpcService(
     {
         logger.LogInformation("[Retrieval.Get] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key.SanitizeForLog());
 
-        var schema = registry.Get(request.TypeName);
+        // Another tenant's type takes the unregistered branch (CSR round 11 #20).
+        var schema = registry.TryGetVisible(request.TypeName, actingUserAccessor.ActingUser);
         if (schema is null)
             return new RetrievalResponse { Found = false, TraceId = request.TraceId };
 
@@ -79,7 +80,9 @@ public sealed class ObjectRetrievalGrpcService(
         logger.LogInformation("[Retrieval.GetMany] type={Type} count={Count}",
             request.TypeName.SanitizeForLog(), request.Keys.Count);
 
-        var schema = registry.Get(request.TypeName);
+        // Another tenant's type takes the unregistered branch exactly, ahead of Distinct and the
+        // GUID check: one Found=false per raw key (CSR round 11 #20).
+        var schema = registry.TryGetVisible(request.TypeName, actingUserAccessor.ActingUser);
 
         if (schema is null)
         {

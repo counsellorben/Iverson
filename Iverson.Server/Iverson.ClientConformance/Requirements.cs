@@ -589,8 +589,10 @@ public static class Requirements
     /// alone, is the property, which is why the Statement says "the status an update of a key that
     /// exists nowhere receives". The assertion accepts code 5 and nothing else: no status at all is
     /// an accepted update, and PERMISSION_DENIED (7) is the answer to a caller refused before any
-    /// row is read, such as a call that arrived carrying no acting-user identity rather than
-    /// another tenant's.</para>
+    /// row is read, such as a call carrying no acting-user identity against a type no tenant owns.
+    /// Against a tenant-owned type, the harness's case, another tenant's call and a call with no
+    /// acting-user identity both meet a type they cannot see and are answered 5 before any key is
+    /// read, as an update of an unregistered type is.</para>
     /// </summary>
     public const string IdnCrossTenantUpdateAnsweredNotFound = "IVC-IDN-008";
 

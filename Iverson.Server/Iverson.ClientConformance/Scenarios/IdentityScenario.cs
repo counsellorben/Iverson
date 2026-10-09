@@ -97,15 +97,17 @@ namespace Iverson.ClientConformance.Scenarios;
 /// tenant in their user column, so this leg keeps sending a payload a conforming client would
 /// send.</para>
 ///
-/// <para><b>A header-less caller and a wrong-tenant caller get different answers, by design.</b> A
-/// caller with no acting-user token at all is denied before this row is ever read
+/// <para><b>What a header-less caller and a wrong-tenant caller are answered.</b> The identity type
+/// is registered under tenant A's acting header, so tenant A owns it, and to any other caller it
+/// does not exist (<c>SchemaVisibility.TryGetVisible</c>). A wrong-tenant caller and a caller with
+/// no acting-user token at all are therefore both answered before any key is read or any row is
+/// fetched, with the <c>NotFound</c> (5) an update of an unregistered type receives. On a type no
+/// tenant owns the two still differ: the header-less caller is denied before the row is read
 /// (<c>RowFieldAuthorizationEvaluator.Evaluate</c> returns <c>Denied</c> on a null acting user,
-/// <c>reason=AccessDenied</c>) and is answered <c>PermissionDenied</c> (7). A wrong-tenant caller
-/// passes that check, reaches the tenant-scoped read, finds no visible row, and is answered
-/// <c>NotFound</c> (5). The order is deliberate: the denial check runs before the existence check,
-/// so a caller who is refused anyway is refused the same way whether or not the key exists. Only
-/// the wrong-tenant answer is graded; the header-less one is a Deferred area in the standard's IDN
-/// coverage ledger.</para>
+/// <c>reason=AccessDenied</c>) and is answered <c>PermissionDenied</c> (7), while the wrong-tenant
+/// caller reaches the tenant-scoped read, finds no visible row, and is answered <c>NotFound</c> (5).
+/// Only the wrong-tenant answer is graded; the header-less one is a Deferred area in the standard's
+/// IDN coverage ledger.</para>
 ///
 /// <para><b>Why every cross-tenant update is answered NOT_FOUND.</b> With the read narrowed to the
 /// caller's own tenant, a foreign-tenant row is never visible to

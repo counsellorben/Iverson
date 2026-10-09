@@ -80,7 +80,7 @@ public sealed class AggregateReader(
             Field: string.Empty);
 
         var result = await RunAsync(
-            search, registry, schema, query: null, spec, having: null, joins: null, authz: constraints);
+            search, registry, actingUser, schema, query: null, spec, having: null, joins: null, authz: constraints);
 
         // A null result means the store had no tenant database to address. EngagementRepository
         // returns null both for an absent or not-yet-provisioned tenant AND when the tenant id is
@@ -94,11 +94,14 @@ public sealed class AggregateReader(
 
     /// <summary>
     /// Executes one aggregation against <paramref name="schema"/>. Authorization must already have
-    /// been evaluated by the caller and passed in as <paramref name="authz"/>.
+    /// been evaluated by the caller and passed in as <paramref name="authz"/>. The builder resolves
+    /// joined type names only among the types <paramref name="actingUser"/> can see (CSR round 11
+    /// #20).
     /// </summary>
     internal static Task<EngagementAggResult?> RunAsync(
         IEngagementStoreSearchService search,
         SchemaRegistry registry,
+        ClaimsPrincipal? actingUser,
         SchemaDescriptor schema,
         SearchQuery? query,
         EngagementAggSpec spec,
@@ -111,7 +114,7 @@ public sealed class AggregateReader(
             spec,
             having,
             joins,
-            t => registry.Get(t) is { } d ? SchemaBuilder.ToEngagementQuerySchema(d) : null,
+            t => registry.TryGetVisible(t, actingUser) is { } d ? SchemaBuilder.ToEngagementQuerySchema(d) : null,
             authz);
 }
 

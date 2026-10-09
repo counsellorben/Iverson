@@ -91,7 +91,16 @@ public sealed class ObjectMappingGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Mapping.Get: depth {request.Depth} exceeds the maximum of {_queryLimits.MaxRelationDepth}."));
 
-        var schema = RequireSchema(request.TypeName);
+        // An invisible type, unregistered or another tenant's, gets exactly an absent key's answer
+        // (CSR round 11 #20), before the key reaches the store.
+        var schema = _registry.TryGetVisible(request.TypeName, _actingUserAccessor.ActingUser);
+        if (schema is null)
+            return new MappingResponse
+            {
+                Success = false,
+                Error   = $"'{request.TypeName}:{request.Key}' not found.",
+                TraceId = request.TraceId
+            };
 
         var rowJson = await FetchByKeyAsync(schema, request.Key,
             EntityAccess.ForTenant(_actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
@@ -193,7 +202,10 @@ public sealed class ObjectMappingGrpcService(
     {
         _logger.LogInformation("[Mapping.Update] type={Type}", request.TypeName.SanitizeForLog());
 
-        var schema = RequireSchema(request.TypeName);
+        // An invisible type, unregistered or another tenant's, is answered before the key is read
+        // (CSR round 11 #20). Its key column is unknown, so the message names no key.
+        var schema = _registry.TryGetVisible(request.TypeName, _actingUserAccessor.ActingUser)
+            ?? throw new RpcException(new Status(StatusCode.NotFound, $"'{request.TypeName}' row not found."));
 
         var key = _keyAccessor.ExtractKey(request.Payload, schema.KeyColumn.Name);
         if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
@@ -274,7 +286,15 @@ public sealed class ObjectMappingGrpcService(
     {
         _logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key.SanitizeForLog());
 
-        var schema = RequireSchema(request.TypeName);
+        // An invisible type gets exactly an absent key's answer (CSR round 11 #20).
+        var schema = _registry.TryGetVisible(request.TypeName, _actingUserAccessor.ActingUser);
+        if (schema is null)
+            return new MappingDeleteResponse
+            {
+                Success = false,
+                Error   = $"'{request.TypeName}:{request.Key}' not found.",
+                TraceId = request.TraceId
+            };
 
         var rowJson = await FetchByKeyAsync(schema, request.Key,
             EntityAccess.ForTenant(_actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value));
@@ -357,8 +377,9 @@ public sealed class ObjectMappingGrpcService(
 
     // ── SQL helpers ───────────────────────────────────────────────────────────
 
+    // Another tenant's type gets the unregistered answer (CSR round 11 #20).
     private SchemaDescriptor RequireSchema(string typeName) =>
-        _registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
+        _registry.TryGetVisible(typeName, _actingUserAccessor.ActingUser) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
 
     private Task<string?> FetchByKeyAsync(

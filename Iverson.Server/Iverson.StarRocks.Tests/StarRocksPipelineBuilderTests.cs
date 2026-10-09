@@ -633,6 +633,75 @@ public class StarRocksPipelineBuilderTests
             ArticleSchema(), Request(joined, later), EmptyRegistry()), "later");
     }
 
+    // ── Owner-private types: the builder sees the caller's visible registry (CSR round 11 #20) ──
+    //
+    // ObjectSearchGrpcService hands the builder a registry lambda that resolves only the types the
+    // caller may see: another tenant's type resolves to null, exactly as an unregistered name does.
+    // Iverson.Api.Tests' OwnerPrivateTypeVisibilityTests pins that lambda; these pin the builder's
+    // answer to it at the join-source and step-name checks. Each hidden-type row has a companion
+    // proving the hidden type is really registered, so the rows compare a hidden type with a
+    // missing one rather than two missing ones.
+
+    private static EngagementQuerySchema ForeignLedgerSchema() => new(
+        "Ledger", "ledgers", "Id", ["Amount"]);
+
+    // Every registered type, the other tenant's included.
+    private static Func<string, EngagementQuerySchema?> FullRegistry() =>
+        BuildRegistry(AuthorSchemaLocal(), ForeignLedgerSchema());
+
+    // The same registry as this caller sees it.
+    private static Func<string, EngagementQuerySchema?> VisibleRegistry() =>
+        BuildRegistry(AuthorSchemaLocal());
+
+    private static PipelineStep StepJoining(string source)
+    {
+        var step = new PipelineStep { Name = "named" };
+        var join = new PipelineJoin { Source = source, Kind = JoinKind.Inner };
+        join.On.Add(new JoinCondition { Left = "AuthorId", Right = "Id" });
+        step.Joins.Add(join);
+        step.Select.Add(new SelectItem { All = true });
+        return step;
+    }
+
+    [Theory]
+    [InlineData("Ghost")]
+    [InlineData("Ledger")]
+    public void Validate_JoinSourceTheCallerCannotSee_GetsTheUnregisteredSourceAnswer(string source)
+    {
+        var ex = Assert.Throws<EngagementQueryTranslationException>(() =>
+            StarRocksPipelineBuilder.TrackAndValidate(ArticleSchema(), Request(StepJoining(source)), VisibleRegistry()));
+
+        ex.Message.Should().Be(
+            $"Step 'named': join source '{source}' is neither an earlier step nor a registered type.");
+    }
+
+    [Fact]
+    public void Validate_JoinSourceOfAnotherTenant_ResolvesWhenTheRegistryIsUnfiltered()
+    {
+        var act = () => StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(StepJoining("Ledger")), FullRegistry());
+
+        act.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("Ghost")]
+    [InlineData("Ledger")]
+    public void Validate_StepNamedAfterATypeTheCallerCannotSee_IsAcceptedLikeAnUnregisteredName(string name)
+    {
+        var cols = StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(new PipelineStep { Name = name }), VisibleRegistry());
+
+        cols.Select(c => c.Name).Should().Equal("base", name);
+        cols[1].Columns.Keys.Should().BeEquivalentTo(cols[0].Columns.Keys);
+    }
+
+    [Fact]
+    public void Validate_StepNamedAfterAnotherTenantsType_CollidesWhenTheRegistryIsUnfiltered() =>
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(new PipelineStep { Name = "Ledger" }), FullRegistry()),
+            "collides with a registered type name");
+
     [Fact]
     public void Validate_JoinWithWindow_Throws()
     {

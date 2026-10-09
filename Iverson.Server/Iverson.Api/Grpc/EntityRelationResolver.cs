@@ -150,7 +150,9 @@ public sealed class EntityRelationResolver(
         var fkValue = StructFieldAccess.GetFieldString(entityStruct, relation.ForeignKey);
         if (string.IsNullOrWhiteSpace(fkValue)) return;
 
-        var relatedSchema = registry.Get(relation.RelatedTypeName);
+        // Another tenant's related type is treated as a missing one (CSR round 11 #20), here and in
+        // the two collection resolvers below.
+        var relatedSchema = registry.TryGetVisible(relation.RelatedTypeName, actingUser);
         if (relatedSchema is null) return;
 
         var rowJson = await entities.FetchByKeyAsync(
@@ -186,7 +188,7 @@ public sealed class EntityRelationResolver(
             .ToList();
         if (ids.Count == 0) return;
 
-        var relatedSchema = registry.Get(relation.RelatedTypeName);
+        var relatedSchema = registry.TryGetVisible(relation.RelatedTypeName, actingUser);
         if (relatedSchema is null) return;
 
         var rows = await entities.FetchManyByKeysAsync(
@@ -229,7 +231,7 @@ public sealed class EntityRelationResolver(
         var keyValue = StructFieldAccess.GetFieldString(entityStruct, schema.KeyColumn.Name);
         if (string.IsNullOrWhiteSpace(keyValue)) return;
 
-        var relatedSchema = registry.Get(relation.RelatedTypeName);
+        var relatedSchema = registry.TryGetVisible(relation.RelatedTypeName, actingUser);
         if (relatedSchema is null) return;
 
         var rows = await entities.FetchByColumnAsync(
