@@ -20,8 +20,9 @@ internal static class AuthorizationFieldMasking
     /// <para>
     /// Also runs <paramref name="payloadSizeValidator"/>'s text-column-size guard, but only as the
     /// LAST step, after every authorization-adjacent check in this method (the initial denial
-    /// check, and — on the existing-row/Update branch — TenantMismatch, TenantImmutable,
-    /// OwnerMismatch, OwnerImmutable, and <see cref="RejectDisallowedFields"/>). Denial-first: a
+    /// check, and — on the existing-row/Update branch — TenantMismatch, OwnerMismatch (answered
+    /// NotFound, like an absent row), TenantImmutable, OwnerImmutable, and
+    /// <see cref="RejectDisallowedFields"/>). Denial-first: a
     /// caller who fails ANY of those checks never reaches the size guard's <c>InvalidArgument</c>
     /// at all — most of them throw <c>PermissionDenied</c> (with its audit trail entry), and
     /// <see cref="RejectDisallowedFields"/> throws its own <c>InvalidArgument</c> for a field the
@@ -228,10 +229,10 @@ internal static class AuthorizationFieldMasking
         }
 
         // LAST — after every check above (the initial denial check and, on the existing-row/Update
-        // branch, TenantMismatch/TenantImmutable/OwnerMismatch/OwnerImmutable/RejectDisallowedFields),
+        // branch, TenantMismatch/OwnerMismatch/TenantImmutable/OwnerImmutable/RejectDisallowedFields),
         // whether that check throws PermissionDenied (most of them, with its audit-logged denial
-        // reason) or InvalidArgument (RejectDisallowedFields, for a field the caller may never
-        // write). A cross-tenant or otherwise unauthorized caller must never reach this guard even
+        // reason), NotFound (OwnerMismatch, which is answered like an absent row) or
+        // InvalidArgument (RejectDisallowedFields, for a field the caller may never write). A cross-tenant or otherwise unauthorized caller must never reach this guard even
         // when their payload is also oversized; running the size check any earlier would let such a
         // caller learn (via InvalidArgument naming a column and its size limit) that the row exists,
         // before authorization has even decided they may see it.

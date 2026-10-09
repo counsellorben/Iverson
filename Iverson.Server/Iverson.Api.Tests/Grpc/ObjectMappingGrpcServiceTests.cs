@@ -414,6 +414,37 @@ public class ObjectMappingGrpcServiceTests
         article.Relations.Should().ContainSingle().Which.PropertyName.Should().Be("Author");
     }
 
+    // UserArticle with an active FieldPermission on a field OTHER than the FK: the child's
+    // AllowedFields is non-null, but it allows ArticleId.
+    private static SchemaDescriptor UserArticleWithRestrictionOnAnotherField() => SchemaFixtures.UserArticleSchema() with
+    {
+        Authorization = new Iverson.Api.Schema.AuthorizationRules(
+            null,
+            new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+            new List<Iverson.Api.Schema.FieldPermission>
+            {
+                new("UserId", new List<string> { "editor" }, new List<string>())
+            })
+    };
+
+    [Fact]
+    public async Task GetSchema_WithOneToManyRelation_WhoseChildRestrictsAnotherFieldOnly_KeepsTheRelation()
+    {
+        // The child has active field permissions, but they allow the FK: the relation stays.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(UserArticleWithRestrictionOnAnotherField());
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema());
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var userArticle = response.Types_.Single(t => t.Name == "UserArticle");
+        userArticle.Fields.Select(f => f.Name).Should().NotContain("UserId"); // restriction is active
+        var article = response.Types_.Single(t => t.Name == "Article");
+        article.Relations.Should()
+            .ContainSingle(r => r.Kind == Iverson.Client.Contracts.RelationKind.OneToMany)
+            .Which.ForeignKey.Should().Be("ArticleId");
+    }
+
     [Fact]
     public async Task GetSchema_WithUnmappedKeyColumnSqlType_FailsLoudly()
     {
@@ -1639,6 +1670,21 @@ public class ObjectMappingGrpcServiceTests
         response.Data.Fields["UserArticles"].ListValue.Values
             .Should().ContainSingle()
             .Which.StructValue.Fields["Id"].StringValue.Should().Be(UserArticleId);
+    }
+
+    [Fact]
+    public async Task Get_AtDepth1_WithOneToManyChildRestrictingAnotherFieldOnly_ResolvesTheRelation()
+    {
+        // The child has active field permissions, but they allow the FK, so the fetch still runs.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema());
+        await _registry.RegisterAsync(UserArticleWithRestrictionOnAnotherField());
+        ArticleWithOneUserArticle();
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields["UserArticles"].ListValue.Values.Should().ContainSingle();
     }
 
     // ── Get audit logging ────────────────────────────────────────────────────

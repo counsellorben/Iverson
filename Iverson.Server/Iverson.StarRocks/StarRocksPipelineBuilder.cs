@@ -596,7 +596,8 @@ internal static class StarRocksPipelineBuilder
                 JoinKind.Full  => "FULL",
                 _              => "INNER"
             };
-            // Entity sources join the physical table aliased as the type name;
+            // A constrained entity source joins a filtered derived table aliased as the type name
+            // (an unconstrained one joins the physical table under that alias);
             // step sources are CTEs joined by their own name (no alias needed).
             var joinedSchema = registry(src.Name);
             var isFreshType = joinedSchema is not null && emitted.All(s => !s.Name.Equals(src.Name, StringComparison.OrdinalIgnoreCase));

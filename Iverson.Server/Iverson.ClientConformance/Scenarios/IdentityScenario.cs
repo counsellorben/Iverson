@@ -111,9 +111,11 @@ namespace Iverson.ClientConformance.Scenarios;
 ///
 /// <para><b>Why every cross-tenant update is answered NOT_FOUND.</b> With the read narrowed to the
 /// caller's own tenant, a foreign-tenant row is never visible to
-/// <c>EnforceWriteAuthorization</c>, so a wrong-tenant update finds no existing row, exactly as an
-/// update of a key that exists nowhere does. Update never creates a row, so both are answered
-/// <c>NotFound</c> with the same message, and neither reaches the database. This is what makes the
+/// <c>EnforceWriteAuthorization</c>, so a wrong-tenant update finds no existing row. The harness's
+/// tenant-owned type is invisible to the other tenant, so that update is answered at the type lookup
+/// with <c>'{type}' row not found.</c>; an owner's update of an unseeded key is answered
+/// <c>'{type}:{key}' not found.</c>. Update never creates a row, both are status 5
+/// (<c>NotFound</c>), which is all the requirement grades, and neither reaches the database. This is what makes the
 /// backstop below load-bearing rather than decorative.</para>
 ///
 /// <para><b>Backstop assertion.</b> <see cref="Judge"/>'s "the write phase reported a row key for

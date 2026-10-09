@@ -1329,6 +1329,24 @@ public class SchemaRegistrationOrchestratorTests
     }
 
     [Fact]
+    public async Task RegisterAsync_EnrichmentTargetMoreReadableThanItsEmbeddingSource_ThrowsInvalidArgument()
+    {
+        // The source is an embedding property (not a chunk): the same subset rule applies.
+        var td = EnrichedWidget(
+            new Client.Contracts.FieldPermission { FieldName = "Body", ReadableRoles = { "editors" } });
+        var body = td.Properties.Single(p => p.Name == "Body");
+        body.IsChunk = false;
+        body.IsEmbedding = true;
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("a subset of them");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
     public async Task RegisterAsync_EnrichmentTargetCoveringOnlyOneOfTwoSourcePermissions_ThrowsInvalidArgument()
     {
         // Two permissions name Body, so a reader must pass both. The target is covered against the

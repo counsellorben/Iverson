@@ -169,13 +169,15 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
         await dlq.DidNotReceive().GetUnreplayedByIdAsync(Arg.Any<Guid>());
     }
 
-    [Fact]
-    public async Task ReplayDlq_ActingUserOfAnActiveTenant_ReachesTheRowLookup()
+    [Theory]
+    [InlineData("tenant_active")]
+    [InlineData(null)]
+    public async Task ReplayDlq_ActingUserOfAnActiveTenantOrWithNoTenant_ReachesTheRowLookup(string? tenantId)
     {
         var (client, _, dlq) = CreateClient();
 
         var response = await client.SendAsync(
-            DlqRequest(HttpMethod.Post, $"/admin/dlq/{Guid.NewGuid()}/replay", "tenant_active"));
+            DlqRequest(HttpMethod.Post, $"/admin/dlq/{Guid.NewGuid()}/replay", tenantId));
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound); // past the gate; the fake has no row
         await dlq.Received(1).GetUnreplayedByIdAsync(Arg.Any<Guid>());
