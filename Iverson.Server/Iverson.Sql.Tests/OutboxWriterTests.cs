@@ -73,6 +73,20 @@ public class OutboxWriterTests
     }
 
     [Fact]
+    public async Task UpsertAndEnqueueOutboxAsync_ColumnNameContainingADoubleQuote_IsRefusedBeforeTheTransaction()
+    {
+        var schema = new TableSchema(
+            "articles",
+            new ColumnSchema("Id", "uuid", false),
+            new List<ColumnSchema> { new("Ti\"tle", "text", false) });
+
+        var act = () => _sut.UpsertAndEnqueueOutboxAsync(schema, "Article", Guid.NewGuid().ToString(), "{}");
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        await _txRunner.DidNotReceive().ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>());
+    }
+
+    [Fact]
     public async Task DeleteOutboxRowIfPresentAsync_ExecutesDeleteByRowId()
     {
         var rowId = Guid.CreateVersion7();

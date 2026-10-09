@@ -203,9 +203,8 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithARelationForeignKeyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument()
     {
-        // The foreign-key arm is the one ValidateIdentifier does NOT cover — relation names are
-        // never identifier-checked — so without this guard it reaches the FK lookup and is
-        // rejected as "not a declared property", which is a misleading answer.
+        // Relation names are identifier-checked too, so without this guard the leading underscore
+        // is rejected with ValidateIdentifier's generic message, which never names the reservation.
         var td = new TypeDescriptor { TypeName = "Widget" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
         td.Relations.Add(new Client.Contracts.RelationDescriptor
@@ -262,11 +261,11 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithARelationNavigationPropertyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument()
     {
-        // Ruling 24. The navigation-property name is the FIFTH way to address the reserved name and
-        // is covered by nothing else: ValidateIdentifier runs on TypeName and Properties[].Name
-        // only, the FK-naming rule constrains ForeignKey only, and RelationCollisionCheck merely
-        // compares PropertyName to ForeignKey — so this fixture, whose ForeignKey is the perfectly
-        // legal "AuthorId", registered CLEANLY before this guard existed. The nav property is not a
+        // Ruling 24. The navigation-property name is the FIFTH way to address the reserved name.
+        // Before relation names were identifier-checked nothing else covered it, so this fixture,
+        // whose ForeignKey is the perfectly legal "AuthorId", registered CLEANLY before this guard
+        // existed; ValidateIdentifier now refuses it as well, but only with its generic message,
+        // which never names the reservation. The nav property is not a
         // column, which is the point: at depth > 0 MaskDisallowedFields strips the tenant column and
         // ResolveRelationsAsync then re-injects the related object under the key __TenantId, putting
         // the reserved name straight back on the wire.
@@ -332,6 +331,34 @@ public class SchemaRegistrationOrchestratorTests
         // never ran for this kind — which is the survivor's exact shape.
         ex.Which.Status.Detail.Should().NotStartWith("Relation foreign key");
         _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(Client.Contracts.RelationKind.OneToOne)]
+    [InlineData(Client.Contracts.RelationKind.OneToMany)]
+    [InlineData(Client.Contracts.RelationKind.ManyToOne)]
+    [InlineData(Client.Contracts.RelationKind.ManyToMany)]
+    public async Task RegisterAsync_ARelationForeignKeyNamedLikeTheTenantColumn_KeepsTheReservedNameMessageForEveryKind(
+        Client.Contracts.RelationKind kind)
+    {
+        // The reserved name also fails the identifier pattern (leading underscore), and relation
+        // names are identifier-checked. This pins that the reserved-name guard still answers first,
+        // for every kind, with the message that names the reservation.
+        var td = SimpleType("Widget", "Name");
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Owner",
+            Kind         = kind,
+            RelatedType  = "User",
+            ForeignKey   = SchemaDescriptor.TenantColumnName,
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().StartWith("Relation foreign key '__TenantId' on 'Widget'");
+        ex.Which.Status.Detail.Should().NotContain("is not a valid identifier");
     }
 
     [Fact]
@@ -525,6 +552,53 @@ public class SchemaRegistrationOrchestratorTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Theory]
+    [InlineData(Client.Contracts.RelationKind.OneToOne,   "PropertyName", "relation navigation property")]
+    [InlineData(Client.Contracts.RelationKind.OneToOne,   "ForeignKey",   "relation foreign key")]
+    [InlineData(Client.Contracts.RelationKind.OneToOne,   "RelatedType",  "relation related type")]
+    [InlineData(Client.Contracts.RelationKind.OneToMany,  "PropertyName", "relation navigation property")]
+    [InlineData(Client.Contracts.RelationKind.OneToMany,  "ForeignKey",   "relation foreign key")]
+    [InlineData(Client.Contracts.RelationKind.OneToMany,  "RelatedType",  "relation related type")]
+    [InlineData(Client.Contracts.RelationKind.ManyToOne,  "PropertyName", "relation navigation property")]
+    [InlineData(Client.Contracts.RelationKind.ManyToOne,  "ForeignKey",   "relation foreign key")]
+    [InlineData(Client.Contracts.RelationKind.ManyToOne,  "RelatedType",  "relation related type")]
+    [InlineData(Client.Contracts.RelationKind.ManyToMany, "PropertyName", "relation navigation property")]
+    [InlineData(Client.Contracts.RelationKind.ManyToMany, "ForeignKey",   "relation foreign key")]
+    [InlineData(Client.Contracts.RelationKind.ManyToMany, "RelatedType",  "relation related type")]
+    public async Task RegisterAsync_ARelationNameThatIsNotAnIdentifier_IsRejectedForEveryKind(
+        Client.Contracts.RelationKind kind, string field, string label)
+    {
+        // Every relation name is identifier-checked, for all four kinds: the foreign key reaches
+        // SQL as a column name (for OneToMany, a column on the related type's table), the
+        // navigation property becomes a payload key, and the related type is looked up by name.
+        const string notAnIdentifier = "Two Words";
+        var td = SimpleType("Widget", "Name");
+        td.Properties.Add(new PropertyDescriptor { Name = "UserId", ObjectType = ObjectType.Guid });
+        td.Properties.Add(new PropertyDescriptor { Name = "UserIds", ObjectType = ObjectType.Guid, IsArray = true });
+        var relation = new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Owner",
+            Kind         = kind,
+            RelatedType  = "User",
+            ForeignKey   = kind == Client.Contracts.RelationKind.ManyToMany ? "UserIds" : "UserId",
+        };
+        switch (field)
+        {
+            case "PropertyName": relation.PropertyName = notAnIdentifier; break;
+            case "ForeignKey":   relation.ForeignKey   = notAnIdentifier; break;
+            case "RelatedType":  relation.RelatedType  = notAnIdentifier; break;
+        }
+        td.Relations.Add(relation);
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().StartWith(
+            $"{label} on type 'Widget' '{notAnIdentifier}' is not a valid identifier");
+        _registry.Get("Widget").Should().BeNull();
     }
 
     [Fact]

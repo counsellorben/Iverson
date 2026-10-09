@@ -13,6 +13,11 @@ public sealed class PostgresSchemaManager(
 
     public async Task ApplySchemaAsync(TableSchema schema, SchemaDriftPolicy driftPolicy = SchemaDriftPolicy.Warn)
     {
+        // Quoted before any connection is opened, so a table or key name the helper refuses never
+        // reaches the advisory lock or any DDL. Column names are quoted where they are used.
+        var table     = PostgresIdentifier.Quote(schema.TableName);
+        var keyColumn = PostgresIdentifier.Quote(schema.KeyColumn.Name);
+
         using var activity = Telemetry.Source.StartActivity("db.apply_schema", ActivityKind.Client);
         activity?.SetTag("db.system", "postgresql");
         activity?.SetTag("db.table", schema.TableName);
@@ -65,12 +70,12 @@ public sealed class PostgresSchemaManager(
 
             if (existingColumns.Count == 0)
             {
-                var keySql   = $"\"{schema.KeyColumn.Name}\" {schema.KeyColumn.SqlType} PRIMARY KEY";
+                var keySql   = $"{keyColumn} {schema.KeyColumn.SqlType} PRIMARY KEY";
                 var colsSql  = schema.Columns.Select(c =>
-                    $"\"{c.Name}\" {c.SqlType}{(c.IsNullable ? "" : " NOT NULL")}");
+                    $"{PostgresIdentifier.Quote(c.Name)} {c.SqlType}{(c.IsNullable ? "" : " NOT NULL")}");
 
                 var ddl = $"""
-                    CREATE TABLE IF NOT EXISTS "{schema.TableName}" (
+                    CREATE TABLE IF NOT EXISTS {table} (
                         {keySql},
                         {string.Join(",\n    ", colsSql)}
                     )
@@ -114,8 +119,8 @@ public sealed class PostgresSchemaManager(
                 foreach (var col in schema.Columns.Where(c => !existingColumns.Contains(c.Name)))
                 {
                     var alterSql = $"""
-                        ALTER TABLE "{schema.TableName}"
-                        ADD COLUMN IF NOT EXISTS "{col.Name}" {col.SqlType}{(col.IsNullable ? "" : $" NOT NULL DEFAULT ('{GetDefaultForType(col.SqlType)}')")}
+                        ALTER TABLE {table}
+                        ADD COLUMN IF NOT EXISTS {PostgresIdentifier.Quote(col.Name)} {col.SqlType}{(col.IsNullable ? "" : $" NOT NULL DEFAULT ('{GetDefaultForType(col.SqlType)}')")}
                         """;
 
                     logger.LogInformation("Adding column {Column} to {Table}", col.Name, schema.TableName);
@@ -131,8 +136,10 @@ public sealed class PostgresSchemaManager(
                 {
                     if (logger.IsEnabled(LogLevel.Information))
                         logger.LogInformation("Dropping removed column {Column} from {Table}", orphan, schema.TableName);
+                    // orphan is read back from pg_attribute, not taken from the schema, so it is not
+                    // passed through PostgresIdentifier.Quote.
                     await conn.ExecuteAsync(
-                        $"ALTER TABLE \"{schema.TableName}\" DROP COLUMN IF EXISTS \"{orphan}\"");
+                        $"ALTER TABLE {table} DROP COLUMN IF EXISTS \"{orphan}\"");
                 }
             }
 
@@ -144,8 +151,8 @@ public sealed class PostgresSchemaManager(
             {
                 var idxName = $"ix_{schema.TableName}_{col.Name}".ToLowerInvariant();
                 await conn.ExecuteAsync($"""
-                    CREATE INDEX IF NOT EXISTS "{idxName}"
-                    ON "{schema.TableName}" ("{col.Name}")
+                    CREATE INDEX IF NOT EXISTS {PostgresIdentifier.Quote(idxName)}
+                    ON {table} ({PostgresIdentifier.Quote(col.Name)})
                     """);
             }
 
@@ -155,7 +162,7 @@ public sealed class PostgresSchemaManager(
             // column alike — a reconciliation replay of a type that declares no tenant field is
             // still a maintenance read. Granting only the tenant-scoped subset would turn those
             // into 42501 insufficient_privilege at runtime.
-            await conn.ExecuteAsync($"""GRANT SELECT, INSERT, UPDATE, DELETE ON "{schema.TableName}" TO iverson_maintenance""");
+            await conn.ExecuteAsync($"""GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO iverson_maintenance""");
 
             if (schema.TenantColumn is not null)
             {
@@ -169,8 +176,8 @@ public sealed class PostgresSchemaManager(
                     try
                     {
                         await conn.ExecuteAsync($"""
-                            CREATE POLICY "{policyName}" ON "{schema.TableName}"
-                            USING ("{schema.TenantColumn}" = current_setting('app.tenant_id', true))
+                            CREATE POLICY {PostgresIdentifier.Quote(policyName)} ON {table}
+                            USING ({PostgresIdentifier.Quote(schema.TenantColumn)} = current_setting('app.tenant_id', true))
                             """);
                     }
                     catch (PostgresException ex) when (ex.SqlState == "42710")
@@ -179,7 +186,7 @@ public sealed class PostgresSchemaManager(
                     }
                 }
 
-                await conn.ExecuteAsync($"""ALTER TABLE "{schema.TableName}" ENABLE ROW LEVEL SECURITY""");
+                await conn.ExecuteAsync($"""ALTER TABLE {table} ENABLE ROW LEVEL SECURITY""");
 
                 // ENABLE alone leaves the table's OWNER exempt from its own policy, and the api
                 // connects as the owner (`iverson`, charts/api/templates/deployment.yaml against
@@ -188,9 +195,9 @@ public sealed class PostgresSchemaManager(
                 // the independent second layer the threat model claims. FORCE is idempotent, which
                 // matters because Program.cs re-applies this DDL for every registered descriptor
                 // on every startup.
-                await conn.ExecuteAsync($"""ALTER TABLE "{schema.TableName}" FORCE ROW LEVEL SECURITY""");
+                await conn.ExecuteAsync($"""ALTER TABLE {table} FORCE ROW LEVEL SECURITY""");
 
-                await conn.ExecuteAsync($"""GRANT SELECT, INSERT, UPDATE, DELETE ON "{schema.TableName}" TO iverson_runtime""");
+                await conn.ExecuteAsync($"""GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO iverson_runtime""");
             }
 
             activity?.SetStatus(ActivityStatusCode.Ok);

@@ -613,6 +613,55 @@ public class SchemaRegistryTests
             e.Message.Contains("Article"));
     }
 
+    // Relation names are not ScalarColumns, and a OneToMany foreign key is not one of this
+    // descriptor's FkColumns (it names a column on the related type's table), so none of the
+    // clauses above sees them. Registration identifier-checks all three; rehydration must too.
+    [Theory]
+    [InlineData("PropertyName")]
+    [InlineData("ForeignKey")]
+    [InlineData("RelatedTypeName")]
+    public async Task LoadAsync_DescriptorWithNonIdentifierRelationName_IsSkippedAndLogsError(string field)
+    {
+        const string notAnIdentifier = "Two Words";
+        var relation = new RelationDescriptor("UserArticles", RelationKind.OneToMany, "UserArticle", "ArticleId");
+        relation = field switch
+        {
+            "PropertyName"    => relation with { PropertyName = notAnIdentifier },
+            "ForeignKey"      => relation with { ForeignKey = notAnIdentifier },
+            "RelatedTypeName" => relation with { RelatedTypeName = notAnIdentifier },
+            _                 => throw new ArgumentOutOfRangeException(nameof(field), field, null),
+        };
+        var badSchema = SchemaFixtures.ArticleSchema() with { Relations = [relation] };
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(badSchema))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse(
+            "a relation name that fails SchemaRegistrationOrchestrator's own identifier pattern must never be admitted on rehydration");
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("failed identifier/key-type validation on rehydration") &&
+            e.Message.Contains("Article"));
+    }
+
+    [Fact]
+    public async Task LoadAsync_DescriptorWithIdentifierShapedOneToManyRelation_IsAdmitted()
+    {
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(SchemaFixtures.ArticleWithOneToManySchema()))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeTrue();
+        _logs.Entries.Should().NotContain(e => e.Level == LogLevel.Error);
+    }
+
     // The TenantColumn VALUE is interpolated raw into SQL identifiers — the RLS policy DDL every
     // startup re-applies (PostgresSchemaManager), EntityRepository's tenant select, and every
     // StarRocks tenant predicate — so a stored value that is not itself one of the validated

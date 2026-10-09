@@ -18,16 +18,19 @@ public sealed class OutboxWriter(
     public async Task<Guid> UpsertAndEnqueueOutboxAsync(
         TableSchema schema, string typeName, string key, string payloadJson, string? tenantId = null)
     {
-        var allCols   = schema.Columns.Select(c => c.Name).ToList();
+        // Schema-derived names are quoted as identifiers; outboxTableName below is a constant.
+        var table     = PostgresIdentifier.Quote(schema.TableName);
+        var keyColumn = PostgresIdentifier.Quote(schema.KeyColumn.Name);
+        var allCols   = schema.Columns.Select(c => PostgresIdentifier.Quote(c.Name)).ToList();
         var updateSet = allCols.Count > 0
-            ? string.Join(", ", allCols.Select(c => $"\"{c}\" = EXCLUDED.\"{c}\""))
-            : $"\"{schema.KeyColumn.Name}\" = EXCLUDED.\"{schema.KeyColumn.Name}\"";
+            ? string.Join(", ", allCols.Select(c => $"{c} = EXCLUDED.{c}"))
+            : $"{keyColumn} = EXCLUDED.{keyColumn}";
 
         var upsertSql =
             $"""
-            INSERT INTO "{schema.TableName}"
-            SELECT * FROM json_populate_record(null::"{schema.TableName}", @Json::json)
-            ON CONFLICT ("{schema.KeyColumn.Name}") DO UPDATE SET {updateSet}
+            INSERT INTO {table}
+            SELECT * FROM json_populate_record(null::{table}, @Json::json)
+            ON CONFLICT ({keyColumn}) DO UPDATE SET {updateSet}
             """;
 
         var outboxSql =

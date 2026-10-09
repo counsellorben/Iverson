@@ -66,6 +66,23 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     }
 
     [Fact]
+    public async Task ApplySchemaAsync_ColumnNameContainingADoubleQuote_IsRefusedAndCreatesNoTable()
+    {
+        var table = UniqueTable();
+        var schema = new TableSchema(
+            table,
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            [new ColumnSchema("na\"me", "text", IsNullable: false)]);
+
+        var act = async () => await _schemaManager.ApplySchemaAsync(schema);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        var count = await _repo.QuerySingleOrDefaultAsync<int>(
+            $"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '{table}'");
+        count.Should().Be(0);
+    }
+
+    [Fact]
     public async Task ApplySchemaAsync_IsIdempotent_WhenCalledTwice()
     {
         var table  = UniqueTable();

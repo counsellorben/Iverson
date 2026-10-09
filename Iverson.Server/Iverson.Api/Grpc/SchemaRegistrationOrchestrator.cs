@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
@@ -20,13 +19,12 @@ public sealed class SchemaRegistrationOrchestrator(
     ILogger<SchemaRegistrationOrchestrator> logger)
     : ISchemaRegistrationOrchestrator
 {
-    // TypeName/property names are string-interpolated unescaped into CREATE TABLE/ALTER TABLE
-    // DDL by PostgresSchemaManager/StarRocksSchemaManager after only a case transformation
-    // (NamingExtensions.ToSnakeCase, which does not escape or reject anything). Validate at
-    // the source — every descriptor that reaches SchemaBuilder.BuildDescriptor must already be
-    // a safe DDL identifier. No underscores are permitted in the input because ToSnakeCase
-    // inserts its own; this pattern also naturally rejects an empty string.
-    internal static readonly Regex IdentifierPattern = new(@"\A[A-Za-z][A-Za-z0-9]*\z", RegexOptions.Compiled);
+    // Type, property and relation names reach DDL and query text (PostgresSchemaManager,
+    // EntityRepository, StarRocksSchemaManager) after only a case transformation
+    // (NamingExtensions.ToSnakeCase, which does not escape or reject anything). Validate at the
+    // source — every descriptor that reaches SchemaBuilder.BuildDescriptor must already be a safe
+    // DDL identifier. The pattern is PostgresIdentifier.IsPlain: no underscores, because
+    // ToSnakeCase inserts its own, and an empty string is rejected.
 
     // The declaration is class-level in every client, so every embedding/chunk property of a type
     // is expected to carry the same value — reading both flag-halves (ModelId AND ChunkModelId) so
@@ -74,6 +72,17 @@ public sealed class SchemaRegistrationOrchestrator(
             ValidateIdentifier(typeDesc.TypeName, "type_name");
             foreach (var property in typeDesc.Properties)
                 ValidateIdentifier(property.Name, $"property name on type '{typeDesc.TypeName}'");
+
+            // All four relation kinds. The foreign key reaches SQL as a column name (a OneToMany
+            // foreign key is a column on the related type's table, filtered on by relation
+            // hydration), the navigation property becomes a payload key, and the related type is
+            // looked up by name. After RejectReservedTenantName, so a reserved name keeps its message.
+            foreach (var relation in typeDesc.Relations)
+            {
+                ValidateIdentifier(relation.PropertyName, $"relation navigation property on type '{typeDesc.TypeName}'");
+                ValidateIdentifier(relation.ForeignKey, $"relation foreign key on type '{typeDesc.TypeName}'");
+                ValidateIdentifier(relation.RelatedType, $"relation related type on type '{typeDesc.TypeName}'");
+            }
 
             var priorRegistered = registry.Get(typeDesc.TypeName);
             if (priorRegistered is not null && priorRegistered.OwnerTenantId != ownerTenantId)
@@ -190,15 +199,16 @@ public sealed class SchemaRegistrationOrchestrator(
             foreach (var relation in descriptor.Relations.Where(r => r.Kind != Schema.RelationKind.OneToMany))
             {
                 // ScalarColumns position: EXCLUDE __TenantId. UNREACHABLE BY CONSTRUCTION from this
-                // path — RejectReservedTenantName, run above on the inbound typeDesc before
-                // BuildDescriptor, already rejects any relation whose ForeignKey is __TenantId, so
-                // no registration can reach this lookup with that name and no test can discriminate
-                // the clause. It is kept deliberately, NOT dead code to delete: this lookup must
-                // answer IDENTICALLY to its live twin in RelationValidator.ValidateSingleRelation,
-                // which IS still reachable (SchemaRegistry.LoadAsync rehydrates descriptors without
-                // re-running BuildDescriptor or the guard above) and IS still covered by a test.
+                // path — RejectReservedTenantName and the relation ValidateIdentifier calls, run above
+                // on the inbound typeDesc before BuildDescriptor, both reject a relation whose
+                // ForeignKey is __TenantId, so no registration can reach this lookup with that name
+                // and no test can discriminate the clause. It is kept deliberately, NOT dead code to
+                // delete: this lookup must answer IDENTICALLY to its twin in
+                // RelationValidator.ValidateSingleRelation, which is still covered by a test. Since
+                // SchemaRegistry.LoadAsync refuses non-identifier relation names, rehydration no
+                // longer reaches that twin with this name either; only a hand-built descriptor does.
                 // Delete it here and the twins diverge; then any future change that reorders or
-                // removes the upfront guard silently restores the original defect — the lookup
+                // removes the upfront guards silently restores the original defect — the lookup
                 // resolves the server-owned column, the relation falls through to the requiredSqlType
                 // check below, and the caller is told to redeclare as a GUID a column it never
                 // declared and cannot address.
@@ -570,12 +580,10 @@ public sealed class SchemaRegistrationOrchestrator(
     /// against a live database.) Rejecting at registration is the accurate, actionable answer.
     /// </para>
     /// <para>
-    /// Deliberately placed BEFORE <c>ValidateIdentifier</c>. A property named "__TenantId" would
-    /// otherwise be rejected by the identifier pattern (which forbids a leading underscore) with a
-    /// generic "not a valid identifier" message that never tells the caller the name is reserved.
-    /// The foreign-key arm is not covered by ValidateIdentifier at all — relation names are never
-    /// identifier-checked — and would otherwise surface at the FK lookup as a misleading
-    /// "which is not a declared property".
+    /// Deliberately placed BEFORE <c>ValidateIdentifier</c>. A property, relation foreign key or
+    /// relation navigation property named "__TenantId" would otherwise be rejected by the
+    /// identifier pattern (which forbids a leading underscore) with a generic "not a valid
+    /// identifier" message that never tells the caller the name is reserved.
     /// </para>
     /// </summary>
     private static void RejectReservedTenantName(TypeDescriptor typeDesc)
@@ -612,11 +620,11 @@ public sealed class SchemaRegistrationOrchestrator(
             RejectReservedTenantName(typeDesc.TypeName, relation.ForeignKey, "Relation foreign key",
                 "Rename the property");
 
-            // Ruling 24. NOTHING else covers the navigation-property name: ValidateIdentifier runs
-            // on TypeName and Properties[].Name only, the FK-naming rule constrains ForeignKey
-            // only, and RelationCollisionCheck merely compares the two names to each other — so a
-            // ManyToOne with PropertyName '__TenantId' and a well-formed ForeignKey registers
-            // cleanly. The nav property is not a column, which is exactly why it is dangerous: on a
+            // Ruling 24. ValidateIdentifier now refuses a navigation property named '__TenantId'
+            // too, but only with its generic message; this arm is what names the reservation.
+            // Before relation names were identifier-checked, a ManyToOne with PropertyName
+            // '__TenantId' and a well-formed ForeignKey registered cleanly. The nav property is
+            // not a column, which is exactly why it is dangerous: on a
             // read at depth > 0, MaskDisallowedFields strips the tenant column and
             // ResolveRelationsAsync then re-INJECTS the related object under the key '__TenantId',
             // putting the reserved name back on the wire and defeating the outbound strip. The
@@ -793,7 +801,9 @@ public sealed class SchemaRegistrationOrchestrator(
         }
     }
 
-    internal static bool IsValidIdentifier(string name) => IdentifierPattern.IsMatch(name);
+    // The single definition of the client identifier shape lives in Iverson.Sql, which needs it
+    // for parameter names and cannot reference this assembly.
+    internal static bool IsValidIdentifier(string? name) => PostgresIdentifier.IsPlain(name);
 
     internal static void ValidateIdentifier(string name, string context)
     {

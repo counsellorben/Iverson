@@ -195,6 +195,14 @@ public sealed class SchemaRegistry(
                         !SchemaDescriptor.IsTenantColumn(c.Name) &&
                         !SchemaRegistrationOrchestrator.IsValidIdentifier(c.Name)) ||
                     descriptor.FkColumns.Any(c => !SchemaRegistrationOrchestrator.IsValidIdentifier(c.ColumnName)) ||
+                    // Relation names, which RegisterAsync identifier-checks on the way in. A OneToMany
+                    // ForeignKey names a column on the related type's table that relation hydration
+                    // filters on, and it is not one of this descriptor's FkColumns, so the clause
+                    // above never sees it.
+                    descriptor.Relations.Any(r =>
+                        !SchemaRegistrationOrchestrator.IsValidIdentifier(r.PropertyName) ||
+                        !SchemaRegistrationOrchestrator.IsValidIdentifier(r.ForeignKey) ||
+                        !SchemaRegistrationOrchestrator.IsValidIdentifier(r.RelatedTypeName)) ||
                     // The TenantColumn VALUE is interpolated raw into SQL identifiers (the RLS policy
                     // DDL every startup re-applies, EntityRepository's tenant select, every StarRocks
                     // tenant predicate), and nothing above validates it unless it happens to be one of

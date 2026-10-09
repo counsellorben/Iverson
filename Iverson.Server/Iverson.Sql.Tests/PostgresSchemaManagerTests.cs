@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
 
@@ -28,5 +29,23 @@ public sealed class PostgresSchemaManagerTests
     public void PostgresSchemaManager_ImplementsIPostgresSchemaManager()
     {
         typeof(PostgresSchemaManager).Should().Implement<IRecordStoreSchemaManager>();
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_TableNameContainingADoubleQuote_IsRefusedBeforeConnecting()
+    {
+        // Nothing listens on port 1, so reaching the connection would fail with a connection error
+        // instead. An ArgumentException means the name was refused before any connection was made.
+        var manager = new PostgresSchemaManager(
+            "Host=127.0.0.1;Port=1;Database=none;Username=none;Password=none;Timeout=1",
+            NullLogger<PostgresSchemaManager>.Instance);
+        var schema = new TableSchema(
+            "play\"ers",
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            new List<ColumnSchema> { new("name", "text", IsNullable: false) });
+
+        var act = () => manager.ApplySchemaAsync(schema);
+
+        await act.Should().ThrowAsync<ArgumentException>();
     }
 }

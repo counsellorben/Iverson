@@ -59,6 +59,20 @@ public class EntityRepositoryTests
     }
 
     [Fact]
+    public async Task FetchByColumnAsync_ColumnNameContainingADoubleQuote_IsRefusedBeforeAnyQuery()
+    {
+        // The column here is a relation's foreign key, which reaches this method from a registered
+        // schema. It is quoted as an identifier, so a name the quoting helper refuses never reaches SQL.
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        var repo = new EntityRepository(sql);
+
+        var act = () => repo.FetchByColumnAsync(ArticleSchema, "Author\"Id", "a1", EntityAccess.ForTenant("tenant-a"));
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        sql.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task FetchAllAsync_HasNoWhereClause()
     {
         var sql = Substitute.For<IRecordStoreQueryExecutor>();
@@ -299,5 +313,23 @@ public class EntityRepositoryTests
                 s.Contains("\"Body\" = @Body") &&
                 s.Contains("WHERE \"Id\" = @Key::uuid")),
             Arg.Any<object?>());
+    }
+
+    [Fact]
+    public async Task UpdateColumnsAsync_ColumnNameThatIsNotAPlainIdentifier_IsRefusedBeforeAnyStatement()
+    {
+        // Each column name is also the parameter name (@Title). "Two Words" quotes cleanly as an
+        // identifier, so only the plain-identifier check on the parameter name can refuse it.
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        var tx = Substitute.For<IDbTransactionContext>();
+        var repo = new EntityRepository(sql);
+
+        var act = () => repo.UpdateColumnsAsync(
+            tx, ArticleSchema, "k1",
+            new Dictionary<string, object?> { ["Two Words"] = "value" },
+            EntityAccess.ForTenant("tenant-a"));
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        tx.ReceivedCalls().Should().BeEmpty();
     }
 }
