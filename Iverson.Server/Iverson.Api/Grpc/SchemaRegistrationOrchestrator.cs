@@ -619,7 +619,9 @@ public sealed class SchemaRegistrationOrchestrator(
 
     // Enrichment targets (properties tagged [IversonSummary]/[IversonKeywords]/[IversonExtracted])
     // are columns the enrichment pipeline writes to, not reads from. Five rules keep that
-    // invariant sound at registration time rather than failing obscurely at ingest.
+    // invariant sound at registration time rather than failing obscurely at ingest, and two more
+    // keep a target's FieldPermissions consistent with that: the pipeline is its only writer, and
+    // its text is derived from the source properties.
     private static void ValidateEnrichmentTargets(TypeDescriptor typeDesc, SchemaDescriptor descriptor)
     {
         var ownerField = descriptor.Authorization?.OwnerField;
@@ -691,6 +693,55 @@ public sealed class SchemaRegistrationOrchestrator(
                 throw new RpcException(new Status(StatusCode.InvalidArgument,
                     $"'{descriptor.TypeName}' declares enrichment targets but has no source text property " +
                     "for the enrichment pipeline to read from."));
+            }
+
+            // The two rules below use RowFieldAuthorizationEvaluator's own comparisons: a
+            // FieldPermission names a property case-insensitively, role names compare ordinally
+            // (the way the caller's `groups` claim is matched), and an empty role list means
+            // unrestricted, so only non-empty lists are acted on.
+            var fieldPermissions = descriptor.Authorization?.FieldPermissions ?? [];
+
+            // Write: the enrichment pipeline is a target's only writer, so a write restriction on
+            // a target could never be enforced against anyone.
+            var writeRestricted = fieldPermissions.FirstOrDefault(fp =>
+                fp.WritableRoles.Count > 0 && targetNames.Contains(fp.FieldName));
+            if (writeRestricted is not null)
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    $"Enrichment target '{writeRestricted.FieldName}' on '{descriptor.TypeName}' carries a " +
+                    "FieldPermission with writable_roles. The enrichment pipeline is the target's only writer, so " +
+                    "a write restriction on it cannot be enforced; remove writable_roles from that FieldPermission."));
+            }
+
+            // Read: a target's text is generated from the source text, so every caller who can read
+            // a target must be able to read every source. The evaluator excludes a field when ANY
+            // FieldPermission naming it excludes the caller, so each restricted source permission
+            // needs one target permission whose roles are a subset of its roles.
+            var sourceNames = typeDesc.Properties
+                .Where(p => p.IsEmbedding || p.IsChunk)
+                .Select(p => p.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var source in fieldPermissions.Where(fp =>
+                         fp.ReadableRoles.Count > 0 && sourceNames.Contains(fp.FieldName)))
+            {
+                foreach (var target in descriptor.EnrichmentTargets)
+                {
+                    var covered = fieldPermissions.Any(fp =>
+                        fp.ReadableRoles.Count > 0 &&
+                        string.Equals(fp.FieldName, target.ColumnName, StringComparison.OrdinalIgnoreCase) &&
+                        fp.ReadableRoles.All(role => source.ReadableRoles.Contains(role, StringComparer.Ordinal)));
+
+                    if (!covered)
+                    {
+                        throw new RpcException(new Status(StatusCode.InvalidArgument,
+                            $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' is generated from " +
+                            $"source property '{source.FieldName}', whose readable_roles are restricted, but the " +
+                            "target carries no FieldPermission whose readable_roles are a subset of them. Every " +
+                            "caller who can read an enrichment target must be able to read every source it is " +
+                            "generated from."));
+                    }
+                }
             }
         }
     }

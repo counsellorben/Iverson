@@ -1223,6 +1223,126 @@ public class SchemaRegistrationOrchestratorTests
             .Where(e => e.StatusCode == StatusCode.InvalidArgument);
     }
 
+    // ── Enrichment targets and FieldPermissions ────────────────────────────────
+    // Body is the chunk source and Summary the enrichment target in every case below; only the
+    // FieldPermissions vary.
+    private static TypeDescriptor EnrichedWidget(params Client.Contracts.FieldPermission[] fieldPermissions)
+    {
+        var td = new TypeDescriptor { TypeName = "Widget" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Body", ObjectType = ObjectType.String, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Summary", ObjectType = ObjectType.String, IsSummaryTarget = true });
+        td.Authorization = new Client.Contracts.AuthorizationRules();
+        foreach (var fieldPermission in fieldPermissions)
+            td.Authorization.FieldPermissions.Add(fieldPermission);
+        return td;
+    }
+
+    [Fact]
+    public async Task RegisterAsync_EnrichmentTargetWithWritableRoles_ThrowsInvalidArgument()
+    {
+        // "summary", not "Summary": a FieldPermission names a property case-insensitively, as the
+        // evaluator matches it.
+        var td = EnrichedWidget(
+            new Client.Contracts.FieldPermission { FieldName = "summary", WritableRoles = { "editors" } });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("cannot be enforced");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RegisterAsync_EnrichmentTargetMoreReadableThanItsSource_ThrowsInvalidArgument(
+        bool targetHasUnrestrictedPermission)
+    {
+        // A FieldPermission whose readable_roles list is empty restricts nothing, so it counts the
+        // same as no permission at all.
+        var permissions = new List<Client.Contracts.FieldPermission>
+        {
+            new Client.Contracts.FieldPermission { FieldName = "Body", ReadableRoles = { "editors" } }
+        };
+        if (targetHasUnrestrictedPermission)
+            permissions.Add(new Client.Contracts.FieldPermission { FieldName = "Summary" });
+        var td = EnrichedWidget(permissions.ToArray());
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("a subset of them");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_EnrichmentPermissionsWithEmptyRoleLists_Registers()
+    {
+        // Empty role lists restrict nothing: the source restricts only writes, and the target's
+        // permission restricts nothing at all, so every reader of the target can read the source.
+        var td = EnrichedWidget(
+            new Client.Contracts.FieldPermission { FieldName = "Body", WritableRoles = { "editors" } },
+            new Client.Contracts.FieldPermission { FieldName = "Summary" });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        _registry.Get("Widget").Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_EnrichmentTargetRoleDifferingFromTheSourceOnlyByCase_ThrowsInvalidArgument()
+    {
+        // Role names compare ordinally, as the evaluator compares them with the caller's groups:
+        // "Editors" and "editors" are different groups.
+        var td = EnrichedWidget(
+            new Client.Contracts.FieldPermission { FieldName = "Body", ReadableRoles = { "editors" } },
+            new Client.Contracts.FieldPermission { FieldName = "Summary", ReadableRoles = { "Editors" } });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("a subset of them");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_EnrichmentTargetCoveringOnlyOneOfTwoSourcePermissions_ThrowsInvalidArgument()
+    {
+        // Two permissions name Body, so a reader must pass both. The target is covered against the
+        // first only: a caller in "editors" but not "reviewers" could read the summary of a body
+        // they cannot read. "body" is lower-cased on purpose (names match case-insensitively).
+        var td = EnrichedWidget(
+            new Client.Contracts.FieldPermission { FieldName = "Body", ReadableRoles = { "editors" } },
+            new Client.Contracts.FieldPermission { FieldName = "body", ReadableRoles = { "reviewers" } },
+            new Client.Contracts.FieldPermission { FieldName = "Summary", ReadableRoles = { "editors" } });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("a subset of them");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_EnrichmentTargetNoMoreReadableThanItsSource_Registers()
+    {
+        // The target's readers are a subset of the source's. "summary" is lower-cased on purpose.
+        var td = EnrichedWidget(
+            new Client.Contracts.FieldPermission { FieldName = "Body", ReadableRoles = { "editors", "reviewers" } },
+            new Client.Contracts.FieldPermission { FieldName = "summary", ReadableRoles = { "editors" } });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        _registry.Get("Widget").Should().NotBeNull();
+    }
+
     [Fact]
     public async Task RegisterAsync_WithManyToOneForeignKeyMatchingNoColumn_ThrowsInvalidArgument()
     {
