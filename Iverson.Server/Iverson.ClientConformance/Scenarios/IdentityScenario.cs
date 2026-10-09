@@ -88,14 +88,16 @@ namespace Iverson.ClientConformance.Scenarios;
 /// payload carrying <c>TenantId</c> passes the <c>InvalidArgument</c> guard — which matches only the
 /// server-owned name — reaches the immutability check with a non-null attempted tenant, and is
 /// denied with <c>TenantImmutable</c> TODAY. What that branch is no longer is the thing THIS
-/// harness's negative leg exercises, and for a broader reason than the harness registering its
-/// types fresh: CSR round 9's Finding #5 mitigation narrows the existing-row read to the acting
-/// tenant unconditionally, for every schema, legacy or fresh. A wrong-tenant caller's update
-/// therefore finds no visible row whatever the target schema's registration history — so neither the
-/// tenant MISMATCH nor the immutability refusal fires on this leg any more, and what it observes
-/// instead is the NOT_FOUND answer described below. The drivers still send the acting user's own
-/// tenant in their user column, so this leg keeps sending a payload a conforming client would
-/// send.</para>
+/// harness's negative leg exercises, and for reasons broader than the harness registering its types
+/// fresh. The harness's identity type is owned by tenant A and is invisible to any other tenant, so
+/// the wrong-tenant caller's update is answered at the type lookup, before any key is read or any
+/// row is fetched: it never reaches the existing-row read, let alone either refusal. Even on a type
+/// no tenant owns, CSR round 9's Finding #5 mitigation narrows the existing-row read to the acting
+/// tenant unconditionally, for every schema, legacy or fresh, so a wrong-tenant update would find no
+/// visible row whatever the schema's registration history. Either way neither the tenant MISMATCH nor
+/// the immutability refusal fires on this leg, and what it observes is the NOT_FOUND answer
+/// described below. The drivers still send the acting user's own tenant in their user column, so
+/// this leg keeps sending a payload a conforming client would send.</para>
 ///
 /// <para><b>What a header-less caller and a wrong-tenant caller are answered.</b> The identity type
 /// is registered under tenant A's acting header, so tenant A owns it, and to any other caller it
