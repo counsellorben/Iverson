@@ -11,7 +11,8 @@ namespace Iverson.Api.Grpc;
 public sealed class TenantLifecycleGrpcService(
     ITenantRepository tenantRepository,
     IIdpAdminClient authentikAdminClient,
-    AuditLog auditLog) : Iverson.Client.Contracts.TenantLifecycleGrpcService.TenantLifecycleGrpcServiceBase
+    AuditLog auditLog,
+    ITenantStatusCache tenantStatusCache) : Iverson.Client.Contracts.TenantLifecycleGrpcService.TenantLifecycleGrpcServiceBase
 {
     public override async Task<Tenant> CreateTenant(CreateTenantRequest request, ServerCallContext context)
     {
@@ -78,6 +79,8 @@ public sealed class TenantLifecycleGrpcService(
                     StatusCode.NotFound,
                     $"Tenant '{request.TenantId}' not found."));
         await tenantRepository.UpdateStatusAsync(request.TenantId, "deleted");
+        // This process stops serving the tenant now rather than when its cached status expires.
+        tenantStatusCache.Invalidate(request.TenantId);
         await authentikAdminClient.DeactivateAllUsersInTenantAsync(request.TenantId);
         auditLog.AdminOperation(context.GetHttpContext().User, "DeleteTenant", request.TenantId);
         return new Empty();
@@ -91,7 +94,18 @@ public sealed class TenantLifecycleGrpcService(
         // move a deleted tenant, whose Authentik users DeleteTenant has already deactivated.
         if (existing.Status == "deleted")
             throw new RpcException(new Status(StatusCode.FailedPrecondition, $"Tenant '{tenantId}' is deleted."));
-        await tenantRepository.UpdateStatusAsync(tenantId, status);
+
+        // The check above answers the common case. The write itself refuses a deleted row too, so
+        // a DeleteTenant that lands between the read and the write is not overwritten.
+        if (!await tenantRepository.UpdateStatusUnlessDeletedAsync(tenantId, status))
+        {
+            if (await tenantRepository.GetAsync(tenantId) is null)
+                throw new RpcException(new Status(StatusCode.NotFound, $"Tenant '{tenantId}' not found."));
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, $"Tenant '{tenantId}' is deleted."));
+        }
+
+        // This process sees the new status now rather than when its cached status expires.
+        tenantStatusCache.Invalidate(tenantId);
         auditLog.AdminOperation(context.GetHttpContext().User, operation, tenantId);
         return ToProto(existing with { Status = status });
     }

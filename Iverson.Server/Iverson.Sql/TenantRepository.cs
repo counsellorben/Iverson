@@ -35,6 +35,11 @@ public sealed class TenantRepository(
             $"""UPDATE "{tableName}" SET "Status" = @Status WHERE "Id" = @Id""",
             new { Id = id, Status = status });
 
+    public async Task<bool> UpdateStatusUnlessDeletedAsync(string id, string status) =>
+        await sql.ExecuteAsync(
+            $"""UPDATE "{tableName}" SET "Status" = @Status WHERE "Id" = @Id AND "Status" <> 'deleted'""",
+            new { Id = id, Status = status }) > 0;
+
     public Task DeleteAsync(string id) =>
         sql.ExecuteAsync(
             $"""DELETE FROM "{tableName}" WHERE "Id" = @Id""",

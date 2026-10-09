@@ -118,4 +118,58 @@ public sealed class TenantRepositoryPostgresIntegrationTests(TenantRepositoryPos
         rows.Should().ContainSingle();
         rows[0].DisplayName.Should().Be("Gamma");
     }
+
+    [Theory]
+    [InlineData("active")]
+    [InlineData("suspended")]
+    public async Task UpdateStatusUnlessDeletedAsync_DeletedTenant_ChangesNothing(string status)
+    {
+        // Deletion is terminal. The guard is in the UPDATE itself, so a suspend or reactivate that
+        // races a delete cannot overwrite it.
+        var repo = await FreshRepositoryAsync();
+        await repo.InsertAsync("tenant-delta", "Delta", "active");
+        await repo.UpdateStatusAsync("tenant-delta", "deleted");
+
+        var changed = await repo.UpdateStatusUnlessDeletedAsync("tenant-delta", status);
+
+        changed.Should().BeFalse();
+        (await repo.GetAsync("tenant-delta"))!.Status.Should().Be("deleted");
+    }
+
+    [Theory]
+    [InlineData("active", "suspended")]
+    [InlineData("suspended", "active")]
+    public async Task UpdateStatusUnlessDeletedAsync_LiveTenant_ChangesTheStatus(string from, string to)
+    {
+        var repo = await FreshRepositoryAsync();
+        await repo.InsertAsync("tenant-epsilon", "Epsilon", from);
+
+        var changed = await repo.UpdateStatusUnlessDeletedAsync("tenant-epsilon", to);
+
+        changed.Should().BeTrue();
+        (await repo.GetAsync("tenant-epsilon"))!.Status.Should().Be(to);
+    }
+
+    [Fact]
+    public async Task UpdateStatusUnlessDeletedAsync_UnknownTenant_ChangesNothing()
+    {
+        var repo = await FreshRepositoryAsync();
+
+        var changed = await repo.UpdateStatusUnlessDeletedAsync("tenant-absent", "active");
+
+        changed.Should().BeFalse();
+        (await repo.GetAsync("tenant-absent")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task UpdateStatusAsync_StillMarksALiveTenantDeleted()
+    {
+        // DeleteTenant's own write is the unconditional one and is unchanged.
+        var repo = await FreshRepositoryAsync();
+        await repo.InsertAsync("tenant-zeta", "Zeta", "suspended");
+
+        await repo.UpdateStatusAsync("tenant-zeta", "deleted");
+
+        (await repo.GetAsync("tenant-zeta"))!.Status.Should().Be("deleted");
+    }
 }

@@ -35,6 +35,8 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
             "tenant_deleted"   => "deleted",
             _                  => (string?)null
         });
+
+        public void Invalidate(string tenantId) { }
     }
 
     private sealed class FakeJaegerHandler : HttpMessageHandler

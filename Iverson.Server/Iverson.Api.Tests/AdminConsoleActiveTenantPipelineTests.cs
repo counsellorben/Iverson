@@ -51,6 +51,8 @@ public class AdminConsoleActiveTenantPipelineTests : IClassFixture<AdminConsoleT
             "tenant_deleted"   => "deleted",
             _                  => (string?)null
         });
+
+        public void Invalidate(string tenantId) { }
     }
 
     private static string Token(string? tenantId)

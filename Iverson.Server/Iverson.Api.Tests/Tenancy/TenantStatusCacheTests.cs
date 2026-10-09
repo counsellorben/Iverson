@@ -84,4 +84,39 @@ public class TenantStatusCacheTests
         second.Should().BeNull();
         await _repository.Received(1).GetAsync("tenant-missing");
     }
+
+    [Fact]
+    public async Task Invalidate_NextGetStatusAsync_ReadsTheRepositoryAgain()
+    {
+        _repository
+            .GetAsync("tenant-d")
+            .Returns(
+                new TenantRow("tenant-d", "Tenant D", "active", DateTime.UtcNow),
+                new TenantRow("tenant-d", "Tenant D", "suspended", DateTime.UtcNow));
+
+        var before = await _sut.GetStatusAsync("tenant-d");
+        _sut.Invalidate("tenant-d");
+        var after = await _sut.GetStatusAsync("tenant-d");
+
+        before.Should().Be("active");
+        after.Should().Be("suspended");
+        await _repository.Received(2).GetAsync("tenant-d");
+    }
+
+    [Fact]
+    public async Task Invalidate_LeavesOtherTenantsCached()
+    {
+        _repository
+            .GetAsync(Arg.Any<string>())
+            .Returns(ci => new TenantRow(ci.Arg<string>(), "Tenant", "active", DateTime.UtcNow));
+
+        await _sut.GetStatusAsync("tenant-e");
+        await _sut.GetStatusAsync("tenant-f");
+        _sut.Invalidate("tenant-e");
+        await _sut.GetStatusAsync("tenant-e");
+        await _sut.GetStatusAsync("tenant-f");
+
+        await _repository.Received(2).GetAsync("tenant-e");
+        await _repository.Received(1).GetAsync("tenant-f");
+    }
 }

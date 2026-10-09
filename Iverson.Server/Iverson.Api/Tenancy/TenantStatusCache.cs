@@ -3,6 +3,15 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace Iverson.Api.Tenancy;
 
+/// <summary>
+/// Caches each tenant's status in this process for <see cref="Ttl"/>.
+/// <para>
+/// <c>TenantLifecycleGrpcService</c> calls <see cref="Invalidate"/> after every status write, so
+/// the replica that served the write sees a suspension, reactivation or deletion immediately.
+/// The cache is per process: every other replica keeps answering its cached status until the
+/// entry expires, up to <see cref="Ttl"/> after the write.
+/// </para>
+/// </summary>
 public sealed class TenantStatusCache(
     ITenantRepository tenantRepository,
     IMemoryCache cache) : ITenantStatusCache
@@ -25,4 +34,6 @@ public sealed class TenantStatusCache(
         cache.Set(KeyFor(tenantId), status, Ttl);
         return status;
     }
+
+    public void Invalidate(string tenantId) => cache.Remove(KeyFor(tenantId));
 }

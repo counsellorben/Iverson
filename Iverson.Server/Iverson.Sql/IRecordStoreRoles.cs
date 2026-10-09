@@ -235,6 +235,14 @@ public interface ITenantRepository
     Task<TenantRow?> GetAsync(string id);
     Task<IEnumerable<TenantRow>> ListAsync();
     Task UpdateStatusAsync(string id, string status);
+
+    /// <summary>
+    /// Sets the status of a tenant that is not <c>deleted</c>, in one statement, and reports
+    /// whether a row changed. False when no tenant has that id, or when its status is
+    /// <c>deleted</c>: deletion is terminal, so a write that races a delete cannot overwrite it.
+    /// </summary>
+    Task<bool> UpdateStatusUnlessDeletedAsync(string id, string status);
+
     Task DeleteAsync(string id);
 }
 

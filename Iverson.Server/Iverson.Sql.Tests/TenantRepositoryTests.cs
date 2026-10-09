@@ -79,6 +79,24 @@ public class TenantRepositoryTests
             Arg.Any<object?>());
     }
 
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(0, false)]
+    public async Task UpdateStatusUnlessDeletedAsync_GuardsTheWriteInSql_AndReportsWhetherARowChanged(int affected, bool expected)
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(affected);
+        var repo = new TenantRepository(TableName, sql);
+
+        var changed = await repo.UpdateStatusUnlessDeletedAsync("tenant-1", "active");
+
+        changed.Should().Be(expected);
+        await sql.Received(1).ExecuteAsync(
+            Arg.Is<string>(s => s.Contains($"UPDATE \"{TableName}\"") && s.Contains("SET \"Status\" = @Status")
+                                && s.Contains("WHERE \"Id\" = @Id AND \"Status\" <> 'deleted'")),
+            Arg.Any<object?>());
+    }
+
     [Fact]
     public async Task DeleteAsync_DeletesById()
     {

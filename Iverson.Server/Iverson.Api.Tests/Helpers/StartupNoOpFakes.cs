@@ -75,6 +75,7 @@ internal sealed class NoOpTenantRepository : ITenantRepository
     public Task<TenantRow?> GetAsync(string id) => Task.FromResult<TenantRow?>(null);
     public Task<IEnumerable<TenantRow>> ListAsync() => Task.FromResult(Enumerable.Empty<TenantRow>());
     public Task UpdateStatusAsync(string id, string status) => Task.CompletedTask;
+    public Task<bool> UpdateStatusUnlessDeletedAsync(string id, string status) => Task.FromResult(false);
     public Task DeleteAsync(string id) => Task.CompletedTask;
 }
 

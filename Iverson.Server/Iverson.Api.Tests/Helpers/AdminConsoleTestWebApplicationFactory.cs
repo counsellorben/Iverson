@@ -178,6 +178,8 @@ internal sealed class AdminConsoleTenantRepository : ITenantRepository
     public Task<IEnumerable<TenantRow>> ListAsync() =>
         Task.FromResult<IEnumerable<TenantRow>>(AdminConsoleTestWebApplicationFactory.Tenants);
     public Task UpdateStatusAsync(string id, string status) => Task.CompletedTask;
+    public Task<bool> UpdateStatusUnlessDeletedAsync(string id, string status) =>
+        Task.FromResult(AdminConsoleTestWebApplicationFactory.Tenants.Any(t => t.Id == id && t.Status != "deleted"));
     public Task DeleteAsync(string id) => Task.CompletedTask;
 }
 

@@ -17,6 +17,7 @@ public class TenantLifecycleGrpcServiceTests
     private readonly ITenantRepository _tenantRepository = Substitute.For<ITenantRepository>();
     private readonly IIdpAdminClient _authentikAdminClient = Substitute.For<IIdpAdminClient>();
     private readonly ILogger<AuditLog> _auditLogger = Substitute.For<ILogger<AuditLog>>();
+    private readonly ITenantStatusCache _tenantStatusCache = Substitute.For<ITenantStatusCache>();
     private readonly AuditLog _auditLog;
     private readonly Iverson.Api.Grpc.TenantLifecycleGrpcService _sut;
 
@@ -26,7 +27,16 @@ public class TenantLifecycleGrpcServiceTests
     public TenantLifecycleGrpcServiceTests()
     {
         _auditLog = new AuditLog(_auditLogger);
-        _sut = new Iverson.Api.Grpc.TenantLifecycleGrpcService(_tenantRepository, _authentikAdminClient, _auditLog);
+        _sut = new Iverson.Api.Grpc.TenantLifecycleGrpcService(
+            _tenantRepository, _authentikAdminClient, _auditLog, _tenantStatusCache);
+        // A tenant the read found and that is not deleted is updated, unless a test says otherwise.
+        _tenantRepository.UpdateStatusUnlessDeletedAsync(Arg.Any<string>(), Arg.Any<string>()).Returns(true);
+    }
+
+    private void AssertNoStatusWrite()
+    {
+        _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
+        _tenantRepository.DidNotReceive().UpdateStatusUnlessDeletedAsync(Arg.Any<string>(), Arg.Any<string>());
     }
 
     private static TestServerCallContext ContextWithUser() =>
@@ -194,7 +204,9 @@ public class TenantLifecycleGrpcServiceTests
 
         response.TenantId.Should().Be("acme");
         response.Status.Should().Be("suspended");
-        await _tenantRepository.Received(1).UpdateStatusAsync("acme", "suspended");
+        await _tenantRepository.Received(1).UpdateStatusUnlessDeletedAsync("acme", "suspended");
+        await _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
+        _tenantStatusCache.Received(1).Invalidate("acme");
     }
 
     [Fact]
@@ -207,8 +219,8 @@ public class TenantLifecycleGrpcServiceTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.NotFound);
-        await _tenantRepository.DidNotReceive()
-            .UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
+        AssertNoStatusWrite();
+        _tenantStatusCache.DidNotReceive().Invalidate(Arg.Any<string>());
     }
 
     [Fact]
@@ -220,7 +232,8 @@ public class TenantLifecycleGrpcServiceTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
-        await _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
+        AssertNoStatusWrite();
+        _tenantStatusCache.DidNotReceive().Invalidate(Arg.Any<string>());
     }
 
     // ── ReactivateTenant ─────────────────────────────────────────────────────
@@ -236,7 +249,9 @@ public class TenantLifecycleGrpcServiceTests
 
         response.TenantId.Should().Be("acme");
         response.Status.Should().Be("active");
-        await _tenantRepository.Received(1).UpdateStatusAsync("acme", "active");
+        await _tenantRepository.Received(1).UpdateStatusUnlessDeletedAsync("acme", "active");
+        await _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
+        _tenantStatusCache.Received(1).Invalidate("acme");
     }
 
     [Fact]
@@ -249,7 +264,8 @@ public class TenantLifecycleGrpcServiceTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.NotFound);
-        await _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
+        AssertNoStatusWrite();
+        _tenantStatusCache.DidNotReceive().Invalidate(Arg.Any<string>());
     }
 
     // CSR round 11 #21: deletion is terminal. Reactivating a deleted tenant would restore its data
@@ -263,7 +279,8 @@ public class TenantLifecycleGrpcServiceTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
-        await _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
+        AssertNoStatusWrite();
+        _tenantStatusCache.DidNotReceive().Invalidate(Arg.Any<string>());
     }
 
     // ── DeleteTenant ─────────────────────────────────────────────────────────
@@ -276,7 +293,9 @@ public class TenantLifecycleGrpcServiceTests
         await _sut.DeleteTenant(new DeleteTenantRequest { TenantId = "acme" }, ContextWithUser());
 
         await _tenantRepository.Received(1).UpdateStatusAsync("acme", "deleted");
+        await _tenantRepository.DidNotReceive().UpdateStatusUnlessDeletedAsync(Arg.Any<string>(), Arg.Any<string>());
         await _authentikAdminClient.Received(1).DeactivateAllUsersInTenantAsync("acme");
+        _tenantStatusCache.Received(1).Invalidate("acme");
     }
 
     [Fact]
@@ -290,5 +309,64 @@ public class TenantLifecycleGrpcServiceTests
         ex.Which.StatusCode.Should().Be(StatusCode.NotFound);
         await _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
         await _authentikAdminClient.DidNotReceive().DeactivateAllUsersInTenantAsync(Arg.Any<string>());
+        _tenantStatusCache.DidNotReceive().Invalidate(Arg.Any<string>());
+    }
+
+    // ── Status write racing a delete ─────────────────────────────────────────
+    // The read finds the tenant live, but the conditional write changes no row: a delete landed
+    // between them. The answer is the one the read-check gives for a deleted tenant, nothing is
+    // audited as done, and the cache is left alone.
+
+    public static TheoryData<string> StatusWrites() => new() { "SuspendTenant", "ReactivateTenant" };
+
+    private Task<Iverson.Client.Contracts.Tenant> SetStatus(string operation) => operation switch
+    {
+        "SuspendTenant"    => _sut.SuspendTenant(new SuspendTenantRequest { TenantId = "acme" }, ContextWithUser()),
+        "ReactivateTenant" => _sut.ReactivateTenant(new ReactivateTenantRequest { TenantId = "acme" }, ContextWithUser()),
+        _ => throw new ArgumentOutOfRangeException(nameof(operation))
+    };
+
+    private void AssertNoAdminOperationAudited() =>
+        _auditLogger.DidNotReceive().Log(
+            LogLevel.Information,
+            Arg.Any<EventId>(),
+            Arg.Any<object>(),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+
+    [Theory]
+    [MemberData(nameof(StatusWrites))]
+    public async Task StatusWrite_DeletedBetweenReadAndWrite_ThrowsFailedPrecondition(string operation)
+    {
+        _tenantRepository.GetAsync("acme").Returns(
+            Task.FromResult<TenantRow?>(ExistingTenant with { Status = "suspended" }),
+            Task.FromResult<TenantRow?>(ExistingTenant with { Status = "deleted" }));
+        _tenantRepository.UpdateStatusUnlessDeletedAsync("acme", Arg.Any<string>()).Returns(false);
+
+        var act = () => SetStatus(operation);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        ex.Which.Status.Detail.Should().Be("Tenant 'acme' is deleted.");
+        await _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
+        _tenantStatusCache.DidNotReceive().Invalidate(Arg.Any<string>());
+        AssertNoAdminOperationAudited();
+    }
+
+    [Theory]
+    [MemberData(nameof(StatusWrites))]
+    public async Task StatusWrite_RowRemovedBetweenReadAndWrite_ThrowsNotFound(string operation)
+    {
+        _tenantRepository.GetAsync("acme").Returns(
+            Task.FromResult<TenantRow?>(ExistingTenant),
+            Task.FromResult<TenantRow?>(null));
+        _tenantRepository.UpdateStatusUnlessDeletedAsync("acme", Arg.Any<string>()).Returns(false);
+
+        var act = () => SetStatus(operation);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.NotFound);
+        _tenantStatusCache.DidNotReceive().Invalidate(Arg.Any<string>());
+        AssertNoAdminOperationAudited();
     }
 }
