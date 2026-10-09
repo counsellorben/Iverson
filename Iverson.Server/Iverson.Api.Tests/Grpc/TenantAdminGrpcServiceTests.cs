@@ -179,9 +179,10 @@ public class TenantAdminGrpcServiceTests
     }
 
     // CSR round-10 #11: revoke first. If Authentik then fails, the user only has to log in again;
-    // the reverse order could leave a deactivated user's tokens valid.
+    // the reverse order could leave a deactivated user's tokens valid. CSR round 11 #13: revoke
+    // again afterwards, for a token refreshed between the first revoke and the deactivation.
     [Fact]
-    public async Task RemoveUser_RevokesTheUsersTokensBeforeDeactivatingInAuthentik()
+    public async Task RemoveUser_RevokesTheUsersTokensBeforeAndAfterDeactivatingInAuthentik()
     {
         _authentikAdminClient.ListUsersByTenantAsync("acme")
             .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
@@ -192,12 +193,13 @@ public class TenantAdminGrpcServiceTests
         {
             _tokenRevocations.RevokeAsync("uid-alice");
             _authentikAdminClient.DeactivateUserAsync("user-1");
+            _tokenRevocations.RevokeAsync("uid-alice");
         });
     }
 
-    // This process's revocation cache is invalidated so the revocation takes effect here at once.
+    // This process's revocation cache is invalidated after each revoke so it takes effect here at once.
     [Fact]
-    public async Task RemoveUser_InvalidatesTheRevocationCacheAfterRevoking()
+    public async Task RemoveUser_InvalidatesTheRevocationCacheAfterEachRevoke()
     {
         _authentikAdminClient.ListUsersByTenantAsync("acme")
             .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
@@ -206,6 +208,9 @@ public class TenantAdminGrpcServiceTests
 
         Received.InOrder(() =>
         {
+            _tokenRevocations.RevokeAsync("uid-alice");
+            _tokenRevocationCache.Invalidate();
+            _authentikAdminClient.DeactivateUserAsync("user-1");
             _tokenRevocations.RevokeAsync("uid-alice");
             _tokenRevocationCache.Invalidate();
         });

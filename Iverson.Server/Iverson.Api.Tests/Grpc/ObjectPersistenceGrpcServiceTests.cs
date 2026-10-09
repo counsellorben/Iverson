@@ -658,7 +658,7 @@ public class ObjectPersistenceGrpcServiceTests
     }
 
     [Fact]
-    public async Task Update_WithNonMatchingOwner_ThrowsPermissionDenied()
+    public async Task Update_WithNonMatchingOwner_AnswersNotFoundLikeAnAbsentRow()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var authorId = Guid.NewGuid().ToString();
@@ -678,7 +678,8 @@ public class ObjectPersistenceGrpcServiceTests
         var act = async () => await _sut.Update(request, TestServerCallContext.Create());
 
         await act.Should().ThrowAsync<RpcException>()
-            .Where(e => e.Status.StatusCode == StatusCode.PermissionDenied);
+            .Where(e => e.Status.StatusCode == StatusCode.NotFound
+                     && e.Status.Detail == $"'Author:{authorId}' not found.");
     }
 
     [Fact]

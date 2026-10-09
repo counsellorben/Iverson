@@ -43,9 +43,10 @@ internal static class AuthorizationFieldMasking
     /// answers NotFound. False for Post.
     /// </param>
     /// <param name="deniedMessage">
-    /// Exception message used both when the caller has no access at all and — for the
-    /// existing-row branch — when an ownership mismatch is detected. Callers pass the
-    /// create- or update-specific wording ("Not authorized to create/update this entity.").
+    /// Exception message used when the caller has no access at all and — for the existing-row
+    /// branch — on a tenant mismatch. Callers pass the create- or update-specific wording ("Not
+    /// authorized to create/update this entity."). An ownership mismatch is answered as an absent
+    /// row instead (CSR round 11 #14).
     /// </param>
     /// <returns>
     /// The canonical keys carried forward into <paramref name="payload"/> from the stored row: the
@@ -107,9 +108,13 @@ internal static class AuthorizationFieldMasking
         // key exists, or the status would tell them which keys exist. The existing-row read is
         // tenant-scoped, so a key that exists nowhere and a key owned by another tenant are both
         // null here and get the same answer. No audit entry, matching Mapping Get's not-found.
+        // One construction for both NotFound answers below, so another owner's row and an absent
+        // one cannot drift apart.
+        RpcException RowNotFound() =>
+            new(new Status(StatusCode.NotFound, $"'{schema.TypeName}:{resourceKey}' not found."));
+
         if (requireExistingRow && existingRowJson is null)
-            throw new RpcException(new Status(StatusCode.NotFound,
-                $"'{schema.TypeName}:{resourceKey}' not found."));
+            throw RowNotFound();
 
         Struct? existingStruct = null;
         if (existingRowJson is null)
@@ -133,18 +138,33 @@ internal static class AuthorizationFieldMasking
                 PreserveExactIntegers(existingStruct, existingRowJson);
 
             // Tenant match + immutability are unconditional — they apply even to bypass
-            // callers, unlike the ownership check below.
+            // callers, unlike the ownership check between them.
+            //
+            // Unreachable today (CSR round 9 Finding #5): both Update call sites now narrow
+            // their existing-row read to the acting tenant, so existingRowJson never carries a
+            // foreign tenant's value here. Kept as a fail-closed backstop for any future or
+            // out-of-band caller that passes a foreign-tenant existingRowJson — do not delete.
+            if (decision.TenantColumn is not null &&
+                StructFieldAccess.GetFieldString(existingStruct, decision.TenantColumn) != decision.TenantValue)
+            {
+                auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "TenantMismatch");
+                throw new RpcException(new Status(StatusCode.PermissionDenied, deniedMessage));
+            }
+
+            // Another owner's row gets exactly an absent row's answer (CSR round 11 #14), so the
+            // status cannot tell a caller that a key exists under someone else; the audit entry
+            // keeps the real reason. BEFORE tenant immutability: on a legacy schema whose tenant
+            // column is client-declared, a payload naming a different tenant would otherwise be
+            // refused as immutable for another owner's row and answered NotFound for an absent one.
+            if (decision.OwnershipRequired &&
+                StructFieldAccess.GetFieldString(existingStruct, decision.OwnerFieldName!) != decision.OwnerValue)
+            {
+                auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "OwnerMismatch");
+                throw RowNotFound();
+            }
+
             if (decision.TenantColumn is not null)
             {
-                // Unreachable today (CSR round 9 Finding #5): both Update call sites now narrow
-                // their existing-row read to the acting tenant, so existingRowJson never carries a
-                // foreign tenant's value here. Kept as a fail-closed backstop for any future or
-                // out-of-band caller that passes a foreign-tenant existingRowJson — do not delete.
-                if (StructFieldAccess.GetFieldString(existingStruct, decision.TenantColumn) != decision.TenantValue)
-                {
-                    auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "TenantMismatch");
-                    throw new RpcException(new Status(StatusCode.PermissionDenied, deniedMessage));
-                }
                 var attemptedTenant = StructFieldAccess.GetFieldString(payload, decision.TenantColumn);
                 if (attemptedTenant is not null && attemptedTenant != decision.TenantValue)
                 {
@@ -161,13 +181,6 @@ internal static class AuthorizationFieldMasking
                 // column to NULL, silently emptying every subsequent StarRocks read for that
                 // tenant. The create branch above already force-sets it for the same reason.
                 SetAuthoritativeField(payload, decision.TenantColumn, decision.TenantValue!);
-            }
-
-            if (decision.OwnershipRequired &&
-                StructFieldAccess.GetFieldString(existingStruct, decision.OwnerFieldName!) != decision.OwnerValue)
-            {
-                auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "OwnerMismatch");
-                throw new RpcException(new Status(StatusCode.PermissionDenied, deniedMessage));
             }
 
             // The owner field name for immutability purposes is sourced from the schema's

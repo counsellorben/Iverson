@@ -620,7 +620,7 @@ app.MapPost("/admin/reconcile/{typeName}", async (
     return Results.Ok(new { reconciledCount = count, typeName });
 }).WithName("Reconcile").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
-app.MapGet("/admin/dlq", async (IDlqRepository dlq, AuditLog audit, HttpContext httpContext) =>
+app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
 {
     var actingUserResult = await httpContext.AuthenticateAsync("ActingUser");
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
@@ -630,6 +630,13 @@ app.MapGet("/admin/dlq", async (IDlqRepository dlq, AuditLog audit, HttpContext 
         actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
         actingUserResult.Principal.FindFirst("scope")?.Value);
     var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
+
+    // CSR round 11 #21: an acting user whose tenant is not active is refused, as on the gRPC
+    // surfaces and the admin console. ActiveTenantEndpointFilter reads HttpContext.User, which here
+    // is the service token, so the acting principal is checked inline. No tenant_id passes.
+    if (!string.IsNullOrEmpty(actingTenantId)
+        && await tenantStatusCache.GetStatusAsync(actingTenantId) is null or "suspended" or "deleted")
+        return Results.Forbid();
 
     // An acting user with NO tenant_id claim must not fall through as though they matched every
     // untenanted row: `r.TenantId == actingTenantId` is `null == null` (true) for every row whose
@@ -643,7 +650,7 @@ app.MapGet("/admin/dlq", async (IDlqRepository dlq, AuditLog audit, HttpContext 
     return Results.Ok(visible);
 }).WithName("ListDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
-app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEventProducer events, AuditLog audit, HttpContext httpContext) =>
+app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEventProducer events, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
 {
     var actingUserResult = await httpContext.AuthenticateAsync("ActingUser");
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
@@ -653,6 +660,11 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
         actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
         actingUserResult.Principal.FindFirst("scope")?.Value);
     var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
+
+    // Same inactive-tenant refusal as /admin/dlq (see comment there), BEFORE the row fetch.
+    if (!string.IsNullOrEmpty(actingTenantId)
+        && await tenantStatusCache.GetStatusAsync(actingTenantId) is null or "suspended" or "deleted")
+        return Results.Forbid();
 
     // Same null-tenant_id-claim bypass as /admin/dlq (see comment there), checked BEFORE the row
     // fetch below: a caller who fails this first-level check must never learn — via 404 vs.
@@ -807,7 +819,10 @@ if (workloadRole == "api")
         using var response = await client.PostAsync("/v1/traces", content);
         ctx.Response.StatusCode = (int)response.StatusCode;
         await response.Content.CopyToAsync(ctx.Response.Body);
-    }).RequireAuthorization("ConsoleClient").RequireRateLimiting("traces")
+    }).RequireAuthorization("ConsoleClient")
+        // CSR round 11 #21: the console token's tenant must be active; no tenant_id passes.
+        .AddEndpointFilter<ActiveTenantEndpointFilter>()
+        .RequireRateLimiting("traces")
         .WithMetadata(new HttpMethodMetadata(new[] { "POST" }, acceptCorsPreflight: true));
 }
 

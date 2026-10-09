@@ -211,6 +211,18 @@ public class TenantLifecycleGrpcServiceTests
             .UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
     }
 
+    [Fact]
+    public async Task SuspendTenant_DeletedTenant_ThrowsFailedPreconditionAndDoesNotUpdate()
+    {
+        _tenantRepository.GetAsync("acme").Returns(Task.FromResult<TenantRow?>(ExistingTenant with { Status = "deleted" }));
+
+        var act = () => _sut.SuspendTenant(new SuspendTenantRequest { TenantId = "acme" }, ContextWithUser());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        await _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
+    }
+
     // ── ReactivateTenant ─────────────────────────────────────────────────────
 
     [Fact]
@@ -237,6 +249,20 @@ public class TenantLifecycleGrpcServiceTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.NotFound);
+        await _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
+    }
+
+    // CSR round 11 #21: deletion is terminal. Reactivating a deleted tenant would restore its data
+    // plane while its Authentik users stay deactivated.
+    [Fact]
+    public async Task ReactivateTenant_DeletedTenant_ThrowsFailedPreconditionAndDoesNotUpdate()
+    {
+        _tenantRepository.GetAsync("acme").Returns(Task.FromResult<TenantRow?>(ExistingTenant with { Status = "deleted" }));
+
+        var act = () => _sut.ReactivateTenant(new ReactivateTenantRequest { TenantId = "acme" }, ContextWithUser());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
         await _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
     }
 

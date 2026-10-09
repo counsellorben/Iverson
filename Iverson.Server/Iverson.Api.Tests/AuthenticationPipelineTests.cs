@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text.Json;
 using FluentAssertions;
+using Iverson.Api.Tenancy;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Events;
 using Iverson.Sql;
@@ -107,6 +108,16 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
     [Fact]
     public async Task ServiceTokenAndActingUserToken_GetAdminDlq_Succeeds()
     {
+        // tenant-a must be active: /admin/dlq refuses an acting user whose tenant is not (CSR
+        // round 11 #21), and this host's no-op tenant repository knows no tenant at all.
+        var tenantStatusCache = Substitute.For<ITenantStatusCache>();
+        tenantStatusCache.GetStatusAsync("tenant-a").Returns(Task.FromResult<string?>("active"));
+        var client = _factory.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<ITenantStatusCache>();
+            services.AddSingleton(tenantStatusCache);
+        })).CreateClient();
+
         var serviceToken = TestJwtFactory.CreateToken(
             "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
         var actingUserToken = TestJwtFactory.CreateToken(
@@ -117,7 +128,7 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", serviceToken);
         request.Headers.Add("x-acting-user-authorization", $"Bearer {actingUserToken}");
 
-        var response = await _client.SendAsync(request);
+        var response = await client.SendAsync(request);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }

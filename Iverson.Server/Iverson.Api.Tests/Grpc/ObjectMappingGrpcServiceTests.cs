@@ -1929,7 +1929,7 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
-    public async Task Update_WithNonMatchingOwner_ThrowsPermissionDenied()
+    public async Task Update_WithNonMatchingOwner_AnswersNotFoundLikeAnAbsentRow()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
@@ -1948,7 +1948,41 @@ public class ObjectMappingGrpcServiceTests
             TestServerCallContext.Create());
 
         var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+        ex.Which.StatusCode.Should().Be(StatusCode.NotFound);
+        ex.Which.Status.Detail.Should().Be($"'Author:{AuthorId}' not found.");
+    }
+
+    [Fact]
+    public async Task Update_WithNonMatchingOwnerAndADifferentTenantValue_OnALegacyTenantColumnSchema_AnswersLikeAnAbsentRow()
+    {
+        // OwnedAuthorSchema's tenant boundary is the client-declared "TenantId". A payload naming a
+        // different tenant used to reach the tenant-immutability refusal for another owner's row
+        // while an absent row got NotFound (CSR round 11 #14).
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+
+        MappingWriteRequest Request() => new()
+        {
+            TypeName = "Author",
+            Payload  = MakePayload(new()
+            {
+                ["Id"]       = Value.ForString(AuthorId),
+                ["Name"]     = Value.ForString("Alice Updated"),
+                ["TenantId"] = Value.ForString("other-tenant")
+            })
+        };
+
+        var absent = await FluentActions.Invoking(() => _sut.Update(Request(), TestServerCallContext.Create()))
+            .Should().ThrowAsync<RpcException>();
+
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
+            .Returns($$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""");
+        var anotherOwners = await FluentActions.Invoking(() => _sut.Update(Request(), TestServerCallContext.Create()))
+            .Should().ThrowAsync<RpcException>();
+
+        anotherOwners.Which.StatusCode.Should().Be(StatusCode.NotFound);
+        anotherOwners.Which.StatusCode.Should().Be(absent.Which.StatusCode);
+        anotherOwners.Which.Status.Detail.Should().Be(absent.Which.Status.Detail);
     }
 
     [Fact]

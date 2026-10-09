@@ -87,6 +87,10 @@ public sealed class TenantLifecycleGrpcService(
     {
         var existing = await tenantRepository.GetAsync(tenantId)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Tenant '{tenantId}' not found."));
+        // Deletion is terminal (CSR round 11 #21): neither SuspendTenant nor ReactivateTenant may
+        // move a deleted tenant, whose Authentik users DeleteTenant has already deactivated.
+        if (existing.Status == "deleted")
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, $"Tenant '{tenantId}' is deleted."));
         await tenantRepository.UpdateStatusAsync(tenantId, status);
         auditLog.AdminOperation(context.GetHttpContext().User, operation, tenantId);
         return ToProto(existing with { Status = status });

@@ -599,6 +599,48 @@ public sealed class AuthorizationFieldMaskingTests
         ex.StatusCode.Should().NotBe(StatusCode.InvalidArgument);
     }
 
+    // ── Owner mismatch answers like an absent row (CSR round 11 #14) ─────────────────────────
+
+    [Fact]
+    public void EnforceWriteAuthorization_OwnerMismatchOnALegacyTenantColumnSchema_AnswersLikeAnAbsentRow()
+    {
+        // Schema()'s tenant boundary is the client-declared "TenantId", so a payload may carry it,
+        // and a value other than the caller's tenant reaches the immutability check. Another
+        // owner's row must still get the answer an absent row gets, not PermissionDenied.
+        var decision = new AuthorizationDecision(
+            Denied: false, OwnershipRequired: true, OwnerFieldName: "OwnerId", OwnerValue: "user-1",
+            AllowedFields: null, TenantColumn: "TenantId", TenantValue: "acting-users-tenant");
+
+        RpcException Attempt(string? existingRowJson) =>
+            Assert.Throws<RpcException>(() => AuthorizationFieldMasking.EnforceWriteAuthorization(
+                EvaluatorReturning(decision),
+                new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "user-1")], "test")),
+                Schema(),
+                new Struct
+                {
+                    Fields =
+                    {
+                        ["Id"]       = Value.ForString("tag-1"),
+                        ["Name"]     = Value.ForString("new"),
+                        ["TenantId"] = Value.ForString("a-different-tenant"),
+                    }
+                },
+                AuthorizationAction.Write,
+                "Not authorized to update this entity.",
+                existingRowJson,
+                requireExistingRow: true,
+                new AuditLog(NullLogger<AuditLog>.Instance),
+                new PayloadSizeValidator()));
+
+        var anotherOwnersRow = Attempt("""{"Id":"tag-1","Name":"old","OwnerId":"someone-else","TenantId":"acting-users-tenant"}""");
+        var absentRow        = Attempt(existingRowJson: null);
+
+        anotherOwnersRow.StatusCode.Should().Be(StatusCode.NotFound);
+        anotherOwnersRow.Status.Detail.Should().Be("'BenchmarkTag:tag-1' not found.");
+        anotherOwnersRow.StatusCode.Should().Be(absentRow.StatusCode);
+        anotherOwnersRow.Status.Detail.Should().Be(absentRow.Status.Detail);
+    }
+
     // ── Restricted fields carried forward; the forced tenant column exempt (CSR round 10 #8) ──
     //
     // An update is a full-row replace in Postgres and StarRocks, so a field the caller may not

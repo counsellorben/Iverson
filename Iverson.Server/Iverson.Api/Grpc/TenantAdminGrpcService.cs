@@ -66,6 +66,10 @@ public sealed class TenantAdminGrpcService(
         await tokenRevocations.RevokeAsync(user.Uid);
         tokenRevocationCache.Invalidate();
         await authentikAdminClient.DeactivateUserAsync(request.UserId);
+        // Revoke again (CSR round 11 #13): a token refreshed between the first revoke and the
+        // deactivation has an iat after the first revocation. As in SetTenantAdmin's demotion.
+        await tokenRevocations.RevokeAsync(user.Uid);
+        tokenRevocationCache.Invalidate();
         auditLog.AdminOperation(context.GetHttpContext().User, "RemoveUser", request.UserId);
         return new Empty();
     }
