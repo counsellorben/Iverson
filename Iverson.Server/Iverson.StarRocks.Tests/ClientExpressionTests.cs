@@ -152,6 +152,25 @@ public class ClientExpressionTests
         Rejection(text, ExpressionContext.Derive)
             .Should().Be($"{Context}: {expected} is not allowed in an expression.");
 
+    [Theory]
+    [InlineData("1.", "number at position 0 has no digits after its decimal point")]
+    public void Lexer_RefusesAMalformedNumber(string text, string expected) =>
+        Rejection(text, ExpressionContext.Derive).Should().Be($"{Context}: {expected}.");
+
+    [Theory]
+    [InlineData("0.00000000000000000000000000000000001")]
+    [InlineData("1.00000000000000000000000000000001")]
+    public void Lexer_RefusesANumberWithMoreDigitsThanItCanHoldExactly(string literal) =>
+        Rejection(literal, ExpressionContext.Derive)
+            .Should().Be($"{Context}: number '{literal}' at position 0 is out of range.");
+
+    [Theory]
+    [InlineData("1234567890123456789012345678", "1234567890123456789012345678")]
+    [InlineData("0.1234567890123456789012345678", "0.1234567890123456789012345678")]
+    [InlineData("1.0000000000000000000000000000000", "1.0000000000000000000000000000")]
+    public void Lexer_AcceptsALongNumberThatIsExact(string literal, string expected) =>
+        Sql(literal, ExpressionContext.Derive).Should().Be(expected);
+
     [Fact]
     public void Lexer_RefusesANumberThatDoesNotFit_WithoutAnOverflowException()
     {
@@ -171,9 +190,24 @@ public class ClientExpressionTests
     [InlineData("Amount *", "unexpected end of expression at position 8")]
     [InlineData("(Amount", "unexpected end of expression at position 7")]
     [InlineData("ABS()", "unexpected ')' at position 4")]
-    [InlineData("1.", "number at position 0 has no digits after its decimal point")]
+    [InlineData("   ", "unexpected end of expression at position 3")]
     public void Parser_RefusesMalformedExpressions(string text, string expected) =>
         Rejection(text, ExpressionContext.Derive).Should().Be($"{Context}: {expected}.");
+
+    [Theory]
+    [InlineData("NULLIF(Amount)", "NULLIF", "2")]
+    [InlineData("NULLIF(Amount, 0, 1)", "NULLIF", "2")]
+    [InlineData("ABS(Amount, 1)", "ABS", "1")]
+    [InlineData("ROUND(Amount, 1, 2)", "ROUND", "1 to 2")]
+    public void Parser_RefusesAScalarFunctionCalledWithTheWrongNumberOfArguments(
+        string text, string function, string expected) =>
+        Rejection(text, ExpressionContext.Derive).Should().StartWith(
+            $"{Context}: function '{function}' at position 0 takes {expected} argument(s), not ");
+
+    [Fact]
+    public void Parser_RefusesWrongArityInsideAnAggregateArgument() =>
+        Rejection("COALESCE(ABS(Amount, 1), 0)", ExpressionContext.AggregateArgument)
+            .Should().Be($"{Context}: function 'ABS' at position 9 takes 1 argument(s), not 2.");
 
     [Theory]
     [InlineData("SUM(Amount)", "SUM", 0)]

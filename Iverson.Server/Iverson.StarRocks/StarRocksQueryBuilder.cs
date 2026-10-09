@@ -233,13 +233,14 @@ internal static class StarRocksQueryBuilder
         // set — only Avg/Sum/Min/Max/Count fall back to spec.Expression ?? Quote(col). Checking
         // only whichever one happened to be "primary" would let a caller smuggle a disallowed
         // Field past validation by also setting an innocuous, allowed Expression.
-        void CheckFieldAllowed(string field)
+        string CheckFieldAllowed(string field)
         {
             var resolved = ResolveStrict(field)
                 ?? throw new EngagementQueryTranslationException($"Unknown aggregation field '{field}'.");
             if (!IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName))
                 throw new EngagementQueryTranslationException(
                     $"Aggregation field '{field}' on '{typeName}' is not authorized for this caller.");
+            return resolved;
         }
 
         if (!string.IsNullOrEmpty(spec.Field))
@@ -255,11 +256,7 @@ internal static class StarRocksQueryBuilder
         {
             expressionSql = ClientExpression.ToSql(
                 spec.Expression, ExpressionContext.AggregateArgument,
-                field =>
-                {
-                    CheckFieldAllowed(field);
-                    return Quote(ResolveStrict(field)!);
-                },
+                field => Quote(CheckFieldAllowed(field)),
                 $"Aggregation '{spec.Name}' expression");
         }
 

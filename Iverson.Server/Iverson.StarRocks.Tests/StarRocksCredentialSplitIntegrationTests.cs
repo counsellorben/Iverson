@@ -27,8 +27,8 @@ public sealed class StarRocksCredentialSplitIntegrationTests
 
         // The grant set job-create-user.yaml issued to iverson_app before the split. The password matches
         // StarRocksSplitLogins'; CREATE USER IF NOT EXISTS leaves an existing user's password alone.
-        fx.Repository.ExecuteAsync("""
-            CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY 'test_pw';
+        fx.Repository.ExecuteAsync($"""
+            CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY '{StarRocksSplitLogins.AppPassword}';
             CREATE DATABASE IF NOT EXISTS iverson;
             GRANT SELECT, INSERT, UPDATE, DELETE ON iverson.* TO 'iverson_app'@'%';
             GRANT CREATE TABLE, DROP, ALTER ON DATABASE iverson TO 'iverson_app'@'%';
@@ -138,13 +138,14 @@ public sealed class StarRocksCredentialSplitIntegrationTests
     [Fact]
     public async Task AppLogin_CannotReadTheSharedDatabase()
     {
+        var table = UniqueTable();
         await _fx.Repository.ExecuteAsync(
-            StarRocksSchemaManager.BuildCreateTableDdl(ProbeSchema("split_probe"), "`iverson`.`split_probe`"));
+            StarRocksSchemaManager.BuildCreateTableDdl(ProbeSchema(table), $"`iverson`.`{table}`"));
         await _fx.Repository.ExecuteAsync(
-            "INSERT INTO `iverson`.`split_probe` VALUES ('10000000-0000-0000-0000-000000000001', 'Shared')");
+            $"INSERT INTO `iverson`.`{table}` VALUES ('10000000-0000-0000-0000-000000000001', 'Shared')");
         await using var conn = await OpenAppConnectionAsync();
 
-        var act = () => conn.QueryAsync("SELECT * FROM `iverson`.`split_probe`");
+        var act = () => conn.QueryAsync($"SELECT * FROM `iverson`.`{table}`");
 
         await act.Should().ThrowAsync<MySqlException>().WithMessage("*Access denied*");
     }

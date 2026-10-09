@@ -112,7 +112,24 @@ internal static class SqlExpressionLexer
             throw new EngagementQueryTranslationException(
                 $"{errorContext}: number '{spelling}' at position {start} is out of range.");
 
+        // TryParse rounds a literal with more digits than decimal holds. A value that does not fit
+        // is refused, so the literal and the parsed value must agree once insignificant zeros are dropped.
+        if (WithoutInsignificantZeros(spelling) != WithoutInsignificantZeros(value.ToString(CultureInfo.InvariantCulture)))
+            throw new EngagementQueryTranslationException(
+                $"{errorContext}: number '{spelling}' at position {start} is out of range.");
+
         return new SqlToken(SqlTokenKind.Number, spelling, start, value);
+    }
+
+    // Drops leading zeros of the integer part and trailing zeros of the fraction: "007" -> "7",
+    // "1.500" -> "1.5", "0.0" -> "0".
+    private static string WithoutInsignificantZeros(string number)
+    {
+        var dot = number.IndexOf('.');
+        var whole = (dot < 0 ? number : number[..dot]).TrimStart('0');
+        var fraction = dot < 0 ? "" : number[(dot + 1)..].TrimEnd('0');
+        if (whole.Length == 0) whole = "0";
+        return fraction.Length == 0 ? whole : $"{whole}.{fraction}";
     }
 
     // Printable ASCII is shown as itself; control characters and non-ASCII by code point.

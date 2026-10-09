@@ -634,12 +634,12 @@ internal static class StarRocksPipelineBuilder
                 }
             }
 
+            var freshTable = isFreshType ? TenantIdentifier.Qualify(tenantDatabase, joinedSchema!.TableName) : null;
             var target = !isFreshType
                 ? $"`{src.Name}`"
                 : sourcePredicates.Count > 0
-                    ? $"(SELECT * FROM {TenantIdentifier.Qualify(tenantDatabase, joinedSchema!.TableName)} " +
-                      $"WHERE {string.Join(" AND ", sourcePredicates)}) AS `{src.Name}`"
-                    : $"{TenantIdentifier.Qualify(tenantDatabase, joinedSchema!.TableName)} AS `{src.Name}`";
+                    ? $"(SELECT * FROM {freshTable} WHERE {string.Join(" AND ", sourcePredicates)}) AS `{src.Name}`"
+                    : $"{freshTable} AS `{src.Name}`";
 
             sb.Append($" {kind} JOIN {target} ON {string.Join(" AND ", conds)}");
             joinIdx++;

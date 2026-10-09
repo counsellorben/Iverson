@@ -191,14 +191,19 @@ public sealed class PipelineIntegrationTests
     private static EngagementQuerySchema OwnedAuthorSchema() =>
         new("PipeOwnedAuthor", "pipe_owned_authors", "Id", ["Name"]);
 
+    private async Task DropOwnedAsync()
+    {
+        await _fx.Repository.ExecuteAsync("DROP TABLE IF EXISTS pipe_owned_articles");
+        await _fx.Repository.ExecuteAsync("DROP TABLE IF EXISTS pipe_owned_authors");
+    }
+
     private async Task SeedOwnedAsync()
     {
         // Both tables carry OwnerId and TenantId columns that the schemas above leave out of their
         // column lists: the builder takes the owner and tenant predicates from the
         // AuthorizationConstraint, not from the schema. Article 1 and authors a1 and a4 belong to
         // the caller (alice, t1). a2 belongs to another owner, and a3 to another tenant.
-        await _fx.Repository.ExecuteAsync("DROP TABLE IF EXISTS pipe_owned_articles");
-        await _fx.Repository.ExecuteAsync("DROP TABLE IF EXISTS pipe_owned_authors");
+        await DropOwnedAsync();
         await _fx.Repository.ExecuteAsync("""
             CREATE TABLE pipe_owned_articles (
                 Id VARCHAR(64) NOT NULL, AuthorId VARCHAR(64), OwnerId VARCHAR(64), TenantId VARCHAR(64)
@@ -229,33 +234,39 @@ public sealed class PipelineIntegrationTests
     public async Task OuterJoinToRegisteredType_ReturnsOnlyTheCallersJoinedRows(JoinKind kind)
     {
         await SeedOwnedAsync();
-
-        var step = new PipelineStep { Name = "named" };
-        var join = new PipelineJoin { Source = "PipeOwnedAuthor", Kind = kind };
-        join.On.Add(new JoinCondition { Left = "AuthorId", Right = "Id" });
-        step.Joins.Add(join);
-        step.Select.Add(new SelectItem { Column = "Id", Alias = "article_id" });
-        step.Select.Add(new SelectItem { Source = "PipeOwnedAuthor", Column = "Id", Alias = "author_id" });
-
-        var request = new PipelineRequest { TypeName = "PipeOwnedArticle" };
-        request.Steps.Add(step);
-
-        var authz = new Dictionary<string, AuthorizationConstraint>(StringComparer.OrdinalIgnoreCase)
+        try
         {
-            ["PipeOwnedArticle"] = new(null, "OwnerId", "alice", "TenantId", "t1"),
-            ["PipeOwnedAuthor"]  = new(null, "OwnerId", "alice", "TenantId", "t1")
-        };
+            var step = new PipelineStep { Name = "named" };
+            var join = new PipelineJoin { Source = "PipeOwnedAuthor", Kind = kind };
+            join.On.Add(new JoinCondition { Left = "AuthorId", Right = "Id" });
+            step.Joins.Add(join);
+            step.Select.Add(new SelectItem { Column = "Id", Alias = "article_id" });
+            step.Select.Add(new SelectItem { Source = "PipeOwnedAuthor", Column = "Id", Alias = "author_id" });
 
-        // Built and run directly, not through PipelineAsync. PipelineAsync would route the query to
-        // a per-tenant database under a tenant role. This fixture connects as root, so the
-        // generated predicates are the only thing separating the caller's rows from the others.
-        var (sql, param, _) = StarRocksPipelineBuilder.Build(
-            OwnedArticleSchema(), request,
-            TestSchemaRegistry.BuildRegistry(OwnedArticleSchema(), OwnedAuthorSchema()), authz);
-        var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
+            var request = new PipelineRequest { TypeName = "PipeOwnedArticle" };
+            request.Steps.Add(step);
 
-        // a1 matches the caller's article. a4 is the caller's own author with no article, and an
-        // outer join still returns it. a2 (another owner) and a3 (another tenant) must not appear.
-        ((IEnumerable<dynamic>)rows).Select(r => (string)r.author_id).Should().BeEquivalentTo(["a1", "a4"]);
+            var authz = new Dictionary<string, AuthorizationConstraint>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["PipeOwnedArticle"] = new(null, "OwnerId", "alice", "TenantId", "t1"),
+                ["PipeOwnedAuthor"]  = new(null, "OwnerId", "alice", "TenantId", "t1")
+            };
+
+            // Built and run directly, not through PipelineAsync. PipelineAsync would route the query to
+            // a per-tenant database under a tenant role. This fixture connects as root, so the
+            // generated predicates are the only thing separating the caller's rows from the others.
+            var (sql, param, _) = StarRocksPipelineBuilder.Build(
+                OwnedArticleSchema(), request,
+                TestSchemaRegistry.BuildRegistry(OwnedArticleSchema(), OwnedAuthorSchema()), authz);
+            var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
+
+            // a1 matches the caller's article. a4 is the caller's own author with no article, and an
+            // outer join still returns it. a2 (another owner) and a3 (another tenant) must not appear.
+            ((IEnumerable<dynamic>)rows).Select(r => (string)r.author_id).Should().BeEquivalentTo(["a1", "a4"]);
+        }
+        finally
+        {
+            await DropOwnedAsync();
+        }
     }
 }

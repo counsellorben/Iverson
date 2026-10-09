@@ -51,9 +51,14 @@ internal sealed class SqlExpressionParser
 {
     internal const int MaxDepth = 32;
 
-    private static readonly HashSet<string> ScalarFunctions = new(StringComparer.OrdinalIgnoreCase)
+    // Argument counts StarRocks accepts, as (min, max); max is int.MaxValue when unbounded.
+    // The keys are the scalar allow-list.
+    private static readonly Dictionary<string, (int Min, int Max)> ScalarFunctions = new(StringComparer.OrdinalIgnoreCase)
     {
-        "COALESCE", "NULLIF", "ROUND", "ABS"
+        ["COALESCE"] = (1, int.MaxValue),
+        ["NULLIF"] = (2, 2),
+        ["ROUND"] = (1, 2),
+        ["ABS"] = (1, 1),
     };
 
     private static readonly HashSet<string> AggregateFunctions = new(StringComparer.OrdinalIgnoreCase)
@@ -176,14 +181,16 @@ internal sealed class SqlExpressionParser
         var name = Current;
         string function;
         bool isAggregate;
+        var arity = (Min: 0, Max: int.MaxValue);
         if (AggregateFunctions.TryGetValue(name.Text, out var aggregate))
         {
             function = aggregate;
             isAggregate = true;
         }
-        else if (ScalarFunctions.TryGetValue(name.Text, out var scalar))
+        else if (ScalarFunctions.TryGetValue(name.Text, out var scalarArity))
         {
-            function = scalar;
+            function = name.Text.ToUpperInvariant(); // the allow-list's keys are upper case
+            arity = scalarArity;
             isAggregate = false;
         }
         else
@@ -216,6 +223,14 @@ internal sealed class SqlExpressionParser
             }
         }
         Expect(SqlTokenKind.RParen);
+
+        if (!isAggregate && (arguments.Count < arity.Min || arguments.Count > arity.Max))
+        {
+            var expected = arity.Max == int.MaxValue ? $"at least {arity.Min}"
+                : arity.Min == arity.Max ? $"{arity.Min}" : $"{arity.Min} to {arity.Max}";
+            throw Invalid($"function '{function}' at position {name.Position} takes {expected} " +
+                          $"argument(s), not {arguments.Count}");
+        }
 
         WindowNode? over = null;
         if (isAggregate)

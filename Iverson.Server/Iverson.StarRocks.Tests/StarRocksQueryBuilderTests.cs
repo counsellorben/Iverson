@@ -3745,7 +3745,7 @@ public class StarRocksQueryBuilderTests
         var authz = new Dictionary<string, AuthorizationConstraint>
         {
             ["Author"]  = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1", TenantColumn: "TenantId", TenantValue: "tenant-1"),
-            ["Article"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1", TenantColumn: "TenantId", TenantValue: "tenant-1")
+            ["Article"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-2", TenantColumn: "TenantId", TenantValue: "tenant-2")
         };
 
         var (sql, param) = StarRocksQueryBuilder.BuildSearch(
@@ -3760,5 +3760,8 @@ public class StarRocksQueryBuilderTests
         var lookup = (SqlMapper.IParameterLookup)param;
         lookup["__ownerVal"].Should().Be("user-1");
         lookup["__tenantVal"].Should().Be("tenant-1");
+        // The joined side binds its own constraint's values, not the primary's.
+        lookup["__owner1"].Should().Be("user-2");
+        lookup["__tenant1"].Should().Be("tenant-2");
     }
 }

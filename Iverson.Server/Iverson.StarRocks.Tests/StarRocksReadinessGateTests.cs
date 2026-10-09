@@ -99,12 +99,19 @@ public class StarRocksReadinessGateTests
                 await Task.Delay(10);
             HasFaulted(wait).Should().BeTrue("the gate gives up after its timeout");
 
-            for (var i = 0; i < 3; i++)
+            // The task reports itself faulted before the thread completing it has let go of it, and the
+            // gate's own continuation may still be running. So it can be unreachable only a moment later:
+            // collect repeatedly, within a bound, instead of once.
+            var collectDeadline = DateTime.UtcNow.AddSeconds(5);
+            while (!IsCollected(wait) && DateTime.UtcNow < collectDeadline)
             {
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
+                await Task.Delay(10);
             }
             IsCollected(wait).Should().BeTrue("otherwise this test proves nothing about observation");
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
 
             unobserved.Should().Be(0);
         }
