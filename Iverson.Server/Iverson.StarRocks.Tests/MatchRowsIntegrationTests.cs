@@ -23,18 +23,12 @@ public sealed class MatchRowsIntegrationTests
     {
         _fx = fx;
         _rootRepo = fx.Repository;
-        // Same grants and connection-string shape as TenantIsolationIntegrationTests (see its comments).
-        fx.Repository.ExecuteAsync("""
-            CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY 'test_pw';
-            GRANT user_admin TO 'iverson_app'@'%';
-            GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
-            GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_app'@'%';
-            """).GetAwaiter().GetResult();
-        _appConnectionString = new MySqlConnectionStringBuilder(fx.ConnectionString)
-        {
-            UserID = "iverson_app", Password = "test_pw", Database = ""
-        }.ToString();
-        _appRepo = new EngagementRepository(_appConnectionString, NullLogger<EngagementRepository>.Instance);
+        // The two production logins, set up by the same helper as TenantIsolationIntegrationTests (see
+        // StarRocksSplitLogins). The pooled repositories below reuse the query login only.
+        (_appConnectionString, var provisionerConnectionString) =
+            StarRocksSplitLogins.EnsureAsync(fx).GetAwaiter().GetResult();
+        _appRepo = new EngagementRepository(_appConnectionString, NullLogger<EngagementRepository>.Instance,
+            provisionerConnectionString: provisionerConnectionString);
     }
 
     private static readonly (string Id, string UserId, string Kind, string At, double? Score, string OwnerId)[] Events =

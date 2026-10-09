@@ -2,7 +2,6 @@ using System.Text.Json;
 using FluentAssertions;
 using Iverson.Client.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
-using MySqlConnector;
 using Xunit;
 
 namespace Iverson.StarRocks.Tests;
@@ -24,51 +23,15 @@ public sealed class TenantIsolationIntegrationTests
     {
         _rootRepo = fx.Repository;
 
-        // fx.Repository connects as root — reuse it to create iverson_app + user_admin, mirroring
-        // job-create-user.yaml. Idempotent (IF NOT EXISTS / re-GRANT), safe if xUnit re-runs this
-        // constructor per test in the class.
-        //
-        // OPERATE ON SYSTEM is granted directly to the user, not via a role: StarRocks does not
-        // auto-activate granted roles on a fresh connection (a new session's active role is NONE
-        // until an explicit SET ROLE), but EngagementRepository's cold-start readiness gate calls
-        // SHOW BACKENDS on every new EngagementRepository instance before any role has been
-        // activated — exactly the gap job-create-user.yaml's direct (non-role) grant closes in
-        // production. Discovered empirically: the brief's illustrative user_admin-only grant left
-        // every _appRepo operation failing readiness with "Access denied ... OPERATE OR NODE
-        // privilege(s) on SYSTEM ... Current role(s): NONE".
-        // CREATE DATABASE ON CATALOG default_catalog is also granted directly (not via a role):
-        // StarRocks's built-in user_admin role covers user/role/grant management but not schema
-        // DDL — EnsureTenantProvisionedAsync's `CREATE DATABASE IF NOT EXISTS` (run under SET
-        // ROLE user_admin) fails with "Access denied ... CREATE DATABASE privilege(s) on CATALOG
-        // default_catalog ... Current role(s): [user_admin]" without it. job-create-user.yaml
-        // grants this to production's iverson_app for the identical reason (EnsureDatabaseAsync).
-        fx.Repository.ExecuteAsync("""
-            CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY 'test_pw';
-            GRANT user_admin TO 'iverson_app'@'%';
-            GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
-            GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_app'@'%';
-            """).GetAwaiter().GetResult();
+        // The two production logins (CSR round 11 §3), set up exactly as job-create-user.yaml sets them
+        // up. StarRocksSplitLogins explains the grants, why they are safe to re-run in any class order,
+        // and why the connection strings name no default database. _appRepo queries as iverson_app and
+        // provisions as iverson_provisioner, as the worker does.
+        var (appConnectionString, provisionerConnectionString) =
+            StarRocksSplitLogins.EnsureAsync(fx).GetAwaiter().GetResult();
 
-        // Database deliberately cleared, not inherited from fx.ConnectionString: this test's
-        // iverson_app only holds the user_admin ROLE, and StarRocks never auto-activates a
-        // granted role on a fresh connection (active role is NONE until an explicit SET ROLE) —
-        // unlike production, where job-create-user.yaml also grants direct, non-role privileges
-        // on the shared database, letting a connection select it as its default at handshake
-        // time. Without a matching direct grant here, setting Database=iverson_test on this
-        // connection string made every single connection attempt fail immediately with
-        // MySqlEndOfStreamException ("incomplete response") during the handshake — confirmed by
-        // isolated repro, not resource contention. Every real operation under test below is
-        // either fully qualified (`db`.`table`, via TenantIdentifier.Qualify) or runs under an
-        // explicit SET ROLE after connecting, so the connection itself never needs a default
-        // database to succeed.
-        var appConnectionString = new MySqlConnectionStringBuilder(fx.ConnectionString)
-        {
-            UserID = "iverson_app",
-            Password = "test_pw",
-            Database = ""
-        }.ToString();
-
-        _appRepo = new EngagementRepository(appConnectionString, NullLogger<EngagementRepository>.Instance);
+        _appRepo = new EngagementRepository(appConnectionString, NullLogger<EngagementRepository>.Instance,
+            provisionerConnectionString: provisionerConnectionString);
     }
 
     private static EngagementTableSchema ProbeSchema(string tableName) =>
@@ -321,7 +284,7 @@ public sealed class TenantIsolationIntegrationTests
         // return no rows instead of actually executing against the shared/default database.
         //
         // Uses _rootRepo, not _appRepo: _appRepo's connection string deliberately has no default
-        // database (see constructor remarks), so it cannot run the unqualified DDL/DML this
+        // database (see StarRocksSplitLogins), so it cannot run the unqualified DDL/DML this
         // scenario needs. _rootRepo (root, default database = iverson_test, set up by
         // StarRocksContainerFixture) exercises the exact same EngagementRepository.SearchAsync
         // code path and authz-null branch — that shared code path, not the calling user's

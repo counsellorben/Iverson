@@ -10,7 +10,8 @@ public static class ServiceCollectionExtensions
         string connectionString,
         EngagementResilienceOptions? resilienceOptions = null,
         bool engagementEnabled = true,
-        EngagementQueryLimitOptions? queryLimitOptions = null)
+        EngagementQueryLimitOptions? queryLimitOptions = null,
+        string? provisionerConnectionString = null)
     {
         var resolvedQueryLimits = queryLimitOptions ?? EngagementQueryLimitOptions.Default;
 
@@ -24,7 +25,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<EngagementRepository>>();
-            return new EngagementRepository(connectionString, logger, resilienceOptions, resolvedQueryLimits);
+            return new EngagementRepository(
+                connectionString, logger, resilienceOptions, resolvedQueryLimits, provisionerConnectionString);
         });
         services.AddSingleton<IEngagementStoreQueryExecutor>(sp => sp.GetRequiredService<EngagementRepository>());
         services.AddSingleton<IEngagementStoreEntityStore>(sp => sp.GetRequiredService<EngagementRepository>());

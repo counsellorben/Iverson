@@ -16,7 +16,8 @@ public sealed class EngagementRepository(
     string connectionString,
     ILogger<EngagementRepository> logger,
     EngagementResilienceOptions? resilienceOptions = null,
-    EngagementQueryLimitOptions? queryLimitOptions = null)
+    EngagementQueryLimitOptions? queryLimitOptions = null,
+    string? provisionerConnectionString = null)
     : IEngagementStoreQueryExecutor, IEngagementStoreEntityStore, IEngagementStoreSearchService
 {
     private readonly EngagementResilienceOptions _resilience = resilienceOptions ?? EngagementResilienceOptions.Default;
@@ -31,6 +32,10 @@ public sealed class EngagementRepository(
             (resilienceOptions ?? EngagementResilienceOptions.Default).CircuitBreaker, logger);
 
     private MySqlConnection CreateConnection() => new(connectionString);
+
+    // CSR round 11 §3: tenant provisioning's own login, which only the worker is given. Used by
+    // EnsureTenantProvisionedAsync and nothing else; every query runs on CreateConnection's login.
+    private MySqlConnection CreateProvisionerConnection() => new(provisionerConnectionString);
 
     // ── Resilience chokepoint ───────────────────────────────────────────────────
     // Every real StarRocks operation routes through here: first the one-time cold-start
@@ -105,6 +110,29 @@ public sealed class EngagementRepository(
         }
 
         return alive ? null : new EngagementNotReadyException("StarRocks backend unavailable", ex);
+    }
+
+    /// <summary>
+    /// Opens the provisioning connection (CSR round 11 §3). On a cluster's first upgrade to the split
+    /// logins, the post-upgrade hook that creates <c>iverson_provisioner</c> runs after the upgraded worker
+    /// is already serving, so StarRocks refuses the login as AccessDenied until it does. That refusal
+    /// becomes an <see cref="EngagementNotReadyException"/>, which the projection consumers treat as
+    /// transient: they halt and redeliver instead of dead-lettering. The readiness checker treats the
+    /// same not-yet-created case the same way (<see cref="EngagementHealthChecker"/>). AccessDenied is
+    /// wire-level ambiguous, so a wrong password stalls the consumer the same way (spec, Known issues).
+    /// Every other failure propagates unchanged.
+    /// </summary>
+    internal static async Task OpenProvisionerConnectionAsync(Func<Task> open)
+    {
+        try
+        {
+            await open().ConfigureAwait(false);
+        }
+        catch (MySqlException ex) when (ex.ErrorCode == MySqlErrorCode.AccessDenied)
+        {
+            throw new EngagementNotReadyException(
+                "StarRocks refused the provisioner login; it may not have been created yet.", ex);
+        }
     }
 
     public async Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null)
@@ -465,6 +493,13 @@ public sealed class EngagementRepository(
     {
         if (!TenantIdentifier.IsValid(tenantId)) return;
 
+        // CSR round 11 §3: provisioning runs only under the provisioner login. An instance built without
+        // one (the api role, which never provisions) refuses outright rather than falling back to the
+        // query login, which holds no user_admin and no CREATE DATABASE.
+        if (provisionerConnectionString is null)
+            throw new InvalidOperationException(
+                "Tenant provisioning needs the StarRocks provisioner connection string, and none was configured.");
+
         var dbName   = TenantIdentifier.DatabaseName(tenantId);
         var roleName = TenantIdentifier.RoleName(tenantId);
         var qualifiedTable = TenantIdentifier.Qualify(dbName, schema.TableName);
@@ -476,8 +511,8 @@ public sealed class EngagementRepository(
 
         await RunAsync(async () =>
         {
-            await using var conn = CreateConnection();
-            await conn.OpenAsync();
+            await using var conn = CreateProvisionerConnection();
+            await OpenProvisionerConnectionAsync(() => conn.OpenAsync());
             await conn.ExecuteAsync("SET ROLE user_admin");
             try
             {
@@ -486,6 +521,15 @@ public sealed class EngagementRepository(
                 await conn.ExecuteAsync($"GRANT SELECT, INSERT, UPDATE, DELETE ON `{dbName}`.* TO ROLE `{roleName}`");
                 await conn.ExecuteAsync($"GRANT CREATE TABLE ON DATABASE `{dbName}` TO ROLE `{roleName}`");
                 await conn.ExecuteAsync($"GRANT `{roleName}` TO USER 'iverson_app'@'%'");
+
+                // CSR round 11 §3: the provisioner grants itself what the next steps need. Re-granting either
+                // is a no-op.
+                // - The tenant role, so `SET ROLE user_admin, <role>` below also works for a tenant whose role
+                //   was created before the provisioner login existed.
+                // - ALTER on the tenant's tables, for WidenLargeTextColumnsAsync's MODIFY COLUMN. Neither
+                //   user_admin nor the tenant role carries ALTER. A direct grant is active whatever role is.
+                await conn.ExecuteAsync($"GRANT `{roleName}` TO USER 'iverson_provisioner'@'%'");
+                await conn.ExecuteAsync($"GRANT ALTER ON ALL TABLES IN DATABASE `{dbName}` TO USER 'iverson_provisioner'@'%'");
 
                 // user_admin alone has no CREATE TABLE privilege on any database, including one it
                 // just created — it's StarRocks's built-in user/role/grant-management role, not a

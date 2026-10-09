@@ -66,4 +66,29 @@ public class ServiceCollectionExtensionsTests
 
         healthCheck.Should().BeOfType<DisabledEngagementStoreHealthCheck>();
     }
+
+    // CSR round 11 §3: the provisioner connection string reaches the repository. Without it,
+    // EnsureTenantProvisionedAsync refuses with InvalidOperationException before connecting
+    // (EngagementRepositoryProvisioningTests). With it, the call gets past that refusal to the readiness
+    // gate, which cannot reach port 1 and gives up after BackendReadyTimeout. Port 1, not ConnString:
+    // nothing here may reach a real StarRocks.
+    [Fact]
+    public async Task AddStarRocks_WithProvisionerConnectionString_HandsItToTheRepository()
+    {
+        const string unreachable = "Server=127.0.0.1;Port=1;User ID=x;Password=x;Connection Timeout=1";
+        var services = new ServiceCollection();
+        services.AddSingleton<ILogger<EngagementRepository>>(NullLogger<EngagementRepository>.Instance);
+        services.AddStarRocks(
+            unreachable,
+            new EngagementResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(2) },
+            provisionerConnectionString: unreachable);
+
+        using var provider = services.BuildServiceProvider();
+        var store = provider.GetRequiredService<IEngagementStoreEntityStore>();
+        var schema = new EngagementTableSchema("probe", new EngagementColumnSchema("Id", "VARCHAR(36)", false), []);
+
+        var act = () => store.EnsureTenantProvisionedAsync("t1", schema);
+
+        await act.Should().ThrowAsync<EngagementNotReadyException>();
+    }
 }

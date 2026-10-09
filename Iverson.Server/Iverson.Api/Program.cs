@@ -265,6 +265,21 @@ builder.Services.AddPostgres(
         : postgresConnectionString);
 
 var starRocksConnectionString = cfg.GetConnectionString("StarRocks");
+
+// CSR round 11 §3: tenant provisioning runs under its own StarRocks login, and only in the worker's
+// engagement consumer (AddEngagementStoreConsumer below). The worker needs that connection string
+// whenever engagement is on. The api role never provisions, so it is never handed one, and its
+// repository refuses provisioning outright.
+var starRocksProvisionerConnectionString =
+    workloadRole == "worker" ? cfg.GetConnectionString("StarRocksProvisioner") : null;
+if (string.IsNullOrWhiteSpace(starRocksProvisionerConnectionString))
+{
+    if (workloadRole == "worker" && engagementStoreEnabledAtStartup)
+        throw new InvalidOperationException(
+            "ConnectionStrings:StarRocksProvisioner is required for the worker role when Engagement:Enabled is true and was not configured.");
+    starRocksProvisionerConnectionString = null;
+}
+
 builder.Services.AddStarRocks(
     string.IsNullOrWhiteSpace(starRocksConnectionString)
         ? (engagementStoreEnabledAtStartup
@@ -303,7 +318,8 @@ builder.Services.AddStarRocks(
         MaxGroupByLimit    = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxGroupByLimit", EngagementQueryLimitOptions.Default.MaxGroupByLimit),
         MaxTopK            = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxTopK", EngagementQueryLimitOptions.Default.MaxTopK),
         MaxRelationDepth   = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxRelationDepth", EngagementQueryLimitOptions.Default.MaxRelationDepth)
-    });
+    },
+    provisionerConnectionString: starRocksProvisionerConnectionString);
 
 builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",
