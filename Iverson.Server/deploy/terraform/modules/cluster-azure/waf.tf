@@ -145,7 +145,7 @@ resource "azurerm_application_gateway" "agic" {
   lifecycle {
     ignore_changes = [
       backend_address_pool, backend_http_settings, frontend_port, http_listener, probe,
-      request_routing_rule, url_path_map, ssl_certificate, redirect_configuration, tags,
+      request_routing_rule, url_path_map, ssl_certificate, redirect_configuration, rewrite_rule_set, tags,
     ]
   }
 }
