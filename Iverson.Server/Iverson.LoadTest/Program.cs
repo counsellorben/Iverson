@@ -2,7 +2,6 @@ using System.Globalization;
 using Dapper;
 using Grpc.Core;
 using Grpc.Net.Client;
-using IdentityModel.Client;
 using Iverson.Client.Contracts;
 using Iverson.Client.Core;
 using Iverson.Events;
@@ -35,10 +34,7 @@ var needsTenantAndSchema = command is "seed" or "write-path" or "read-path" or "
     or "benchmark-ingest" or "benchmark-query";
 
 var grpcUrl       = Env("IVERSON_GRPC_URL",        "http://localhost:8080");
-var clientId      = Environment.GetEnvironmentVariable("IVERSON_CLIENT_ID");
-var clientSecret  = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SECRET");
 var tokenEndpoint = Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT");
-var clientScope   = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SCOPE");
 var postgresCs   = Env("IVERSON_POSTGRES_CS",     "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
 var starRocksCs  = Env("IVERSON_STARROCKS_CS",    "Server=127.0.0.1;Port=9030;Database=iverson;Uid=root;Pwd=;");
 var kafkaBoots   = Env("IVERSON_KAFKA_BOOTSTRAP", "localhost:9092");
@@ -111,17 +107,17 @@ if (flags.Target == "kind" && string.IsNullOrWhiteSpace(kafkaOptions.SecurityPro
 // IversonClientCredentials.HostHeader's doc comment for why this is required: Authentik's
 // issuer_mode:global stamps the JWT's `iss` claim from the request's Host header, so a client
 // reaching the host-exposed port as localhost mints a token the API rejects on issuer validation.
-var clientCredentials = clientId is not null && clientSecret is not null && tokenEndpoint is not null
-    ? new IversonClientCredentials(clientId, clientSecret, tokenEndpoint, clientScope, HostHeader: actingUserHostHeader)
-    : null;
+// A client secret (compose) or, on Helm, a service-account token file (CSR round-11 #9).
+using var adminAutomation = AdminAutomationCredentials.FromEnvironment(
+    Environment.GetEnvironmentVariable, actingUserHostHeader);
 
 ActingUserTokenProvider? tenantAdminTokenProvider = null;
-if (needsTenantAndSchema && clientCredentials is not null)
+if (needsTenantAndSchema && adminAutomation is not null)
 {
     Console.WriteLine("Ensuring LoadTest tenant is provisioned...");
     try
     {
-        var adminToken = await MintClientCredentialsTokenAsync(clientCredentials);
+        var adminToken = await adminAutomation.GetTokenAsync();
         var adminRecoveryLink = await EnsureTenantProvisionedAsync(
             grpcUrl, adminToken, tenantProvisionId, "Iverson LoadTest (dynamic)",
             tenantAdminUsername, tenantAdminEmail);
@@ -175,16 +171,17 @@ if (needsTenantAndSchema && clientCredentials is not null)
 else if (needsTenantAndSchema)
 {
     Console.WriteLine(
-        "Client credentials not configured (IVERSON_CLIENT_ID/IVERSON_CLIENT_SECRET/IVERSON_TOKEN_ENDPOINT) — " +
+        "Client credentials not configured (IVERSON_CLIENT_ID/IVERSON_TOKEN_ENDPOINT, and IVERSON_CLIENT_SECRET or IVERSON_CLIENT_ASSERTION_FILE) — " +
         "skipping tenant provisioning and schema registration; StarRocks seeding will be empty.");
 }
 
 var services = new ServiceCollection()
     .AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning))
     .AddIversonClient(
-        grpcUrl, clientCredentials,
+        grpcUrl, adminAutomation?.SdkCredentials,
         tenantAdminTokenProvider is not null ? () => tenantAdminTokenProvider.GetTokenAsync() : null,
         allowInsecureChannelCallCredentials: true,
+        serviceTokenProvider: adminAutomation is { UsesAssertion: true } ? adminAutomation.GetTokenAsync : null,
         entityAssemblies: [typeof(BenchmarkArticle).Assembly])
     .AddSingleton(config)
     .AddSingleton(kafkaOptions)
@@ -385,33 +382,6 @@ static InvalidOperationException TenantAdminLoginFailure(Exception ex) => new(
     "enrols its TOTP device, failed. Re-running LoadTest finds the tenant and retries the login when the " +
     "admin's token is first needed.",
     ex);
-
-static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentials creds)
-{
-    using var http = new HttpClient();
-    var request = new ClientCredentialsTokenRequest
-    {
-        Address      = creds.TokenEndpoint,
-        ClientId     = creds.ClientId,
-        ClientSecret = creds.ClientSecret,
-        Scope        = creds.Scope,
-    };
-    // This is a second minting path alongside CachedClientCredentialsTokenProvider, and it must
-    // honour HostHeader for the same reason: Authentik's issuer_mode:global stamps the JWT's `iss`
-    // from the request's Host header. Forcing the in-cluster Host name is what this tool does and
-    // always works; minting via localhost yields iss=http://localhost:9000/, which compose also
-    // accepts since the identity-plane change (its Authentication__ExternalIssuer). The API accepts
-    // a token whose issuer is one of its configured issuers: the internal issuer, the external one,
-    // or the metadata issuer. Minting through any other host gives an issuer it rejects (401),
-    // before any authorization is evaluated.
-    if (creds.HostHeader is { Length: > 0 } host)
-        request.Headers.Host = host;
-
-    var response = await http.RequestClientCredentialsTokenAsync(request);
-    if (response.IsError)
-        throw new InvalidOperationException($"Failed to acquire admin-automation token: {response.Error}");
-    return response.AccessToken!;
-}
 
 // Returns CreateTenant's one-time admin recovery link when this call creates the tenant, or null
 // when the tenant already exists.
