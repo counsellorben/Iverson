@@ -97,9 +97,8 @@ deliberately not blueprinted for any deployment** — who holds operator rights 
 operational decision, and seeding it into version-controlled config would be a
 privilege-escalation defect.
 
-1. Sign in to Authentik with the deployment's bootstrap credentials — email from
-   `AUTHENTIK_BOOTSTRAP_EMAIL`, password from the `<release>-authentik-app` Secret's
-   `bootstrap-password` key.
+1. Sign in to Authentik as the break-glass admin, `iverson-breakglass`, over the in-cluster route
+   (`docs/runbooks/csr11-identity-plane.md` §3; `akadmin` is deactivated since CSR round 11).
 2. **Directory → Users → Create**, or locate the existing account.
 3. Add the `tenant_id` attribute, as in step 2b.4 above.
 4. **Directory → Groups → `operators` → add the user.**

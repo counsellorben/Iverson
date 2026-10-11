@@ -37,7 +37,7 @@ embedded YAML reference that same computed value — there is no longer a second
 against a live cluster) and confirming all 13 credential values (10 Secrets, 3 of which carry
 both a client-id and a client-secret) are byte-identical between the emitted Secrets and the
 blueprint's `stringData` on the very first `helm install` — no second pass needed
-for these credentials specifically. (This was verified at the template-rendering level, not via a
+for these credentials specifically. Since CSR round 11 the admin-automation Secret carries only its `client-id`; its client authenticates with a service-account token (`docs/runbooks/csr11-identity-plane.md` §4). (This was verified at the template-rendering level, not via a
 full live multi-service `helm install` against a fully-provisioned cluster with CNPG/Strimzi/
 StarRocks operators installed — the bug and its fix both live entirely in what value a template
 computes, which template-level verification covers directly.)

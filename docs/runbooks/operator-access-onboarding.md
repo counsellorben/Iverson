@@ -24,9 +24,8 @@ below against the compose Authentik instance (`http://localhost:9000`, bootstrap
 
 The `operators` group already exists (blueprinted) — do not create it. Only membership is manual:
 
-1. Log into the Authentik admin UI with the deployment's bootstrap credentials (kind: email from
-   `AUTHENTIK_BOOTSTRAP_EMAIL`, password from the `<release>-authentik-app` Secret's
-   `bootstrap-password` key).
+1. Log into the Authentik admin UI as the break-glass admin, `iverson-breakglass`
+   (`docs/runbooks/csr11-identity-plane.md` §3; `akadmin` is deactivated since CSR round 11).
    The Authentik admin interface (and the rest of the admin API) is reachable only in-cluster since
    CSR round-10's identity-plane change; the public host no longer serves it. Reach it with
    `kubectl -n <ns> port-forward svc/<release>-authentik 9000:9000`, then open
