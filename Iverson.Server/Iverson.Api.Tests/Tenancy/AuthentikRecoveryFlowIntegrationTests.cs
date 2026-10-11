@@ -142,13 +142,17 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
             File.Delete(assertionFile);
         }
 
-        // Wrong subject, wrong audience, or arrival through the public listener: refused, nobody created.
+        // Wrong subject, wrong audience, arrival through the public listener, no pod binding, or a lifetime over 600 s: refused, nobody created.
         var usersAfter = await UserCountAsync(admin);
         (await ExchangeAsync(clientId, Assertion(rsa, kid, "system:serviceaccount:iverson-test:other", FederatedAudience)))
             .Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
         (await ExchangeAsync(clientId, Assertion(rsa, kid, FederatedSubject, "somebody-else")))
             .Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
         (await ExchangeAsync(clientId, assertion, publicIngressMarker: true))
+            .Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
+        (await ExchangeAsync(clientId, Assertion(rsa, kid, FederatedSubject, FederatedAudience, podBound: false)))
+            .Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
+        (await ExchangeAsync(clientId, Assertion(rsa, kid, FederatedSubject, FederatedAudience, lifetimeSeconds: 3600)))
             .Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
         (await UserCountAsync(admin)).Should().Be(usersAfter);
     }
@@ -253,15 +257,28 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
         return results[0].GetProperty(property).Clone();
     }
 
-    /// <summary>An RS256 JWT shaped like a kubelet-projected service-account token.</summary>
-    private static string Assertion(RSA rsa, string kid, string subject, string audience)
+    /// <summary>
+    /// An RS256 JWT shaped like a kubelet-projected service-account token: pod-bound (a
+    /// <c>kubernetes.io.pod</c> claim) with a 600 s life, unless told otherwise.
+    /// </summary>
+    private static string Assertion(RSA rsa, string kid, string subject, string audience, bool podBound = true, int lifetimeSeconds = 600)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var header = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new { alg = "RS256", typ = "JWT", kid }));
-        var payload = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new
+        var claims = new Dictionary<string, object>
         {
-            iss = "https://kubernetes.default.svc.cluster.local", sub = subject, aud = new[] { audience }, iat = now, exp = now + 600,
-        }));
+            ["iss"] = "https://kubernetes.default.svc.cluster.local", ["sub"] = subject, ["aud"] = new[] { audience },
+            ["iat"] = now, ["exp"] = now + lifetimeSeconds,
+        };
+        var kubernetes = new Dictionary<string, object>
+        {
+            ["namespace"] = "iverson-test",
+            ["serviceaccount"] = new { name = "iverson-api", uid = "00000000-0000-0000-0000-000000000001" },
+        };
+        if (podBound)
+            kubernetes["pod"] = new { name = "iverson-api-0", uid = "00000000-0000-0000-0000-000000000002" };
+        claims["kubernetes.io"] = kubernetes;
+        var payload = Base64Url(JsonSerializer.SerializeToUtf8Bytes(claims));
         var signature = rsa.SignData(Encoding.ASCII.GetBytes($"{header}.{payload}"), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         return $"{header}.{payload}.{Base64Url(signature)}";
     }

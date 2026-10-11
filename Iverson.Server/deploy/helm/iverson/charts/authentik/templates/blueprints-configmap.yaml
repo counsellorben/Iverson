@@ -83,6 +83,9 @@ data:
       # Authentik checks only a federated JWT's signature and expiry, so the subject and audience are
       # pinned here. The user check refuses every exchange until service-clients.yaml has pre-created
       # the user, so no exchange can create it (one created that way has an expiry and no group).
+      # CSR round-11 #7: it also bounds the token's lifetime to 600 s, which with Authentik's expiry
+      # check bounds its usable age, and requires the kubelet's pod binding, which `kubectl create
+      # token` without a bound pod lacks.
       - id: orchestrator-workload
         model: authentik_policies_expression.expressionpolicy
         identifiers:
@@ -92,10 +95,16 @@ data:
             jwt = request.context.get("oauth_jwt") or {}
             aud = jwt.get("aud")
             auds = aud if isinstance(aud, list) else [aud]
+            iat = jwt.get("iat")
+            exp = jwt.get("exp")
+            k8s = jwt.get("kubernetes.io") or {}
             user = ak_user_by(username="iverson-admin-orchestrator-workload")
             return (
                 jwt.get("sub") == "system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-api"
                 and "iverson-authentik-orchestrator" in auds
+                and isinstance(iat, int) and isinstance(exp, int)
+                and exp - iat <= 600
+                and "pod" in k8s
                 and user is not None
                 and ak_is_group_member(user, name="iverson-admin-orchestrators")
             )

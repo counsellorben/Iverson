@@ -76,7 +76,7 @@ public sealed class AuthentikOrchestratorFederationBlueprintTests
     }
 
     [Fact]
-    public void PinExpression_PinsSubjectAudienceAndGroupGate()
+    public void PinExpression_PinsSubjectAudienceLifetimePodAndGroupGate()
     {
         var pin = PinPolicyExpression("SUBJECT");
 
@@ -84,6 +84,10 @@ public sealed class AuthentikOrchestratorFederationBlueprintTests
         pin.Should().Contain("\"iverson-authentik-orchestrator\" in auds");
         pin.Should().Contain("ak_is_group_member(user, name=\"iverson-admin-orchestrators\")");
         pin.Should().Contain("user is not None");
+        // CSR round-11 #7: an unbound token (no pod claim) or a long-lived one is refused.
+        pin.Should().Contain("exp - iat <= 600");
+        pin.Should().Contain("isinstance(iat, int) and isinstance(exp, int)");
+        pin.Should().Contain("\"pod\" in k8s");
         // The Helm form must still pin the API's own service account.
         EntryExpression(FederationEntry("name: iverson-admin-orchestrator-workload"))
             .Should().Contain($"jwt.get(\"sub\") == \"{HelmSubject}\"");
