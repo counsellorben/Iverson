@@ -275,6 +275,11 @@ public sealed class AuthentikFlowExecutorClient : IDisposable
     // Authentik marks a TOTP code "used" on any submission attempt within its 30s window, success
     // or failure — so submitting twice in the same window always fails the second time. Wait out
     // the rest of the window rather than misreport that as a real validation failure.
+    // The last TOTP step this process submitted per identity. Recovery enrols the device and the first
+    // login follows on a new client instance, so the step must outlive any one client or the login
+    // reuses the enrolment's window and records a failed login against the caller's address.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> LastSubmittedCounters = new();
+
     private async Task SubmitTotpCodeAsync(string flowUrl, string secret, TotpAttemptState state)
     {
         if (state.Attempts >= MaxTotpAttempts)
@@ -284,6 +289,9 @@ public sealed class AuthentikFlowExecutorClient : IDisposable
 
         var now = DateTimeOffset.UtcNow;
         var counter = (int)(now.ToUnixTimeSeconds() / 30);
+        // Seeding from an earlier client's step is not an attempt: Attempts is untouched.
+        if (state.LastCounter is null && LastSubmittedCounters.TryGetValue(CachePath, out var seeded))
+            state.LastCounter = seeded;
         if (state.LastCounter == counter)
         {
             var waitMs = (int)((counter + 1) * 30 - now.ToUnixTimeSeconds()) * 1000 + 500;
@@ -292,6 +300,7 @@ public sealed class AuthentikFlowExecutorClient : IDisposable
         }
         var code = Totp(secret);
         state.LastCounter = (int)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30);
+        LastSubmittedCounters[CachePath] = state.LastCounter.Value;
         state.Attempts++;
         await SendAsync(HttpMethod.Post, flowUrl, JsonBody(new { code }));
     }

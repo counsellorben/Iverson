@@ -146,9 +146,9 @@ if (needsTenantAndSchema && adminAutomation is not null)
             tenantAdminIdentity, tenantAdminLoggerFactory.CreateLogger<AuthentikFlowExecutorClient>()));
         if (adminRecoveryLink is not null)
         {
-            // Log in now, while this run has just set the password: the first login completes the
-            // tenant admin's TOTP enrolment, so the account is never left with a password and an
-            // unclaimed second-factor enrolment until some later data-plane call.
+            // Log in now, while this run has just set the password: recovery already enrolled the TOTP
+            // device, so this login verifies the account end to end (password and second factor)
+            // instead of leaving a failure to surface at some later data-plane call.
             try
             {
                 await tenantAdminTokenProvider.GetTokenAsync();
@@ -157,7 +157,7 @@ if (needsTenantAndSchema && adminAutomation is not null)
             {
                 throw TenantAdminLoginFailure(ex);
             }
-            Console.WriteLine("Logged the tenant admin in, enrolling its TOTP device.");
+            Console.WriteLine("Logged the tenant admin in.");
         }
         Console.WriteLine($"Tenant '{tenantProvisionId}' ready.\n");
     }
@@ -379,7 +379,7 @@ static InvalidOperationException TenantExistsFailure(Exception ex, string tenant
 // login failed. The next run finds the tenant and logs the admin in when its token is first needed.
 static InvalidOperationException TenantAdminLoginFailure(Exception ex) => new(
     $"{ex.Message} The tenant exists and its admin's password is set, but the admin's first login, which " +
-    "enrols its TOTP device, failed. Re-running LoadTest finds the tenant and retries the login when the " +
+    "verifies the account end to end, failed. Re-running LoadTest finds the tenant and retries the login when the " +
     "admin's token is first needed.",
     ex);
 
