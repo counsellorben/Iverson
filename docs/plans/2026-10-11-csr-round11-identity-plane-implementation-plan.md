@@ -189,6 +189,10 @@ Verified at plan-write time (2026-10-11, `main` at `3de6e75c`). Scratch evidence
 | 42 | Consumer | LoadTest's README documents its environment variables in one table. | `Iverson.LoadTest/README.md:168-170`. |
 | 43 | Code | The plan's own code blocks for Tasks 1–5 apply cleanly to `main` and pass. With Tasks 6–8 they render all five profiles and pass Task 10's render check. | `replay.py` applied Tasks 1–5 from this plan's code blocks to a scratch worktree at `a018a182`, plus the Task 6–8 drafts. Results: Client.Core.Tests 13/13; LoadTest.Tests 134/134; the Authentik classes (`AuthentikRecoveryFlowIntegrationTests`, `…RoleBlueprintTests`, `…FederationBlueprintTests`) 23/23 against a real Authentik 2026.5.3 in 4 m 25 s; Task 10 Step 3 `OK` ×5. |
 | 44 | Code | `recovery-flow.yaml`'s `metaapplyblueprint` entry makes its `!Find` of the stock TOTP setup stage independent of apply order. | Probe M1 (2026-10-11): with the stock stage deleted, the file without the entry exits 1 (`configuration_stages: Invalid pk "None"`). M2: with the entry, the stock blueprint is applied inside validation, the apply exits 0 and the stage is back in `configuration_stages`; a re-apply exits 0. M3: on a fresh volume the stock instance exists from migrate, the file's first automatic apply is `successful`, and `flow_recovery` is set about 45 s after worker start. M4: `GET /api/v3/stages/authenticator/totp/?name=default-authenticator-totp-setup` returns count 1 or 0 by exact name. |
+| 45 | Code | Authentik parses `AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS` as a comma-separated list. `ak apply_blueprint` exits non-zero only on a validation failure. | CIR-2 S1: `strings /usr/bin/authentik-server` (image 2026.5.3, read-only mount) shows `env:"TRUSTED_PROXY_CIDRS, overwrite"` with no `delimiter=`, decoded by go-envconfig v1.3.0 (default comma). CIR-2 S5: `authentik/blueprints/management/commands/apply_blueprint.py` has one `sys_exit(1)`, on `not valid`. |
+| 46 | Code | The meta entry resolves in every consumer that mounts `blueprints/`: the stock `BlueprintInstance` exists from `authentik-migrate` before the worker runs, and the Api.Tests fixture's extra mounted files neither create nor alter the stock TOTP flow or stage. | `authentik/blueprints/v1/meta/apply_blueprint.py:33-34` (`if not instance and required`). Probe M3: instance created during migrate; first automatic apply `successful`. CIR-2 S2-1: the fixture's migrate is M3's `lifecycle.migrate` (`AuthentikContainerFixture.cs:167-176`), and a grep of the mounted files finds no write to the stock TOTP flow or stage. |
+| 47 | Code | Task 5's lookup regenerates the client id when the Secret or its `client-id` key is missing. On upgrade, the moved marker-policy binding updates the existing row rather than duplicating it. | CIR-2 S3: a four-case scratch chart (Secret with key / without key / without `data` / absent), input → output. `sed -n 737,846p authentik/core/models.py \| command grep -c primary_key` → `0`: `Application` inherits `pbm_uuid`, so `!KeyOf` and `!Find` resolve to the same target. |
+| 48 | Code | Task 10 Step 3's `recovery configure`, `superusers file` and `reputation file` checks parse the blueprints, so they fail on the broken renders the spec's render list names. | UIP-2 run of the plan's Step 3 script with these entries: True on the replayed renders of all five profiles. False on `skip`, no `configuration_stages`, WebAuthn in place of TOTP, `akadmin` active, deny at order 25, binding removed, `score__lt=0` removed, and a flow-`!Find` binding target (CIR-2 §2.1–2.3 reproduced). |
 
 ## Tasks
 
@@ -2351,7 +2355,16 @@ whole file.
 1. Wait until the new worker pod is the only one:
    `kubectl -n <ns> rollout status deploy/<release>-authentik-worker`, then repeat
    `kubectl -n <ns> get pods -l app=<release>-authentik-worker` until it lists one pod.
-2. Apply:
+2. On a fresh install, wait until Authentik's own blueprints have created the login flow and the
+   TOTP setup stage the static files refer to (up to 5 minutes):
+
+   ```bash
+   ok=no; for i in $(seq 1 30); do [ "$(kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c "from authentik.flows.models import Flow; from authentik.stages.authenticator_totp.models import AuthenticatorTOTPStage; print(Flow.objects.filter(slug='default-authentication-flow').count(), AuthenticatorTOTPStage.objects.filter(name='default-authenticator-totp-setup').count())" 2>/dev/null | tail -1)" = "1 1" ] && { ok=yes; break; }; sleep 10; done; echo "stock objects present: $ok"
+   ```
+
+   Continue when it prints `yes`. If it prints `no`, Authentik's own blueprints have not applied yet:
+   check the worker's log for blueprint errors and repeat this step before applying.
+3. Apply:
 
    ```bash
    kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- \
@@ -2561,9 +2574,9 @@ for v in ("values-local", "values-laptop", "values-aws", "values-azure", "values
                                                       "proxy_set_header X-Forwarded-For $iverson_client_addr;", "proxy_set_header X-Forwarded-For $remote_addr;")),
         "authentik trusts loopback": cfg.get("AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS") == "127.0.0.1/32,::1/128",
         "no bootstrap on server": "AUTHENTIK_BOOTSTRAP_PASSWORD" not in srv,
-        "recovery configure": "not_configured_action: configure" in rec and "default-authenticator-totp-setup" in rec,
-        "reputation file": "iverson-login-failures-by-address" in bp.get("reputation.yaml", ""),
-        "superusers file": len(yaml.load(bp["superusers.yaml"], Loader=L)["entries"]) == 9,
+        "recovery configure": any(e.get("identifiers", {}).get("name") == "iverson-recovery-mfa-validation" and e["attrs"].get("not_configured_action") == "configure" and e["attrs"].get("configuration_stages") == [("TAG", ["authentik_stages_authenticator_totp.authenticatortotpstage", ["name", "default-authenticator-totp-setup"]])] for e in yaml.load(rec, Loader=L)["entries"]),
+        "reputation file": (lambda rep: any(e["model"] == "authentik_policies_expression.expressionpolicy" and e["identifiers"] == {"name": "iverson-login-failures-by-address"} and "score__lt=0" in e["attrs"]["expression"] and "return failures > -5" in e["attrs"]["expression"] for e in rep) and any(e["model"] == "authentik_policies.policybinding" and e["identifiers"] == {"policy": ("TAG", "login-failures-by-address"), "target": ("TAG", ["authentik_policies.policybindingmodel", ["flow__slug", "default-authentication-flow"]]), "order": 0} for e in rep))(yaml.load(bp.get("reputation.yaml", "version: 1\nentries: []"), Loader=L)["entries"]),
+        "superusers file": (lambda su: len(su) == 9 and any(e["model"] == "authentik_core.user" and e["identifiers"] == {"username": "akadmin"} and e["attrs"].get("is_active") is False for e in su) and any(e["model"] == "authentik_core.group" and e["identifiers"] == {"name": "authentik Admins"} and e["attrs"].get("is_superuser") is True for e in su) and any(e["model"] == "authentik_core.user" and e["identifiers"] == {"username": "iverson-breakglass"} and e["attrs"].get("groups") == [("TAG", "admins")] for e in su) and sorted((e["identifiers"]["target"][1][1][1], e["attrs"]["order"]) for e in su if e["model"] == "authentik_flows.flowstagebinding" and e["identifiers"].get("stage") == ("TAG", "refuse-superuser")) == [("default-authentication-flow", 15), ("iverson-recovery", 0)])(yaml.load(bp["superusers.yaml"], Loader=L)["entries"]),
         "pin bounds": "exp - iat <= 600" in orch and '"pod" in k8s' in orch,
         "admin-automation file": "jwt_federation_sources" in sec.get("admin-automation.yaml", ""),
         "admin-automation SA": any(d["kind"] == "ServiceAccount" and d["metadata"]["name"] == "iverson-admin-automation" for d in docs),
