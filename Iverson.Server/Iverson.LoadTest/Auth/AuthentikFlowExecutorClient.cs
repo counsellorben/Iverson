@@ -387,24 +387,47 @@ public sealed class AuthentikFlowExecutorClient : IDisposable
                 : $"The recovery flow answered the password with '{(root.TryGetProperty("component", out var c) ? c.GetString() : null)}' and no error; the password was not set.");
         }
 
-        // Each completed stage (prompt, MFA check, user write) answers a body-less 302 back to the
-        // same executor URL; this client doesn't follow redirects, so follow them here.
-        for (var i = 0; i < MaxFlowStages && resp.StatusCode == System.Net.HttpStatusCode.Redirect; i++)
-            resp = await SendAsync(HttpMethod.Get, flowUrl);
-        if (resp.StatusCode == System.Net.HttpStatusCode.Redirect)
-            throw new InvalidOperationException($"The recovery flow was still redirecting after {MaxFlowStages} requests.");
+        // Each completed stage answers a body-less 302 back to the same executor URL; this client
+        // doesn't follow redirects, so follow them here.
+        resp = await FollowRecoveryRedirectsAsync(flowUrl, resp);
+        var (end, configUrl) = await ReadChallengeAsync(resp);
 
-        var end = await ReadComponentAsync(resp);
+        // CSR round-11 #5: an account with no second factor enrols TOTP here, before the password is
+        // written. The secret is cached where MintAsync reads it, so the first login validates with it.
+        if (end == "ak-stage-authenticator-totp")
+        {
+            var secret = ParseTotpSecretFromConfigUrl(
+                configUrl ?? throw new InvalidOperationException("The recovery flow's TOTP setup stage sent no config_url."));
+            SaveCachedTotpSecret(secret);
+            await SubmitTotpCodeAsync(flowUrl, secret, new TotpAttemptState());
+            resp = await FollowRecoveryRedirectsAsync(flowUrl, await SendAsync(HttpMethod.Get, flowUrl));
+            (end, _) = await ReadChallengeAsync(resp);
+        }
+
         if (end != "xak-flow-redirect")
             throw new InvalidOperationException($"The recovery flow ended at '{end}', not 'xak-flow-redirect'; the password was not set.");
     }
 
-    private static async Task<string?> ReadComponentAsync(HttpResponseMessage resp)
+    private async Task<HttpResponseMessage> FollowRecoveryRedirectsAsync(string flowUrl, HttpResponseMessage resp)
+    {
+        for (var i = 0; i < MaxFlowStages && resp.StatusCode == System.Net.HttpStatusCode.Redirect; i++)
+            resp = await SendAsync(HttpMethod.Get, flowUrl);
+        if (resp.StatusCode == System.Net.HttpStatusCode.Redirect)
+            throw new InvalidOperationException($"The recovery flow was still redirecting after {MaxFlowStages} requests.");
+        return resp;
+    }
+
+    private static async Task<string?> ReadComponentAsync(HttpResponseMessage resp) =>
+        (await ReadChallengeAsync(resp)).Component;
+
+    private static async Task<(string? Component, string? ConfigUrl)> ReadChallengeAsync(HttpResponseMessage resp)
     {
         if (resp.StatusCode != System.Net.HttpStatusCode.OK)
             throw new InvalidOperationException($"The recovery flow answered HTTP {(int)resp.StatusCode}.");
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        return doc.RootElement.TryGetProperty("component", out var c) ? c.GetString() : null;
+        var root = doc.RootElement;
+        return (root.TryGetProperty("component", out var c) ? c.GetString() : null,
+                root.TryGetProperty("config_url", out var u) ? u.GetString() : null);
     }
 
     public async Task<MintedToken> RefreshAsync(string refreshToken, CancellationToken ct = default)

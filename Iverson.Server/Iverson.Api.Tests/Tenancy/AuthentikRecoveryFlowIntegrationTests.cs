@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Web;
 using FluentAssertions;
 using Iverson.Api.Tenancy;
 using Microsoft.Extensions.Configuration;
@@ -488,26 +489,52 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
     // ───────────────────────── CSR round-3 finding #2: MFA on the recovery flow ─────────────────
 
     /// <summary>
-    /// The onboarding half of finding #2's fix: <c>not_configured_action: skip</c> must leave a
-    /// brand-new invitee — who by definition has no enrolled factor — able to complete the flow.
-    /// This is the CSR round-2 finding #4 regression class all over again, so it is asserted
-    /// behaviourally (the flow runs to a real authenticated session), not by reading config.
+    /// CSR round-11 #5: an account with no second factor enrols TOTP inside its recovery flow, after
+    /// choosing a password and before the password is written, so the factor belongs to whoever
+    /// completes the link rather than to whoever signs in first. Asserted behaviourally: the flow
+    /// stops at TOTP setup with no session, and only a valid code reaches a real authenticated
+    /// session.
     /// </summary>
     [Fact]
-    public async Task RecoveryFlow_UserWithNoEnrolledFactor_CompletesAndSignsTheUserIn()
+    public async Task RecoveryFlow_UserWithNoEnrolledFactor_EnrolsTotpBeforeSigningIn()
     {
-        var username = Unique("csr3-nomfa");
+        var username = Unique("csr11-nomfa");
         var created = await _orchestrator.CreateUserAsync(
-            username, $"{username}@iverson-test.invalid", "csr3-tenant", groups: []);
+            username, $"{username}@iverson-test.invalid", "csr11-tenant", groups: []);
 
         using var flow = new RecoveryFlowSession(_authentik.BaseUrl, created.RecoveryLink!);
 
         (await flow.StartAsync()).Should().Be("ak-stage-prompt");
-        var afterPassword = await flow.SubmitPasswordAsync("Correct-Horse-Battery-9");
+        (await flow.SubmitPasswordAsync("Correct-Horse-Battery-9")).Should().Be("ak-stage-authenticator-totp",
+            "an account with no enrolled factor must enrol one before the reset completes");
+        (await flow.AuthenticatedUsernameAsync()).Should().BeNull("enrolment has not finished");
 
-        afterPassword.Should().Be("xak-flow-redirect",
-            "with no enrolled factor the MFA stage must skip, letting onboarding finish");
+        (await flow.SubmitTotpSetupCodeAsync(Totp(flow.TotpSetupSecret()))).Should().Be("xak-flow-redirect");
         (await flow.AuthenticatedUsernameAsync()).Should().Be(username);
+    }
+
+    /// <summary>RFC 6238 TOTP (HMAC-SHA1, 6 digits, 30 s), the code Authentik's TOTP stages accept.</summary>
+    private static string Totp(string base32Secret)
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        var key = new List<byte>();
+        int buffer = 0, bits = 0;
+        foreach (var ch in base32Secret.TrimEnd('=').ToUpperInvariant())
+        {
+            buffer = (buffer << 5) | alphabet.IndexOf(ch);
+            bits += 5;
+            if (bits >= 8)
+            {
+                bits -= 8;
+                key.Add((byte)(buffer >> bits));
+            }
+        }
+        var counter = BitConverter.GetBytes(DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30);
+        if (BitConverter.IsLittleEndian) Array.Reverse(counter);
+        var hash = HMACSHA1.HashData(key.ToArray(), counter);
+        var offset = hash[^1] & 0x0F;
+        var code = ((hash[offset] & 0x7F) << 24 | hash[offset + 1] << 16 | hash[offset + 2] << 8 | hash[offset + 3]) % 1_000_000;
+        return code.ToString("D6");
     }
 
     /// <summary>
@@ -582,6 +609,18 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
         public Task<string?> SubmitTotpCodeAsync(string code) => ReadComponentAsync(
             _client.PostAsync(_executorUrl, Json(
                 $$"""{"component":"ak-stage-authenticator-validate","code":"{{code}}"}""")));
+
+        public Task<string?> SubmitTotpSetupCodeAsync(string code) => ReadComponentAsync(
+            _client.PostAsync(_executorUrl, Json(
+                $$"""{"component":"ak-stage-authenticator-totp","code":"{{code}}"}""")));
+
+        /// <summary>The base32 secret in the last challenge's config_url (the TOTP setup stage).</summary>
+        public string TotpSetupSecret()
+        {
+            using var doc = JsonDocument.Parse(LastChallengeBody);
+            var configUrl = new Uri(doc.RootElement.GetProperty("config_url").GetString()!);
+            return HttpUtility.ParseQueryString(configUrl.Query)["secret"]!;
+        }
 
         /// <summary>Device classes the last challenge offered (empty when it wasn't an MFA challenge).</summary>
         public string[] OfferedDeviceClasses()

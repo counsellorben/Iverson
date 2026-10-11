@@ -218,4 +218,57 @@ public class AuthentikFlowExecutorClientTests
             File.GetUnixFileMode(dir).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         });
     }
+
+    // CSR round-11 #5: an account with no second factor enrols TOTP inside the recovery flow, before
+    // its password is written. After the password, Authentik answers two 302s and then the TOTP setup
+    // challenge; after the code, three 302s and then completion.
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task SetPasswordFromRecoveryLinkAsync_EnrolsTotp_CachingTheSecretWhereMintAsyncReadsIt()
+    {
+        await WithTempHome(async home =>
+        {
+            var handler = new FakeHandler(
+                Json("""{"component":"ak-stage-prompt"}"""),
+                Redirect(), Redirect(),
+                Json("""{"component":"ak-stage-authenticator-totp","config_url":"otpauth://totp/iverson?secret=JBSWY3DPEHPK3PXP"}"""),
+                Redirect(), Redirect(), Redirect(),
+                Json("""{"component":"xak-flow-redirect","to":"/"}"""));
+
+            await Client(handler).SetPasswordFromRecoveryLinkAsync(Link);
+
+            handler.Requests.Should().HaveCount(8, "nothing is sent after the xak-flow-redirect");
+            handler.Requests[4].Method.Should().Be(HttpMethod.Post);
+            using (var body = JsonDocument.Parse(handler.Requests[4].Body))
+                body.RootElement.GetProperty("code").GetString().Should().MatchRegex("^[0-9]{6}$");
+            handler.Requests.Where((_, i) => i != 1 && i != 4).Should().AllSatisfy(r =>
+            {
+                r.Method.Should().Be(HttpMethod.Get);
+                r.Url.Should().Be(ExecutorUrl);
+            });
+            File.ReadAllText(CachePath(home)).Should().Be("JBSWY3DPEHPK3PXP\n",
+                "the tenant admin's first login validates with this secret instead of enrolling again");
+        });
+    }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task SetPasswordFromRecoveryLinkAsync_Throws_WhenTheEnrolmentCodeIsRefused()
+    {
+        await WithTempHome(async _ =>
+        {
+            const string totpStage = """{"component":"ak-stage-authenticator-totp","config_url":"otpauth://totp/iverson?secret=JBSWY3DPEHPK3PXP"}""";
+            var handler = new FakeHandler(
+                Json("""{"component":"ak-stage-prompt"}"""),
+                Redirect(),
+                Json(totpStage),
+                Json("""{"component":"ak-stage-authenticator-totp","response_errors":{"code":[{"string":"Code does not match","code":"invalid"}]}}"""),
+                Json(totpStage));
+
+            var act = () => Client(handler).SetPasswordFromRecoveryLinkAsync(Link);
+
+            await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*ak-stage-authenticator-totp*");
+            handler.Requests.Should().HaveCount(5);
+        });
+    }
 }

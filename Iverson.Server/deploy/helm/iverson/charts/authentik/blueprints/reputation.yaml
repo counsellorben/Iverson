@@ -1,0 +1,27 @@
+version: 1
+metadata:
+  name: Iverson - Login failures by client address
+entries:
+  # CSR round-11 #5. Authentik's own reputation policy sums every (address, username) score for the
+  # address, and a successful login raises its row, so one account's successes offset failures
+  # against another from the same address. This sums only the failing rows. Each failed
+  # identification, password or MFA attempt lowers its row (floored at -5); a row expires
+  # reputation.expiry (default 24 h) after its first failure.
+  - id: login-failures-by-address
+    model: authentik_policies_expression.expressionpolicy
+    identifiers:
+      name: iverson-login-failures-by-address
+    attrs:
+      expression: |
+        from django.db.models import Sum
+        from authentik.policies.reputation.models import Reputation
+        failures = Reputation.objects.filter(ip=str(ak_client_ip), score__lt=0).aggregate(total=Sum("score"))["total"] or 0
+        return failures > -5
+  # Flow-level, so a refused address is denied before identification. PolicyBinding.target is the
+  # flow's policybindingmodel row (pbm_uuid), not its flow_uuid: a flow !Find here creates the binding
+  # once and then fails every later apply.
+  - model: authentik_policies.policybinding
+    identifiers:
+      policy: !KeyOf login-failures-by-address
+      target: !Find [authentik_policies.policybindingmodel, [flow__slug, default-authentication-flow]]
+      order: 0
