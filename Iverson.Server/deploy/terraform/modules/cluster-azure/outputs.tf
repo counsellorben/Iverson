@@ -10,3 +10,5 @@ output "node_pool_labels" {
 }
 
 output "data_volumes_des_id" { value = azurerm_disk_encryption_set.data_volumes.id }
+
+output "authentik_waf_policy_id" { value = azurerm_web_application_firewall_policy.authentik.id }

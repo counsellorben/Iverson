@@ -1,2 +1,5 @@
 global:
   ingressHost: "iverson-ci-test.example.org"
+authentik:
+  ingress:
+    securityPolicy: "iverson-authentik-login"

@@ -158,6 +158,8 @@ authentik:
     # with a real cert-manager-issued Secret name for the real host before
     # applying.
     tlsSecretName: "iverson-authentik-tls"
+    # CSR round-11 #5: Terraform output authentik_security_policy_name (docs/runbooks/csr11-identity-plane.md).
+    securityPolicy: ""
 
 adminUi:
   ingress:

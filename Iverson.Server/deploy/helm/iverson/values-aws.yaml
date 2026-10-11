@@ -180,6 +180,8 @@ authentik:
       alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
       alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
       alb.ingress.kubernetes.io/ssl-redirect: "443"
+    # CSR round-11 #5: Terraform output authentik_waf_acl_arn (docs/runbooks/csr11-identity-plane.md).
+    wafAclArn: ""
 
 adminUi:
   ingress:

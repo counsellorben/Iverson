@@ -116,6 +116,20 @@ variable "general_max_count" {
   default = 5
 }
 
+# CSR round-11 #5: the edge rate limit on Authentik's flow executor (waf.tf). The window is one of
+# the two durations Application Gateway rate-limit rules accept.
+variable "authentik_host" { type = string }
+
+variable "authentik_login_rate_limit" { type = number }
+
+variable "authentik_login_rate_window" {
+  type = number
+  validation {
+    condition     = contains([60, 300], var.authentik_login_rate_window)
+    error_message = "authentik_login_rate_window must be 60 or 300 seconds."
+  }
+}
+
 # No default: the Entra group(s) whose members administer the cluster through Azure RBAC.
 variable "cluster_admin_group_object_ids" {
   type = list(string)

@@ -1,0 +1,11 @@
+{{- with .Values.ingress.securityPolicy }}
+# CSR round-11 #5: the Cloud Armor policy (Terraform's authentik_security_policy_name) on the Authentik
+# backend, attached by service.yaml's backend-config annotation.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: {{ $.Release.Name }}-authentik
+spec:
+  securityPolicy:
+    name: {{ . | quote }}
+{{- end }}

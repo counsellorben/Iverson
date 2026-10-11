@@ -262,8 +262,10 @@ resource "azurerm_kubernetes_cluster" "this" {
     subnet_id                = azurerm_subnet.apiserver.id
   }
 
+  # CSR round-11 #5: AGIC programs the WAF_v2 gateway in waf.tf instead of creating its own
+  # Standard_v2 gateway, which could carry no WAF policy.
   ingress_application_gateway {
-    subnet_cidr = "10.1.16.0/24"
+    gateway_id = azurerm_application_gateway.agic.id
   }
 
   oms_agent {

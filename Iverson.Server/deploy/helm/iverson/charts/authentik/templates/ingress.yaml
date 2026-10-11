@@ -1,3 +1,14 @@
+{{- $wafKey := get (dict "alb" "wafAclArn" "gce" "securityPolicy" "azure-application-gateway" "wafPolicyId") .Values.ingress.className }}
+{{- if and $wafKey (not (get .Values.ingress $wafKey)) }}
+{{- fail (printf "authentik.ingress.%s must be set with ingress className %q: copy it from the Terraform output (docs/runbooks/csr11-identity-plane.md). Without it the public login has no edge rate limit (CSR round-11 #5)." $wafKey .Values.ingress.className) }}
+{{- end }}
+{{- $annotations := deepCopy (default dict .Values.ingress.annotations) }}
+{{- with .Values.ingress.wafAclArn }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/wafv2-acl-arn" . }}
+{{- end }}
+{{- with .Values.ingress.wafPolicyId }}
+{{- $_ := set $annotations "appgw.ingress.kubernetes.io/waf-policy-for-path" . }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -8,7 +19,7 @@ metadata:
   # behavior, independent of ingress class, so it covers nginx/alb/gce alike. An ingress-nginx-only
   # annotation here would have been redundant on nginx and silently absent on alb/gce.
   annotations:
-    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+    {{- toYaml $annotations | nindent 4 }}
 spec:
   ingressClassName: {{ .Values.ingress.className | quote }}
 {{- if .Values.ingress.tlsSecretName }}

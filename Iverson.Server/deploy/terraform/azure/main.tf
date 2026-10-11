@@ -35,6 +35,10 @@ variable "key_vault_authorized_ip_ranges" { type = list(string) }
 # Object IDs of the Entra group(s) that administer the cluster through Azure RBAC; no default.
 variable "cluster_admin_group_object_ids" { type = list(string) }
 
+# CSR round-11 #5: the Authentik host the login rate limit matches (authentik.<global.ingressHost>);
+# no default.
+variable "authentik_host" { type = string }
+
 provider "azurerm" {
   features {}
 }
@@ -46,6 +50,9 @@ module "cluster" {
   api_authorized_ip_ranges       = var.api_authorized_ip_ranges
   key_vault_authorized_ip_ranges = var.key_vault_authorized_ip_ranges
   cluster_admin_group_object_ids = var.cluster_admin_group_object_ids
+  authentik_host                 = var.authentik_host
+  authentik_login_rate_limit     = var.authentik_login_rate_limit
+  authentik_login_rate_window    = var.authentik_login_rate_window
 }
 
 # Entra authentication through kubelogin (must be on PATH): local accounts are disabled, so
@@ -91,4 +98,6 @@ module "operators" {
 output "cluster_name" { value = module.cluster.cluster_name }
 output "node_pool_labels" { value = module.cluster.node_pool_labels }
 output "storage_class_names" { value = module.operators.storage_class_names }
+# Copy into values-azure.yaml's authentik.ingress.wafPolicyId (docs/runbooks/csr11-identity-plane.md).
+output "authentik_waf_policy_id" { value = module.cluster.authentik_waf_policy_id }
 output "kubeconfig_command" { value = "az aks get-credentials --name ${module.cluster.cluster_name} --resource-group ${var.cluster_name}-rg" }
