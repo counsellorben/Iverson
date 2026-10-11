@@ -20,6 +20,10 @@ feed Helm values, so copy the output across by hand. A cloud profile's render fa
 1. Optionally set `authentik_login_rate_limit` (default 100 requests) and
    `authentik_login_rate_window` (default 300 s) on the root. Azure accepts only 60 or 300 s.
    Azure also requires `authentik_host`, the Authentik host: `authentik.<global.ingressHost>`.
+   The edge limit counts every flow-executor request, and one interactive login is roughly 8-12 of
+   them, so the default 100 per 300 s is about ten logins per client address per five minutes (on
+   GCP, exceeding it bans the address for 10 minutes). Size `authentik_login_rate_limit` for users
+   behind a shared NAT.
 2. `terraform apply`, then `terraform output -raw <output>` and put the value under the key in the
    table.
 3. `helm upgrade`. The limit counts requests per client address to `/api/v3/flows/executor/` on
@@ -131,6 +135,11 @@ five. A failed password costs one and a failed MFA code two, and successful logi
 failures. The address is the one Authentik records: the client itself on every profile, selected
 from the load balancer's `X-Forwarded-For` by `global.trustedProxies`. A shared NAT can therefore be
 refused for up to 24 hours, counted from the first failure.
+
+The in-cluster route is one shared address: every `kubectl port-forward` caller (operators, the
+break-glass admin, LoadTest on Helm) reaches Authentik from it, so five login failures there refuse
+the in-cluster login route for all of them. The way back in is a §3 recovery link, which still signs
+the admin in because only `default-authentication-flow` is throttled; then clear the scores as below.
 
 To clear an address before then, delete its scores in the admin interface (in-cluster, §3) or with
 the API:
