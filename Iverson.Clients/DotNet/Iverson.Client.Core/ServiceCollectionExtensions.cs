@@ -35,6 +35,13 @@ public static class ServiceCollectionExtensions
     /// Metadata rather than CallCredentials and so is otherwise invisible to grpc-dotnet's
     /// guard. Pass <see langword="true"/> only for a known-local, non-TLS endpoint.
     /// </param>
+    /// <param name="serviceTokenProvider">
+    /// Token source for the schema-registration (mapping) client, and for the data-plane clients
+    /// when <paramref name="dataPlaneTokenProvider"/> is omitted, in place of
+    /// <paramref name="credentials"/>: for a caller that obtains its service token itself, such as
+    /// one that exchanges a Kubernetes service-account token instead of holding a client secret.
+    /// Mutually exclusive with <paramref name="credentials"/>.
+    /// </param>
     public static IServiceCollection AddIversonClient(
         this IServiceCollection services,
         string grpcEndpoint,
@@ -42,11 +49,19 @@ public static class ServiceCollectionExtensions
         Func<Task<string>>? dataPlaneTokenProvider = null,
         Func<Task<string>>? actingUserTokenProvider = null,
         bool allowInsecureChannelCallCredentials = false,
+        Func<Task<string>>? serviceTokenProvider = null,
         params Assembly[] entityAssemblies)
     {
         var assemblies = entityAssemblies.Length > 0
             ? entityAssemblies
             : [Assembly.GetCallingAssembly()];
+
+        if (credentials is not null && serviceTokenProvider is not null)
+        {
+            throw new InvalidOperationException(
+                "Pass either credentials or serviceTokenProvider, not both: each authenticates the " +
+                "schema-registration client.");
+        }
 
         // CSR round-3 finding #4: the acting-user identity rides as raw Metadata
         // (see ActingUserMetadata.WithActingUser), added per-call by EntityCoordinator and
@@ -97,6 +112,10 @@ public static class ServiceCollectionExtensions
                 sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync(),
                 allowInsecureChannelCallCredentials);
         }
+        else if (serviceTokenProvider is not null)
+        {
+            AttachCredentials(mappingBuilder, _ => serviceTokenProvider(), allowInsecureChannelCallCredentials);
+        }
 
         if (dataPlaneTokenProvider is not null)
         {
@@ -115,6 +134,12 @@ public static class ServiceCollectionExtensions
             AttachCredentials(searchBuilder,
                 sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync(),
                 allowInsecureChannelCallCredentials);
+        }
+        else if (serviceTokenProvider is not null)
+        {
+            AttachCredentials(persistenceBuilder, _ => serviceTokenProvider(), allowInsecureChannelCallCredentials);
+            AttachCredentials(retrievalBuilder, _ => serviceTokenProvider(), allowInsecureChannelCallCredentials);
+            AttachCredentials(searchBuilder, _ => serviceTokenProvider(), allowInsecureChannelCallCredentials);
         }
 
         services.AddTransient(typeof(EntityCoordinator<>));

@@ -1,5 +1,8 @@
 using FluentAssertions;
+using Grpc.Core;
+using Iverson.Client.Contracts;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Http;
 using Xunit;
 
 namespace Iverson.Client.Core.Tests;
@@ -138,5 +141,101 @@ public class ServiceCollectionExtensionsTests
         using var provider = services.BuildServiceProvider();
 
         provider.GetRequiredService<ActingUserIdentity>().RefusesPlaintextTokens.Should().Be(expected);
+    }
+
+    // ---- CSR round-11 #9: the service-token provider ------------------------------------------------
+
+    private static Func<Task<string>> ServiceTokenProvider => () => Task.FromResult("service-token");
+
+    [Fact]
+    public void AddIversonClient_WithCredentialsAndServiceTokenProvider_Throws()
+    {
+        var services = new ServiceCollection();
+        var credentials = new IversonClientCredentials("test-client", "test-secret", "https://auth.example.com/oauth/token");
+
+        var act = () => services.AddIversonClient(
+            grpcEndpoint: "https://localhost:5000",
+            credentials: credentials,
+            serviceTokenProvider: ServiceTokenProvider);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*credentials*serviceTokenProvider*");
+    }
+
+    [Fact]
+    public async Task AddIversonClient_WithServiceTokenProvider_AuthenticatesAllFourClients()
+    {
+        var seen = await AuthorizationHeadersAsync(serviceTokenProvider: ServiceTokenProvider);
+
+        seen.Should().BeEquivalentTo(new Dictionary<string, string?>
+        {
+            ["mapping"] = "Bearer service-token",
+            ["persistence"] = "Bearer service-token",
+            ["retrieval"] = "Bearer service-token",
+            ["search"] = "Bearer service-token",
+        });
+    }
+
+    [Fact]
+    public async Task AddIversonClient_WithServiceTokenProvider_LeavesTheDataPlaneToItsOwnProvider()
+    {
+        var seen = await AuthorizationHeadersAsync(
+            serviceTokenProvider: ServiceTokenProvider,
+            dataPlaneTokenProvider: () => Task.FromResult("data-plane-token"));
+
+        seen.Should().BeEquivalentTo(new Dictionary<string, string?>
+        {
+            ["mapping"] = "Bearer service-token",
+            ["persistence"] = "Bearer data-plane-token",
+            ["retrieval"] = "Bearer data-plane-token",
+            ["search"] = "Bearer data-plane-token",
+        });
+    }
+
+    /// <summary>
+    /// Registers the clients against an https endpoint, replaces each one's transport with a handler
+    /// that records the request's authorization header and fails the call, makes one unary call per
+    /// client, and returns what each sent.
+    /// </summary>
+    private static async Task<Dictionary<string, string?>> AuthorizationHeadersAsync(
+        Func<Task<string>>? serviceTokenProvider = null, Func<Task<string>>? dataPlaneTokenProvider = null)
+    {
+        var seen = new Dictionary<string, string?>();
+        var services = new ServiceCollection();
+        services.AddIversonClient(
+            grpcEndpoint: "https://localhost:5000",
+            dataPlaneTokenProvider: dataPlaneTokenProvider,
+            serviceTokenProvider: serviceTokenProvider);
+        foreach (var (name, label) in new[]
+        {
+            (nameof(ObjectMappingService.ObjectMappingServiceClient), "mapping"),
+            (nameof(ObjectPersistenceService.ObjectPersistenceServiceClient), "persistence"),
+            (nameof(ObjectRetrievalService.ObjectRetrievalServiceClient), "retrieval"),
+            (nameof(ObjectSearchService.ObjectSearchServiceClient), "search"),
+        })
+        {
+            services.Configure<HttpClientFactoryOptions>(name, o => o.HttpMessageHandlerBuilderActions.Add(b =>
+                b.PrimaryHandler = new RecordingHandler(header => seen[label] = header)));
+        }
+        using var provider = services.BuildServiceProvider();
+
+        await Swallow(provider.GetRequiredService<ObjectMappingService.ObjectMappingServiceClient>().GetSchemaAsync(new GetSchemaRequest()).ResponseAsync);
+        await Swallow(provider.GetRequiredService<ObjectPersistenceService.ObjectPersistenceServiceClient>().PostAsync(new PersistRequest()).ResponseAsync);
+        await Swallow(provider.GetRequiredService<ObjectRetrievalService.ObjectRetrievalServiceClient>().GetAsync(new RetrievalRequest()).ResponseAsync);
+        await Swallow(provider.GetRequiredService<ObjectSearchService.ObjectSearchServiceClient>().AggregateAsync(new AggregateRequest()).ResponseAsync);
+        return seen;
+
+        static async Task Swallow(Task call)
+        {
+            try { await call; } catch (RpcException) { }
+        }
+    }
+
+    private sealed class RecordingHandler(Action<string?> record) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            record(request.Headers.TryGetValues("authorization", out var values) ? values.Single() : null);
+            throw new HttpRequestException("recorded");
+        }
     }
 }
