@@ -37,7 +37,13 @@ variable "cluster_admin_group_object_ids" { type = list(string) }
 
 # CSR round-11 #5: the Authentik host the login rate limit matches (authentik.<global.ingressHost>);
 # no default.
-variable "authentik_host" { type = string }
+variable "authentik_host" {
+  type = string
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.authentik_host))
+    error_message = "authentik_host must be the lowercase hostname only (no scheme, port or path), because the edge rate-limit rule compares it to the lowercased Host header."
+  }
+}
 
 provider "azurerm" {
   features {}

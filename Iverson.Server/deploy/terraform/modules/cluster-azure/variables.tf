@@ -118,7 +118,13 @@ variable "general_max_count" {
 
 # CSR round-11 #5: the edge rate limit on Authentik's flow executor (waf.tf). The window is one of
 # the two durations Application Gateway rate-limit rules accept.
-variable "authentik_host" { type = string }
+variable "authentik_host" {
+  type = string
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.authentik_host))
+    error_message = "authentik_host must be the lowercase hostname only (no scheme, port or path), because the edge rate-limit rule compares it to the lowercased Host header."
+  }
+}
 
 variable "authentik_login_rate_limit" { type = number }
 
