@@ -110,7 +110,7 @@ data:
             )
       # Refuses exchanges that came through the public listener. The same rule as the
       # admin-automation policy, kept as its own object so this blueprint does not depend on
-      # service-clients.yaml's apply order.
+      # admin-automation.yaml's apply order.
       - id: orchestrator-in-cluster-only
         model: authentik_policies_expression.expressionpolicy
         identifiers:
