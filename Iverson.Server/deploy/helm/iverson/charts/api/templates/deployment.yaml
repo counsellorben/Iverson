@@ -1,9 +1,10 @@
-{{- if not .Values.trustedProxies.cidrs }}
-{{- fail "api.trustedProxies.cidrs must list at least one CIDR: the load-balancer or ingress ranges whose X-Forwarded-For the rate limiters trust" }}
+{{- $trustedCidrs := dig "trustedProxies" "cidrs" (list) .Values.global }}
+{{- if not $trustedCidrs }}
+{{- fail "global.trustedProxies.cidrs must list at least one CIDR: the load-balancer or ingress ranges whose X-Forwarded-For the rate limiters and the Authentik tls-proxy trust" }}
 {{- end }}
-{{- range .Values.trustedProxies.cidrs }}
+{{- range $trustedCidrs }}
 {{- if not (trim .) }}
-{{- fail "api.trustedProxies.cidrs contains a blank entry; every entry must be a CIDR" }}
+{{- fail "global.trustedProxies.cidrs contains a blank entry; every entry must be a CIDR" }}
 {{- end }}
 {{- end }}
 apiVersion: v1
@@ -142,12 +143,12 @@ spec:
             - name: Otel__Endpoint
               value: "http://{{ .Release.Name }}-jaeger:4317"
             {{- end }}
-            {{- range $i, $cidr := .Values.trustedProxies.cidrs }}
+            {{- range $i, $cidr := $trustedCidrs }}
             - name: RateLimiting__TrustedProxies__Cidrs__{{ $i }}
               value: {{ $cidr | quote }}
             {{- end }}
             - name: RateLimiting__TrustedProxies__Hops
-              value: {{ .Values.trustedProxies.hops | quote }}
+              value: {{ dig "trustedProxies" "hops" 1 .Values.global | quote }}
             - name: Authentication__Authority
               value: "http://{{ .Release.Name }}-authentik:9000/application/o/iverson-api/"
             - name: Authentication__ExternalIssuer

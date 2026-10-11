@@ -9,3 +9,7 @@ data:
   AUTHENTIK_POSTGRESQL__USER: "authentik"
   AUTHENTIK_LOG_LEVEL: "info"
   AUTHENTIK_BOOTSTRAP_EMAIL: "{{ .Values.bootstrapEmail }}"
+  # CSR round-11 #8: Authentik takes the left-most X-Forwarded-For entry from a trusted peer, and its
+  # default trusts every private range. Only the tls-proxy sidecar (loopback) is trusted now; it
+  # always sends exactly one address (configmap-tls-proxy.yaml).
+  AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS: "127.0.0.1/32,::1/128"

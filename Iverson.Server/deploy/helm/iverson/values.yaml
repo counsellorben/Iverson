@@ -105,6 +105,15 @@ global:
   # loop in Program.cs). Default false so no production install provisions test credentials or
   # seeds placeholder tenants; values-local.yaml and values-laptop.yaml set this true.
   provisionTestIdentities: false
+  # CSR round-11 #8: the load-balancer or ingress ranges whose X-Forwarded-For is trusted, and which
+  # entry from the right holds the client (2 behind Google's load balancer, which appends
+  # "<client>,<lb-ip>"). Global because two readers must agree: the API's rate limiters
+  # (charts/api) and the Authentik tls-proxy, which picks the address Authentik records
+  # (charts/authentik). No usable default: every profile sets its own, and charts/api fails the
+  # render while the list is empty.
+  trustedProxies:
+    cidrs: []
+    hops: 1
 
 postgres:
   enabled: true
