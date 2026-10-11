@@ -119,3 +119,85 @@ data:
           policy: !KeyOf orchestrator-in-cluster-only
           target: !KeyOf orchestrator-app
           order: 1
+  {{- /* CSR round-11 #9: Helm only. Compose and the Api.Tests fixture mount blueprints/, keep akadmin
+     and log in with it, and the fixture's OrchestratorGroup_IsNotASuperuserGroup forbids a superuser
+     group in the service-clients blueprints. The deny bindings !Find flows other files define
+     (default-authentication-flow, iverson-recovery), so apply this file after those. */}}
+  superusers.yaml: |
+    version: 1
+    metadata:
+      name: Iverson - Superusers and break-glass
+    entries:
+      # Declared here because the stock events blueprint can create the group without the flag.
+      - id: admins
+        model: authentik_core.group
+        identifiers:
+          name: authentik Admins
+        attrs:
+          is_superuser: true
+      # The named break-glass admin. No password: it gets one, and enrols TOTP, only through a recovery
+      # link an operator generates in the worker (docs/runbooks/csr11-identity-plane.md).
+      - model: authentik_core.user
+        identifiers:
+          username: iverson-breakglass
+        attrs:
+          username: iverson-breakglass
+          name: Iverson break-glass admin
+          is_active: true
+          groups:
+            - !KeyOf admins
+      # Bootstrap's own admin, never used after install. Inactive, it cannot log in; whichever of
+      # bootstrap and this file runs first, it ends inactive.
+      - model: authentik_core.user
+        identifiers:
+          username: akadmin
+        attrs:
+          name: authentik Default Admin
+          is_active: false
+      # True for a superuser on the public listener, whose tls-proxy marks every request. A deny stage
+      # runs only when its policy passes; evaluated at execution (evaluate_on_plan false,
+      # re_evaluate_policies true), it sees the identified or recovering user.
+      - id: superuser-on-public-listener
+        model: authentik_policies_expression.expressionpolicy
+        identifiers:
+          name: iverson-superuser-on-public-listener
+        attrs:
+          expression: |
+            return request.user.is_superuser and "HTTP_X_IVERSON_PUBLIC_INGRESS" in request.http_request.META
+      - id: refuse-superuser
+        model: authentik_stages_deny.denystage
+        identifiers:
+          name: iverson-refuse-superuser-on-public-listener
+        attrs:
+          deny_message: Administrators sign in through the in-cluster route.
+      # Login: after identification (10), before password (20), so a superuser's password is never
+      # checked on the public listener.
+      - id: login-refuse-binding
+        model: authentik_flows.flowstagebinding
+        identifiers:
+          target: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+          stage: !KeyOf refuse-superuser
+        attrs:
+          order: 15
+          evaluate_on_plan: false
+          re_evaluate_policies: true
+      - model: authentik_policies.policybinding
+        identifiers:
+          policy: !KeyOf superuser-on-public-listener
+          target: !KeyOf login-refuse-binding
+          order: 0
+      # Recovery: first, before any password or device is written.
+      - id: recovery-refuse-binding
+        model: authentik_flows.flowstagebinding
+        identifiers:
+          target: !Find [authentik_flows.flow, [slug, iverson-recovery]]
+          stage: !KeyOf refuse-superuser
+        attrs:
+          order: 0
+          evaluate_on_plan: false
+          re_evaluate_policies: true
+      - model: authentik_policies.policybinding
+        identifiers:
+          policy: !KeyOf superuser-on-public-listener
+          target: !KeyOf recovery-refuse-binding
+          order: 0
