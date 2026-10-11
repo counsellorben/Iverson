@@ -188,6 +188,7 @@ Verified at plan-write time (2026-10-11, `main` at `3de6e75c`). Scratch evidence
 | 41 | Consumer | Compose keeps admin-automation secret-based, and never sees the templated keys. | `compose-only/service-clients.yaml` is static; `superusers.yaml` and `admin-automation.yaml` exist only in templates. |
 | 42 | Consumer | LoadTest's README documents its environment variables in one table. | `Iverson.LoadTest/README.md:168-170`. |
 | 43 | Code | The plan's own code blocks for Tasks 1–5 apply cleanly to `main` and pass. With Tasks 6–8 they render all five profiles and pass Task 10's render check. | `replay.py` applied Tasks 1–5 from this plan's code blocks to a scratch worktree at `a018a182`, plus the Task 6–8 drafts. Results: Client.Core.Tests 13/13; LoadTest.Tests 134/134; the Authentik classes (`AuthentikRecoveryFlowIntegrationTests`, `…RoleBlueprintTests`, `…FederationBlueprintTests`) 23/23 against a real Authentik 2026.5.3 in 4 m 25 s; Task 10 Step 3 `OK` ×5. |
+| 44 | Code | `recovery-flow.yaml`'s `metaapplyblueprint` entry makes its `!Find` of the stock TOTP setup stage independent of apply order. | Probe M1 (2026-10-11): with the stock stage deleted, the file without the entry exits 1 (`configuration_stages: Invalid pk "None"`). M2: with the entry, the stock blueprint is applied inside validation, the apply exits 0 and the stage is back in `configuration_stages`; a re-apply exits 0. M3: on a fresh volume the stock instance exists from migrate, the file's first automatic apply is `successful`, and `flow_recovery` is set about 45 s after worker start. M4: `GET /api/v3/stages/authenticator/totp/?name=default-authenticator-totp-setup` returns count 1 or 0 by exact name. |
 
 ## Tasks
 
@@ -596,6 +597,19 @@ Re-run Step 1's command. Expected: `Passed!` with 0 failed. That includes the fi
   # Stage chain: prompt (1) -> MFA validation or TOTP enrolment (2) -> user_write (3) -> user_login (4)
   # -> redirect to the console (5). Order 0 is left for the Helm-only refusal of superusers on the
   # public listener (templates/blueprints-configmap.yaml, superusers.yaml).
+```
+
+  6. Insert this entry directly after the `entries:` line, as the file's first entry (before the `# CSR round-3 finding #2, defence-in-depth half` comment):
+
+```yaml
+  # CSR round-11 #5: configuration_stages below finds the stock TOTP setup stage, which Authentik's own
+  # blueprints create in no fixed order relative to this file. Applying that stock blueprint first,
+  # inside this file's validation, makes the !Find resolve on every apply, a cold start included.
+  - model: authentik_blueprints.metaapplyblueprint
+    attrs:
+      identifiers:
+        path: default/flow-default-authenticator-totp-setup.yaml
+      required: true
 ```
 
 - [ ] **Step 4: Create `$CH/charts/authentik/blueprints/reputation.yaml`** with exactly:
@@ -2403,8 +2417,9 @@ export IVERSON_TOKEN_ENDPOINT=http://localhost:9000/application/o/token/   # wit
 export IVERSON_ACTING_USER_HOST_HEADER=<release>-authentik:9000             # the issuer the API accepts
 ```
 
-LoadTest re-reads the file for every Operator token it requests. A run longer than an hour needs a
-fresh token written to the same file before the hour is up. A caller of its own sends the token as
+LoadTest re-reads the file for every Operator token it requests, about 59 minutes after the previous
+one, so the token in the file must still be valid then; it lives 10 minutes. For a run longer than an
+hour, rewrite the file with a freshly minted token every 5 minutes for the length of the run. A caller of its own sends the token as
 a `client_credentials` request with `client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`
 and `client_assertion=<token>`.
 
@@ -2671,11 +2686,12 @@ free -g | sed -n 2p
 $DC up -d authentik-server authentik-worker > $LIVE/compose-up.log 2>&1; echo "up exit=$?"
 for i in $(seq 1 60); do [ "$(docker inspect -f '{{.State.Health.Status}}' csr11b-authentik-server-1 2>/dev/null)" = healthy ] && break; sleep 10; done; echo "server: $(docker inspect -f '{{.State.Health.Status}}' csr11b-authentik-server-1)"
 for i in $(seq 1 30); do curl -s -H "Authorization: Bearer $(val AUTHENTIK_BOOTSTRAP_TOKEN)" "http://127.0.0.1:9000/api/v3/flows/instances/?slug=default-authentication-flow" | python3 -c 'import sys,json; sys.exit(0 if json.load(sys.stdin)["pagination"]["count"]==1 else 1)' 2>/dev/null && break; sleep 10; done
+ok=no; for i in $(seq 1 30); do curl -s -H "Authorization: Bearer $(val AUTHENTIK_BOOTSTRAP_TOKEN)" "http://127.0.0.1:9000/api/v3/stages/authenticator/totp/?name=default-authenticator-totp-setup" | python3 -c 'import sys,json; sys.exit(0 if json.load(sys.stdin)["pagination"]["count"]==1 else 1)' 2>/dev/null && { ok=yes; break; }; sleep 10; done; echo "totp stage present: $ok"
 docker exec csr11b-authentik-worker-1 ak apply_blueprint custom/recovery-flow.yaml custom/reputation.yaml > $LIVE/compose-apply.log 2>&1; echo "apply exit=$?"
 for i in $(seq 1 30); do curl -s -H "Authorization: Bearer $(val AUTHENTIK_BOOTSTRAP_TOKEN)" "http://127.0.0.1:9000/api/v3/policies/expression/?name=iverson-login-failures-by-address" | python3 -c 'import sys,json; sys.exit(0 if json.load(sys.stdin)["pagination"]["count"]==1 else 1)' 2>/dev/null && break; sleep 10; done; echo "reputation policy applied: $?"
 ```
 
-Expected: `up exit=0`, `server: healthy`, `apply exit=0`, `reputation policy applied: 0`. The explicit apply is runbook §2's: the worker's first automatic apply can run before the stock login flow exists.
+Expected: `up exit=0`, `server: healthy`, `totp stage present: yes`, `apply exit=0`, `reputation policy applied: 0`. The explicit apply is runbook §2's: the worker's first automatic apply can run before the stock login flow exists. The two polls wait for both stock objects the static files `!Find`: the login flow (`reputation.yaml`) and the TOTP setup stage (`recovery-flow.yaml`).
 
 ```bash
 source /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/csr11-b-sdd/env.sh
@@ -2737,11 +2753,12 @@ cd $CH && helm dependency build . >/dev/null
 helm upgrade --install iverson . -n iverson --create-namespace -f values-laptop.yaml --set ollama.enabled=false \
   --set api.hpa.maxReplicas=1 --set api.image.tag=csr11b --set worker.image.tag=csr11b --wait --timeout 30m
 kubectl -n iverson get pods --no-headers | awk '$3!="Running" && $3!="Completed"{print "NOT READY:", $0}'
+ok=no; for i in $(seq 1 30); do [ "$(kubectl -n iverson exec deploy/iverson-authentik-worker -c worker -- ak shell -c "from authentik.flows.models import Flow; from authentik.stages.authenticator_totp.models import AuthenticatorTOTPStage; print(Flow.objects.filter(slug='default-authentication-flow').count(), AuthenticatorTOTPStage.objects.filter(name='default-authenticator-totp-setup').count())" 2>/dev/null | tail -1)" = "1 1" ] && { ok=yes; break; }; sleep 10; done; echo "stock objects present: $ok"
 kubectl -n iverson exec deploy/iverson-authentik-worker -c worker -- ak apply_blueprint custom/recovery-flow.yaml custom/reputation.yaml > $LIVE/apply1.log 2>&1; echo "apply static exit=$?"
 kubectl -n iverson exec deploy/iverson-authentik-worker -c worker -- ak apply_blueprint custom/superusers.yaml custom/orchestrator-federation.yaml custom/service-clients/service-clients.yaml custom/service-clients/admin-automation.yaml > $LIVE/apply2.log 2>&1; echo "apply templated exit=$?"
 ```
 
-Expected: no `NOT READY` lines, `apply static exit=0` and `apply templated exit=0`. These are the runbook §2 commands.
+Expected: no `NOT READY` lines, `stock objects present: yes`, `apply static exit=0` and `apply templated exit=0`. These are the runbook §2 commands, after a wait for the stock login flow and TOTP setup stage the static files `!Find`.
 
 - [ ] **Step 8: Kind live checks.**
 
@@ -2815,7 +2832,7 @@ exchange() { # client_id assertion [extra curl args] -> MINTED <scope> | REFUSED
   curl -s -H 'Host: iverson-authentik:9000' "${@:3}" http://127.0.0.1:19000/application/o/token/ -d grant_type=client_credentials -d client_id="$1" \
     -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer --data-urlencode client_assertion="$2" -d scope="$SCOPE" \
   | python3 -c 'import sys,json,base64; d=json.load(sys.stdin); t=d.get("access_token"); p=t.split(".")[1] if t else ""
-print("MINTED", json.loads(base64.urlsafe_b64decode(p+"="*(-len(p)%4))).get("scope") if t else "REFUSED "+d.get("error",""))'; }
+print("MINTED " + str(json.loads(base64.urlsafe_b64decode(p+"="*(-len(p)%4))).get("scope")) if t else "REFUSED "+d.get("error",""))'; }
 POD=$(kubectl -n iverson get pod -l app=iverson-api -o jsonpath='{.items[0].metadata.name}'); UID_=$(kubectl -n iverson get pod $POD -o jsonpath='{.metadata.uid}')
 SCOPE=goauthentik.io/api
 echo "orch pod-bound 10m: $(exchange iverson-admin-orchestrator "$(kubectl -n iverson create token iverson-api --audience iverson-authentik-orchestrator --duration 10m --bound-object-kind Pod --bound-object-name $POD --bound-object-uid $UID_)")"
