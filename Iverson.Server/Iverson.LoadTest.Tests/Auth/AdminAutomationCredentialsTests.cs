@@ -126,4 +126,28 @@ public class AdminAutomationCredentialsTests
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*kubectl create token*");
     }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("  \n\t\n")]
+    public async Task GetTokenAsync_WithAnEmptyAssertionFile_SaysSoAndSendsNoRequest(string content)
+    {
+        var file = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(file, content);
+            var endpoint = new TokenEndpoint();
+            using var creds = new AdminAutomationCredentials("id", Endpoint, null, file, null, null, endpoint);
+
+            var act = () => creds.GetTokenAsync();
+
+            await act.Should().ThrowAsync<InvalidOperationException>()
+                .WithMessage("*IVERSON_CLIENT_ASSERTION_FILE*empty*");
+            endpoint.Requests.Should().BeEmpty();
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
 }

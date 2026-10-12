@@ -22,8 +22,9 @@ public sealed class AdminAutomationCredentials : IDisposable
 
     private readonly HttpClient _http;
     private readonly SemaphoreSlim _lock = new(1, 1);
-    private string? _token;
-    private DateTimeOffset _expiresAt = DateTimeOffset.MinValue;
+    private sealed record CachedToken(string Value, DateTimeOffset ExpiresAt);
+
+    private CachedToken? _cached;
 
     public AdminAutomationCredentials(
         string clientId, string tokenEndpoint, string? clientSecret, string? assertionFile,
@@ -71,22 +72,22 @@ public sealed class AdminAutomationCredentials : IDisposable
     /// <summary>An Operator access token, re-used until a minute before it expires.</summary>
     public async Task<string> GetTokenAsync()
     {
-        if (_token is not null && DateTimeOffset.UtcNow < _expiresAt)
-            return _token;
+        if (Volatile.Read(ref _cached) is { } fresh && DateTimeOffset.UtcNow < fresh.ExpiresAt)
+            return fresh.Value;
 
         await _lock.WaitAsync();
         try
         {
-            if (_token is not null && DateTimeOffset.UtcNow < _expiresAt)
-                return _token;
+            if (Volatile.Read(ref _cached) is { } cached && DateTimeOffset.UtcNow < cached.ExpiresAt)
+                return cached.Value;
 
             using var request = BuildRequest();
             var response = await _http.RequestClientCredentialsTokenAsync(request);
             if (response.IsError)
                 throw new InvalidOperationException($"Failed to acquire admin-automation token: {response.Error}");
-            _token = response.AccessToken!;
-            _expiresAt = DateTimeOffset.UtcNow.AddSeconds(response.ExpiresIn - 60);
-            return _token;
+            var minted = new CachedToken(response.AccessToken!, DateTimeOffset.UtcNow.AddSeconds(response.ExpiresIn - 60));
+            Volatile.Write(ref _cached, minted);
+            return minted.Value;
         }
         finally
         {
@@ -109,10 +110,16 @@ public sealed class AdminAutomationCredentials : IDisposable
                     $"IVERSON_CLIENT_ASSERTION_FILE names '{AssertionFile}', which does not exist. Mint a token with " +
                     "`kubectl create token <release>-admin-automation --audience iverson-authentik-admin-automation " +
                     "--duration 10m` and write it there.");
+            var assertion = File.ReadAllText(AssertionFile).Trim();
+            if (assertion.Length == 0)
+                throw new InvalidOperationException(
+                    $"IVERSON_CLIENT_ASSERTION_FILE names '{AssertionFile}', which is empty. Mint a token into it with " +
+                    "`kubectl create token <release>-admin-automation --audience iverson-authentik-admin-automation " +
+                    "--duration 10m`.");
             request.ClientAssertion = new ClientAssertion
             {
                 Type = JwtBearerAssertionType,
-                Value = File.ReadAllText(AssertionFile).Trim(),
+                Value = assertion,
             };
             request.ClientCredentialStyle = ClientCredentialStyle.PostBody;
         }
