@@ -95,9 +95,15 @@ resource "azurerm_application_gateway" "agic" {
   firewall_policy_id  = azurerm_web_application_firewall_policy.gateway.id
 
   sku {
-    name     = "WAF_v2"
-    tier     = "WAF_v2"
-    capacity = 1
+    name = "WAF_v2"
+    tier = "WAF_v2"
+  }
+
+  # Every login and MFA submission crosses this gateway: at least two instances, so one failing
+  # instance does not take the login path down with it.
+  autoscale_configuration {
+    min_capacity = 2
+    max_capacity = 10
   }
 
   gateway_ip_configuration {
