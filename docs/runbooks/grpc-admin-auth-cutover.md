@@ -40,7 +40,7 @@ client-id and a client-secret) are byte-identical between the emitted Secrets an
 specifically. Since CSR round 11 the admin-automation Secret carries only its `client-id`; its
 client authenticates with a service-account token (`docs/runbooks/csr11-identity-plane.md` §4).
 (This was verified at the template-rendering level, not via a full live multi-service `helm install`
-against a fully-provisioned cluster with CNPG/Strimzi/ StarRocks operators installed — the bug and
+against a fully-provisioned cluster with CNPG/Strimzi/StarRocks operators installed — the bug and
 its fix both live entirely in what value a template computes, which template-level verification
 covers directly.)
 
