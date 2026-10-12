@@ -170,7 +170,10 @@ These were newly introduced by this plan and verified at plan-write time (2026-1
 | 28 | Command | The tls-proxy image has `curl`; the API image does not | `nginx-unprivileged:1.30.5-alpine`: `/usr/bin/curl`. `dotnet/aspnet:10.0`: neither `curl` nor `wget`. |
 | 29 | Consumer | The authentik egress policy already allows Postgres 5432 | `templates/networkpolicies.yaml` authentik-egress rule to `cnpg.io/cluster` on 5432, so `verify-full` needs no new rule. |
 | 30 | Code | Prometheus mounts the API CA on every profile | The subchart cannot see the API class, so the mount is unconditional. That is safe because `<release>-api-internal-tls` renders whenever the api subchart does (`api.enabled: true`; no profile overrides it). |
-| 31 | Decision | Other ingress classes leave the switch off; a mismatched admin-api class fails the render | A class other than nginx/alb/gce/azure-application-gateway gets `backendTls` false (no backend protocol exists for it), so the hop stays as today. `admin-api-ingress.yaml` fails when the API serves TLS and `api.adminApiIngress.className` cannot reach it (user decision 2026-10-12). No profile hits it. |
+| 31 | Decision | Other ingress classes leave the switch off; a mismatched admin-api class fails the render | A class other than nginx/alb/gce/azure-application-gateway gets `backendTls` false (no backend protocol exists for it), so the hop stays as today. `admin-api-ingress.yaml` fails when the API serves TLS and `api.adminApiIngress.className` cannot reach it (user decision 2026-10-12). No profile hits it. On gce the backend protocol comes from the api Service's `app-protocols`, which follows `api.ingress.className`, so the guard also fails a `gce` admin-api under a non-`gce` API class (GCE's plain-HTTP default for an unmapped port accepted unverified, user decision 2026-10-12, CIR-1 §3.2). |
+| 32 | Code | The create-user Job finishes on a multi-FE upgrade while plaintext and TLS FEs share the Service | CIR-1 probe: the rendered script behind a per-connection balancer mixing a TLS FE and a plaintext endpoint. With `AUTH` decided in a separate `if`, the Job was still running at 120 s at both 2:1 and 1:2. With `AUTH` decided inside the readiness loop (Task 5 Step 6c), it exited 0 at 2:1, and with no root password. At 1:2, a grant batch that hit the plaintext endpoint exited 1, which `backoffLimit: 6` retries. The fixed script passes `sh -n`, and the Step 8 checker counts 4 calls. |
+| 33 | Consumer | `/admin/reconcile` answers only on 8080 | `Iverson.Api/Program.cs:621` `RequireListenerPort(8080)`; `ListenerPortGateAsync` (`:939-947`, registered at `:512`) returns 404 on any other local port. CIR-1 probe: a TLS HTTP/2 POST to 8080 with the rendered Kestrel env reached routing. |
+| 34 | Code | The trusted-root block plans with a non-empty map | `terraform test` with a mocked azurerm provider (terraform v1.9.8, azurerm 3.117.1), PEMs extracted from the azure render: `Success! 2 passed, 0 failed.`; the reviewer's negative control (empty map asserting `== 1`) fails. |
 
 ## Tasks
 
@@ -597,9 +600,10 @@ with:
 {{- end }}
 {{- end }}
 {{- /* CSR round-11 #4, #6: one Kestrel serves 8080 and 8081, so this Ingress follows the API pod's
-   backendTls (keyed on api.ingress) and must be able to reach it over TLS. */}}
+   backendTls (keyed on api.ingress) and must be able to reach it over TLS. On gce the protocol comes
+   from the api Service's app-protocols, which follows api.ingress.className. */}}
 {{- $backendTls := eq (include "iverson.backendTls" (dict "className" .Values.ingress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true" }}
-{{- if and $backendTls (ne (include "iverson.backendTls" (dict "className" .Values.adminApiIngress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true") }}
+{{- if and $backendTls (or (ne (include "iverson.backendTls" (dict "className" .Values.adminApiIngress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true") (and (eq .Values.adminApiIngress.className "gce") (ne .Values.ingress.className "gce"))) }}
 {{- fail (printf "api.adminApiIngress.className %q cannot reach the API over TLS, which api.ingress.className %q turns on (CSR round-11 #4): give both API Ingresses the same class" .Values.adminApiIngress.className .Values.ingress.className) }}
 {{- end }}
 {{- $edge := include "iverson.edgeAnnotations" (dict "className" .Values.adminApiIngress.className "backendTls" $backendTls "grpc" false "trustedRoot" .Values.ingress.appgwTrustedRootCertificate "host" (printf "%s-api" .Release.Name) "probePort" 8081 "probePath" "/health") | fromYaml }}
@@ -1528,6 +1532,70 @@ flock -o $SCR/heavy.lock -c '
 
 Expected: `fmt rc=0`, `Success! The configuration is valid.` twice, `No problems detected!`. (`terraform plan` needs Azure credentials, so the rendered block is not planned here; the provider source line is the encoding evidence.)
 
+Then plan the trusted-root block with a non-empty map (spec §7), using a mocked azurerm provider so no credentials are needed. The two PEMs are the chart's own CAs from the azure render:
+
+```bash
+source /tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/csr11-c-sdd/env.sh
+cd $CH && helm dependency build . >/dev/null
+for n in api authentik; do
+  helm template iverson . -n iverson -f values-azure.yaml -f values-azure.ci-override.yaml -s charts/$n/templates/secret-internal-tls.yaml \
+    | python3 -c 'import sys,yaml,base64; print(base64.b64decode(yaml.safe_load(sys.stdin)["data"]["ca.crt"]).decode(), end="")' > $SCR/tf-az/$n-ca.pem
+done
+mkdir -p $SCR/tf-az/modules/cluster-azure/tests
+cat > $SCR/tf-az/modules/cluster-azure/tests/roots.tftest.hcl <<X
+mock_provider "azurerm" {
+  mock_data "azurerm_client_config" {
+    defaults = {
+      tenant_id       = "00000000-0000-0000-0000-000000000000"
+      object_id       = "00000000-0000-0000-0000-000000000000"
+      subscription_id = "00000000-0000-0000-0000-000000000000"
+    }
+  }
+}
+
+variables {
+  cluster_name                   = "iverson"
+  location                       = "eastus"
+  api_authorized_ip_ranges       = ["203.0.113.0/24"]
+  key_vault_authorized_ip_ranges = ["203.0.113.0/24"]
+  cluster_admin_group_object_ids = ["00000000-0000-0000-0000-000000000000"]
+  authentik_host                 = "authentik.example.com"
+  authentik_login_rate_limit     = 100
+  authentik_login_rate_window    = 300
+}
+
+run "empty" {
+  command = plan
+  assert {
+    condition     = length(azurerm_application_gateway.agic.trusted_root_certificate) == 0
+    error_message = "an empty map renders no trusted roots"
+  }
+}
+
+run "two_roots" {
+  command = plan
+  variables {
+    appgw_backend_trusted_roots = {
+      "iverson-api-ca"       = file("$SCR/tf-az/api-ca.pem")
+      "iverson-authentik-ca" = file("$SCR/tf-az/authentik-ca.pem")
+    }
+  }
+  assert {
+    condition     = toset([for r in azurerm_application_gateway.agic.trusted_root_certificate : r.name]) == toset(["iverson-api-ca", "iverson-authentik-ca"])
+    error_message = "one trusted root per map key"
+  }
+  assert {
+    condition     = [for r in azurerm_application_gateway.agic.trusted_root_certificate : r.data if r.name == "iverson-api-ca"][0] == file("$SCR/tf-az/api-ca.pem")
+    error_message = "the root carries the PEM as given"
+  }
+}
+X
+export TF_PLUGIN_CACHE_DIR=/tmp/claude-1000/-home-ben-repositories-Iverson/13ed280c-3679-411c-b94f-88727abea9b2/scratchpad/udd2/plugcache
+flock -o $SCR/heavy.lock -c 'cd '$SCR'/tf-az/modules/cluster-azure && systemd-run --user --scope -q -p MemoryMax=2G terraform test -no-color | tail -1'
+```
+
+Expected: `Success! 2 passed, 0 failed.` The test runs in the scratch copy, which the block above initialised; nothing is added to the repo.
+
 - [ ] **Step 3: Helm guard in `_validate.tpl`, empty keys in `values-azure.yaml`**
 
 The new block goes at the end of the `iverson.validateNoPlaceholders` define, after the existing `lookup` guard.
@@ -1652,7 +1720,7 @@ $TRAILER"
 
 **Interfaces:**
 - Produces, for the runbook task:
-  - the Secret `<release>-starrocks-tls` (`tls.crt`, `tls.key`, `ca.crt`; `resource-policy: keep`). Rotation: delete it, upgrade, then restart the FE, API and worker pods.
+  - the Secret `<release>-starrocks-tls` (`tls.crt`, `tls.key`, `ca.crt`; `resource-policy: keep`). Rotation (runbook §3): delete it and upgrade; while the upgrade waits on the create-user hook, delete the FE pods; then restart the API and worker pods.
   - the ConfigMap `<release>-starrocks-fe-config` (key `fe.conf`).
   - Rollout behaviour: on the upgrade that adds TLS, the create-user Job, the API and the worker treat a not-yet-restarted plaintext FE as unavailable, until the operator has restarted the FE pods with TLS. The Job waits in its "waiting for FE..." loop, and the API and worker readiness gates keep the new pods unready.
 - Touches `charts/api/templates/deployment.yaml`, which Task 1 also edits. This task's anchors are the StarRocks connection-string line and the `postgres-tls` mount and volume blocks, which Task 1 does not change. The two tasks insert into the same `volumeMounts` and `volumes` lists, at different anchors.
@@ -1705,7 +1773,8 @@ iverson-fe-keystore
    charts/authentik/templates/secret-internal-tls.yaml: an existing Secret is reused unchanged, so
    upgrades keep the same CA. The CA private key is never stored, so nothing in the cluster can issue
    more certificates under it. The certificate names the FE Service, the host every client dials.
-   Rotate by deleting this Secret, upgrading, then restarting the FE, API and worker pods. */}}
+   Rotate by deleting this Secret and upgrading; while the upgrade waits on the create-user hook,
+   delete the FE pods; then restart the API and worker pods (docs/runbooks/csr11-transport-network.md §3). */}}
 {{- $name := printf "%s-starrocks-tls" .Release.Name }}
 apiVersion: v1
 kind: Secret
@@ -1896,7 +1965,7 @@ with:
 - [ ] **Step 6: The create-user Job.** Make four replacements in `$CH/charts/starrocks/templates/job-create-user.yaml`:
   - mount the CA;
   - define `TLS`;
-  - put `$TLS` on all five `mysql` calls (the two in the `until`, the `if`, the `SHOW BACKENDS` loop and the grant batch).
+  - put `$TLS` on all four `mysql` calls (the two in the `until` condition, the `SHOW BACKENDS` loop and the grant batch), and decide `AUTH` inside the `until`, only on a connection that completed TLS.
 
 The host stays `$FE_HOST`, which is the certificate's CN.
 
@@ -1951,6 +2020,10 @@ with:
                 echo "waiting for FE..."; sleep 5
               done
               if mysql -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" -e "SELECT 1" >/dev/null 2>&1; then
+                AUTH="-p$ROOT_PW"
+              else
+                AUTH=""
+              fi
 ```
 
 with:
@@ -1961,12 +2034,20 @@ with:
               # CSR round 11 #4: every call requires TLS and verifies FE's certificate against the
               # chart CA and FE_HOST, so the passwords below travel only inside TLS. An FE that
               # does not serve TLS yet (an upgrade before the FE pods restart) counts as not ready.
+              # AUTH is decided only by a connection that completed TLS: while the operator rolls
+              # a multi-FE StatefulSet, the FE Service mixes restarted and plaintext pods.
               TLS="--ssl-mode=VERIFY_IDENTITY --ssl-ca=/etc/starrocks-tls/ca.crt"
-              until mysql $TLS -h "$FE_HOST" -P 9030 -u root -e "SELECT 1" >/dev/null 2>&1 \
-                 || mysql $TLS -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" -e "SELECT 1" >/dev/null 2>&1; do
+              until
+                if mysql $TLS -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" -e "SELECT 1" >/dev/null 2>&1; then
+                  AUTH="-p$ROOT_PW"
+                elif mysql $TLS -h "$FE_HOST" -P 9030 -u root -e "SELECT 1" >/dev/null 2>&1; then
+                  AUTH=""
+                else
+                  false
+                fi
+              do
                 echo "waiting for FE..."; sleep 5
               done
-              if mysql $TLS -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" -e "SELECT 1" >/dev/null 2>&1; then
 ```
 
 6d. Replace the two single lines below. Each is one line in the file; the lines are long and only their start changes.
@@ -2201,7 +2282,7 @@ for p in ["laptop", "local", "aws", "gcp", "azure"]:
     # create-user Job: every mysql call carries $TLS, which holds the verifying flags
     script = job["containers"][0]["args"][0]
     calls = [l for l in script.splitlines() if re.search(r"\bmysql\s", l) and not l.strip().startswith("#")]
-    check(len(calls) == 5 and all("mysql $TLS -h \"$FE_HOST\"" in l for l in calls), f"{p}: job mysql calls {calls}")
+    check(len(calls) == 4 and all("mysql $TLS -h \"$FE_HOST\"" in l for l in calls), f"{p}: job mysql calls {calls}")
     check(f'TLS="--ssl-mode=VERIFY_IDENTITY --ssl-ca={CA_PATH}"' in script, f"{p}: job TLS flags")
     check('FE_HOST="iverson-starrocks-fe-service"' in script, f"{p}: job host")
     check(job["volumes"] == [{"name": "starrocks-tls", "secret": {"secretName": "iverson-starrocks-tls",
@@ -3064,10 +3145,12 @@ upgrade, then restart its pods:
 |---|---|
 | `<release>-api-internal-tls` | the API Deployment. Prometheus picks up the new CA file without a restart. |
 | `<release>-authentik-internal-tls` | the Authentik server Deployment and the API Deployment |
-| `<release>-starrocks-tls` | the FE pods (`kubectl -n <ns> delete pod -l app.starrocks.ownerreference/name=<release>-starrocks-fe`), then the API and worker Deployments |
+| `<release>-starrocks-tls` | the FE pods while `helm upgrade` is still waiting on its create-user hook (`kubectl -n <ns> delete pod -l app.starrocks.ownerreference/name=<release>-starrocks-fe` once the upgrade has recreated the Secret). The hook waits until FE serves the new certificate, so the upgrade completes only after the FE pods restart; raise `--timeout` if they need more than the default 5 minutes. Then restart the API and worker Deployments. |
 
-On Azure, also replace the matching PEM in `appgw_backend_trusted_roots` and apply. Do this before
-the upgrade, keeping the old entry until the pods have restarted.
+On Azure the gateway trusts only the CA in `appgw_backend_trusted_roots`. The new CA exists only
+after the upgrade has regenerated the Secret. So, after the upgrade, copy its new `ca.crt` over the
+matching PEM, as in §2 step 2, apply, and then restart the pods. The Azure edge to that pod fails
+from the apply until the restarted pods are Ready.
 
 The StarRocks operator does not restart the FE when only its `fe.conf` ConfigMap changes. After any
 later edit to `charts/starrocks/templates/configmap-fe.yaml`, delete the FE pods as above.
@@ -3129,13 +3212,14 @@ with:
 
 ````markdown
    ```
-   kubectl -n <ns> port-forward svc/<release>-api 8081:8081 &
+   kubectl -n <ns> port-forward svc/<release>-api 8080:8080 &
    kubectl -n <ns> get secret <release>-api-internal-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > api-ca.pem
-   curl --cacert api-ca.pem --connect-to <release>-api:8081:127.0.0.1:8081 -X POST https://<release>-api:8081/admin/reconcile/{TypeName}
+   curl --http2 --cacert api-ca.pem --connect-to <release>-api:8080:127.0.0.1:8080 -X POST https://<release>-api:8080/admin/reconcile/{TypeName}
    ```
-   The API serves only TLS since CSR round 11, so the request verifies the certificate name
-   `<release>-api` (`docs/runbooks/csr11-transport-network.md` §5). The API image has no `curl`, so
-   the request runs from the workstation, not inside the pod.
+   The API serves only TLS since CSR round 11, and `/admin/*` is on the HTTP/2-only 8080 listener,
+   so the request uses `--http2` and verifies the certificate name `<release>-api`
+   (`docs/runbooks/csr11-transport-network.md` §5). The API image has no `curl`, so the request runs
+   from the workstation, not inside the pod.
 ````
 
 - [ ] **Step 4: Check the docs.**
@@ -3342,7 +3426,7 @@ $DC up --dry-run -d --no-deps qdrant tei-embed postgres authentik-server iverson
 Expected:
 - `redis in compose: 0`.
 - `up exit=0`, `server: healthy`, `worker: running`.
-- The `csr11c-` container list holds Postgres, the Authentik migrate, server and worker containers, and no Redis.
+- The `csr11c-` list holds the running Postgres, Authentik server and worker containers and no Redis (the migrate container has exited 0, and `docker ps` lists only running containers).
 - `login flow present: 0`.
 - `C1 login: xak-flow-redirect`: a login completes with no Redis running.
 - `stack.py query dry-run exit=0`: the command `stack.py query` runs (Task 6 Step 5) is accepted by compose.
