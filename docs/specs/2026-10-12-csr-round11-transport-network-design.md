@@ -127,7 +127,7 @@ The ALB health-check paths and the GCE Authentik health check are side-fixes in 
 - **Azure first-install window:** edge → pod stays plaintext on Azure until §3's phase 2.
 - **Azure behaviour unverified live:** whether the AGIC probe uses HTTPS when `backend-protocol` is https, and whether AGIC removes trusted roots it did not create, are undocumented; Terraform re-asserts the roots on every apply. The Host replacement the 9080 Host fix relies on (Application Gateway replaces Host with `backend-hostname`) is taken from vendor documentation. Only render checks and `terraform validate` run for Azure.
 - **gRPC on GCE and AGIC:** the existing "still 400" gap (health checks for the gRPC port) is unchanged.
-- **Operator and console wiring render-checked (user decision 2026-10-12, CDR-2 §3.1):** the StarRocks operator's handling of the init container and `configMapInfo`, and the admin-api and admin-ui Ingresses' HTTPS backends, are checked by render checks and container probes, not a live operator or ingress run.
+- **Operator and console wiring render-checked (user decision 2026-10-12, CDR-2 §3.1):** the StarRocks operator's handling of the init container and `configMapInfo`, and the admin-api Ingress's HTTPS backend, are checked by render checks and container probes (the Prometheus container probe scrapes the same TLS Kestrel 8081 endpoint the admin-api Ingress targets); the admin-ui Ingress changes only its port-80 and peer settings (§4, §6), which the render checks cover, not a live operator or ingress run.
 - **ALB ALPN (user decision 2026-10-12, CDR-2 §3.2):** gRPC from ALB to the API's HTTP/2-only TLS endpoint needs ALB to negotiate ALPN `h2` (RFC 9113 §3.2); Kestrel drops a TLS client that offers none. AWS documentation is silent; not verified live.
 - **StarRocks plaintext still accepted:** FE serves plaintext to clients that do not request TLS (operator and FE scripts); every Iverson client requires TLS.
 - **admin-ui static hop:** edge → admin-ui (static files, no credentials) stays plaintext.
@@ -184,3 +184,7 @@ Evidence was gathered on 2026-10-12 at `d710aadb`: a scratch ASP.NET app and a t
 36. **nginx `grpcs` reaches HTTP/2-only TLS Kestrel:** nginx 1.30.5 `grpc_pass grpcs://` reached such an endpoint over HTTP/2 (CDR-2 probe).
 37. **Kestrel loads the chart's key format:** a key and certificate from Helm `genSignedCert` (PKCS#1 RSA) loaded through the spec's `Kestrel__Endpoints__*__Certificate__*` env names (CDR-2 probe).
 38. **The keystore format loads in the FE's JDK:** a PKCS12 file from `mysql:8.0.46`'s OpenSSL 3.5.1 loaded in the StarRocks 4.1.1 image's JDK 17 `keytool` (CDR-2 probe).
+
+**Added after CDR-3**
+39. **The Prometheus container probe needs real DNS for its target:** the rendered job discovers targets by `dns_sd_configs` A records (`charts/prometheus/templates/configmap.yaml:19-23`). Outside a cluster, `--add-host` (an `/etc/hosts` entry) gave no targets after 20 s; a podman network alias `iverson-api-headless.iverson.svc.cluster.local` on the target container gave an active `https://…:8081/metrics` target (CDR-3 probe).
+40. **The container-probe images are local:** `starrocks/allin1-ubuntu:4.1.1`, `mysql:8.0.46`, `prom/prometheus:v2.55.1` and `mcr.microsoft.com/dotnet/aspnet:10.0` (`docker images`).
