@@ -99,7 +99,7 @@ spec:
                   name: {{ .Release.Name }}-starrocks-app
                   key: app-password
             - name: ConnectionStrings__StarRocks
-              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);"
+              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);SslMode=VerifyFull;SslCa=/etc/starrocks-tls/ca.crt;"
             {{- end }}
             - name: Engagement__Enabled
               value: {{ .Values.global.engagementEnabled | quote }}
@@ -281,6 +281,12 @@ spec:
             - name: postgres-tls
               mountPath: /etc/postgres-tls
               readOnly: true
+            {{- if .Values.global.engagementEnabled }}
+            # CSR round 11 #4: the CA ConnectionStrings__StarRocks verifies FE's certificate with.
+            - name: starrocks-tls
+              mountPath: /etc/starrocks-tls
+              readOnly: true
+            {{- end }}
             - name: authentik-ca
               mountPath: /etc/iverson/authentik-ca
               readOnly: true
@@ -310,6 +316,14 @@ spec:
             items:
               - key: ca.crt
                 path: ca.crt
+        {{- if .Values.global.engagementEnabled }}
+        - name: starrocks-tls
+          secret:
+            secretName: {{ .Release.Name }}-starrocks-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
         - name: authentik-ca
           secret:
             secretName: {{ .Release.Name }}-authentik-internal-tls

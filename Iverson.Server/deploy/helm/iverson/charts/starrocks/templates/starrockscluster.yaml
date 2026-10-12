@@ -17,6 +17,60 @@ spec:
         storageClassName: {{ .Values.storageClassName | quote }}
         storageSize: {{ .Values.fe.storageSize | quote }}
         mountPath: /opt/starrocks/fe/meta
+      # CSR round 11 #4: holds the FE keystore. The operator mounts a storage volume under its own
+      # name and turns storageClassName emptyDir into an emptyDir (no PVC); a size starting with
+      # "0" would drop the volume, so the size is a token non-zero value.
+      - name: fe-tls
+        storageClassName: emptyDir
+        storageSize: 1Mi
+        mountPath: /opt/starrocks/fe/tls
+    # CSR round 11 #4: builds the PKCS12 keystore fe.conf names from <release>-starrocks-tls on every
+    # pod start. The Secret reaches it through env, not a volume: the operator may add a hash to a
+    # mounted Secret's volume name. The image is the chart's mysql client image, which ships openssl.
+    initContainers:
+      - name: fe-keystore
+        image: {{ .Values.createUser.image | quote }}
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: { drop: ["ALL"] }
+          seccompProfile: { type: RuntimeDefault }
+        resources:
+          requests: { cpu: "100m", memory: "64Mi" }
+          limits: { cpu: "250m", memory: "128Mi" }
+        env:
+          - name: TLS_CRT
+            valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-tls, key: tls.crt } }
+          - name: TLS_KEY
+            valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-tls, key: tls.key } }
+          - name: CA_CRT
+            valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-tls, key: ca.crt } }
+          - name: KEYSTORE_PASSWORD
+            value: {{ include "starrocks.feKeystorePassword" . | quote }}
+        command: ["sh", "-c"]
+        args:
+          - |
+            set -e
+            umask 077
+            cd /opt/starrocks/fe/tls
+            printf '%s\n' "$TLS_CRT" > tls.crt
+            printf '%s\n' "$TLS_KEY" > tls.key
+            printf '%s\n' "$CA_CRT" > ca.crt
+            openssl pkcs12 -export -name fe -in tls.crt -inkey tls.key -certfile ca.crt \
+              -passout env:KEYSTORE_PASSWORD -out fe.p12.tmp
+            rm -f tls.crt tls.key ca.crt
+            # FE runs as root (the image default) and this container as uid 1000: 0644 lets FE read
+            # the keystore without relying on CAP_DAC_OVERRIDE. The emptyDir is private to the pod.
+            chmod 0644 fe.p12.tmp
+            mv -f fe.p12.tmp {{ include "starrocks.feKeystorePath" . }}
+        volumeMounts:
+          - name: fe-tls
+            mountPath: /opt/starrocks/fe/tls
+    configMapInfo:
+      configMapName: {{ .Release.Name }}-starrocks-fe-config
+      resolveKey: fe.conf
     nodeSelector:
       {{- toYaml .Values.fe.nodeSelector | nindent 6 }}
     tolerations:

@@ -82,7 +82,7 @@ spec:
                   name: {{ .Release.Name }}-starrocks-app
                   key: app-password
             - name: ConnectionStrings__StarRocks
-              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);"
+              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);SslMode=VerifyFull;SslCa=/etc/starrocks-tls/ca.crt;"
             # CSR round 11 §3: tenant provisioning's own login. Only the worker provisions, so
             # only the worker gets it; the api Deployment has no reference to this Secret.
             - name: STARROCKS_PROVISIONER_PASSWORD
@@ -91,7 +91,7 @@ spec:
                   name: {{ .Release.Name }}-starrocks-provisioner
                   key: password
             - name: ConnectionStrings__StarRocksProvisioner
-              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;User Id=iverson_provisioner;Password=$(STARROCKS_PROVISIONER_PASSWORD);"
+              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;User Id=iverson_provisioner;Password=$(STARROCKS_PROVISIONER_PASSWORD);SslMode=VerifyFull;SslCa=/etc/starrocks-tls/ca.crt;"
             {{- end }}
             - name: Engagement__Enabled
               value: {{ .Values.global.engagementEnabled | quote }}
@@ -166,6 +166,12 @@ spec:
             - name: postgres-tls
               mountPath: /etc/postgres-tls
               readOnly: true
+            {{- if .Values.global.engagementEnabled }}
+            # CSR round 11 #4: the CA both StarRocks connection strings verify FE's certificate with.
+            - name: starrocks-tls
+              mountPath: /etc/starrocks-tls
+              readOnly: true
+            {{- end }}
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -184,5 +190,13 @@ spec:
             items:
               - key: ca.crt
                 path: ca.crt
+        {{- if .Values.global.engagementEnabled }}
+        - name: starrocks-tls
+          secret:
+            secretName: {{ .Release.Name }}-starrocks-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
         - name: tmp
           emptyDir: {}

@@ -26,6 +26,15 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         seccompProfile: { type: RuntimeDefault }
+      # CSR round 11 #4: the CA that issued FE's certificate (secret-tls.yaml). That Secret is an
+      # ordinary release resource, so it exists before this post-install/post-upgrade hook runs.
+      volumes:
+        - name: starrocks-tls
+          secret:
+            secretName: {{ .Release.Name }}-starrocks-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
       containers:
         - name: create-user
           image: {{ .Values.createUser.image | quote }}
@@ -43,31 +52,43 @@ spec:
               valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-app, key: app-password } }
             - name: PROVISIONER_PW
               valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-provisioner, key: password } }
+          volumeMounts:
+            - name: starrocks-tls
+              mountPath: /etc/starrocks-tls
+              readOnly: true
           command: ["sh", "-c"]
           args:
             - |
               set -e
               FE_HOST="{{ .Release.Name }}-starrocks-fe-service"
               BE_REPLICAS="{{ .Values.be.replicas }}"
-              until mysql -h "$FE_HOST" -P 9030 -u root -e "SELECT 1" >/dev/null 2>&1 \
-                 || mysql -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" -e "SELECT 1" >/dev/null 2>&1; do
+              # CSR round 11 #4: every call requires TLS and verifies FE's certificate against the
+              # chart CA and FE_HOST, so the passwords below travel only inside TLS. An FE that
+              # does not serve TLS yet (an upgrade before the FE pods restart) counts as not ready.
+              # AUTH is decided only by a connection that completed TLS: while the operator rolls
+              # a multi-FE StatefulSet, the FE Service mixes restarted and plaintext pods.
+              TLS="--ssl-mode=VERIFY_IDENTITY --ssl-ca=/etc/starrocks-tls/ca.crt"
+              until
+                if mysql $TLS -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" -e "SELECT 1" >/dev/null 2>&1; then
+                  AUTH="-p$ROOT_PW"
+                elif mysql $TLS -h "$FE_HOST" -P 9030 -u root -e "SELECT 1" >/dev/null 2>&1; then
+                  AUTH=""
+                else
+                  false
+                fi
+              do
                 echo "waiting for FE..."; sleep 5
               done
-              if mysql -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" -e "SELECT 1" >/dev/null 2>&1; then
-                AUTH="-p$ROOT_PW"
-              else
-                AUTH=""
-              fi
               # BE's own entrypoint script registers itself with FE via
               # `mysql -u root` — hardcoded, no password, no way to configure — so changing
               # root's password (below) before every expected BE has joined permanently
               # locks any not-yet-joined BE out of the cluster (it only retries for ~15s
               # before giving up). Wait for BE_REPLICAS backends first, using the same $AUTH
               # so this is idempotent across upgrades where root already has a password.
-              until [ "$(mysql -h "$FE_HOST" -P 9030 -u root $AUTH --skip-column-names --batch -e "SHOW BACKENDS;" 2>/dev/null | wc -l)" -ge "$BE_REPLICAS" ]; do
+              until [ "$(mysql $TLS -h "$FE_HOST" -P 9030 -u root $AUTH --skip-column-names --batch -e "SHOW BACKENDS;" 2>/dev/null | wc -l)" -ge "$BE_REPLICAS" ]; do
                 echo "waiting for $BE_REPLICAS BE node(s) to register..."; sleep 5
               done
-              mysql -h "$FE_HOST" -P 9030 -u root $AUTH -e "
+              mysql $TLS -h "$FE_HOST" -P 9030 -u root $AUTH -e "
                 SET PASSWORD FOR 'root' = PASSWORD('$ROOT_PW');
                 CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY '$APP_PW';
                 CREATE USER IF NOT EXISTS 'iverson_provisioner'@'%' IDENTIFIED BY '$PROVISIONER_PW';
