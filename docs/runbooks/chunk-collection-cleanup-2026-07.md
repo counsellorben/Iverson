@@ -25,12 +25,13 @@ chunk from an orphaned duplicate after the fact.
    same host) — reach it in-cluster instead, via a port-forward:
    ```
    kubectl -n <ns> port-forward svc/<release>-api 8080:8080 &
-   curl --http2-prior-knowledge -X POST http://localhost:8080/admin/reconcile/{TypeName}
+   kubectl -n <ns> get secret <release>-api-internal-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > api-ca.pem
+   curl --http2 --cacert api-ca.pem --connect-to <release>-api:8080:127.0.0.1:8080 -X POST https://<release>-api:8080/admin/reconcile/{TypeName}
    ```
-   or by exec'ing into a running API pod:
-   ```
-   kubectl -n <ns> exec deploy/<release>-api -- curl --http2-prior-knowledge -X POST http://localhost:8080/admin/reconcile/{TypeName}
-   ```
+   The API serves only TLS since CSR round 11, and `/admin/*` is on the HTTP/2-only 8080 listener,
+   so the request uses `--http2` and verifies the certificate name `<release>-api`
+   (`docs/runbooks/csr11-transport-network.md` §5). The API image has no `curl`, so the request runs
+   from the workstation, not inside the pod.
 4. Verify: `SearchChunks` results for a known article should return exactly the expected number
    of passages (no duplicates) — spot-check 2-3 articles per type.
 

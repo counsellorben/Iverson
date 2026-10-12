@@ -133,6 +133,7 @@ If a check fails, apply these fallbacks by values for that profile, in order:
 2. If still blocked, set `networkPolicy.apiServerAnyDestination: true`.
 3. For DNS failures, set `networkPolicy.dnsAnyDestination: true`.
 
+Either fallback renders only with `networkPolicy.keepFallbacks: true` beside it (CSR round-11 #18).
 A profile that keeps a fallback leaves that half of CSR round-10 finding #17 open there; record it.
 
 ## 5. AKS ingress readiness
