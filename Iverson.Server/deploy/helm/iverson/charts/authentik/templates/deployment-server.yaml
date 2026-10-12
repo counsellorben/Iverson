@@ -1,3 +1,4 @@
+{{- $backendTls := eq (include "iverson.backendTls" (dict "className" .Values.ingress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -162,14 +163,15 @@ spec:
             limits:
               cpu: {{ .Values.resources.tlsProxy.limits.cpu | quote }}
               memory: {{ .Values.resources.tlsProxy.limits.memory | quote }}
-          # An HTTP probe on the public listener (CSR round-10 #4): GCE and AGIC derive the Ingress
+          # A probe on the public listener (CSR round-10 #4): GCE and AGIC derive the Ingress
           # backend's health check from the readiness probe on the port the container declares, and
           # 9080 needs no NetworkPolicy exception beyond its own rule. Both listeners share one nginx
           # process and config, so it vouches for 8443 too. Authentik's cheap /-/health/live/ path with
           # the server container's timeout and threshold keeps a slow Django response from taking the
-          # only Authentik pod out of its Service.
+          # only Authentik pod out of its Service. HTTPS when 9080 serves TLS (CSR round-11 #4): an
+          # nginx ssl listener answers plain HTTP with 400.
           readinessProbe:
-            httpGet: { path: /-/health/live/, port: 9080 }
+            httpGet: { path: /-/health/live/, port: 9080{{ if $backendTls }}, scheme: HTTPS{{ end }} }
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 5

@@ -2,11 +2,18 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ .Release.Name }}-authentik
-  {{- /* CSR round-11 #5: GCE attaches backendconfig.yaml (the Cloud Armor policy) to the public
-  listener's backend. */}}
-  {{- with .Values.ingress.securityPolicy }}
+  {{- /* CSR round-11 #5: GCE attaches backendconfig.yaml (the Cloud Armor policy and health check)
+  to the public listener's backend. CSR round-11 #4: GCE speaks HTTPS to the public listener when
+  it serves TLS (iverson.backendTls). */}}
+  {{- $gceTls := and (eq .Values.ingress.className "gce") (eq (include "iverson.backendTls" (dict "className" .Values.ingress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true") }}
+  {{- if or .Values.ingress.securityPolicy $gceTls }}
   annotations:
+    {{- with .Values.ingress.securityPolicy }}
     cloud.google.com/backend-config: '{"ports": {"9080": "{{ $.Release.Name }}-authentik"}}'
+    {{- end }}
+    {{- if $gceTls }}
+    cloud.google.com/app-protocols: '{"http-public": "HTTPS"}'
+    {{- end }}
   {{- end }}
 spec:
   selector:

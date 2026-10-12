@@ -8,4 +8,12 @@ metadata:
 spec:
   securityPolicy:
     name: {{ . | quote }}
+  {{- if and (eq $.Values.ingress.className "gce") (eq (include "iverson.backendTls" (dict "className" $.Values.ingress.className "trustedRoot" $.Values.ingress.appgwTrustedRootCertificate)) "true") }}
+  # CSR round-11 #4: the public listener serves TLS; Authentik's / redirects, so the check uses the
+  # liveness path the tls-proxy forwards.
+  healthCheck:
+    type: HTTPS
+    port: 9080
+    requestPath: /-/health/live/
+  {{- end }}
 {{- end }}

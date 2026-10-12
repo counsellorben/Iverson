@@ -37,3 +37,8 @@ ingress:
   wafAclArn: ""
   securityPolicy: ""
   wafPolicyId: ""
+  # CSR round-11 #4: on className azure-application-gateway, the name of the Application Gateway
+  # trusted root holding this release's <release>-authentik-internal-tls ca.crt. Empty keeps the
+  # gateway → Authentik 9080 hop plaintext; set, the tls-proxy serves TLS on 9080. Other classes
+  # ignore it (iverson.backendTls in the parent's templates/_helpers.tpl).
+  appgwTrustedRootCertificate: ""
