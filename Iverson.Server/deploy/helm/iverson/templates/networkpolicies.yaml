@@ -11,11 +11,29 @@
 {{- fail "networkPolicy.apiServerCidrs contains a blank entry; every entry must be a CIDR" }}
 {{- end }}
 {{- end }}
+{{- if or .Values.networkPolicy.dnsAnyDestination .Values.networkPolicy.apiServerAnyDestination }}
+{{- if not .Values.networkPolicy.keepFallbacks }}
+{{- fail "networkPolicy.dnsAnyDestination / apiServerAnyDestination render port-only egress rules that admit any destination. They are first-deploy fallbacks: replace them with the scoped rules, or set networkPolicy.keepFallbacks: true to record that the fallback is kept on purpose (docs/runbooks/csr10-infrastructure-cutover.md section 4)." }}
+{{- end }}
+{{- end }}
 {{- range .Values.networkPolicy.clusterCidrs }}
 {{- if not (trim (toString .)) }}
 {{- fail "networkPolicy.clusterCidrs contains a blank entry; every entry must be a CIDR (note: helm's --set x={} produces a one-element list [\"\"], not an empty list — use --set-json or a values file for a true empty list)" }}
 {{- end }}
 {{- end }}
+{{- /*
+CSR round-11 #18: the ingress-nginx namespace is admitted only where the Ingress fronting the
+port is served by ingress-nginx (className "nginx"); every other class reaches the pod from
+clusterCidrs alone. Each rule is gated on the className of the Ingress that targets its port:
+API 8080 by api.ingress, API 8081 by api.adminApiIngress (Prometheus stays admitted there
+whatever the class), admin-ui 8080 by adminUi.ingress, Authentik 9080 by authentik.ingress. A
+rule's `from` list never becomes empty: clusterCidrs is non-empty (refused above otherwise), so
+dropping the namespace peer narrows the rule instead of turning it into an allow-all.
+*/}}
+{{- $nginxApi := eq (dig "ingress" "className" "" (default dict .Values.api)) "nginx" }}
+{{- $nginxAdminApi := eq (dig "adminApiIngress" "className" "" (default dict .Values.api)) "nginx" }}
+{{- $nginxAdminUi := eq (dig "ingress" "className" "" (default dict .Values.adminUi)) "nginx" }}
+{{- $nginxAuthentik := eq (dig "ingress" "className" "" (default dict .Values.authentik)) "nginx" }}
 # Default-deny: nothing in the namespace can talk to anything else unless a
 # more specific policy below explicitly allows it.
 apiVersion: networking.k8s.io/v1
@@ -44,16 +62,20 @@ spec:
   policyTypes: ["Ingress"]
   ingress:
     - from:
+        {{- if $nginxApi }}
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+        {{- end }}
         {{- range .Values.networkPolicy.clusterCidrs }}
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
       ports:
         - { protocol: TCP, port: 8080 }
     - from:
+        {{- if $nginxAdminApi }}
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+        {{- end }}
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } }
         {{- range .Values.networkPolicy.clusterCidrs }}
         - ipBlock: { cidr: {{ . }} }
@@ -467,8 +489,10 @@ spec:
   policyTypes: ["Ingress"]
   ingress:
     - from:
+        {{- if $nginxAdminUi }}
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+        {{- end }}
         {{- range .Values.networkPolicy.clusterCidrs }}
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
@@ -552,8 +576,10 @@ spec:
     # Port 9000 has no rule: its only callers are the kubelet (node traffic is always admitted),
     # the sidecar over loopback and `kubectl port-forward`, none of which NetworkPolicy filters.
     - from:
+        {{- if $nginxAuthentik }}
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+        {{- end }}
         {{- range .Values.networkPolicy.clusterCidrs }}
         - ipBlock: { cidr: {{ . }} }
         {{- end }}

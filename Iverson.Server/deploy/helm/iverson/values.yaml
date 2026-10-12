@@ -31,6 +31,10 @@ networkPolicy:
   enabled: true
   dnsAnyDestination: false
   apiServerAnyDestination: false
+  # Acknowledges a kept fallback: with dnsAnyDestination or apiServerAnyDestination true the render
+  # fails unless this is true as well, so a fallback applied for the first deploy is not left in
+  # place unnoticed (docs/runbooks/csr10-infrastructure-cutover.md section 4).
+  keepFallbacks: false
 
 # global values are visible to every subchart (unlike top-level keys like `api:`,
 # which are scoped only to the matching subchart) — used here so the authentik
