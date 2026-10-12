@@ -124,10 +124,11 @@ export IVERSON_ACTING_USER_HOST_HEADER=<release>-authentik:9000             # th
 ```
 
 LoadTest re-reads the file for every Operator token it requests, about 59 minutes after the previous
-one, so the token in the file must still be valid then; it lives 10 minutes. For a run longer than an
-hour, rewrite the file with a freshly minted token every 5 minutes for the length of the run. A caller of its own sends the token as
-a `client_credentials` request with `client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`
-and `client_assertion=<token>`.
+one, so the token in the file must still be valid then; it lives 10 minutes. For a run longer than
+an hour, rewrite the file with a freshly minted token every 5 minutes for the length of the run. A
+caller of its own sends the token as a `client_credentials` request with
+`client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer` and
+`client_assertion=<token>`.
 
 ## 5. Login throttling
 
