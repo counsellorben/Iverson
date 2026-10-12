@@ -48,10 +48,11 @@ whole file.
    `kubectl -n <ns> rollout status deploy/<release>-authentik-worker`, then repeat
    `kubectl -n <ns> get pods -l app=<release>-authentik-worker` until it lists one pod.
 2. On a fresh install, wait until Authentik's own blueprints have created the login flow and the
-   TOTP setup stage the static files refer to (up to 5 minutes):
+   TOTP setup stage the static files refer to, and the out-of-box `initial-setup` flow that
+   `service-clients.yaml` retitles (up to 5 minutes):
 
    ```bash
-   ok=no; for i in $(seq 1 30); do [ "$(kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c "from authentik.flows.models import Flow; from authentik.stages.authenticator_totp.models import AuthenticatorTOTPStage; print(Flow.objects.filter(slug='default-authentication-flow').count(), AuthenticatorTOTPStage.objects.filter(name='default-authenticator-totp-setup').count())" 2>/dev/null | tail -1)" = "1 1" ] && { ok=yes; break; }; sleep 10; done; echo "stock objects present: $ok"
+   ok=no; for i in $(seq 1 30); do [ "$(kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c "from authentik.flows.models import Flow; from authentik.stages.authenticator_totp.models import AuthenticatorTOTPStage; print(Flow.objects.filter(slug='default-authentication-flow').count(), AuthenticatorTOTPStage.objects.filter(name='default-authenticator-totp-setup').count(), Flow.objects.filter(slug='initial-setup').count())" 2>/dev/null | tail -1)" = "1 1 1" ] && { ok=yes; break; }; sleep 10; done; echo "stock objects present: $ok"
    ```
 
    Continue when it prints `yes`. If it prints `no`, Authentik's own blueprints have not applied yet:
