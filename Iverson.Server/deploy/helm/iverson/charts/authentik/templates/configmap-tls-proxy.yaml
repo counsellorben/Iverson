@@ -11,8 +11,8 @@ data:
     # the same values (global.trustedProxies). A peer inside the trusted ranges is a load balancer or
     # ingress, so the client is the entry `hops` positions from the right of X-Forwarded-For; any
     # other peer, or a header with no such entry, gives the peer itself. The last map strips a port
-    # (AGIC writes "ip:port") and unwraps "[v6]:port", as ClientPartitionKey's IPEndPoint.TryParse
-    # does, so Authentik always receives one bare address.
+    # (AGIC writes "ip:port") and unwraps "[v6]" with or without a port, as ClientPartitionKey's
+    # IPEndPoint.TryParse does, so Authentik always receives one bare address.
 {{- $hops := int (dig "trustedProxies" "hops" 1 .Values.global) }}
 {{- if not (has $hops (list 1 2)) }}
 {{- fail "global.trustedProxies.hops must be 1 or 2: the Authentik tls-proxy selects only those positions" }}
@@ -36,6 +36,7 @@ data:
       "~^1:(?<c>.+)$" $c;
     }
     map $iverson_client $iverson_client_addr {
+      "~^\[(?<a>[0-9A-Fa-f:.]+)\]$" $a;
       "~^\[(?<a>[0-9A-Fa-f:.]+)\]:[0-9]+$" $a;
       "~^(?<a>[0-9]{1,3}(?:\.[0-9]{1,3}){3}):[0-9]+$" $a;
       default $iverson_client;
