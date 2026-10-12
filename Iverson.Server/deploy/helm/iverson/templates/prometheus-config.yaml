@@ -1,3 +1,8 @@
+{{- if .Values.global.prometheusEnabled }}
+{{- /* CSR round-11 #4: moved here from charts/prometheus/templates/configmap.yaml, because only the
+   parent sees the api subchart's ingress class, which decides whether the API serves TLS
+   (iverson.backendTls). Same name: charts/prometheus/templates/deployment.yaml mounts it. */}}
+{{- $apiTls := eq (include "iverson.backendTls" (dict "className" .Values.api.ingress.className "trustedRoot" .Values.api.ingress.appgwTrustedRootCertificate)) "true" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -17,6 +22,15 @@ data:
     # they were one target.
     scrape_configs:
       - job_name: iverson-api
+        {{- if $apiTls }}
+        # CSR round-11 #4: the API serves TLS. Targets are pod IPs, which the certificate does
+        # not name, so the name checked is the Service's. The CA is a Secret volume without
+        # subPath, so a rotated CA reaches the running Prometheus.
+        scheme: https
+        tls_config:
+          ca_file: /etc/iverson/api-ca/ca.crt
+          server_name: {{ .Release.Name }}-api
+        {{- end }}
         dns_sd_configs:
           - names: ["{{ .Release.Name }}-api-headless.{{ .Release.Namespace }}.svc.cluster.local"]
             type: A
@@ -26,3 +40,4 @@ data:
           - names: ["{{ .Release.Name }}-worker-headless.{{ .Release.Namespace }}.svc.cluster.local"]
             type: A
             port: 8081
+{{- end }}

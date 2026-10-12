@@ -1,7 +1,7 @@
 # Headless counterpart to the ClusterIP Service above (service.yaml) — additive, not a
 # replacement. worker's ClusterIP Service carries no Ingress today, but the same
 # per-pod-vs-VIP reasoning applies: Prometheus's dns_sd_configs scrape (Task 8,
-# charts/prometheus/templates/configmap.yaml) needs one A record per pod IP so its
+# the parent chart's templates/prometheus-config.yaml) needs one A record per pod IP so its
 # counters (fan-out backlog, DLQ/retry) don't flicker across the HPA's replicas the way a
 # ClusterIP VIP scrape would.
 apiVersion: v1

@@ -69,6 +69,12 @@ spec:
               readOnly: true
             - name: storage
               mountPath: /prometheus
+            # CSR round-11 #4: the CA the iverson-api scrape job verifies the API with, once the API
+            # serves TLS (the parent's templates/prometheus-config.yaml). Not a subPath mount, so a
+            # rotated CA reaches the running Prometheus, which rereads ca_file.
+            - name: api-ca
+              mountPath: /etc/iverson/api-ca
+              readOnly: true
       volumes:
         - name: config
           configMap:
@@ -76,3 +82,9 @@ spec:
         - name: storage
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-prometheus
+        - name: api-ca
+          secret:
+            secretName: {{ .Release.Name }}-api-internal-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
