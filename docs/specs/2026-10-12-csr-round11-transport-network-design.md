@@ -19,6 +19,8 @@ Sub-projects A (server authorization) and B (identity plane) merged and were pus
 - **StarRocks:** FE TLS with verifying clients; FE still accepts plaintext (not forced).
 - **Azure port 80:** `ssl-redirect` on the four AGIC Ingresses.
 - **Service mesh:** out of scope.
+- **Prometheus scrape (CDR-1 §3.1, option A):** the parent chart renders the scrape ConfigMap, so the API job can follow the API's backend-TLS switch.
+- **AGIC Host rewrite (CDR-1 §3.2, accept):** the 9080 Host fix relies on Application Gateway's documented Host replacement; it is not verified live.
 
 ## 1. Chart certificates
 
@@ -26,8 +28,10 @@ Two new chart-generated Secrets follow `charts/authentik/templates/secret-intern
 
 | Secret | Subchart | Certificate names (CN first) |
 |---|---|---|
-| `<release>-api-tls` | api | `<release>-api`, `<release>-api.<ns>.svc`, `<release>-api.<ns>.svc.cluster.local` |
+| `<release>-api-internal-tls` | api | `<release>-api`, `<release>-api.<ns>.svc`, `<release>-api.<ns>.svc.cluster.local` |
 | `<release>-starrocks-tls` | starrocks | `<release>-starrocks-fe-service` + `.<ns>.svc` + `.<ns>.svc.cluster.local` |
+
+Like `secret-internal-tls.yaml:7-9`, the API Secret's template fails the render when its name equals `api.ingress.tlsSecretName` or `api.adminApiIngress.tlsSecretName` (the kind and cloud profiles name their public certificate `iverson-api-tls`).
 
 Authentik's public listener reuses the existing `<release>-authentik-internal-tls` (same pod, same sidecar; CN `<release>-authentik`).
 
@@ -35,9 +39,9 @@ Authentik's public listener reuses the existing `<release>-authentik-internal-tl
 
 **Backend TLS switch.** `backendTls` is true on the nginx, alb and gce classes. On `azure-application-gateway` it is true per pod (API; Authentik) only once that pod's trusted-root name is set (§3). Every item below — Kestrel endpoints, probes, the Prometheus job, `listen 9080 ssl` and the edge annotations — follows it; when false the hop stays as today.
 
-**API (no code change).** The api Deployment sets `Kestrel__Endpoints__Grpc__Url=https://*:8080`, `Kestrel__Endpoints__Http__Url=https://*:8081` and each endpoint's `Certificate__Path`/`Certificate__KeyPath` to the mounted `<release>-api-tls`. `appsettings.json` stays http, so compose and local runs are unchanged. Readiness and liveness probes get `scheme: HTTPS` (the kubelet skips verification). Prometheus's `iverson-api` job gets `scheme: https`, `tls_config.ca_file` (a mounted copy of `ca.crt`) and `tls_config.server_name: <release>-api` (it scrapes pod IPs, which are not certificate names).
+**API (no code change).** The api Deployment sets `Kestrel__Endpoints__Grpc__Url=https://*:8080`, `Kestrel__Endpoints__Http__Url=https://*:8081` and each endpoint's `Certificate__Path`/`Certificate__KeyPath` to the mounted `<release>-api-internal-tls`. `appsettings.json` stays http, so compose and local runs are unchanged. Readiness and liveness probes get `scheme: HTTPS` (the kubelet skips verification). The parent chart renders the Prometheus scrape ConfigMap `<release>-prometheus-config` (moved from `charts/prometheus/templates/configmap.yaml`, gated on `global.prometheusEnabled`; the prometheus Deployment keeps mounting it by that name), so its `iverson-api` job can follow `backendTls`: `scheme: https`, `tls_config.ca_file` (a copy of `ca.crt` mounted in the prometheus Deployment) and `tls_config.server_name: <release>-api` (it scrapes pod IPs, which are not certificate names).
 
-**Authentik.** `configmap-tls-proxy.yaml`: `listen 9080 ssl;` with the same `ssl_certificate`, key and `ssl_protocols` as the 8443 server.
+**Authentik.** `configmap-tls-proxy.yaml`: `listen 9080 ssl;` with the same `ssl_certificate`, key and `ssl_protocols` as the 8443 server. The tls-proxy container's readiness probe (`httpGet` 9080) gets `scheme: HTTPS` with it; plain HTTP to an `ssl` listener answers 400. The 9080 server sets `Host` and `X-Forwarded-Host` to the constant `authentik.<global.ingressHost>` instead of `$http_host`: on AGIC, `backend-hostname` replaces Host, and Authentik builds its issuer and URLs from Host. On the other classes the Ingress routes only that host to 9080, so the value there is unchanged.
 
 **Per-class edge settings** (set by the templates from `className`, not by profile values):
 
@@ -54,8 +58,8 @@ The ALB health-check paths and the GCE Authentik health check are side-fixes in 
 
 - **Terraform:** a new `appgw_backend_trusted_roots` variable (`map(string)`, name → PEM, default `{}`) in the azure root, passed to `modules/cluster-azure`, renders one `trusted_root_certificate { name, data }` block per entry on the gateway.
 - **Helm:** `api.ingress.appgwTrustedRootCertificate` (both API Ingresses, since one Kestrel serves 8080 and 8081) and `authentik.ingress.appgwTrustedRootCertificate` (root names); set → `backendTls` true for that pod's hops.
-- **Runbook:** (1) `helm install`; (2) read `ca.crt` from `<release>-api-tls` and `<release>-authentik-internal-tls` into the variable and apply; (3) set the two values and `helm upgrade`.
-- **Guard:** on the azure class, if `lookup` finds the hop's TLS Secret (the release exists) and the root name is empty, the render fails, pointing at the runbook. `helm template` without a cluster is unaffected.
+- **Runbook:** (1) `helm install`; (2) read `ca.crt` from `<release>-api-internal-tls` and `<release>-authentik-internal-tls` into the variable and apply; (3) set the two values and `helm upgrade`.
+- **Guard:** on the azure class, if `lookup` finds `<release>-api-internal-tls` (created by this change, so phase 1 has run) and either pod's root name is empty, the render fails, pointing at the runbook. Both hops key on the API Secret: `<release>-authentik-internal-tls` has existed since round 10, so its presence does not mean phase 1 ran. `helm template` without a cluster is unaffected.
 
 ## 4. Port 80 (#6)
 
@@ -76,11 +80,11 @@ The ALB health-check paths and the GCE Authentik health check are side-fixes in 
 - API and worker connection strings (app and provisioner) gain `SslMode=VerifyFull;SslCa=/etc/starrocks-tls/ca.crt`, with `ca.crt` mounted.
 - `job-create-user.yaml`: every `mysql` call gains `--ssl-mode=VERIFY_IDENTITY --ssl-ca=…`. The two password literals then travel inside TLS; no hashed `IDENTIFIED … AS`.
 
-**Authentik → Postgres.** The Authentik ConfigMap sets `AUTHENTIK_POSTGRESQL__SSLMODE: verify-full` and `AUTHENTIK_POSTGRESQL__SSLROOTCERT` to a mount of `<release>-postgres-ca` (`ca.crt`) in both Authentik Deployments — the CA and host (`<release>-postgres-rw`) the API and worker already verify with `SSL Mode=VerifyFull`.
+**Authentik → Postgres.** The Authentik ConfigMap sets `AUTHENTIK_POSTGRESQL__SSLMODE: verify-full` and `AUTHENTIK_POSTGRESQL__SSLROOTCERT` to a mount of `<release>-postgres-ca` (`ca.crt`) in the three containers that load `<release>-authentik-config` (the server's `migrate` initContainer, `server`, `worker`) — the CA and host (`<release>-postgres-rw`) the API and worker already verify with `SSL Mode=VerifyFull`.
 
 **Redis is removed.** Authentik 2026.5.3 reads no Redis setting.
-- Helm: the `redis` subchart (`charts/redis`, `redis-0.1.0.tgz`), its `Chart.yaml`/`Chart.lock` entries, the `redis:` blocks in `values.yaml` and the profiles, `AUTHENTIK_REDIS__HOST` and both `AUTHENTIK_REDIS__PASSWORD` references, and the Redis NetworkPolicies.
-- Compose: the `redis` service, Authentik's `depends_on: redis` and `AUTHENTIK_REDIS__HOST`.
+- Helm: the `redis` subchart (`charts/redis`, `redis-0.1.0.tgz`), its `Chart.yaml`/`Chart.lock` entries, the `redis:` blocks in `values.yaml` and the profiles, `AUTHENTIK_REDIS__HOST` and the three `AUTHENTIK_REDIS__PASSWORD` references (`migrate`, `server`, `worker`), and the Redis NetworkPolicies.
+- Compose: the `redis` service, Authentik's `depends_on: redis` and `AUTHENTIK_REDIS__HOST`; `Iverson.LoadTest/scripts/stack.py` drops `redis` from `TIERS["query"]`, `CONTAINER` and its docstring.
 - Tests: `AuthentikContainerFixture` stops starting a Redis container.
 
 ## 6. Network policy (#18)
@@ -90,10 +94,10 @@ The ALB health-check paths and the GCE Authentik health check are side-fixes in 
 
 ## 7. Testing
 
-- **Render checks** (all five profiles, `helm dependency build` + `helm template`/`helm lint`, parsed): per-class backend and health-check annotations (§2 table); the api and Authentik Service `app-protocols`; the GCE BackendConfig health check; `allow-http: "false"` on the four GCE Ingresses and `ssl-redirect` on the four AGIC Ingresses; the Kestrel env and HTTPS probes; the Prometheus https job; `listen 9080 ssl`; the StarRocks storage volume, init container and `configMapInfo`; the client connection strings and job flags; Authentik's `sslmode`/`sslrootcert` env and mount; no Redis object or env; the `ingress-nginx` peer only on kind; the fallback gate both ways; the Azure guard both ways (a fake existing Secret through a scratch chart).
+- **Render checks** (all five profiles, `helm dependency build` + `helm template`/`helm lint`, parsed): per-class backend and health-check annotations (§2 table); the api and Authentik Service `app-protocols`; the GCE BackendConfig health check; `allow-http: "false"` on the four GCE Ingresses and `ssl-redirect` on the four AGIC Ingresses; the Kestrel env and HTTPS probes (API and tls-proxy); the Prometheus https job (rendered by the parent); the 9080 `Host`/`X-Forwarded-Host` constant; `listen 9080 ssl`; the StarRocks storage volume, init container and `configMapInfo`; the client connection strings and job flags; Authentik's `sslmode`/`sslrootcert` env and the CA mount in each of `migrate`, `server` and `worker`; no Redis object or env; the `ingress-nginx` peer only on kind; the fallback gate both ways; the Azure guard both ways (a fake existing Secret through a scratch chart); the chart's Secret names differ from every Ingress `secretName` under release `iverson`.
 - **Terraform:** `fmt -check`, `validate` per root and tfsec in a scratch copy; the azure root with a non-empty `appgw_backend_trusted_roots`.
 - **Suites:** the nine .NET suites and Client.Core stay green (the fixture change runs in Api.Tests).
-- **Compose live** (isolated project): Authentik server and worker healthy without Redis; a login completes.
+- **Compose live** (isolated project): Authentik server and worker healthy without Redis; a login completes; `stack.py query`'s compose command passes a `--dry-run`.
 - **Kind live** (fresh install, laptop profile):
   - gRPC through ingress-nginx over GRPCS and the admin console over HTTPS; plaintext `8080`/`8081` refused in-cluster; probes green; Prometheus target `up` over https;
   - an Authentik login through the 9080 TLS listener;
@@ -115,7 +119,7 @@ The ALB health-check paths and the GCE Authentik health check are side-fixes in 
 - **Service mesh / pod → store mTLS:** not in scope.
 - **Edge certificate verification:** the nginx, ALB and GCE edges encrypt to pods but do not verify pod certificates; only the Azure gateway checks the root and CN.
 - **Azure first-install window:** edge → pod stays plaintext on Azure until §3's phase 2.
-- **Azure behaviour unverified live:** whether the AGIC probe uses HTTPS when `backend-protocol` is https, and whether AGIC removes trusted roots it did not create, are undocumented; Terraform re-asserts the roots on every apply. Only render checks and `terraform validate` run for Azure.
+- **Azure behaviour unverified live:** whether the AGIC probe uses HTTPS when `backend-protocol` is https, and whether AGIC removes trusted roots it did not create, are undocumented; Terraform re-asserts the roots on every apply. The Host replacement the 9080 Host fix relies on (Application Gateway replaces Host with `backend-hostname`) is taken from vendor documentation. Only render checks and `terraform validate` run for Azure.
 - **gRPC on GCE and AGIC:** the existing "still 400" gap (health checks for the gRPC port) is unchanged.
 - **StarRocks plaintext still accepted:** FE serves plaintext to clients that do not request TLS (operator and FE scripts); every Iverson client requires TLS.
 - **admin-ui static hop:** edge → admin-ui (static files, no credentials) stays plaintext.
@@ -141,7 +145,7 @@ Evidence was gathered on 2026-10-12 at `d710aadb`: a scratch ASP.NET app and a t
 11. Authentik 9080 is admitted only from `ingress-nginx`/`clusterCidrs` (`networkpolicies.yaml:540-560`); the tls-proxy already serves 8443 with `<release>-authentik-internal-tls`.
 12. The API and worker reach Postgres with `SSL Mode=VerifyFull;Root Certificate=/etc/postgres-tls/ca.crt` from `<release>-postgres-ca` (`charts/api/templates/deployment.yaml:93, 277-282`); Authentik uses the same host `<release>-postgres-rw` (`charts/authentik/templates/configmap.yaml:7`) and runs as uid 1000.
 13. Credentialed StarRocks clients are exactly: API app, worker app and provisioner connection strings (`charts/api/templates/deployment.yaml:101`, `charts/worker/templates/deployment.yaml:85, 94`) and `job-create-user.yaml:50-70`.
-14. Redis consumers: only Authentik (configmap, both deployments), the Redis NetworkPolicies, `Chart.yaml`/`Chart.lock`, `values.yaml` and the cloud/laptop profiles, compose, and `AuthentikContainerFixture`; `charts/redis/templates/secret.yaml` keeps its Secret.
+14. Redis consumers: only Authentik (configmap, both deployments), the Redis NetworkPolicies, `Chart.yaml`/`Chart.lock`, `values.yaml` and the cloud/laptop profiles, compose, `Iverson.LoadTest/scripts/stack.py` (`TIERS["query"]`, `CONTAINER`, docstring; lines 13, 86, 96), and `AuthentikContainerFixture`; `charts/redis/templates/secret.yaml` keeps its Secret.
 15. Operator v1.11.5: storage volumes are mounted under their own name, `storageClassName: emptyDir` yields an emptyDir (a size starting "0" skips the volume) (`pkg/k8sutils/templates/pod/mount.go:36-50, 16-30`); a Secret volume name may carry a hash (`getVolumeName`, `VolumeNameWithHash`); `initContainers` (with `volumeMounts`, `env`) pass through to the pod (`spec.go:274`); `configMapInfo` mounts at `/etc/starrocks/fe/conf` and sets `CONFIGMAP_MOUNT_PATH` (`fe_pod.go:33-85`).
 16. StarRocks 4.1.1 `fe_entrypoint.sh`: `update_conf_from_configmap` symlinks each ConfigMap file over `conf/<file>` (lines 189-210); `show frontends` and `ALTER SYSTEM ADD FOLLOWER/OBSERVER` use plain `mysql` (lines 86, 229-232). `fe-ubuntu:4.1.1` runs as root (registry config).
 17. The `ingress-nginx` peer appears at `templates/networkpolicies.yaml:47-48, 55-56, 470-471, 555-556`; parent values hold `api:`, `adminUi:` and `authentik:` sections (`values.yaml:188, 268, 284`).
@@ -154,3 +158,14 @@ Evidence was gathered on 2026-10-12 at `d710aadb`: a scratch ASP.NET app and a t
 22. AWS LBC: `backend-protocol-version` is valid with `HTTPS`; `healthcheck-protocol` defaults to `HTTP` (it does not follow the backend protocol); `healthcheck-path` defaults to `/`.
 23. GKE: `cloud.google.com/app-protocols` maps Service port names to `HTTPS`/`HTTP2`; Google Cloud load balancers accept any backend certificate (self-signed or unknown CA); health checks are inferred from the serving port's `httpGet` readiness probe, else BackendConfig `healthCheck`; `kubernetes.io/ingress.allow-http: "false"` disables HTTP, with the add-after-programming restriction applying only to `managed-certificates`.
 24. AGIC: HTTPS to pods needs a well-known CA or `appgw-trusted-root-certificate` naming a root installed on the gateway; Application Gateway v2 checks the backend certificate's CN against the backend setting's host (`backend-hostname`), and pod-IP hosts are unsupported for HTTPS; the default probe is HTTP to `127.0.0.1` on `/`; the docs contradict each other on an HTTP listener without `ssl-redirect`.
+
+**Added after CDR-1**
+25. **Kestrel PEM TLS under the API pod's constraints:** the same env-only endpoints served HTTP/2 TLS 200 and HTTP/1.1 TLS 200 as uid 1000 on a read-only root filesystem (`mcr.microsoft.com/dotnet/aspnet:10.0`, `--read-only`, `--user 1000:1000`), matching `charts/api/templates/deployment.yaml:65, 75`.
+26. **Public certificate name:** `deploy/kind/setup.sh:58-65` creates `iverson-api-tls` (keys `tls.crt`, `tls.key`) and the kind release is `iverson` (`setup.sh:179`); `values-{laptop,local,gcp,azure}.yaml` set `api.ingress.tlsSecretName: "iverson-api-tls"`; no template creates `api-internal-tls` (`git grep`, no hits).
+27. **tls-proxy readiness probe:** `httpGet { path: /-/health/live/, port: 9080 }` with no scheme (`charts/authentik/templates/deployment-server.yaml:171-172`); an nginx `ssl` listener answers plain HTTP with 400 (CDR-1 probe on the chart's tls-proxy image).
+28. **Authentik's internal TLS Secret predates this change:** `secret-internal-tls.yaml` renders unconditionally with `helm.sh/resource-policy: keep` (line 15), since round 10.
+29. **Authentik's issuer follows Host:** `get_issuer` returns `request.build_absolute_uri(...)` (`authentik/providers/oauth2/models.py:349-352`, 2026.5.3); the 9080 server forwards `Host`/`X-Forwarded-Host $http_host` (`configmap-tls-proxy.yaml:63-64`); the Authentik Ingress routes only `authentik.<global.ingressHost>`; Application Gateway replaces Host with the backend-settings host name (vendor documentation).
+30. **Three Authentik containers load `<release>-authentik-config`:** the server's `migrate` initContainer, `server` and `worker` (`deployment-server.yaml:62, 99`, `deployment-worker.yaml:77`), each with an `AUTHENTIK_REDIS__PASSWORD` (`deployment-server.yaml:72, 111`, `deployment-worker.yaml:99`); `lifecycle/migrate.py` connects with `sslrootcert` (2026.5.3).
+31. **FE probes use the HTTP port:** startup, liveness and readiness probes target `httpPort` (`pkg/subcontrollers/fe/fe_pod.go:72-74`, operator v1.11.5), not 9030.
+32. **Parent templates see subchart ingress classes:** a scratch parent template printed `api.ingress`/`api.adminApiIngress`/`adminUi.ingress`/`authentik.ingress` classNames as `nginx|nginx||nginx` (laptop) and `alb|alb|alb|alb` (aws), including subchart defaults.
+33. **Prometheus config:** `charts/prometheus/templates/configmap.yaml` renders `<release>-prometheus-config`, which `charts/prometheus/templates/deployment.yaml:72-75` mounts by that name; the subchart is gated on `global.prometheusEnabled` (`Chart.yaml:52`).
