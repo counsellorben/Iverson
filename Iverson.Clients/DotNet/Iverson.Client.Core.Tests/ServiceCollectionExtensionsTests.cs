@@ -168,10 +168,10 @@ public class ServiceCollectionExtensionsTests
 
         seen.Should().BeEquivalentTo(new Dictionary<string, string?>
         {
-            ["mapping"] = "Bearer service-token",
-            ["persistence"] = "Bearer service-token",
-            ["retrieval"] = "Bearer service-token",
-            ["search"] = "Bearer service-token",
+            [nameof(ObjectMappingService.ObjectMappingServiceClient)] = "Bearer service-token",
+            [nameof(ObjectPersistenceService.ObjectPersistenceServiceClient)] = "Bearer service-token",
+            [nameof(ObjectRetrievalService.ObjectRetrievalServiceClient)] = "Bearer service-token",
+            [nameof(ObjectSearchService.ObjectSearchServiceClient)] = "Bearer service-token",
         });
     }
 
@@ -184,38 +184,57 @@ public class ServiceCollectionExtensionsTests
 
         seen.Should().BeEquivalentTo(new Dictionary<string, string?>
         {
-            ["mapping"] = "Bearer service-token",
-            ["persistence"] = "Bearer data-plane-token",
-            ["retrieval"] = "Bearer data-plane-token",
-            ["search"] = "Bearer data-plane-token",
+            [nameof(ObjectMappingService.ObjectMappingServiceClient)] = "Bearer service-token",
+            [nameof(ObjectPersistenceService.ObjectPersistenceServiceClient)] = "Bearer data-plane-token",
+            [nameof(ObjectRetrievalService.ObjectRetrievalServiceClient)] = "Bearer data-plane-token",
+            [nameof(ObjectSearchService.ObjectSearchServiceClient)] = "Bearer data-plane-token",
+        });
+    }
+
+    // Observed: grpc-dotnet refuses to build the first client (an InvalidOperationException naming
+    // the TLS requirement), so nothing is sent and the token is never attached.
+    [Fact]
+    public async Task AddIversonClient_WithServiceTokenProviderOverPlaintext_RefusesToBuildAClientWithoutOptIn()
+    {
+        var act = () => AuthorizationHeadersAsync(
+            serviceTokenProvider: ServiceTokenProvider, endpoint: "http://localhost:5000");
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*requires TLS*");
+    }
+
+    [Fact]
+    public async Task AddIversonClient_WithServiceTokenProviderOverPlaintext_SendsTheTokenWithOptIn()
+    {
+        var seen = await AuthorizationHeadersAsync(
+            serviceTokenProvider: ServiceTokenProvider, endpoint: "http://localhost:5000", allowInsecure: true);
+
+        seen.Should().BeEquivalentTo(new Dictionary<string, string?>
+        {
+            [nameof(ObjectMappingService.ObjectMappingServiceClient)] = "Bearer service-token",
+            [nameof(ObjectPersistenceService.ObjectPersistenceServiceClient)] = "Bearer service-token",
+            [nameof(ObjectRetrievalService.ObjectRetrievalServiceClient)] = "Bearer service-token",
+            [nameof(ObjectSearchService.ObjectSearchServiceClient)] = "Bearer service-token",
         });
     }
 
     /// <summary>
-    /// Registers the clients against an https endpoint, replaces each one's transport with a handler
-    /// that records the request's authorization header and fails the call, makes one unary call per
-    /// client, and returns what each sent.
+    /// Registers the clients against <paramref name="endpoint"/>, replaces every client's transport
+    /// with a handler that records the request's authorization header (keyed by the client's name)
+    /// and fails the call, makes one unary call per client, and returns what each sent.
     /// </summary>
     private static async Task<Dictionary<string, string?>> AuthorizationHeadersAsync(
-        Func<Task<string>>? serviceTokenProvider = null, Func<Task<string>>? dataPlaneTokenProvider = null)
+        Func<Task<string>>? serviceTokenProvider = null, Func<Task<string>>? dataPlaneTokenProvider = null,
+        string endpoint = "https://localhost:5000", bool allowInsecure = false)
     {
         var seen = new Dictionary<string, string?>();
         var services = new ServiceCollection();
         services.AddIversonClient(
-            grpcEndpoint: "https://localhost:5000",
+            grpcEndpoint: endpoint,
             dataPlaneTokenProvider: dataPlaneTokenProvider,
-            serviceTokenProvider: serviceTokenProvider);
-        foreach (var (name, label) in new[]
-        {
-            (nameof(ObjectMappingService.ObjectMappingServiceClient), "mapping"),
-            (nameof(ObjectPersistenceService.ObjectPersistenceServiceClient), "persistence"),
-            (nameof(ObjectRetrievalService.ObjectRetrievalServiceClient), "retrieval"),
-            (nameof(ObjectSearchService.ObjectSearchServiceClient), "search"),
-        })
-        {
-            services.Configure<HttpClientFactoryOptions>(name, o => o.HttpMessageHandlerBuilderActions.Add(b =>
-                b.PrimaryHandler = new RecordingHandler(header => seen[label] = header)));
-        }
+            serviceTokenProvider: serviceTokenProvider,
+            allowInsecureChannelCallCredentials: allowInsecure);
+        services.ConfigureAll<HttpClientFactoryOptions>(o => o.HttpMessageHandlerBuilderActions.Add(b =>
+            b.PrimaryHandler = new RecordingHandler(header => seen[b.Name!] = header)));
         using var provider = services.BuildServiceProvider();
 
         await Swallow(provider.GetRequiredService<ObjectMappingService.ObjectMappingServiceClient>().GetSchemaAsync(new GetSchemaRequest()).ResponseAsync);
