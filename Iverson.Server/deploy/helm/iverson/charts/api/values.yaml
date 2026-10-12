@@ -20,6 +20,12 @@ ingress:
   # override was removed; left in place it would have been a silent no-op for
   # any operator who still (harmlessly but confusingly) set it.
   tlsSecretName: ""
+  # CSR round-11 #4: on className azure-application-gateway, the name of the Application Gateway
+  # trusted root holding this release's <release>-api-internal-tls ca.crt. Empty keeps the
+  # gateway → API hops plaintext; set, both API Ingresses (8080 and 8081, one Kestrel) and the
+  # Prometheus scrape switch to TLS. Other classes ignore it (iverson.backendTls in the parent's
+  # templates/_helpers.tpl).
+  appgwTrustedRootCertificate: ""
 # Backs the dedicated admin-api.<global.ingressHost> Ingress (Task 4) — the console's
 # JSON/CORS-reachable origin, distinct from the h2c/gRPC host above. No `host` key here:
 # the template computes it via printf from global.ingressHost, mirroring

@@ -79,3 +79,61 @@ networkPolicy.apiServerAnyDestination is the first-deploy fallback: any destinat
 {{- end }}
   ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 6443 }]
 {{- end -}}
+
+{{/*
+CSR round-11 #4: whether the edge reaches a pod over TLS ("backendTls"), from the pod's Ingress
+class. Called with (dict "className" <ingress class> "trustedRoot" <appgwTrustedRootCertificate>) by
+the api and Authentik subcharts and by the parent's Prometheus config; prints "true" or nothing.
+nginx, alb and gce encrypt to any backend certificate. Application Gateway verifies it, so it needs
+the chart CA installed as a trusted root first: true only once the root's name is set. Any other
+class gets no backend-protocol settings from this chart, so its edge would keep speaking plaintext
+to a TLS port: false, and the hop stays as before.
+*/}}
+{{- define "iverson.backendTls" -}}
+{{- if has .className (list "nginx" "alb" "gce") -}}
+true
+{{- else if and (eq .className "azure-application-gateway") .trustedRoot -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+CSR round-11 #4, #6: the Ingress annotations this chart sets per class, as YAML for `fromYaml`;
+callers merge them over the profile's own annotations, so a key appears once and the chart's value
+wins. Argument: (dict "className" "backendTls" "grpc" "trustedRoot" "host" "probePort" "probePath").
+- Port 80, on every call: gce turns HTTP off; Application Gateway answers it only with a redirect.
+- backendTls (iverson.backendTls of the pod behind the Ingress) sets the edge → pod protocol and,
+  where the health check does not follow it, the health check: on alb the protocol, and the path
+  except for gRPC (ALB's gRPC check has its own default); on Application Gateway the trusted root,
+  the host name the pod certificate carries (host), and the probe port and path.
+- grpc marks the API's gRPC Ingress: nginx speaks GRPC to it, GRPCS once backendTls is on.
+*/}}
+{{- define "iverson.edgeAnnotations" -}}
+{{- $a := dict -}}
+{{- if eq .className "gce" -}}
+{{- $_ := set $a "kubernetes.io/ingress.allow-http" "false" -}}
+{{- else if eq .className "azure-application-gateway" -}}
+{{- $_ := set $a "appgw.ingress.kubernetes.io/ssl-redirect" "true" -}}
+{{- end -}}
+{{- if and (eq .className "nginx") .grpc -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/backend-protocol" (ternary "GRPCS" "GRPC" .backendTls) -}}
+{{- else if .backendTls -}}
+{{- if eq .className "nginx" -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/backend-protocol" "HTTPS" -}}
+{{- else if eq .className "alb" -}}
+{{- $_ := set $a "alb.ingress.kubernetes.io/backend-protocol" "HTTPS" -}}
+{{- $_ := set $a "alb.ingress.kubernetes.io/healthcheck-protocol" "HTTPS" -}}
+{{- if not .grpc -}}
+{{- $_ := set $a "alb.ingress.kubernetes.io/healthcheck-path" .probePath -}}
+{{- end -}}
+{{- else if eq .className "azure-application-gateway" -}}
+{{- $_ := set $a "appgw.ingress.kubernetes.io/backend-protocol" "https" -}}
+{{- $_ := set $a "appgw.ingress.kubernetes.io/appgw-trusted-root-certificate" .trustedRoot -}}
+{{- $_ := set $a "appgw.ingress.kubernetes.io/backend-hostname" .host -}}
+{{- $_ := set $a "appgw.ingress.kubernetes.io/health-probe-hostname" .host -}}
+{{- $_ := set $a "appgw.ingress.kubernetes.io/health-probe-port" (toString .probePort) -}}
+{{- $_ := set $a "appgw.ingress.kubernetes.io/health-probe-path" .probePath -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $a -}}
+{{- end -}}

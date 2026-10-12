@@ -7,6 +7,7 @@
 {{- fail "global.trustedProxies.cidrs contains a blank entry; every entry must be a CIDR" }}
 {{- end }}
 {{- end }}
+{{- $backendTls := eq (include "iverson.backendTls" (dict "className" .Values.ingress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -223,6 +224,24 @@ spec:
             - name: Prometheus__BaseUrl
               value: "http://{{ .Release.Name }}-prometheus:9090"
             {{- end }}
+            {{- if $backendTls }}
+            # CSR round-11 #4: both endpoints serve TLS from <release>-api-internal-tls (the ingress,
+            # Prometheus and the kubelet are their only callers). Overrides appsettings.json's http
+            # URLs, which compose and local runs keep. All-TLS: a plaintext endpoint beside TLS ones
+            # breaks UseHttpsRedirection.
+            - name: Kestrel__Endpoints__Grpc__Url
+              value: "https://*:8080"
+            - name: Kestrel__Endpoints__Grpc__Certificate__Path
+              value: "/etc/iverson/api-tls/tls.crt"
+            - name: Kestrel__Endpoints__Grpc__Certificate__KeyPath
+              value: "/etc/iverson/api-tls/tls.key"
+            - name: Kestrel__Endpoints__Http__Url
+              value: "https://*:8081"
+            - name: Kestrel__Endpoints__Http__Certificate__Path
+              value: "/etc/iverson/api-tls/tls.crt"
+            - name: Kestrel__Endpoints__Http__Certificate__KeyPath
+              value: "/etc/iverson/api-tls/tls.key"
+            {{- end }}
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}
@@ -239,11 +258,17 @@ spec:
               # probe client speaks HTTP/1.1 and gets rejected with 400. 8081 is the dedicated
               # Http1 endpoint the same /health routes are also mapped to.
               port: 8081
+              {{- if $backendTls }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 10
           livenessProbe:
             httpGet:
               path: /health/live
               port: 8081
+              {{- if $backendTls }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 30
             periodSeconds: 15
           volumeMounts:
@@ -264,6 +289,11 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if $backendTls }}
+            - name: api-tls
+              mountPath: /etc/iverson/api-tls
+              readOnly: true
+            {{- end }}
       volumes:
         - name: kafka-ca
           secret:
@@ -293,3 +323,13 @@ spec:
               - serviceAccountToken: { path: token, audience: iverson-authentik-orchestrator, expirationSeconds: 600 }
         - name: tmp
           emptyDir: {}
+        {{- if $backendTls }}
+        - name: api-tls
+          secret:
+            secretName: {{ .Release.Name }}-api-internal-tls
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- end }}

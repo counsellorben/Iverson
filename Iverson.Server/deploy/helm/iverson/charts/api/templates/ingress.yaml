@@ -14,16 +14,20 @@ is also reachable from the browser via grpc-web fetches, where CSP connect-src
 still matters.
 */}}
 {{- $oidcOrigin := printf "%s://authentik.%s" .Values.global.externalScheme .Values.global.ingressHost }}
+{{- /* CSR round-11 #4, #6: the class's edge → API protocol and port-80 settings (iverson.edgeAnnotations,
+   parent templates/_helpers.tpl), merged over the profile's annotations. */}}
+{{- $backendTls := eq (include "iverson.backendTls" (dict "className" .Values.ingress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true" }}
+{{- $edge := include "iverson.edgeAnnotations" (dict "className" .Values.ingress.className "backendTls" $backendTls "grpc" true "trustedRoot" .Values.ingress.appgwTrustedRootCertificate "host" (printf "%s-api" .Release.Name) "probePort" 8081 "probePath" "/health") | fromYaml }}
+{{- $annotations := mergeOverwrite (deepCopy (default dict .Values.ingress.annotations)) $edge }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Release.Name }}-api
   annotations:
-    {{- with .Values.ingress.annotations }}
+    {{- with $annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
     {{- if eq .Values.ingress.className "nginx" }}
-    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
     nginx.ingress.kubernetes.io/configuration-snippet: |
       more_set_headers "X-Frame-Options: DENY";
       more_set_headers "X-Content-Type-Options: nosniff";

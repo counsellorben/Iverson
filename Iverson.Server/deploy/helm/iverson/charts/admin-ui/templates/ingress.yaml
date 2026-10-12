@@ -25,15 +25,16 @@ gets its own mechanism:
     these classes the headers come from the origin (this pod's own nginx) only.
 */}}
 {{- $oidcOrigin := printf "%s://authentik.%s" .Values.global.externalScheme .Values.global.ingressHost }}
+{{- /* CSR round-11 #6: the class's port-80 setting only (iverson.edgeAnnotations); the edge → admin-ui
+   hop serves static files and stays plaintext. */}}
+{{- $edge := include "iverson.edgeAnnotations" (dict "className" .Values.ingress.className "backendTls" false) | fromYaml }}
+{{- $annotations := mergeOverwrite (dict "nginx.ingress.kubernetes.io/rewrite-target" "/$2") (deepCopy (default dict .Values.ingress.annotations)) $edge }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Release.Name }}-admin-ui
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /$2
-    {{- with .Values.ingress.annotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
+    {{- toYaml $annotations | nindent 4 }}
     {{- if eq .Values.ingress.className "nginx" }}
     {{- if ne .Values.global.externalScheme "https" }}
     nginx.ingress.kubernetes.io/ssl-redirect: "false"

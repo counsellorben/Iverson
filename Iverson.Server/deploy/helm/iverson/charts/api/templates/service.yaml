@@ -2,6 +2,12 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ .Release.Name }}-api
+  {{- /* CSR round-11 #4: GCE's load balancer speaks to each port by its name's entry: HTTP/2 over
+     TLS to gRPC, HTTPS to the HTTP/1.1 port (iverson.backendTls). */}}
+  {{- if and (eq .Values.ingress.className "gce") (eq (include "iverson.backendTls" (dict "className" .Values.ingress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true") }}
+  annotations:
+    cloud.google.com/app-protocols: '{"grpc": "HTTP2", "http": "HTTPS"}'
+  {{- end }}
 spec:
   selector:
     app: {{ .Release.Name }}-api
