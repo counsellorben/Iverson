@@ -28,7 +28,7 @@ chunk from an orphaned duplicate after the fact.
    kubectl -n <ns> get secret <release>-api-internal-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > api-ca.pem
    curl --http2 --cacert api-ca.pem --connect-to <release>-api:8080:127.0.0.1:8080 -X POST https://<release>-api:8080/admin/reconcile/{TypeName}
    ```
-   The API serves only TLS since CSR round 11, and `/admin/*` is on the HTTP/2-only 8080 listener,
+   On Helm, the API serves TLS since CSR round 11 wherever its Ingress class turns on backend TLS (see `csr11-transport-network.md`), and `/admin/*` is on the HTTP/2-only 8080 listener,
    so the request uses `--http2` and verifies the certificate name `<release>-api`
    (`docs/runbooks/csr11-transport-network.md` §5). The API image has no `curl`, so the request runs
    from the workstation, not inside the pod.

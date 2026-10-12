@@ -34,12 +34,12 @@ namespace Iverson.Api.Tests.Tenancy;
 ///
 /// Uses <see cref="IClassFixture{TFixture}"/>, NOT per-test IAsyncLifetime on this class: xunit
 /// creates a fresh instance of the TEST CLASS per [Fact], so an IAsyncLifetime fixture built in
-/// the class itself gets rebuilt (and its whole 5-container stack re-created) once per [Fact] —
+/// the class itself gets rebuilt (and its whole 4-container stack re-created) once per [Fact] —
 /// observed directly running this file with 2 [Fact]s: two full Authentik stacks came up
 /// concurrently, contended for this box's 4 cores, and both blew the migrate-completion timeout.
 /// IClassFixture shares ONE fixture instance across every [Fact] in the class instead. That is
 /// also why the round-3 findings' facts live in THIS class rather than a new one: a second class
-/// would get its own IClassFixture instance and therefore its own 5-container Authentik stack.
+/// would get its own IClassFixture instance and therefore its own 4-container Authentik stack.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(ContainerCollection.Name)]

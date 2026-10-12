@@ -113,7 +113,7 @@ The ALB health-check paths and the GCE Authentik health check are side-fixes in 
 
 ## 8. Rollout
 
-- **One upgrade switches each hop:** the API pods restart with TLS and the Ingress annotations change in the same release; requests in flight during the rollout can fail once.
+- **One upgrade switches each hop:** the API pods restart with TLS and the Ingress annotations change in the same release; from the Ingress update until the new pods are Ready the API and Authentik's public login are unavailable at the edge, and on profiles that deploy StarRocks this waits for an FE to serve TLS, so plan a maintenance window.
 - **Orphan Secret:** `<release>-redis` carries `resource-policy: keep`; the runbook deletes it after the upgrade.
 - **StarRocks:** the FE pods restart (new init container and `fe.conf`); clients reconnect over TLS.
 - **Azure:** §3's two phases; phase 3 ends with the `<release>-prometheus` restart.

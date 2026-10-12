@@ -202,8 +202,8 @@ internal sealed class ReconciliationService(
         if (attempts >= MaxAttempts)
             logger.LogCritical(
                 "[Reconciliation] Giving up on type={Type} key={Key} after {Attempts} attempts — " +
-                "requires a manual in-cluster HTTP/2 POST (e.g. curl --http2-prior-knowledge) to " +
-                "/admin/reconcile/{Type} (kubectl port-forward or exec — not reachable via the ingress). " +
+                "requires a manual in-cluster HTTP/2 POST to " +
+                "/admin/reconcile/{Type} (not reachable via the ingress; see docs/runbooks/chunk-collection-cleanup-2026-07.md step 3). " +
                 "Last error: {Error}",
                 row.TypeName,
                 row.EntityKey,

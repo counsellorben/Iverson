@@ -10,10 +10,19 @@ fallback needs an explicit acknowledgement. Compose is unchanged apart from Redi
 ## 1. What the upgrade does
 
 One `helm upgrade` switches each hop. The API pods and the Authentik server pod restart with TLS
-in the same release as the Ingress annotations, so a request in flight during the rollout can fail
-once. The StarRocks FE pods restart with a keystore and a new `fe.conf`. Until they are back, the
-create-user Job, the API and the worker treat the still-plaintext FE as not ready and retry. This
-clears within the upgrade's timeout.
+in the same release as the Ingress annotations. From the Ingress update until the new pods are
+Ready, the API and Authentik's public login are unavailable at the edge: the Ingress already speaks
+TLS to the backends while the old pods still serve plaintext, and Authentik runs a single server
+pod. On profiles that deploy StarRocks, new API pods become Ready only once an FE serves TLS, so
+the outage lasts through the first FE restart plus API startup. Plan a maintenance window.
+The StarRocks FE pods restart with a keystore and a new `fe.conf`. Until they are back, the
+create-user Job, the API and the worker treat the still-plaintext FE as not ready and retry. The
+Job may fail and be retried by Kubernetes while FE pods restart; the upgrade completes once every
+FE serves TLS (raise `--timeout` if the FE restarts take longer than its default 5 minutes).
+
+This change removes a subchart and moves a template, so run `helm dependency build` in the chart
+directory before the upgrade; a stale `charts/*.tgz` would render Redis and a duplicate prometheus
+ConfigMap again.
 
 After the upgrade, delete the orphaned Redis Secret. Its `resource-policy: keep` stops Helm from
 deleting it:
@@ -22,10 +31,10 @@ deleting it:
 kubectl -n <ns> delete secret <release>-redis
 ```
 
-## 2. Azure: trusted roots (two phases)
+## 2. Azure: trusted roots (three steps)
 
 The Application Gateway uses HTTPS to a pod only if it holds the CA that signed the pod's
-certificate. The chart generates those CAs, so Azure takes two phases. Until the second phase,
+certificate. The chart generates those CAs, so Azure takes three steps. Until step 3,
 the Azure edge reaches the API and Authentik in plaintext, and the chart refuses an upgrade that
 skips it.
 
@@ -91,4 +100,4 @@ kubectl -n <ns> get secret <release>-api-internal-tls -o jsonpath='{.data.ca\.cr
 curl --cacert api-ca.pem --connect-to <release>-api:8081:127.0.0.1:8081 https://<release>-api:8081/health
 ```
 
-On Azure before phase 3 of §2, the API still serves plain HTTP.
+On Azure before step 3 of §2, the API still serves plain HTTP.
