@@ -128,6 +128,13 @@ variable "authentik_host" {
 
 variable "authentik_login_rate_limit" { type = number }
 
+# CSR round-11 #4: backend-TLS trust roots for the gateway, name -> PEM text (the provider
+# base64-encodes it). Names are what the Ingress annotation appgw-trusted-root-certificate refers to.
+variable "appgw_backend_trusted_roots" {
+  type    = map(string)
+  default = {}
+}
+
 variable "authentik_login_rate_window" {
   type = number
   validation {

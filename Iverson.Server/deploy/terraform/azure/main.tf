@@ -45,6 +45,15 @@ variable "authentik_host" {
   }
 }
 
+# CSR round-11 #4: the roots Application Gateway trusts for backend TLS, keyed by the name the Helm
+# value api.ingress.appgwTrustedRootCertificate / authentik.ingress.appgwTrustedRootCertificate
+# carries (comma-separated for several). Each value is PEM text: the azurerm provider base64-encodes
+# it for the gateway. Empty until the chart has issued its internal CAs (docs/runbooks/csr11-transport-network.md).
+variable "appgw_backend_trusted_roots" {
+  type    = map(string)
+  default = {}
+}
+
 provider "azurerm" {
   features {}
 }
@@ -59,6 +68,7 @@ module "cluster" {
   authentik_host                 = var.authentik_host
   authentik_login_rate_limit     = var.authentik_login_rate_limit
   authentik_login_rate_window    = var.authentik_login_rate_window
+  appgw_backend_trusted_roots    = var.appgw_backend_trusted_roots
 }
 
 # Entra authentication through kubelogin (must be on PATH): local accounts are disabled, so

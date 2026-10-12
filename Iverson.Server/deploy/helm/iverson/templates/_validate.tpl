@@ -115,4 +115,25 @@ they behave identically under `helm template` and a real install/upgrade.
 {{- end }}
 {{- end }}
 {{- end }}
+{{- /*
+CSR round-11 #4 (two-phase Azure rollout): Application Gateway trusts a backend certificate
+only through a trusted root that Terraform uploaded to the gateway (appgw_backend_trusted_roots)
+and that the Ingress names. The API's internal-TLS Secret exists once the chart's certificates
+are in place (phase 1), and from then on both pods' root names must be set, or the gateway
+would keep speaking plaintext to pods that now serve TLS. Both hops key on the API Secret:
+<release>-authentik-internal-tls has existed since round 10, so its presence does not mean
+phase 1 ran. lookup resolves empty under `helm template` / --dry-run (no cluster), so CI
+renders are unaffected. See docs/runbooks/csr11-transport-network.md.
+*/}}
+{{- $apiVals := default dict .Values.api }}
+{{- $akVals := default dict .Values.authentik }}
+{{- $azureClass := "azure-application-gateway" }}
+{{- if or (eq (dig "ingress" "className" "" $apiVals) $azureClass) (eq (dig "ingress" "className" "" $akVals) $azureClass) }}
+{{- $apiTlsSecret := lookup "v1" "Secret" .Release.Namespace (printf "%s-api-internal-tls" .Release.Name) }}
+{{- if $apiTlsSecret }}
+{{- if or (not (dig "ingress" "appgwTrustedRootCertificate" "" $apiVals)) (not (dig "ingress" "appgwTrustedRootCertificate" "" $akVals)) }}
+{{- fail (printf "the Application Gateway class needs api.ingress.appgwTrustedRootCertificate and authentik.ingress.appgwTrustedRootCertificate: Secret %s-api-internal-tls exists, so the chart has issued its internal CAs, but at least one trusted-root name is empty. Upload the roots to the gateway and set both names (docs/runbooks/csr11-transport-network.md)." .Release.Name) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end -}}

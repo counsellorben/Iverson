@@ -148,6 +148,15 @@ resource "azurerm_application_gateway" "agic" {
     priority                   = 1
   }
 
+  # Terraform owns the trust roots (AGIC only references them by name), so they are not ignored below.
+  dynamic "trusted_root_certificate" {
+    for_each = var.appgw_backend_trusted_roots
+    content {
+      name = trusted_root_certificate.key
+      data = trusted_root_certificate.value
+    }
+  }
+
   lifecycle {
     ignore_changes = [
       backend_address_pool, backend_http_settings, frontend_port, http_listener, probe,

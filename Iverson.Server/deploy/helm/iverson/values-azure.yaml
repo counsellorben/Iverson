@@ -98,6 +98,11 @@ api:
     # renders one whenever tlsSecretName is set) — replace with a real
     # cert-manager-issued Secret name for the real host before applying.
     tlsSecretName: "iverson-api-tls"
+    # CSR round-11 #4: name of the gateway trusted root (a key of the Terraform variable
+    # appgw_backend_trusted_roots) that signs the API's internal certificate. Empty until the
+    # runbook's phase 2; once set, the API's backend hops use TLS. A non-empty value is required
+    # on every upgrade after <release>-api-internal-tls exists (docs/runbooks/csr11-transport-network.md).
+    appgwTrustedRootCertificate: ""
   adminApiIngress:
     className: "azure-application-gateway"
     annotations: {}
@@ -156,6 +161,8 @@ authentik:
     # already renders one whenever tlsSecretName is set) — replace with a
     # real cert-manager-issued Secret name for the real host before applying.
     tlsSecretName: "iverson-authentik-tls"
+    # CSR round-11 #4: as api.ingress.appgwTrustedRootCertificate, for the Authentik pod's root.
+    appgwTrustedRootCertificate: ""
     # CSR round-11 #5: Terraform output authentik_waf_policy_id (docs/runbooks/csr11-identity-plane.md).
     wafPolicyId: ""
 
