@@ -7,7 +7,7 @@
 {{- fail "global.trustedProxies.cidrs contains a blank entry; every entry must be a CIDR" }}
 {{- end }}
 {{- end }}
-{{- $backendTls := eq (include "iverson.backendTls" (dict "className" .Values.ingress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true" }}
+{{- $backendTls := eq (include "api.backendTls" .) "true" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:

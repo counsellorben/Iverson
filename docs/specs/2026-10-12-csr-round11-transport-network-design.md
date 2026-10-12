@@ -116,7 +116,7 @@ The ALB health-check paths and the GCE Authentik health check are side-fixes in 
 - **One upgrade switches each hop:** the API pods restart with TLS and the Ingress annotations change in the same release; from the Ingress update until the new pods are Ready the API and Authentik's public login are unavailable at the edge, and on profiles that deploy StarRocks this waits for an FE to serve TLS, so plan a maintenance window.
 - **Orphan Secret:** `<release>-redis` carries `resource-policy: keep`; the runbook deletes it after the upgrade.
 - **StarRocks:** the FE pods restart (new init container and `fe.conf`); clients reconnect over TLS.
-- **Azure:** §3's two phases; phase 3 ends with the `<release>-prometheus` restart.
+- **Azure:** §3's runbook; its step 3 ends with the `<release>-prometheus` restart.
 - **Rotation:** delete the hop's TLS Secret, upgrade, restart its pods (and on Azure, update the Terraform root); same as round 10.
 
 ## Known issues / accepted as out of scope
@@ -124,7 +124,7 @@ The ALB health-check paths and the GCE Authentik health check are side-fixes in 
 - **Compose (user decision 2026-10-12):** its API, StarRocks and Authentik → Postgres hops stay plaintext.
 - **Service mesh / pod → store mTLS:** not in scope.
 - **Edge certificate verification:** the nginx, ALB and GCE edges encrypt to pods but do not verify pod certificates; only the Azure gateway checks the root and CN.
-- **Azure first-install window:** edge → pod stays plaintext on Azure until §3's phase 2.
+- **Azure first-install window:** edge → pod stays plaintext on Azure until step 3 of §3's runbook.
 - **Azure behaviour unverified live:** whether the AGIC probe uses HTTPS when `backend-protocol` is https, and whether AGIC removes trusted roots it did not create, are undocumented; Terraform re-asserts the roots on every apply. The Host replacement the 9080 Host fix relies on (Application Gateway replaces Host with `backend-hostname`) is taken from vendor documentation. Only render checks and `terraform validate` run for Azure.
 - **gRPC on GCE and AGIC:** the existing "still 400" gap (health checks for the gRPC port) is unchanged.
 - **Operator and console wiring render-checked (user decision 2026-10-12, CDR-2 §3.1):** the StarRocks operator's handling of the init container and `configMapInfo`, and the admin-api Ingress's HTTPS backend, are checked by render checks and container probes (the Prometheus container probe scrapes the same TLS Kestrel 8081 endpoint the admin-api Ingress targets); the admin-ui Ingress changes only its port-80 and peer settings (§4, §6), which the render checks cover, not a live operator or ingress run.

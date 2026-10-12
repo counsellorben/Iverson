@@ -71,7 +71,8 @@ spec:
               mountPath: /prometheus
             # CSR round-11 #4: the CA the iverson-api scrape job verifies the API with, once the API
             # serves TLS (the parent's templates/prometheus-config.yaml). Not a subPath mount, so a
-            # rotated CA reaches the running Prometheus, which rereads ca_file.
+            # rotated CA reaches the running Prometheus, which rereads ca_file. Without the API Secret (api
+            # disabled) the pod still starts and the API job shows down.
             - name: api-ca
               mountPath: /etc/iverson/api-ca
               readOnly: true
@@ -85,6 +86,7 @@ spec:
         - name: api-ca
           secret:
             secretName: {{ .Release.Name }}-api-internal-tls
+            optional: true
             items:
               - key: ca.crt
                 path: ca.crt

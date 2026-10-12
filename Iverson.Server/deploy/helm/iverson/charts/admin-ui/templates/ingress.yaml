@@ -26,9 +26,13 @@ gets its own mechanism:
 */}}
 {{- $oidcOrigin := printf "%s://authentik.%s" .Values.global.externalScheme .Values.global.ingressHost }}
 {{- /* CSR round-11 #6: the class's port-80 setting only (iverson.edgeAnnotations); the edge → admin-ui
-   hop serves static files and stays plaintext. */}}
+   hop serves static files and stays plaintext. The call passes only className and backendTls false
+   because with backendTls off the helper reads no other key (missing keys read as nil). */}}
 {{- $edge := include "iverson.edgeAnnotations" (dict "className" .Values.ingress.className "backendTls" false) | fromYaml }}
 {{- $annotations := mergeOverwrite (dict "nginx.ingress.kubernetes.io/rewrite-target" "/$2") (deepCopy (default dict .Values.ingress.annotations)) $edge }}
+{{- if and (eq .Values.ingress.className "nginx") (ne .Values.global.externalScheme "https") }}
+{{- $annotations = mergeOverwrite $annotations (dict "nginx.ingress.kubernetes.io/ssl-redirect" "false") }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -36,9 +40,6 @@ metadata:
   annotations:
     {{- toYaml $annotations | nindent 4 }}
     {{- if eq .Values.ingress.className "nginx" }}
-    {{- if ne .Values.global.externalScheme "https" }}
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    {{- end }}
     nginx.ingress.kubernetes.io/configuration-snippet: |
       more_set_headers "X-Frame-Options: DENY";
       more_set_headers "X-Content-Type-Options: nosniff";

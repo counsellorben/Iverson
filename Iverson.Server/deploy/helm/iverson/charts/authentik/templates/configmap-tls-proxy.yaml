@@ -1,4 +1,4 @@
-{{- $backendTls := eq (include "iverson.backendTls" (dict "className" .Values.ingress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true" }}
+{{- $backendTls := eq (include "authentik.backendTls" .) "true" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

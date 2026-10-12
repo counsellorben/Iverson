@@ -5,7 +5,7 @@ metadata:
   {{- /* CSR round-11 #5: GCE attaches backendconfig.yaml (the Cloud Armor policy and health check)
   to the public listener's backend. CSR round-11 #4: GCE speaks HTTPS to the public listener when
   it serves TLS (iverson.backendTls). */}}
-  {{- $gceTls := and (eq .Values.ingress.className "gce") (eq (include "iverson.backendTls" (dict "className" .Values.ingress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true") }}
+  {{- $gceTls := and (eq .Values.ingress.className "gce") (eq (include "authentik.backendTls" .) "true") }}
   {{- if or .Values.ingress.securityPolicy $gceTls }}
   annotations:
     {{- with .Values.ingress.securityPolicy }}

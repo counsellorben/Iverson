@@ -67,7 +67,7 @@ whole file.
        custom/service-clients/service-clients.yaml custom/service-clients/admin-automation.yaml
    ```
 
-   Each command exits non-zero if a blueprint fails. `admin-automation.yaml` and
+   Each command exits non-zero if a blueprint fails. On a worker at the laptop profile's memory limits the command can be killed for memory (exit 137); re-running it is safe because applying a blueprint is idempotent. `admin-automation.yaml` and
    `orchestrator-federation.yaml` fetch the cluster's keys from the worker's JWKS relay when they
    apply. If the relay can't reach the API server, both fail and wait for the next re-apply; the
    message names `oidc_jwks_url`.

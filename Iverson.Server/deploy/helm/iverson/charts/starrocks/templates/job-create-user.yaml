@@ -65,14 +65,19 @@ spec:
               # CSR round 11 #4: every call requires TLS and verifies FE's certificate against the
               # chart CA and FE_HOST, so the passwords below travel only inside TLS. An FE that
               # does not serve TLS yet (an upgrade before the FE pods restart) counts as not ready.
-              # AUTH is decided only by a connection that completed TLS: while the operator rolls
-              # a multi-FE StatefulSet, the FE Service mixes restarted and plaintext pods.
+              # ROOT_HAS_PW is decided only by a connection that completed TLS: while the operator
+              # rolls a multi-FE StatefulSet, the FE Service mixes restarted and plaintext pods.
               TLS="--ssl-mode=VERIFY_IDENTITY --ssl-ca=/etc/starrocks-tls/ca.crt"
+              # fe: the mysql client with root's login; the password is quoted, never word-split.
+              fe() {
+                if [ "$ROOT_HAS_PW" = 1 ]; then mysql $TLS -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" "$@"
+                else mysql $TLS -h "$FE_HOST" -P 9030 -u root "$@"; fi
+              }
               until
                 if mysql $TLS -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" -e "SELECT 1" >/dev/null 2>&1; then
-                  AUTH="-p$ROOT_PW"
+                  ROOT_HAS_PW=1
                 elif mysql $TLS -h "$FE_HOST" -P 9030 -u root -e "SELECT 1" >/dev/null 2>&1; then
-                  AUTH=""
+                  ROOT_HAS_PW=0
                 else
                   false
                 fi
@@ -83,12 +88,12 @@ spec:
               # `mysql -u root` — hardcoded, no password, no way to configure — so changing
               # root's password (below) before every expected BE has joined permanently
               # locks any not-yet-joined BE out of the cluster (it only retries for ~15s
-              # before giving up). Wait for BE_REPLICAS backends first, using the same $AUTH
+              # before giving up). Wait for BE_REPLICAS backends first, using the same ROOT_HAS_PW
               # so this is idempotent across upgrades where root already has a password.
-              until [ "$(mysql $TLS -h "$FE_HOST" -P 9030 -u root $AUTH --skip-column-names --batch -e "SHOW BACKENDS;" 2>/dev/null | wc -l)" -ge "$BE_REPLICAS" ]; do
+              until [ "$(fe --skip-column-names --batch -e "SHOW BACKENDS;" 2>/dev/null | wc -l)" -ge "$BE_REPLICAS" ]; do
                 echo "waiting for $BE_REPLICAS BE node(s) to register..."; sleep 5
               done
-              mysql $TLS -h "$FE_HOST" -P 9030 -u root $AUTH -e "
+              fe -e "
                 SET PASSWORD FOR 'root' = PASSWORD('$ROOT_PW');
                 CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY '$APP_PW';
                 CREATE USER IF NOT EXISTS 'iverson_provisioner'@'%' IDENTIFIED BY '$PROVISIONER_PW';

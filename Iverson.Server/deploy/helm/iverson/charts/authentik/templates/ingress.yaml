@@ -11,7 +11,7 @@
 {{- end }}
 {{- /* CSR round-11 #4, #6: the class's edge → tls-proxy 9080 protocol and port-80 settings
    (iverson.edgeAnnotations, parent templates/_helpers.tpl). */}}
-{{- $backendTls := eq (include "iverson.backendTls" (dict "className" .Values.ingress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true" }}
+{{- $backendTls := eq (include "authentik.backendTls" .) "true" }}
 {{- $_ := mergeOverwrite $annotations (include "iverson.edgeAnnotations" (dict "className" .Values.ingress.className "backendTls" $backendTls "grpc" false "trustedRoot" .Values.ingress.appgwTrustedRootCertificate "host" (printf "%s-authentik" .Release.Name) "probePort" 9080 "probePath" "/-/health/live/") | fromYaml) }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress

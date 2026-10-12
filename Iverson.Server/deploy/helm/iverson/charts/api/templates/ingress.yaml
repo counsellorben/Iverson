@@ -16,7 +16,7 @@ still matters.
 {{- $oidcOrigin := printf "%s://authentik.%s" .Values.global.externalScheme .Values.global.ingressHost }}
 {{- /* CSR round-11 #4, #6: the class's edge → API protocol and port-80 settings (iverson.edgeAnnotations,
    parent templates/_helpers.tpl), merged over the profile's annotations. */}}
-{{- $backendTls := eq (include "iverson.backendTls" (dict "className" .Values.ingress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true" }}
+{{- $backendTls := eq (include "api.backendTls" .) "true" }}
 {{- $edge := include "iverson.edgeAnnotations" (dict "className" .Values.ingress.className "backendTls" $backendTls "grpc" true "trustedRoot" .Values.ingress.appgwTrustedRootCertificate "host" (printf "%s-api" .Release.Name) "probePort" 8081 "probePath" "/health") | fromYaml }}
 {{- $annotations := mergeOverwrite (deepCopy (default dict .Values.ingress.annotations)) $edge }}
 apiVersion: networking.k8s.io/v1
