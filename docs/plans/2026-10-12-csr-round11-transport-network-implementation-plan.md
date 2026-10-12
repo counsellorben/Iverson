@@ -734,7 +734,7 @@ values-gcp: ~Deployment/iverson-api ~Ingress/iverson-admin-api ~Ingress/iverson-
 ```text
 Error: execution error at (iverson/charts/api/templates/secret-internal-tls.yaml:10:4): api.ingress.tlsSecretName must n
 Error: execution error at (iverson/charts/api/templates/secret-internal-tls.yaml:13:4): api.adminApiIngress.tlsSecretNam
-Error: execution error at (iverson/charts/api/templates/admin-api-ingress.yaml:44:4): api.adminApiIngress.className "tra
+Error: execution error at (iverson/charts/api/templates/admin-api-ingress.yaml:45:4): api.adminApiIngress.className "tra
 azure, root unset, admin-api traefik: renders
 ```
 
@@ -3139,9 +3139,10 @@ skips it.
 ## 3. Rotating a chart certificate
 
 Each chart CA's key is discarded after it signs its one certificate. To rotate, delete the Secret,
-upgrade, then restart its pods:
+upgrade, then restart its pods. `<release>-starrocks-tls` is the exception: its FE pods restart
+while the upgrade is still running, as its row says.
 
-| Secret | Restart after the upgrade |
+| Secret | Restart |
 |---|---|
 | `<release>-api-internal-tls` | the API Deployment. Prometheus picks up the new CA file without a restart. |
 | `<release>-authentik-internal-tls` | the Authentik server Deployment and the API Deployment |
