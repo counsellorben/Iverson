@@ -299,18 +299,6 @@ services:
 
   # ── Identity ────────────────────────────────────────────────────────────────
 
-  redis:
-    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-    container_name: iverson-redis
-    restart: unless-stopped
-    command: ["redis-server", "--save", ""]   # cache-only, no volume mounted — matches the Helm
-                                               # subchart's identical reasoning (Task 1)
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   # The ONE process that migrates the authentik database. Everything else runs with
   # AUTHENTIK_SKIP_MIGRATIONS=true and waits for this to exit 0.
   #
@@ -339,15 +327,12 @@ services:
     restart: "no"
     environment:
       AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?run scripts/generate-compose-secrets.sh first}
-      AUTHENTIK_REDIS__HOST: redis
       AUTHENTIK_POSTGRESQL__HOST: postgres
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: authentik
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
 
   authentik-server:
@@ -357,7 +342,6 @@ services:
     command: server
     environment:
       AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?run scripts/generate-compose-secrets.sh first}
-      AUTHENTIK_REDIS__HOST: redis
       AUTHENTIK_POSTGRESQL__HOST: postgres
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
@@ -387,8 +371,6 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "ak", "healthcheck"]
       interval: 15s
@@ -403,7 +385,6 @@ services:
     command: worker
     environment:
       AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?run scripts/generate-compose-secrets.sh first}
-      AUTHENTIK_REDIS__HOST: redis
       AUTHENTIK_POSTGRESQL__HOST: postgres
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
@@ -428,8 +409,6 @@ services:
       authentik-migrate:
         condition: service_completed_successfully
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "ak", "healthcheck"]

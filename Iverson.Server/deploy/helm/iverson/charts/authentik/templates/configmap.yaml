@@ -3,10 +3,13 @@ kind: ConfigMap
 metadata:
   name: {{ .Release.Name }}-authentik-config
 data:
-  AUTHENTIK_REDIS__HOST: "{{ .Release.Name }}-redis"
   AUTHENTIK_POSTGRESQL__HOST: "{{ .Release.Name }}-postgres-rw"
   AUTHENTIK_POSTGRESQL__NAME: "authentik"
   AUTHENTIK_POSTGRESQL__USER: "authentik"
+  # CSR round-11 #4: the connection verifies the server certificate against the CNPG CA that the
+  # three containers loading this ConfigMap mount from <release>-postgres-ca.
+  AUTHENTIK_POSTGRESQL__SSLMODE: "verify-full"
+  AUTHENTIK_POSTGRESQL__SSLROOTCERT: "/etc/postgres-tls/ca.crt"
   AUTHENTIK_LOG_LEVEL: "info"
   AUTHENTIK_BOOTSTRAP_EMAIL: "{{ .Values.bootstrapEmail }}"
   # CSR round-11 #8: Authentik takes the left-most X-Forwarded-For entry from a trusted peer, and its

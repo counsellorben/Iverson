@@ -10,7 +10,7 @@ project exists to avoid). The `ingest` tier here needs far fewer containers than
     ingest  qdrant, tei-embed
             everything ingest.py touches: the vector store and the embedding model.
 
-    query   qdrant, tei-embed, postgres, redis, authentik-server, iverson-api
+    query   qdrant, tei-embed, postgres, authentik-server, iverson-api
             adds what `dotnet run -- benchmark-query` needs to issue real SearchSimilar/
             SearchChunks calls through the gRPC read path -- report.py itself issues no
             RPCs and needs no containers; it only scores the *.trec run files that
@@ -45,14 +45,14 @@ readiness -- there is no tier left running afterward to wait on.
 `ingest`/`query` then poll for readiness: Qdrant's `GET /readyz`, TEI's `GET /health`,
 and for iverson-api a raw TCP connect to 127.0.0.1:8080 -- port 8080 is h2c/gRPC-only
 (Kestrel configured Http2-only) and refuses HTTP/1.1, so an HTTP probe against it hangs or
-errors rather than reporting readiness. Postgres/redis/authentik-server have no readiness
+errors rather than reporting readiness. Postgres/authentik-server have no readiness
 check of their own here, and that is still sound even though iverson-api's bootstrap DDL
-(the thing that gates Kestrel binding 8080) only ever touches postgres, not redis or
+(the thing that gates Kestrel binding 8080) only ever touches postgres, not
 authentik: `docker compose up -d --no-deps <tier services>` still enforces
 `depends_on: service_healthy` among the services *named on the command line*, and
 iverson-api's compose entry declares `authentik-server: condition: service_healthy` --
 verified experimentally, not merely reasoned from the DDL. So a successful connect to 8080
-already implies postgres, redis, and authentik-server were all reachable, via compose's own
+already implies postgres and authentik-server were both reachable, via compose's own
 dependency gate rather than anything iverson-api's startup code does. (A DDL-only argument
 would wrongly license dropping authentik-server from this tier -- it is required here for a
 different reason.)
@@ -83,7 +83,7 @@ DEFAULT_TIMEOUT = 180  # seconds; iverson-api's own compose healthcheck allows u
 # Tiers name docker-compose *service* names -- what `docker compose up` takes.
 TIERS = {
     "ingest": ["qdrant", "tei-embed"],
-    "query": ["qdrant", "tei-embed", "postgres", "redis", "authentik-server", "iverson-api"],
+    "query": ["qdrant", "tei-embed", "postgres", "authentik-server", "iverson-api"],
 }
 
 # Service name -> container_name, copied from docker-compose.yml. `docker stop`/`docker ps`
@@ -93,7 +93,6 @@ CONTAINER = {
     "qdrant": "iverson-qdrant",
     "tei-embed": "iverson-tei-embed",
     "postgres": "iverson-postgres",
-    "redis": "iverson-redis",
     "authentik-server": "iverson-authentik-server",
     "iverson-api": "iverson-api",
 }
@@ -166,7 +165,7 @@ def wait_http_200(url, timeout):
     return False
 
 
-# service -> readiness probe. Services absent here (postgres, redis, authentik-server) are
+# service -> readiness probe. Services absent here (postgres, authentik-server) are
 # not polled directly -- see the module docstring for why that is sound.
 READY_CHECKS = {
     "qdrant": lambda timeout: wait_http_200("http://127.0.0.1:6333/readyz", timeout),

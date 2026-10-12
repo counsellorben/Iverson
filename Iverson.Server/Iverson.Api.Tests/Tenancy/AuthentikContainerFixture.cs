@@ -12,7 +12,7 @@ using Xunit;
 namespace Iverson.Api.Tests.Tenancy;
 
 /// <summary>
-/// Brings up a real, blueprint-equipped Authentik instance (Postgres + Redis + the
+/// Brings up a real, blueprint-equipped Authentik instance (Postgres + the
 /// authentik-migrate/-server/-worker trio, mirroring <c>docker-compose.yml</c>'s own sequencing
 /// and its documented deadlock-avoidance) for CSR round-2 finding #4's regression coverage.
 ///
@@ -74,15 +74,14 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
     private readonly INetwork _network = new NetworkBuilder().Build();
 
     private readonly PostgreSqlContainer _postgres;
-    private readonly IContainer _redis;
 
     public AuthentikContainerFixture()
     {
-        // Network aliases below ("postgres"/"redis") are what every Authentik env var
-        // (AUTHENTIK_POSTGRESQL__HOST / AUTHENTIK_REDIS__HOST) points at — matching
-        // docker-compose.yml's own service-name-as-hostname convention exactly. WithNetwork(...)
-        // is a BUILDER method, unavailable once .Build() has produced the container, so both
-        // must be applied here rather than in InitializeAsync.
+        // The network alias below ("postgres") is what every Authentik env var
+        // (AUTHENTIK_POSTGRESQL__HOST) points at — matching docker-compose.yml's own
+        // service-name-as-hostname convention exactly. WithNetwork(...) is a BUILDER method,
+        // unavailable once .Build() has produced the container, so both must be applied here
+        // rather than in InitializeAsync.
         _postgres = new PostgreSqlBuilder()
             .WithImage("postgres:16-alpine")
             .WithDatabase(AuthentikDbName)
@@ -90,14 +89,6 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
             .WithPassword(AuthentikDbPassword)
             .WithNetwork(_network)
             .WithNetworkAliases("postgres")
-            .Build();
-
-        _redis = new ContainerBuilder()
-            .WithImage("redis:7.4-alpine")
-            .WithCommand("redis-server", "--save", "")
-            .WithNetwork(_network)
-            .WithNetworkAliases("redis")
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilCommandIsCompleted("redis-cli", "ping"))
             .Build();
     }
 
@@ -126,7 +117,7 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         await _network.CreateAsync();
-        await Task.WhenAll(_postgres.StartAsync(), _redis.StartAsync());
+        await _postgres.StartAsync();
 
         await RunMigrationToCompletionAsync();
 
@@ -149,7 +140,6 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
         // ContainerCollection documents — this fixture's containers are its own to clean up).
         await SafeDisposeAsync(_authentikWorker);
         await SafeDisposeAsync(_authentikServer);
-        await SafeDisposeAsync(_redis);
         await SafeDisposeAsync(_postgres);
         await _network.DeleteAsync();
     }
@@ -172,7 +162,6 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
             .WithNetwork(_network)
             .WithEntrypoint("python", "-m", "lifecycle.migrate")
             .WithEnvironment("AUTHENTIK_SECRET_KEY", SecretKey)
-            .WithEnvironment("AUTHENTIK_REDIS__HOST", "redis")
             .WithEnvironment("AUTHENTIK_POSTGRESQL__HOST", "postgres")
             .WithEnvironment("AUTHENTIK_POSTGRESQL__NAME", AuthentikDbName)
             .WithEnvironment("AUTHENTIK_POSTGRESQL__USER", AuthentikDbUser)
@@ -234,7 +223,6 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
             .WithNetwork(_network)
             .WithCommand(command)
             .WithEnvironment("AUTHENTIK_SECRET_KEY", SecretKey)
-            .WithEnvironment("AUTHENTIK_REDIS__HOST", "redis")
             .WithEnvironment("AUTHENTIK_POSTGRESQL__HOST", "postgres")
             .WithEnvironment("AUTHENTIK_POSTGRESQL__NAME", AuthentikDbName)
             .WithEnvironment("AUTHENTIK_POSTGRESQL__USER", AuthentikDbUser)

@@ -107,11 +107,6 @@ worker:
     limits: { cpu: "500m", memory: "512Mi" }
   hpa: { minReplicas: 1, maxReplicas: 2, targetCPUUtilization: 70 }
 
-redis:
-  resources:
-    requests: { cpu: "50m", memory: "64Mi" }
-    limits: { cpu: "100m", memory: "128Mi" }
-
 authentik:
   resources:
     server:

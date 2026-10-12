@@ -32,11 +32,8 @@ dependencies:
 - name: prometheus
   repository: file://charts/prometheus
   version: 0.1.0
-- name: redis
-  repository: file://charts/redis
-  version: 0.1.0
 - name: authentik
   repository: file://charts/authentik
   version: 0.1.0
-digest: sha256:bbf9ac3c6ec4e5a057460d48153b48deafde4e4168108ed2091117501a23c86b
-generated: "2026-09-06T18:17:38.187016999-04:00"
+digest: sha256:9f915316939a0c0b38c639961b7c1ba8c86aa37785c5e08accf2145ae9740011
+generated: "2026-10-12T12:31:11.309330793-04:00"

@@ -50,10 +50,6 @@ dependencies:
     version: "0.1.0"
     repository: "file://charts/prometheus"
     condition: global.prometheusEnabled
-  - name: redis
-    version: "0.1.0"
-    repository: "file://charts/redis"
-    condition: redis.enabled
   - name: authentik
     version: "0.1.0"
     repository: "file://charts/authentik"

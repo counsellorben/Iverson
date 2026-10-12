@@ -28,7 +28,7 @@ namespace Iverson.Api.Tests.Tenancy;
 /// no way to know whether the real dependency (a provisioned recovery flow) exists.
 ///
 /// This is deliberately the ONLY integration test in this assembly that runs a real Authentik —
-/// heavier than the rest of the suite (5 containers: network + Postgres + Redis + authentik-
+/// heavier than the rest of the suite (a network and 4 containers: Postgres + authentik-
 /// migrate + authentik-server + authentik-worker) and gated behind <see cref="ContainerCollection"/>
 /// like every other container-backed test class here, so it never runs concurrently with them.
 ///

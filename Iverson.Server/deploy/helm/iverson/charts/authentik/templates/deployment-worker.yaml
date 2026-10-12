@@ -94,11 +94,6 @@ spec:
             - name: AUTHENTIK_POSTGRESQL__PASSWORD
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-postgres, key: password }
-            # CSR round-2 finding #11: Redis now requires auth (charts/redis's --requirepass) —
-            # this must match the password in that Secret exactly.
-            - name: AUTHENTIK_REDIS__PASSWORD
-              valueFrom:
-                secretKeyRef: { name: {{ .Release.Name }}-redis, key: password }
             - name: AUTHENTIK_BOOTSTRAP_PASSWORD
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: bootstrap-password }
@@ -128,6 +123,9 @@ spec:
             - name: blueprints-service-clients
               mountPath: /blueprints/custom/service-clients
               readOnly: true
+            - name: postgres-tls
+              mountPath: /etc/postgres-tls
+              readOnly: true
       volumes:
         - name: blueprints
           configMap:
@@ -143,3 +141,9 @@ spec:
               - downwardAPI: { items: [{ path: namespace, fieldRef: { fieldPath: metadata.namespace } }] }
         - name: jwks-relay-www
           emptyDir: {}
+        - name: postgres-tls
+          secret:
+            secretName: {{ .Release.Name }}-postgres-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
