@@ -162,7 +162,7 @@ These were introduced by this plan and verified at plan-write time (2026-10-12, 
 | 21 | Signature | The harness can call a public static class in `Iverson.LoadTest`: `Iverson.ClientConformance.csproj:10` references `../Iverson.LoadTest/Iverson.LoadTest.csproj`, and `Iverson.ClientConformance.Tests.csproj:22` references the harness, so the test project sees it transitively | csproj lines cited; Task 3 Step 6 build of `Iverson.ClientConformance.Tests` → `0 Error(s)` and `HarnessEndpointCheckTests` 7/7 |
 | 22 | Signature | LoadTest `Program.cs` already has `using Iverson.LoadTest.Auth;` (`:8`) and `TokenBroker.cs` already has it (`:6`); the harness `Program.cs` does not (its usings are `:1-6`), so Task 3 adds it there | `git show 1b108e37:…` grep output: LoadTest `Program.cs:8`, `TokenBroker.cs:6`; harness `Program.cs:1-6` lists Grpc.Core, Grpc.Net.Client, Iverson.Client.Contracts, Iverson.ClientConformance, Iverson.ClientConformance.Scenarios, Microsoft.Extensions.Logging |
 | 23 | Code | The replaced derivation (`Program.cs:77-79`, `TokenBroker.cs:96-98`) is the only place the token endpoint is sliced, and the check runs before both: LoadTest's check is at the old `:77` (before `AdminAutomationCredentials.FromEnvironment` `:111` and the provisioning block `:117`); the harness's precedes `DeriveAuthentikBaseUrl` (`Program.cs:20`) | `git grep -n 'IndexOf("/application/o/token/"' 1b108e37` → `LoadTest/Program.cs:78`, `ClientConformance/TokenBroker.cs:97`; Task 3 Step 7: `IVERSON_TOKEN_ENDPOINT=localhost:9000` gives the refusal message, exit 1, instead of a range exception |
-| 24 | Code | `CredentialEndpoints.Check` accepts `localhost`/`LOCALHOST`/`127.0.0.1`/`[::1]` (any scheme for the gRPC URL, http for the token endpoint) and `https://`, and refuses `http://iverson-api:8080`, `http://0.0.0.0:8080`, an unparsable URL, and a token endpoint not ending in `/application/o/token/`; with `grpcMayUseTls: false` it refuses `https://iverson-api:8080` | Task 3 Step 6: `CredentialEndpointsTests` 20/20 and `HarnessEndpointCheckTests` 7/7; red first at Step 2 (`error CS0103: The name 'CredentialEndpoints' does not exist in the current context`) |
+| 24 | Code | `CredentialEndpoints.Check` accepts `localhost`/`LOCALHOST`/`127.0.0.1`/`[::1]` (any scheme for the gRPC URL, http for the token endpoint) and `https://`, and refuses `http://iverson-api:8080`, `http://0.0.0.0:8080`, an unparsable URL, and a token endpoint not ending in `/application/o/token/`, and (CIR-1 §3.1 C) an `http://` token endpoint with a non-loopback `https://` gRPC URL; with `grpcMayUseTls: false` it refuses `https://iverson-api:8080` | Task 3 Step 6: `CredentialEndpointsTests` 21/21 and `HarnessEndpointCheckTests` 7/7; red first at Step 2 (`error CS0103: The name 'CredentialEndpoints' does not exist in the current context`) |
 | 25 | Command | `dotnet build <proj> -p:UseSharedCompilation=false`, `dotnet test <proj> --no-build [--filter 'FullyQualifiedName~X']` run from `Iverson.Server` under `flock $SCR/heavy.lock` + `systemd-run --user --scope -q -p MemoryMax=6G` | Ran at plan time: `0 Error(s)` for both; `Passed: 156` (LoadTest.Tests), `Passed: 657` (ClientConformance.Tests); filters `~Auth.CredentialEndpointsTests` → 20, `~HarnessEndpointCheckTests` → 7 (exactly the new cases, so the substrings match nothing else) |
 | 26 | Command | The built binaries are `Iverson.LoadTest/bin/Debug/net10.0/Iverson.LoadTest.dll` and `Iverson.ClientConformance/bin/Debug/net10.0/Iverson.ClientConformance.dll` after building the test projects, and run under `env -i HOME=… $(command -v dotnet) <dll>` (the inherited PATH contains spaces from WSL, so `env -i PATH=$PATH` breaks) | `ls` after the Step 6 build lists both dlls; Task 3 Step 7 outputs recorded (exit 0 usage line; four `exit=1` refusals) |
 | 27 | Consumer | Changing `allowInsecureChannelCallCredentials` from `true` to `IsLoopback(grpcUrl)` keeps every documented run working: all documented LoadTest/harness gRPC URLs and token endpoints are loopback and end in `/application/o/token/` | `git grep -h -o 'IVERSON_TOKEN_ENDPOINT[=:][^ ]*' 1b108e37` → every value `http://localhost:9000/application/o/token/` (plus the agent's own test value `https://idp/token`, which this task does not touch); spec verified assumptions 6, 7, 34 |
@@ -203,7 +203,7 @@ These were introduced by this plan and verified at plan-write time (2026-10-12, 
 | 62 | Path | `golang:1.26` resolves to manifest list `sha256:d7722066f0b60ceccb6c0643cbed1f5f9e15506ac237146c95333504d7805d89` (same as `1.26.9`), Go 1.26.9 with `GOTOOLCHAIN=local` | Registry HEAD (index Accept) for `1.26` and `1.26.9` → that digest; amd64 config Env `GOLANG_VERSION=1.26.9`, `GOTOOLCHAIN=local` (matches CDR-1 S3-0.16) |
 | 63 | Consumer | The only other `go` consumer of the Go module is ClientConformance's `DriverRunner` (`go build -o bin/conformance ./conformance`, `DriverRunner.cs:141-142`), which uses the caller's `go`; with the default `GOTOOLCHAIN=auto` it downloads go1.26.9 as it already downloads 1.25.0 today. `scripts/generate_protos.sh` pins go1.22 but only runs `protoc` plugins, never `go build` | `command grep -rn 'go build\|go run' Iverson.Server/Iverson.ClientConformance` → `DriverRunner.cs:141-142`; `generate_protos.sh` read in full |
 | 64 | Path | `README.md:71` is the single-line clients list ending `[TypeScript](Iverson.Clients/TypeScript/).` (anchor unique) | Replay: anchor count 1; no other README/docs line states a Go version (`command grep -rni 'go 1\.2[0-9]\|go1\.2[0-9]'` outside docs history → go.mod, CI, generate_protos.sh only) |
-| 65 | Code | `govulncheck` in GitHub already installs after `setup-go` at v1.7.0, so Task 8's GitHub edit is only `go-version` | `dependency-scan.yml:58-62` at `1b108e37` |
+| 65 | Code | `govulncheck` in GitHub already installs after `setup-go` at v1.7.0, so Task 8's GitHub edit is `go-version: "1.26"` plus `check-latest: true`: setup-go exports `GOTOOLCHAIN=local` (so `go.mod`'s `toolchain` line is ignored) and without `check-latest` takes the runner image's cached 1.26 patch | `dependency-scan.yml:58-62` at `1b108e37`; setup-go `action.yml` (`check-latest`, default false), `src/installer.ts:95,127` and `src/main.ts:190` at `b7ad1dad`; the `actions/go-versions` manifest resolves "1.26" to 1.26.9; runner image `ubuntu24/20261004.327` caches 1.26.8 and `ubuntu24/20261012.334` (2026-10-13, rolling out) moves it to 1.26.9; govulncheck v1.7.0 on the bumped module: go1.26.8 → 9 stdlib advisories, exit 3; go1.26.9 → `No vulnerabilities found.` (CIR-1 §2.1) |
 | 66 | Code | Replacing the three `source-map-js` lines in each lockfile equals `npm audit fix --package-lock-only` minus npm 10.9.2's `libc` deletions | Scratch copies at `1b108e37`: npm's AdminUI output is byte-identical to the edited file; npm's TS output is `3 33` (drops 10 `"libc"` arrays written by a newer npm) vs the edit's `3 3`; `npm view source-map-js@1.2.2 dist.integrity` = `sha512-KGj/8Y43…NP3Vw==`; each lock has exactly one `node_modules/source-map-js` entry and dependents' ranges are `^1.2.1` |
 | 67 | Command | After the bump both packages `npm ci`, audit clean at high, build and test | Replay: both `found 0 vulnerabilities` (`npm ci` and `npm audit --audit-level=high`), `npm ls` → only `source-map-js@1.2.2`; AdminUI `✓ built`, 22 files / 226 tests passed; TS `tsc`, 10 files / 287 tests passed. One earlier AdminUI full run at load ≈10 timed out `router.test.tsx` "renders the landing page at / when authenticated" (5000 ms); passed alone ×2 and in the full suite ×3 |
 | 68 | Path | The old nginx digest `15c994d1…` appears outside `docs/` only at `Iverson.AdminUI/Dockerfile:25` and `Iverson.Server/docker-compose.yml:426`; the chart's tls-proxy (`charts/authentik/values.yaml:6`) is tag-only | `command grep -rn --exclude-dir={node_modules,docs,.git} 15c994d1 .` → those two lines; after Task 9 → none |
@@ -255,7 +255,7 @@ These were introduced by this plan and verified at plan-write time (2026-10-12, 
 | 114 | Ordering | Task 12 depends on no other task; Task 13 uses only Task 12's `$SCR/tools/shellcheck`; Task 14 uses only Tasks 12–13's files and names, and its check does not test Task 5's or Task 10's results | Brief "Shared files": `values-{aws,gcp,azure}.yaml` are T12-only; no other task creates the three new files; Task 14 Step 2 reads only Task 12/13 files, the mint script's existing `--target`, and the chart. |
 | 115 | Command | CI's .NET gate is `dotnet build Iverson.slnx` then `dotnet test Iverson.slnx --filter "Category!=Integration"`, from the repo root | `.github/workflows/dotnet-build.yml:19-20` (`- run: dotnet build Iverson.slnx`, `- run: dotnet test Iverson.slnx --filter "Category!=Integration"`) |
 | 116 | Command | `dotnet test Iverson.slnx` alone does not build `Iverson.Client.Sample`, `Iverson.Client.Conformance.Driver` or `Iverson.Launcher`, so Step 1 runs the build first, and runs it `--no-incremental` so every project's warnings print | Plan-time solution test log: the built projects are only the test projects and their references (no `Iverson.Client.Sample ->` line); the Sample's CS8619 appears only in the `dotnet build Iverson.slnx --no-incremental` log |
-| 117 | Command | Step 1's .NET block, run on a tree holding the .NET edits of Tasks 2, 3 and 6 (applied from the drafts), prints `build-exit=0`, `22 Warning(s)`, `0 Error(s)` and the 11 per-assembly lines in Step 1's Expected | Plan-time run of the block (env path swapped). Output: Client.Core.Tests 91, LoadTest.Tests 156, ClientConformance.Tests 657, Api.Tests 1511, Client.Search.Tests 125, Embeddings.Tests 60, Events.Tests 41, Patterns.Tests 289, Sql.Tests 86, StarRocks.Tests 635, Vector.Tests 112, all `failed=0` |
+| 117 | Command | Step 1's .NET block, run on a tree holding the .NET edits of Tasks 2, 3 and 6 (applied from the drafts), prints `build-exit=0`, `22 Warning(s)`, `0 Error(s)` and the 11 per-assembly lines in Step 1's Expected | Plan-time run of the block (env path swapped). Output: Client.Core.Tests 91, LoadTest.Tests 157, ClientConformance.Tests 657, Api.Tests 1511, Client.Search.Tests 125, Embeddings.Tests 60, Events.Tests 41, Patterns.Tests 289, Sql.Tests 86, StarRocks.Tests 635, Vector.Tests 112, all `failed=0` |
 | 118 | Consumer | The branch adds no compiler warning: the final build's 22 warning sites are exactly `1b108e37`'s | Baseline `dotnet build Iverson.slnx --no-incremental` at `1b108e37`: `22 Warning(s)`. The deduplicated `file(line,col): warning CSxxxx` sites from the final-state build equal the baseline set (diff differs only in sort order) |
 | 119 | Consumer | Every non-Integration .NET test runs without Docker, so the CI-command run starts no container | Plan-time solution test with `DOCKER_HOST=unix:///nonexistent/docker.sock`: all 11 assemblies pass (one timing test aside, next row) |
 | 120 | Code | `StarRocksReadinessGateTests.A_shared_wait_its_only_waiter_abandoned_is_still_observed_when_it_fails` is timing-sensitive under host load and unrelated to the branch | It failed once in the baseline solution run (`Expected HasFaulted(wait) to be True … found False`, load average ≈10). Then the class alone passed 5/5 twice, and the assembly re-run passed 635/635 |
@@ -266,7 +266,7 @@ These were introduced by this plan and verified at plan-write time (2026-10-12, 
 | 125 | Command | Task 10's scratch scripts compare `main`'s `.gitlab-ci.yml` with the final one as Step 2's GitLab block expects: 13 unpinned on `main`; 7 pinned references and none unpinned on the final file; every pinned digest 200; only the OWASP job's triggers change | Plan-time run on a tree holding the CI edits of Tasks 7 (Step 5), 8 (Step 3) and 10 (Steps 2–4), with `git merge-base main HEAD` = `1b108e37`: output as in Step 2's Expected (`0 distinct pinned references; unpinned jobs: [13 names]`, `7 distinct pinned references; unpinned jobs: none`, seven `pinned … 200 (tag still points here)`, `12 of 13 jobs unchanged`) |
 | 126 | Command | Task 10 Step 5's first block passes on the final workflow set, including `publish-images.yml` | Plan-time run after applying Tasks 7, 8, 10, 11 (Steps 2–5) and 12 (Steps 2 and 4): `actionlint rc=0` |
 | 127 | Ordering | The Step 2 re-runs find their inputs still in `$SCR` | `$SCR/ci/{digest,gl_images,gl_rules}.py`: T10 Steps 1 and 5 create them, and no task deletes `$SCR/ci`. `$SCR/ops/before.json`: T11 Step 1 writes it, and only `$SCR/ops/head` is removed. `$SCR/protection/check.py` and the stub: T13 Step 1. `$SCR/tools/shellcheck`: T12 Step 1. `get-pip.py`: re-fetched by T7 Step 1. `cosign`: re-fetched by T12 Step 1. (`command grep -n 'rm -rf\|rm -f'` over the five drafts.) |
-| 128 | Ordering | Re-running Task 7 Step 3, Task 11 Step 1 or Task 10 Step 5's second and third blocks on the final tree would give wrong results | T7 Step 3 runs `pip-compile … --output-file=requirements.txt` (rewrites the lock with the newest releases). T11 Step 1 reads `git show HEAD:…/main.tf`, which on the final tree reads the stub. T10 Step 5 block 2 does `git show HEAD:.gitlab-ci.yml > gitlab-before.yml`, which on the final tree is already pinned |
+| 128 | Ordering | Re-running Task 7 Step 3 or Task 10 Step 5's second and third blocks on the final tree would give wrong results; re-running Task 11 Step 1 is redundant | T7 Step 3 runs `pip-compile … --output-file=requirements.txt` (rewrites the lock with the newest releases). T11 Step 1 reads `git show main:…/main.tf`, so its output is already in `$SCR/ops/before.json` and a re-run rewrites the same file. T10 Step 5 block 2 does `git show HEAD:.gitlab-ci.yml > gitlab-before.yml`, which on the final tree is already pinned |
 | 129 | Ordering | The branch holds 14 commits, one per task, Tasks 1–14 | The commit steps in the drafts are T1 S7, T2 S13, T3 S9, T4 S7, T5 S7, T6 S3, T7 S7, T8 S4, T9 S4, T10 S7, T11 S9, T12 S7, T13 S4 and T14 S3, each with one `git commit`. Task 0 commits nothing |
 | 130 | Command | `git log --format='%(trailers:key=Co-Authored-By,valueonly,separator=; )' … \| sort \| uniq -c` prints one line per distinct trailer set | Run on `main`'s last 5 commits: `      5 Claude Opus 5.5 (1M context) <noreply@anthropic.com>` |
 | 131 | Command | LoadTest publishes framework-dependent for linux-x64 at 41M, needs only `Microsoft.NETCore.App` 10.0.0, and carries `Duende.IdentityModel.dll` on the final .NET state | Plan-time `dotnet publish Iverson.Server/Iverson.LoadTest -c Release -r linux-x64 --self-contained false -o $LIVE/lt` on a tree with Tasks 2, 3 and 6 applied: `41M`, runtimeconfig `{'name': 'Microsoft.NETCore.App', 'version': '10.0.0'}`, `Duende.IdentityModel.dll` |
@@ -291,6 +291,14 @@ These were introduced by this plan and verified at plan-write time (2026-10-12, 
 | 150 | Consumer | Task 15 changes no tracked file. Its only outputs under `$WT` are gitignored build directories (`bin/`, `obj/`, `node_modules/`, `dist/`, `build/`, `*.egg-info/`), so `git status --porcelain` stays empty | Plan-time: after the solution build, test run and publish in the scratch worktree, the only `git status` entries were the drafted edits I applied; there were no build outputs. Tasks 7 and 9 record the same for pip and npm |
 | 151 | Ordering | Applying Tasks 1–14 in numeric order on one tree from `1b108e37` gives no anchor failure and no output mismatch, and every check re-run on the final tree keeps its outcome, including the shared files `.gitlab-ci.yml`, `dependency-scan.yml`, `dependabot.yml` and `image-scan.yml` | Combined replay (scratch `csr11-d-plan/replay/replay-report.md`): 14 tasks applied, every block matched apart from timings and the suite counts each task notes; 14 commits, each with the exact trailer; the final-tree re-runs (GitLab parse and pins, actionlint, Terraform, the image-scan reader, helm lint/kubeconform, the protection dry-run, the Python suites at 244/73) all kept their outcome |
 | 152 | Command | Task 11's baselines compare against `main`, not `HEAD`, so its decoded-pin and image-list checks stay meaningful when re-run after its commit | Replay: with `HEAD`, a post-commit re-run of Step 1 printed `0 {}` and Step 6 `False 5`, and Step 7 compared the new workflow with itself; with `main` the final tree printed `True 5`, `16` and `image lists identical` |
+| 153 | Path | Task 0's branch name and worktree path are free and the path is gitignored, and its first command prints nothing on a clean main checkout | `git branch --list csr11-clients-tooling-ci` → empty; the path is absent; `.gitignore:79` ignores `.worktrees/`; the status filter printed nothing (CIR-1 S1-T0.2, S1-T0.3) |
+| 154 | Code | Task 1's tests, which set JVM-wide trust-store properties, pass in any order within the surefire JVM | `mvn -o -B -pl client test` with `-Dsurefire.runOrder=reversealphabetical` and `=random` → 227/0 each (CIR-1 S1-T1.10) |
+| 155 | Consumer | After Tasks 2 and 3, every LoadTest `WithActingUser` caller gets a non-refusing identity, and Python's new `ValueError` cannot fire through `IversonClient.coordinator()` | The `WithActingUser` callers (`DirectSeeder.cs:121,180,258`, `WritePathRunner.cs:103,113,129`, `BenchmarkIngestScenario.cs:194`) use coordinators that DI injects (into DirectSeeder, BenchmarkIngestScenario, and WritePathScenario/KindWritePathScenario for WritePathRunner), so they get the DI identity under `IsLoopback(grpcUrl)`; `core.py:916-918` refuses an ambient token on plaintext before `:971` builds the coordinator; Python suite 244/0 (CIR-1 S1-X2.2–X2.4, S1-T2.14) |
+| 156 | Code | Both programs reach the startup check: the harness with no arguments, LoadTest with `--help` before any `RequireEnv` | Harness `Program.cs:361-366` sets `ShowHelp` only for `--help`/`-h`, and `:10` is its only branch; LoadTest `Program.cs:33-34` `needsTenantAndSchema` is `seed`/`write-path`/`read-path`/`all`/`benchmark-ingest`/`benchmark-query`; Task 3 Step 7 printed the refusals (CIR-1 span check) |
+| 157 | Command | The pip and audit environments behave as the tasks assume: the agent venv passes with pip 26.1.2; the GitHub runner's pip 26.2.1 and the GitLab image's `wheel 0.46.3` audit clean; `--require-hashes` installs over an unhashed `setuptools==84.0.0`; the agent's `pip install --no-deps .` works without a `[build-system]` table | Task 4 Steps 2 and 6 outputs; run 38189863559 log (`pip … (26.2.1)`); OSV `pip 26.2.1` and `wheel 0.46.3` → none; a CPython 3.11.17 run shaped like the GitLab image installed both locks and `iverson-agent==0.1.0` (CIR-1 S3-7.11) |
+| 158 | Command | CI's Helm v3.15.0 and Terraform 1.7.5 give the same results as the plan-time versions for Task 11 | Helm 3.15.0 ran the whole third-party image-list script: rc 0, list identical to 3.16.4's; Terraform 1.7.5 `fmt -check -recursive` rc 0 and the decode check `True 5` (CIR-1 S4-X.6, S4-X.15) |
+| 159 | Consumer | `setup.sh` reads the stub when Task 15 Step 5 runs it by a relative path; no other consumer uses the Launcher Dockerfile; Task 12's inline copy of the third-party filter matches image-scan after Tasks 10–11 | `setup.sh`'s reader run from `$WT`, `/` and its own directory reads all three pins; a case-insensitive `launcher` sweep outside `docs/` finds no other user; the filter line is unchanged in Tasks 10+11's diff (CIR-1 S4-11.12, S4-10.8, S4-X.16) |
+| 160 | Consumer | Task 15's live check: LoadTest registers unowned schemas, so the smoke-test and bypass users' Posts resolve them; kind selects podman without `KIND_EXPERIMENTAL_PROVIDER` in `build-and-load-image.sh`; the `kind` podman network predates Step 4's snapshot | Post resolves schemas through `TryGetVisible` since `02abddb3` and LoadTest registers without an acting-user header (CIR-1 S5-0.59); the same `build-and-load-image.sh` lines ran live in sub-projects B and C2 (identity-plane plan :2762-2764, orchestrator plan :1578-1580); `docker network ls` lists `kind` today |
 
 ## Tasks
 
@@ -1785,7 +1793,7 @@ Expected: the status lists exactly the ten paths, each `M ` (staged); the commit
 - Produces `Iverson.LoadTest.Auth.CredentialEndpoints` (public, static): `Check(string grpcUrl, string? tokenEndpoint, bool grpcMayUseTls) → string?` (the refusal message, or null), `AuthentikBaseUrl(string? tokenEndpoint) → string`, `IsLoopback(string url) → bool`, and the constant `TokenEndpointPath`. LoadTest calls `Check` with `grpcMayUseTls: true`; the harness, which already references `Iverson.LoadTest`, calls it with `false`, because its own channel is plaintext.
 - `TokenBroker.cs` is also edited by the Duende.IdentityModel task (its `using IdentityModel.Client` line only). This task edits only the `DeriveAuthentikBaseUrl` block, so either order applies cleanly.
 
-One check covers both programs. It uses `Uri.IsLoopback` (spec verified assumption 8). The token endpoint's shape is checked first, so a malformed value gets a message instead of the `IndexOf` range exception the old derivation threw. Then the gRPC URL is checked (loopback, or https for LoadTest). Last come the token endpoint and the Authentik base URL (https or loopback). LoadTest runs the check unconditionally, before the provisioning block and before `AdminAutomationCredentials` is built. The SDK's own flag cannot see two paths, and the check covers both: the bare provisioning channel and the raw `Metadata.WithActingUser` sites (verified assumption 6). The harness runs it before it derives the base URL and before preflight; the five drivers receive the same URL and secrets (verified assumption 7).
+One check covers both programs. It uses `Uri.IsLoopback` (spec verified assumption 8). The token endpoint's shape is checked first, so a malformed value gets a message instead of the `IndexOf` range exception the old derivation threw. Then the gRPC URL is checked (loopback, or https for LoadTest), then the token endpoint and the Authentik base URL (https or loopback). Last, for LoadTest only, a non-loopback `https://` gRPC URL requires an `https://` token endpoint (user decision 2026-10-12, CIR-1 §3.1 C): with that gRPC URL the client library is not opted in to plaintext credentials and refuses a plaintext token endpoint when the client is registered, so the startup check refuses the pairing first. This narrows spec §2's "https or loopback" rule for that one pairing. LoadTest runs the check unconditionally, before the provisioning block and before `AdminAutomationCredentials` is built. The SDK's own flag cannot see two paths, and the check covers both: the bare provisioning channel and the raw `Metadata.WithActingUser` sites (verified assumption 6). The harness runs it before it derives the base URL and before preflight; the five drivers receive the same URL and secrets (verified assumption 7).
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -1799,7 +1807,8 @@ using Xunit;
 namespace Iverson.LoadTest.Tests.Auth;
 
 // CSR round-11 #15: LoadTest sends credentials to its gRPC URL only when it is loopback or https,
-// and to the token endpoint and the Authentik base URL only when they are https or loopback.
+// and to the token endpoint and the Authentik base URL only when they are https or loopback; with a
+// non-loopback https gRPC URL the token endpoint must be https.
 public class CredentialEndpointsTests
 {
     [Theory]
@@ -1817,6 +1826,7 @@ public class CredentialEndpointsTests
     [InlineData("http://0.0.0.0:8080", null, "IVERSON_GRPC_URL must be https:// or a loopback address")]
     [InlineData("not a url", null, "IVERSON_GRPC_URL must be https:// or a loopback address")]
     [InlineData("http://localhost:8080", "http://iverson-authentik:9000/application/o/token/", "IVERSON_TOKEN_ENDPOINT must be https:// or a loopback address")]
+    [InlineData("https://iverson-api:8080", "http://localhost:9000/application/o/token/", "IVERSON_TOKEN_ENDPOINT must be https:// when IVERSON_GRPC_URL is not a loopback address")]
     [InlineData("http://localhost:8080", "https://iverson-authentik:8443/token", "IVERSON_TOKEN_ENDPOINT must be an absolute URL ending in /application/o/token/")]
     [InlineData("http://localhost:8080", "localhost:9000", "IVERSON_TOKEN_ENDPOINT must be an absolute URL ending in /application/o/token/")]
     // The shape is checked first: a malformed token endpoint is named even when the gRPC URL is also refused.
@@ -1912,7 +1922,7 @@ public static class CredentialEndpoints
     /// Why these endpoints may not carry credentials, or null when they may. The token endpoint's
     /// shape is checked first, then the gRPC URL (loopback, or https when
     /// <paramref name="grpcMayUseTls"/>), then the token endpoint and the Authentik base URL
-    /// (https or loopback).
+    /// (https or loopback), and last, with a non-loopback https gRPC URL, an https token endpoint.
     /// </summary>
     public static string? Check(string grpcUrl, string? tokenEndpoint, bool grpcMayUseTls)
     {
@@ -1930,6 +1940,14 @@ public static class CredentialEndpoints
 
         if (tokenEndpoint is not null && !IsHttpsOrLoopback(tokenEndpoint))
             return "IVERSON_TOKEN_ENDPOINT must be https:// or a loopback address: the client secret or assertion is sent to it.";
+
+        // CIR-1 §3.1 C (user decision 2026-10-12): with a non-loopback https:// gRPC URL the client
+        // library is not opted in to plaintext credentials, so it refuses a plaintext token endpoint
+        // when the client is registered; refuse that pairing here, before any credential is sent.
+        if (grpcMayUseTls && !grpc.IsLoopback && tokenEndpoint is not null
+            && !(Uri.TryCreate(tokenEndpoint, UriKind.Absolute, out var token) && token.Scheme == Uri.UriSchemeHttps))
+            return "IVERSON_TOKEN_ENDPOINT must be https:// when IVERSON_GRPC_URL is not a loopback address: " +
+                   "the client library sends client credentials only to an https token endpoint on such a channel.";
 
         if (!IsHttpsOrLoopback(AuthentikBaseUrl(tokenEndpoint)))
             return "The Authentik base URL (IVERSON_TOKEN_ENDPOINT without its path) must be https:// or a " +
@@ -1992,7 +2010,7 @@ with:
         allowInsecureChannelCallCredentials: CredentialEndpoints.IsLoopback(grpcUrl),
 ```
 
-Program.cs already has `using Iverson.LoadTest.Auth;`. With a loopback `http://` URL the flag is true, so the ambient tenant-admin token still binds. A non-loopback `https://` URL is not refused by the SDK, whose predicate is the `http` scheme. A non-loopback `http://` URL never reaches the SDK (verified assumption 34).
+Program.cs already has `using Iverson.LoadTest.Auth;`. With a loopback `http://` URL the flag is true, so the ambient tenant-admin token still binds. A non-loopback `https://` URL is not refused by the SDK's channel check, whose predicate is the `http` scheme; the SDK's token-endpoint check would refuse a plaintext token endpoint with it, a pairing the startup check now refuses first (CIR-1 §3.1 C). A non-loopback `http://` URL never reaches the SDK (verified assumption 34).
 
 - [ ] **Step 5: The harness runs the check before preflight and shares the derivation.**
 
@@ -2079,13 +2097,13 @@ Expected (durations vary):
 ```text
     0 Error(s)
     0 Error(s)
-Passed!  - Failed:     0, Passed:    20, Skipped:     0, Total:    20, Duration: 216 ms - Iverson.LoadTest.Tests.dll (net10.0)
+Passed!  - Failed:     0, Passed:    21, Skipped:     0, Total:    21, Duration: 216 ms - Iverson.LoadTest.Tests.dll (net10.0)
 Passed!  - Failed:     0, Passed:     7, Skipped:     0, Total:     7, Duration: 66 ms - Iverson.ClientConformance.Tests.dll (net10.0)
-Passed!  - Failed:     0, Passed:   156, Skipped:     0, Total:   156, Duration: 2 s - Iverson.LoadTest.Tests.dll (net10.0)
+Passed!  - Failed:     0, Passed:   157, Skipped:     0, Total:   157, Duration: 2 s - Iverson.LoadTest.Tests.dll (net10.0)
 Passed!  - Failed:     0, Passed:   657, Skipped:     0, Total:   657, Duration: 9 s - Iverson.ClientConformance.Tests.dll (net10.0)
 ```
 
-At `1b108e37` the full suites hold 136 and 650 tests; this task adds 20 and 7. If an earlier task in this plan changed either suite, the totals differ. What matters is `Failed: 0`, the 20 and the 7.
+At `1b108e37` the full suites hold 136 and 650 tests; this task adds 21 and 7. If an earlier task in this plan changed either suite, the totals differ. What matters is `Failed: 0`, the 21 and the 7.
 
 - [ ] **Step 7: Both programs refuse at startup, before any network call.** This runs the built binaries with a clean environment. LoadTest's `--help` exercises the unconditional check without contacting anything. Only refusal cases are run against the harness, because an accepted configuration would go on to preflight against localhost.
 
@@ -2168,7 +2186,7 @@ git commit -q -m "refuse plaintext network endpoints in loadtest and the conform
 $TRAILER" && git show --stat --format=%s HEAD | tail -n +1
 ```
 
-Expected: the status filter prints nothing; then the subject `refuse plaintext network endpoints in loadtest and the conformance harness` and `7 files changed, 190 insertions(+), 16 deletions(-)`.
+Expected: the status filter prints nothing; then the subject `refuse plaintext network endpoints in loadtest and the conformance harness` and `7 files changed, 200 insertions(+), 16 deletions(-)`.
 
 ### Task 4: Agent CLI output and prompt echoes (#17, #23)
 
@@ -3246,7 +3264,7 @@ Expected: the status filter prints nothing; `6 files changed, 654 insertions(+),
 **Interfaces:**
 - Produces `golang:1.26@sha256:d7722066f0b60ceccb6c0643cbed1f5f9e15506ac237146c95333504d7805d89` on the GitLab `govulncheck` job. Task 10 pins every other `image:` and leaves this one as it is.
 
-The GitHub job already installs `govulncheck@v1.7.0` after `setup-go`, so only its Go version changes; GitLab moves from `@latest` to the same v1.7.0. The local `go` is 1.22 with `GOTOOLCHAIN=auto`, so it downloads and runs the toolchain `go.mod` names. Every Go command here keeps its module and build caches and the downloaded toolchain under `$SCR/go`, and Step 4 deletes them.
+The GitHub job already installs `govulncheck@v1.7.0` after `setup-go`; its Go version moves to `1.26` with `check-latest: true`, because setup-go sets `GOTOOLCHAIN=local` (so `go.mod`'s `toolchain` line is ignored) and otherwise uses the runner image's cached 1.26 patch, which can be older than 1.26.9 and still carry the stdlib advisories; GitLab moves from `@latest` to the same v1.7.0. The local `go` is 1.22 with `GOTOOLCHAIN=auto`, so it downloads and runs the toolchain `go.mod` names. Every Go command here keeps its module and build caches and the downloaded toolchain under `$SCR/go`, and Step 4 deletes them.
 
 - [ ] **Step 1: Move the module to Go 1.26 and `golang.org/x/net` v0.60.0.**
 
@@ -3294,7 +3312,7 @@ flock -o $SCR/heavy.lock -c "systemd-run --user --scope -q -p MemoryMax=3G go in
 $SCR/go/bin/govulncheck ./... | tail -2
 ```
 
-Expected: `go version go1.26.9 linux/amd64` (the toolchain line selects it, as `setup-go` "1.26" and the GitLab image both do); `go build` and `go vet` print nothing; `go test` prints `ok` for `github.com/iverson/clients/go/conformance`, `github.com/iverson/clients/go/iverson` and `github.com/iverson/clients/go/iverson_test` and no `FAIL`; `go install` prints `go: golang.org/x/vuln@v1.7.0 requires go >= 1.25.0; switching to go1.26.9` (an `@version` install ignores the module's `go.mod`, so the local 1.22 switches up) and some `go: downloading` lines; govulncheck ends with `No vulnerabilities found.` The same govulncheck run on `main`'s `go.mod` reports the stdlib and `x/net` advisories (spec verified assumptions 14 and 35).
+Expected: `go version go1.26.9 linux/amd64` (the toolchain line selects it here; on GitHub `check-latest: true` selects the newest 1.26 release, and the GitLab image is 1.26.9); `go build` and `go vet` print nothing; `go test` prints `ok` for `github.com/iverson/clients/go/conformance`, `github.com/iverson/clients/go/iverson` and `github.com/iverson/clients/go/iverson_test` and no `FAIL`; `go install` prints `go: golang.org/x/vuln@v1.7.0 requires go >= 1.25.0; switching to go1.26.9` (an `@version` install ignores the module's `go.mod`, so the local 1.22 switches up) and some `go: downloading` lines; govulncheck ends with `No vulnerabilities found.` The same govulncheck run on `main`'s `go.mod` reports the stdlib and `x/net` advisories (spec verified assumptions 14 and 35).
 
 - [ ] **Step 3: CI and README.**
 
@@ -3312,6 +3330,8 @@ sub(".github/workflows/dependency-scan.yml", '''      - uses: actions/setup-go@b
 ''', '''      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
+          # the runner image can cache an older 1.26 patch; resolve "1.26" to the newest release instead
+          check-latest: true
 ''')
 sub(".gitlab-ci.yml", '''  image: golang:1.25
   extends: .rules-dependency-scan
@@ -3352,7 +3372,7 @@ git commit -q -m "move the go sdk to go 1.26 and x/net v0.60.0 and pin govulnche
 $TRAILER" && git show --stat --format=%s HEAD | tail -1
 ```
 
-Expected: the status filter prints nothing; `5 files changed, 17 insertions(+), 14 deletions(-)`.
+Expected: the status filter prints nothing; `5 files changed, 19 insertions(+), 14 deletions(-)`.
 
 ### Task 9: The admin console base image and the npm audits (#19, spec §4)
 
@@ -5321,7 +5341,7 @@ Iverson.Client.Search.Tests Passed failed=0 passed=125 skipped=0
 Iverson.ClientConformance.Tests Passed failed=0 passed=657 skipped=0
 Iverson.Embeddings.Tests Passed failed=0 passed=60 skipped=0
 Iverson.Events.Tests Passed failed=0 passed=41 skipped=0
-Iverson.LoadTest.Tests Passed failed=0 passed=156 skipped=0
+Iverson.LoadTest.Tests Passed failed=0 passed=157 skipped=0
 Iverson.Patterns.Tests Passed failed=0 passed=289 skipped=0
 Iverson.Sql.Tests Passed failed=0 passed=86 skipped=0
 Iverson.StarRocks.Tests Passed failed=0 passed=635 skipped=0
@@ -5329,7 +5349,7 @@ Iverson.Vector.Tests Passed failed=0 passed=112 skipped=0
 ```
 
 - The 22 warnings are the same sites as on `main`; none is in a file this branch touches. The Sample's CS8619 predates the branch (Task 2 Step 8, Task 6 Step 2).
-- Three suites grow: Client.Core.Tests 84 → 91 (Task 2), LoadTest.Tests 136 → 156 and ClientConformance.Tests 650 → 657 (Task 3). The other eight match `main`.
+- Three suites grow: Client.Core.Tests 84 → 91 (Task 2), LoadTest.Tests 136 → 157 and ClientConformance.Tests 650 → 657 (Task 3). The other eight match `main`.
 - `Iverson.StarRocks.Tests.StarRocksReadinessGateTests.A_shared_wait_its_only_waiter_abandoned_is_still_observed_when_it_fails` failed once at plan time, on `main`'s code, while the host's load average was about 10. It passed alone twice and in a re-run of the whole assembly. It is a timing test the branch does not touch. If it fails, re-run that assembly once on a quieter host. If it fails again, run it on `main` before treating it as a branch failure.
 
 The container-backed suites, one at a time, the way sub-project C's verification ran them. They start their own throwaway Testcontainers and never touch the user's containers. Only the `Integration` category runs here, because the solution run above already ran every other test in these projects. The `--no-build` reuses that run's build.
@@ -5834,7 +5854,7 @@ docker images --format '{{.Repository}}:{{.Tag}}' | command grep -E ':csr11d$|iv
 docker ps -a --format '{{.Names}}' | sort | diff $LIVE/before-containers.txt - && echo containers-unchanged
 docker volume ls -q | sort | diff $LIVE/before-volumes.txt - && echo volumes-unchanged
 docker network ls --format '{{.Name}}' | sort | diff $LIVE/before-networks.txt - && echo networks-unchanged
-docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort | comm -23 $LIVE/before-images.txt - | head && echo no-image-removed-or-repointed
+out="$(docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort | comm -23 $LIVE/before-images.txt -)"; [ -z "$out" ] && echo no-image-removed-or-repointed || printf 'CHANGED:\n%s\n' "$out"
 echo "new images:"; docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort | comm -13 $LIVE/before-images.txt -
 rm -rf $LIVE/lt
 git -C $WT status --porcelain
@@ -5843,7 +5863,7 @@ git -C $WT status --porcelain
 Expected:
 - `No kind clusters found`.
 - `containers-unchanged`, `volumes-unchanged` and `networks-unchanged`.
-- `no-image-removed-or-repointed`.
+- `no-image-removed-or-repointed`. A `CHANGED:` block instead lists a pre-existing image that was removed or re-tagged: stop and report it.
 - An empty `git status`.
 
 Then remove whatever this task built:
