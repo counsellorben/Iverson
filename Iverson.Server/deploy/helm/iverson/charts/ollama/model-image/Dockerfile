@@ -3,7 +3,7 @@
 # #19: the previous check compared a 12-character prefix). The chart derives this image's tag
 # from the model, the digest and a hash of this file.
 # Base pinned by multi-arch index digest (resolved 2026-10-06).
-FROM docker.io/ollama/ollama:0.12.11@sha256:3d8a05e3432d50ea57594fabe971e46cc8fe963a0f9f8c40400bd56cd5388e47 AS fetch
+FROM docker.io/ollama/ollama:0.40.3@sha256:adca95a12c2b386a8f9a995e7fa0600e187e3323b5e5522f5a6c3b1ec73eff99 AS fetch
 ARG MODEL
 ARG DIGEST
 ENV OLLAMA_MODELS=/models HOME=/tmp
@@ -24,6 +24,6 @@ RUN set -e; ollama serve >/tmp/log 2>&1 & pid=$!; \
     actual=$(sha256sum "$manifest" | cut -d' ' -f1); \
     [ "$actual" = "$DIGEST" ] || { echo "FATAL: $MODEL manifest $actual != pinned $DIGEST" >&2; exit 1; }
 
-FROM docker.io/ollama/ollama:0.12.11@sha256:3d8a05e3432d50ea57594fabe971e46cc8fe963a0f9f8c40400bd56cd5388e47
+FROM docker.io/ollama/ollama:0.40.3@sha256:adca95a12c2b386a8f9a995e7fa0600e187e3323b5e5522f5a6c3b1ec73eff99
 COPY --from=fetch /models /models
 ENV OLLAMA_MODELS=/models
