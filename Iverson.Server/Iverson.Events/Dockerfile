@@ -1,6 +1,6 @@
 # Iverson.Events is a class library — it is packaged into Iverson.Api at build time.
 # This Dockerfile builds just the library for standalone artifact inspection or packaging.
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS build
 WORKDIR /src
 
 COPY ["Iverson.Events/Iverson.Events.csproj", "Iverson.Events/"]
