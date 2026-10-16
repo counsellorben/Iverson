@@ -1,11 +1,13 @@
 name: Publish Images
 
-# CSR round-11 #19. Publishes the first-party images to GHCR, signs each pushed digest keyless with
-# cosign (GitHub OIDC; the signature is recorded in the public Rekor log) and attaches a signed
+# CSR round-11 #19. Publishes the first-party images to GHCR, signs each published digest keyless
+# with cosign (GitHub OIDC; the signature is recorded in the public Rekor log) and attaches a signed
 # SPDX-JSON SBOM attestation. iverson-api and iverson-admin-ui publish on every run, tagged with the
 # commit SHA on main and X.Y.Z on a vX.Y.Z tag, never "latest". The model images publish only on tags
-# and manual runs, under the content-derived tags the chart references. Verifying a published image:
-# docs/runbooks/csr11-clients-tooling-ci.md.
+# and manual runs, under the content-derived tags the chart references. A published tag never moves:
+# a run whose tag already exists reuses the digest it names instead of rebuilding, and still signs
+# and attests that digest. Signing runs in its own job, the only one holding an OIDC token.
+# Verifying a published image: docs/runbooks/csr11-clients-tooling-ci.md.
 
 on:
   push:
@@ -15,7 +17,7 @@ on:
 
 jobs:
   images:
-    # The publish job's matrix: one entry per image this run publishes.
+    # The publish and sign jobs' matrix: one entry per image this run publishes.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -80,13 +82,19 @@ jobs:
           echo "include=$(python3 -c 'import json, sys; print(json.dumps([json.loads(l) for l in sys.stdin]))' < "$rows")" >> "$GITHUB_OUTPUT"
 
   publish:
+    # Builds and pushes each image, or reuses the digest its tag already names, and generates its
+    # SBOM. No OIDC token here: the sign job alone can mint one.
     name: publish (${{ matrix.name }})
     needs: images
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      id-token: write
+    # Runs that would push the same tag (a v tag and a manual run, two tags on one commit) queue
+    # here instead of racing; the later one finds the tag published and reuses it.
+    concurrency:
+      group: publish-${{ matrix.image }}:${{ matrix.tag }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -102,8 +110,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Check whether the tag is published
+        id: published
+        env:
+          REF: ${{ matrix.image }}:${{ matrix.tag }}
+        run: |
+          set -euo pipefail
+          # A published tag never moves. A tag that already exists is reused at the digest it names,
+          # and only the registry's definite "not found" counts as unpublished: any other failure
+          # stops the run rather than rebuild over a tag that may exist.
+          err="$RUNNER_TEMP/inspect.err"
+          if manifest=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' 2>"$err"); then
+            digest=$(printf '%s' "$manifest" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("digest", ""))')
+            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::$REF names no sha256 digest"; exit 1; }
+            echo "::notice::$REF was already published at $digest; reusing that digest instead of rebuilding"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          elif grep -Fq -- "$REF: not found" "$err"; then
+            echo "$REF is not published yet; building it"
+          else
+            cat "$err" >&2
+            echo "::error::could not tell whether $REF is published"
+            exit 1
+          fi
       - name: Build and push
         id: build
+        if: steps.published.outputs.digest == ''
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.context }}
@@ -112,6 +143,75 @@ jobs:
           tags: ${{ matrix.image }}:${{ matrix.tag }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           push: true
+      - name: Record the digest
+        id: digest
+        env:
+          PUBLISHED: ${{ steps.published.outputs.digest }}
+          BUILT: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest=${PUBLISHED:-$BUILT}
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no sha256 digest for this image"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/publish"
+          printf '%s\n' "$digest" > "$RUNNER_TEMP/publish/digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ matrix.image }}@${{ steps.digest.outputs.digest }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/publish/sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Hand the digest and SBOM to the sign job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: publish-${{ matrix.name }}-${{ matrix.tag }}
+          path: |
+            ${{ runner.temp }}/publish/digest
+            ${{ runner.temp }}/publish/sbom.spdx.json
+          if-no-files-found: error
+          # A re-run replaces the earlier attempt's copy.
+          overwrite: true
+          retention-days: 1
+
+  sign:
+    # Signs each published digest keyless and attests its SBOM. The only job with an OIDC token.
+    # It runs for every entry whose publish job succeeded, even when another entry's failed; a
+    # failed entry has no artifact, so its sign job fails too.
+    name: sign (${{ matrix.name }})
+    needs: [images, publish]
+    if: ${{ !cancelled() && needs.images.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.images.outputs.include) }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: publish-${{ matrix.name }}-${{ matrix.tag }}
+          path: ${{ runner.temp }}/publish
+      - name: Read the digest
+        id: digest
+        env:
+          DIGEST_FILE: ${{ runner.temp }}/publish/digest
+        run: |
+          set -euo pipefail
+          digest=$(< "$DIGEST_FILE")
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the publish job's digest is not a sha256 digest"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           # The installer's own bootstrap release, which it checks against a SHA-256 in the pinned
@@ -119,20 +219,10 @@ jobs:
           cosign-release: v3.0.6
       - name: Sign
         env:
-          REF: ${{ matrix.image }}@${{ steps.build.outputs.digest }}
+          REF: ${{ matrix.image }}@${{ steps.digest.outputs.digest }}
         run: cosign sign --yes "$REF"
-      - name: SBOM
-        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
-        with:
-          image: ${{ matrix.image }}@${{ steps.build.outputs.digest }}
-          registry-username: ${{ github.actor }}
-          registry-password: ${{ secrets.GITHUB_TOKEN }}
-          format: spdx-json
-          output-file: ${{ runner.temp }}/sbom.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
       - name: Attest the SBOM
         env:
-          REF: ${{ matrix.image }}@${{ steps.build.outputs.digest }}
-          SBOM: ${{ runner.temp }}/sbom.spdx.json
+          REF: ${{ matrix.image }}@${{ steps.digest.outputs.digest }}
+          SBOM: ${{ runner.temp }}/publish/sbom.spdx.json
         run: cosign attest --yes --type spdxjson --predicate "$SBOM" "$REF"

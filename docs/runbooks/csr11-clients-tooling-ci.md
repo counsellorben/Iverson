@@ -62,6 +62,14 @@ the repository, workflow and ref.
 The clusters do not check signatures at admission. Verification is the operator's check before a
 deploy.
 
+Each run builds and pushes an image only when its tag does not exist yet. A tag that already
+exists is never rebuilt or moved: the run reuses the digest the tag names, and its log carries a
+notice saying so. Either way, a separate `sign (<image>)` job, the only job with an OIDC token,
+signs that digest and attests its SBOM after `publish (<image>)` pushed or reused it. A run that
+pushed a tag but failed before signing it is therefore completed by the next run on the same
+tag, which re-signs the digest under the same identity. Two runs that would push the same tag
+queue behind each other instead of racing.
+
 The publish workflow's first real run is unexercised before the push. Its acceptance check is
 this section: run it against the `main` SHA tags after the first push, and against the model
 images after the first manual run.
@@ -74,8 +82,8 @@ images after the first manual run.
 `ghcr.io/counsellorben/`.
 
 The image tags stay operator-supplied. Set all three on every deploy, to the full commit SHA of a
-`main` build or to `X.Y.Z` for a `vX.Y.Z` tag (the git ref is `vX.Y.Z`; the image tag is `X.Y.Z`). The chart's default tag `0.1.0` is never published,
-and the workflow never publishes `latest`.
+`main` build or to `X.Y.Z` for a `vX.Y.Z` tag (the git ref is `vX.Y.Z`; the image tag is `X.Y.Z`). The chart's default tag `0.1.0` is published only
+by a `v0.1.0` tag, and the workflow never publishes `latest`.
 
 ```bash
 helm upgrade --install iverson Iverson.Server/deploy/helm/iverson -n iverson \
@@ -91,8 +99,10 @@ Dockerfile, run the workflow on that commit before deploying it:
 gh workflow run publish-images.yml --ref main
 ```
 
-A manual run also republishes `iverson-api` and `iverson-admin-ui` under the commit SHA. The
-workflow refuses any ref other than `main` or a `vX.Y.Z` tag.
+A manual run also covers `iverson-api` and `iverson-admin-ui` under the commit SHA. Any image
+whose tag is already published, including model images whose pins did not change, is reused at
+its existing digest and re-signed, not rebuilt. The workflow refuses any ref other than `main` or
+a `vX.Y.Z` tag.
 
 ## 4. Branch protection
 
