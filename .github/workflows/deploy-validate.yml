@@ -1,9 +1,12 @@
 name: Deploy Validate
 
+# CSR round-11 #19: every pull request and every push to main, with no paths filter. Branch
+# protection requires these checks, and a required check whose workflow a paths filter skips never
+# reports, which leaves the pull request blocked.
 on:
-  pull_request:
-    paths:
-      - "Iverson.Server/deploy/**"
+  pull_request: {}
+  push:
+    branches: [main]
 
 # Least-privilege default: every job here only checks out the repo and runs
 # read-only linters/validators (helm lint, kubeconform, kube-score, tfsec,

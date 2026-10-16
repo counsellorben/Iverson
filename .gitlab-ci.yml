@@ -29,9 +29,11 @@ stages:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
 
+# CSR round-11 #19: every job image is pinned as name:tag@sha256:<index digest>. The tag keeps the
+# reference readable; the digest is what is pulled. A bump changes both together.
 helm-lint:
   stage: validate
-  image: alpine/helm:3.15.0
+  image: alpine/helm:3.15.4@sha256:105741fa6621ed9a3ea944066de78bb27d4b9bb93a56ce8e7cb4d621e1e4bbf2
   extends: .rules-deploy-changes
   script:
     - helm dependency build Iverson.Server/deploy/helm/iverson
@@ -48,7 +50,7 @@ helm-lint:
 
 helm-template-kubeconform:
   stage: validate
-  image: alpine/helm:3.15.0
+  image: alpine/helm:3.15.4@sha256:105741fa6621ed9a3ea944066de78bb27d4b9bb93a56ce8e7cb4d621e1e4bbf2
   extends: .rules-deploy-changes
   before_script:
     - apk add --no-cache curl
@@ -75,7 +77,7 @@ helm-template-kubeconform:
 
 security-audit:
   stage: validate
-  image: alpine/helm:3.15.0
+  image: alpine/helm:3.15.4@sha256:105741fa6621ed9a3ea944066de78bb27d4b9bb93a56ce8e7cb4d621e1e4bbf2
   extends: .rules-deploy-changes
   before_script:
     - apk add --no-cache curl
@@ -113,7 +115,7 @@ security-audit:
 
 terraform-validate:
   stage: validate
-  image: hashicorp/terraform:1.7.5
+  image: hashicorp/terraform:1.7.5@sha256:386b7bff108f9fd3b79a2e0110190c162b5e4aebf26afe3eef028fd89532c17e
   extends: .rules-deploy-changes
   parallel:
     matrix:
@@ -135,7 +137,7 @@ terraform-validate:
 
 nuget-audit:
   stage: dependency-scan
-  image: mcr.microsoft.com/dotnet/sdk:10.0
+  image: mcr.microsoft.com/dotnet/sdk:10.0@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317
   extends: .rules-dependency-scan
   script:
     - dotnet restore Iverson.slnx
@@ -144,7 +146,7 @@ nuget-audit:
 
 npm-audit-adminui:
   stage: dependency-scan
-  image: node:22
+  image: node:22@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8
   extends: .rules-dependency-scan
   script:
     - cd Iverson.AdminUI
@@ -153,7 +155,7 @@ npm-audit-adminui:
 
 npm-audit-ts-sdk:
   stage: dependency-scan
-  image: node:22
+  image: node:22@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8
   extends: .rules-dependency-scan
   script:
     - cd Iverson.Clients/TypeScript
@@ -172,8 +174,15 @@ govulncheck:
 
 owasp-dependency-check-java:
   stage: dependency-scan
-  image: maven:3.9-eclipse-temurin-21
-  extends: .rules-dependency-scan
+  image: maven:3.9-eclipse-temurin-21@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320
+  # CSR round-11 #19: the only job that reads NVD_API_KEY, so it never runs in a merge-request
+  # pipeline (these rules replace .rules-dependency-scan's, which also admit merge requests). Job
+  # rules decide which jobs run, not which variables a pipeline receives: NVD_API_KEY must also be a
+  # Protected (or pipeline-schedule) variable (docs/runbooks/csr11-clients-tooling-ci.md).
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
   variables:
     NVD_API_KEY: $NVD_API_KEY
   script:
@@ -182,7 +191,7 @@ owasp-dependency-check-java:
 
 pip-audit-python-sdk:
   stage: dependency-scan
-  image: python:3.11
+  image: python:3.11@sha256:50cfccc707e8721201ee018bfd7f6a85d8eacf49c4f9f75833a2aba09a10411f
   extends: .rules-dependency-scan
   script:
     - cd Iverson.Clients/Python
@@ -196,7 +205,7 @@ pip-audit-python-sdk:
 
 pip-audit-agents:
   stage: dependency-scan
-  image: python:3.11
+  image: python:3.11@sha256:50cfccc707e8721201ee018bfd7f6a85d8eacf49c4f9f75833a2aba09a10411f
   extends: .rules-dependency-scan
   script:
     - cd Iverson.Agents/Python
@@ -212,7 +221,7 @@ pip-audit-agents:
 
 dotnet-build-test:
   stage: build-test
-  image: mcr.microsoft.com/dotnet/sdk:10.0
+  image: mcr.microsoft.com/dotnet/sdk:10.0@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
@@ -222,7 +231,7 @@ dotnet-build-test:
 
 typescript-sdk-build-test:
   stage: build-test
-  image: node:22
+  image: node:22@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'

@@ -36,7 +36,6 @@ updates:
     directories:
       - "/Iverson.AdminUI"
       - "/Iverson.Server/Iverson.Api"
-      - "/Iverson.Server/Iverson.Launcher"
       - "/Iverson.Server/Iverson.Events"
       - "/Iverson.Server/Iverson.Sql"
       - "/Iverson.Server/Iverson.Vector"
