@@ -12,6 +12,9 @@ global:
   ingressHost: "iverson.example.com"
   prometheusEnabled: true   # single source of truth — see values.yaml's comment on this flag
   externalScheme: "https"
+  # CSR round-11 #19: the model images are published to GHCR by
+  # .github/workflows/publish-images.yml (docs/runbooks/csr11-clients-tooling-ci.md).
+  modelImageRegistry: "ghcr.io/counsellorben/"
   # CSR round-10 #3: the Application Gateway subnet (modules/cluster-azure,
   # azurerm_subnet.appgw). It writes "ip:port", which the API accepts.
   trustedProxies:
@@ -87,6 +90,10 @@ tei:
       effect: "NoSchedule"
 
 api:
+  # CSR round-11 #19: published to GHCR by .github/workflows/publish-images.yml. Set image.tag on
+  # every deploy (docs/runbooks/csr11-clients-tooling-ci.md).
+  image:
+    repository: "ghcr.io/counsellorben/iverson-api"
   ingress:
     className: "azure-application-gateway"
     annotations: {}
@@ -121,6 +128,8 @@ api:
 # file is self-documenting and matches values-local.yaml's shape. Only authentik's
 # bootstrapEmail actually differs from base, to match this environment's real host.
 worker:
+  image:
+    repository: "ghcr.io/counsellorben/iverson-api"   # the api image (api.image above)
   replicas: 2
   resources:
     requests: { cpu: "2", memory: "4Gi", ephemeral-storage: "1Gi" }
@@ -161,6 +170,8 @@ authentik:
     wafPolicyId: ""
 
 adminUi:
+  image:
+    repository: "ghcr.io/counsellorben/iverson-admin-ui"   # published with the api image
   ingress:
     className: "azure-application-gateway"
     annotations: {}
