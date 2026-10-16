@@ -1,12 +1,12 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-12-csr-round11-clients-tooling-ci-implementation-plan.md, T4 S3
 // Source: Iverson.Agents/Python/iverson_agent/__main__.py _printable and _TERMINAL_CONTROLS
-// Replay base: 7d4669e5896c4df448b2d45c9a4abbf67926b688
+// Code ref: 50796aedc1e8d3a08792db01c606f0505cae9a86
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions docs/formal/2026-10-12-csr-round11-clients-tooling-ci-implementation-plan/_printable.dfy
 
 // Python `str` is a sequence of code points.
 newtype CodePoint = x: int | 0 <= x < 0x110000
 
-// _TERMINAL_CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+// __main__.py:52  _TERMINAL_CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 // A single-character class of three code-point ranges, compiled without flags:
 // a code point matches iff it lies in one of the ranges.
 predicate TerminalControlsMatches(c: CodePoint)
@@ -25,7 +25,7 @@ function TerminalControlsSub(repl: seq<CodePoint>, s: seq<CodePoint>): seq<CodeP
   else [s[0]] + TerminalControlsSub(repl, s[1..])
 }
 
-// def _printable(text: str) -> str:
+// __main__.py:55-60  def _printable(text: str) -> str:
 //     return _TERMINAL_CONTROLS.sub("", text)
 function Printable(text: seq<CodePoint>): seq<CodePoint>
 {

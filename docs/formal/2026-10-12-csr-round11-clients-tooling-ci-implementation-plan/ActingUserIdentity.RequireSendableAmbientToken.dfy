@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-12-csr-round11-clients-tooling-ci-implementation-plan.md, T2 S3, T2 S7
 // Source: Iverson.Clients/DotNet/Iverson.Client.Core/ActingUserIdentity.cs, EntityCoordinator.cs and SchemaCatalogClient.cs (all under Iverson.Clients/DotNet/Iverson.Client.Core/) ActingUserIdentity.RequireSendableAmbientToken; EntityCoordinator<T>'s _identity initializer and WithActingUser's guard; SchemaCatalogClient's _actingUserTokenProvider initializer
-// Replay base: 7d4669e5896c4df448b2d45c9a4abbf67926b688
+// Code ref: 50796aedc1e8d3a08792db01c606f0505cae9a86
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --unicode-char false --allow-deprecation docs/formal/2026-10-12-csr-round11-clients-tooling-ci-implementation-plan/ActingUserIdentity.RequireSendableAmbientToken.dfy
 
 datatype Option<T> = None | Some(value: T)
@@ -29,7 +29,7 @@ function RequireSendableAmbientToken(identity: Option<Identity>): Outcome<Option
     Returned(identity)
 }
 
-// EntityCoordinator.cs:31
+// EntityCoordinator.cs:31 (parameter declared :22)
 // private readonly ActingUserIdentity? _identity = ActingUserIdentity.RequireSendableAmbientToken(identity);
 // Returns the value stored in _identity, or Threw when the initializer throws.
 function CoordinatorIdentity(identity: Option<Identity>): Outcome<Option<Identity>>
@@ -37,7 +37,7 @@ function CoordinatorIdentity(identity: Option<Identity>): Outcome<Option<Identit
   RequireSendableAmbientToken(identity)
 }
 
-// EntityCoordinator.cs:50-70
+// EntityCoordinator.cs:50-72 (guard :55-65; construction :68-71)
 // WithActingUser(tokenProvider): the guard, then `new(..., _identity) { _boundActingUser = tokenProvider }`,
 // whose constructor re-runs the _identity initializer on the same identity.
 // Returns the new coordinator's _identity, or Threw.

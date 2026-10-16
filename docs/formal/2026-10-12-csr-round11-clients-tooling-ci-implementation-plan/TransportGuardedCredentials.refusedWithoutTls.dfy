@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-12-csr-round11-clients-tooling-ci-implementation-plan.md, T1 S3, T1 S5
 // Source: Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/TransportGuardedCredentials.java and Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/OAuth2ClientCredentials.java TransportGuardedCredentials.applyRequestMetadata and refusedWithoutTls; the security-level guard in OAuth2ClientCredentials.applyRequestMetadata
-// Replay base: 7d4669e5896c4df448b2d45c9a4abbf67926b688
+// Code ref: 50796aedc1e8d3a08792db01c606f0505cae9a86
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --unicode-char false --allow-deprecation docs/formal/2026-10-12-csr-round11-clients-tooling-ci-implementation-plan/TransportGuardedCredentials.refusedWithoutTls.dfy
 
 // ---------------------------------------------------------------------------

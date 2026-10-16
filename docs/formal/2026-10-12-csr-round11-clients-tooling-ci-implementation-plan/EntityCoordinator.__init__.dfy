@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-12-csr-round11-clients-tooling-ci-implementation-plan.md, T2 S11
 // Source: Iverson.Clients/Python/iverson_client/core.py EntityCoordinator.__init__'s acting_user_token guard and with_acting_user's guard
-// Replay base: 7d4669e5896c4df448b2d45c9a4abbf67926b688
+// Code ref: 50796aedc1e8d3a08792db01c606f0505cae9a86
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions docs/formal/2026-10-12-csr-round11-clients-tooling-ci-implementation-plan/EntityCoordinator.__init__.dfy
 
 // ---------------------------------------------------------------------------
