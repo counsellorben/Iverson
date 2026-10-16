@@ -95,9 +95,12 @@ public class StarRocksReadinessGateTests
         {
             var wait = AbandonTheOnlyWaiter(marker);
             var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (!HasFaulted(wait) && DateTime.UtcNow < deadline)
+            while (!HasFaulted(wait) && !IsCollected(wait) && DateTime.UtcNow < deadline)
                 await Task.Delay(10);
-            HasFaulted(wait).Should().BeTrue("the gate gives up after its timeout");
+            // A GC between the fault and the next poll leaves nothing to inspect. Only a finished task can be
+            // collected (a pending one is rooted by the gate's poll timer), and its check always throws, so a
+            // collected task faulted.
+            (HasFaulted(wait) || IsCollected(wait)).Should().BeTrue("the gate gives up after its timeout");
 
             // The task reports itself faulted before the thread completing it has let go of it, and the
             // gate's own continuation may still be running. So it can be unreachable only a moment later:
