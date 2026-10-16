@@ -36,7 +36,7 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
     private const int QdrantGrpcPort     = 6334;
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder()
-        .WithImage("postgres:16-alpine")
+        .WithImage("postgres:18-alpine")
         .Build();
 
     private readonly IContainer _starRocks = new ContainerBuilder()

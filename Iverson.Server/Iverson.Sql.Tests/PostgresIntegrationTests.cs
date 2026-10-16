@@ -9,7 +9,7 @@ namespace Iverson.Sql.Tests;
 public sealed class PostgresContainerFixture : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
-        .WithImage("postgres:16-alpine")
+        .WithImage("postgres:18-alpine")
         .Build();
 
     public PostgresRepository Repository { get; private set; } = null!;

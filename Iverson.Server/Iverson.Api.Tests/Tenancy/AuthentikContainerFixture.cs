@@ -83,7 +83,7 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
         // unavailable once .Build() has produced the container, so both must be applied here
         // rather than in InitializeAsync.
         _postgres = new PostgreSqlBuilder()
-            .WithImage("postgres:16-alpine")
+            .WithImage("postgres:18-alpine")
             .WithDatabase(AuthentikDbName)
             .WithUsername(AuthentikDbUser)
             .WithPassword(AuthentikDbPassword)

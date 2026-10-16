@@ -21,7 +21,7 @@ namespace Iverson.Api.Tests.Reconciliation;
 public sealed class ReconciliationQueuePostgresContainerFixture : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
-        .WithImage("postgres:16-alpine")
+        .WithImage("postgres:18-alpine")
         .Build();
 
     public PostgresRepository Repository { get; private set; } = null!;
