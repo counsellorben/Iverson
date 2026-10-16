@@ -9,7 +9,7 @@ fe:
   nodeSelector: {}
   tolerations: []
 be:
-  image: "starrocks/be-ubuntu:4.1.1"
+  image: "starrocks/be-ubuntu:4.1.6"
   replicas: 2
   storageSize: 500Gi
   resources:
