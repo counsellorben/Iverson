@@ -32,7 +32,7 @@
 ### 2.1 Canonical keys at RPC entry
 
 A new step, `PayloadKeyCanonicalizer.Canonicalize(schema, payload)`, runs first in each of the four client write RPCs: `ObjectMappingService.Post/Update` and `ObjectPersistenceService.Post/Update`. It runs before `ExtractKey`, the existing-row fetch and `EnforceWriteAuthorization`.
-- It builds a case-insensitive map from `KeyColumn.Name` and `ScalarColumns[].Name` to the registered spelling. The tenant column is excluded: its smuggling check (`AuthorizationFieldMasking.cs:91-98`) keeps running on the raw key and keeps its message.
+- It builds a case-insensitive map from `KeyColumn.Name` and `ScalarColumns[].Name` to the registered spelling. The reserved tenant column `__TenantId` is excluded: its smuggling check (`AuthorizationFieldMasking.cs:91-98`) keeps running on the raw key and keeps its message. A legacy client-declared tenant column (such as `TenantId`) is canonicalised like any other column.
 - It renames each payload key that matches exactly one column to that column's spelling.
 - It refuses with `InvalidArgument` two payload keys that map to the same column, and a key that matches more than one column (a stored type with case-duplicate columns).
 - Keys that match no column are left alone (unchanged behaviour). Navigation keys are never in the map.
@@ -49,7 +49,7 @@ Registration accepts `Authorization.OwnerField`, `FieldPermissions[].FieldName` 
 - an owner-scoped caller can set the owner on Create (`SetAuthoritativeField` adds a second key beside the client's);
 - bypass writers skip `OwnerImmutable`.
 
-Fix: `SchemaBuilder.BuildDescriptor` rewrites these three to the matched column's spelling. `SchemaRegistry.LoadAsync` applies the same rewrite to stored descriptors (`descriptor with { … }`).
+Fix: `SchemaBuilder.BuildDescriptor` rewrites these to the matched column's spelling. For relations, only the foreign keys of `OneToOne`, `ManyToOne` and `ManyToMany` relations are rewritten: a `OneToMany` foreign key names a column of the related type, not of this one. `SchemaRegistry.LoadAsync` applies the same rewrite to stored descriptors (`descriptor with { … }`).
 
 ### 2.3 Serialisation and the sinks
 
@@ -75,7 +75,7 @@ One predicate, `PopularitySignalEligibility.IsEligible(parent, relation, registr
   - `PR(parent) ⊆ PR(child)`;
   - every `FieldPermission` of the child on the FK column or on `PopularitySignalColumn` with non-empty `ReadableRoles` satisfies `PR(parent) ⊆ ReadableRoles`.
 
-A missing child or a relation that isn't `OneToMany` makes the signal ineligible.
+A missing child or a relation that isn't `OneToMany` makes the signal ineligible, even when `parent.Authorization` is null: that structural check comes first.
 
 Where it applies:
 - `PopularitySignalUpdater` (the consumer and the sweep) skips ineligible signals.
@@ -90,7 +90,7 @@ At the three decay sites (SearchSimilar, SearchChunks, and SearchSimilar via chu
 
 ## 4. Enrichment (#18)
 
-- The target-permission rule in `SchemaRegistrationOrchestrator.ValidateEnrichmentTargets` is restated as a pure predicate over `SchemaDescriptor`: TEXT and TEXT[] targets, with the synthetic `Document` excluded.
+- The whole rule set in `SchemaRegistrationOrchestrator.ValidateEnrichmentTargets` (target types, sources, write restrictions and read-role subsets) is restated as a pure predicate over `SchemaDescriptor`: TEXT and TEXT[] targets, with the synthetic `Document` excluded.
 - Registration keeps throwing on it.
 - `SchemaRegistry.LoadAsync` runs the predicate on every stored descriptor. A failing descriptor loads with `EnrichmentTargets = []` and logs an error naming the type. `EnrichmentConsumer` already returns early for a type with no targets (`:97`, `:266`).
 - The extraction prompt passes `target.Hint` through `EnrichmentPrompts.EscapeUntrustedText`. That function rewrites only `<<<` and `>>>`, and the content hash still uses the raw hint, so stored hashes stay valid.
@@ -113,7 +113,7 @@ New plumbing table `IversonPrivilegedRequests`. The worker creates it through `A
   - `ReplayDlq` takes none.
 - **Registry:** the worker reloads its registry (`LoadAsync`) before running a request, so a type registered moments ago resolves.
 - **Errors:** an unexpected exception records `Internal` with a generic message; the details go to the log.
-- **Cleanup:** finished rows older than one day are deleted.
+- **Cleanup:** finished rows older than one day are deleted. A row still `running` more than one hour after it was claimed is marked failed ("the worker stopped before finishing this request"), so a worker that dies mid-request never leaves a request pending forever.
 
 ### 5.2 How the api waits
 
@@ -133,7 +133,8 @@ The api inserts the row, then polls its status every 250 ms.
 **`/admin/reconcile/{type}`.** Operator is checked as today. The api waits up to 60 s:
 - the worker finished: `200 {reconciledCount, typeName}`, as today;
 - the type is unknown: `404`;
-- still running: `202 {requestId}`, and the worker completes it. Reconcile is idempotent, so the request has no expiry.
+- still running: `202 {requestId}`, and the worker completes it. Reconcile is idempotent, so the request has no expiry;
+- any other worker failure: `500 {error}` with the worker's recorded message (the same applies to replay).
 
 These routes are reached only through port-forward, so no edge timeout applies. A client disconnect no longer cancels the reconcile.
 
@@ -197,7 +198,8 @@ The worker issues all of these itself, as database owner, and none comes from a 
 - The api's role check only runs the `SET LOCAL ROLE iverson_runtime` probe.
 - The api no longer crash-loops on a missing table or grant. Its startup registry load retries in the background, and `/health` reports not-ready while any of these hold:
   - `has_table_privilege('iverson_api', '"IversonReconciliationQueue"', 'INSERT')` is false;
-  - the registry hasn't loaded.
+  - the registry hasn't loaded;
+  - a `SET LOCAL ROLE iverson_runtime` probe fails.
 - `ReadinessPolicy` keeps its `AuthPending` tolerance.
 
 ### 6.4 Dead code removed
@@ -237,7 +239,9 @@ Every loaded descriptor has a tenant column, and every non-denied decision carri
 - New plumbing table `IversonStarRocksTenants (TenantId text PK, ProvisionedAt timestamptz)`. The worker inserts a row after each successful provisioning.
 - `Iverson.StarRocks` takes an injected `IProvisionedTenantDirectory`, implemented over Postgres in `Iverson.Api` and cached per process once a tenant is found. Every StarRocks reader consults it before connecting: the api's read paths and the worker's popularity aggregates.
   - An unrecorded tenant reads as empty: `[]`, `null` or an empty stream, as today.
-  - A recorded tenant whose login fails is a real error. The gRPC services map it to `Unavailable`, not `Unknown`.
+  - A recorded tenant whose login fails is a real error: it raises `EngagementNotReadyException`, which the gRPC services map to `Unavailable` and which halts the worker's consumer rather than dead-lettering (as round 11 does for a refused provisioner login).
+  - A Delete for an unrecorded tenant does nothing: there is no StarRocks data to delete.
+- Pool exhaustion is excluded from the retry as well as the circuit breaker (one predicate feeds both).
 - `IsExpectedMissingResourceError` loses its role arm ("cannot find role", "is not granted to") and keeps its 5502 "Unknown table" arm.
 
 ### 7.4 `iverson_app`
@@ -261,7 +265,7 @@ There is no backfill. No stack holds StarRocks tenant data from before round 12 
 - `job-revoke-cross-db.yaml` also polls for `iverson_api` and grants it CONNECT, as belt-and-braces; the worker's grant is the one the api depends on.
 
 **Compose:**
-- The init SQL creates `iverson_api` only when `iverson_runtime` exists. Otherwise the superuser worker creates the login, membership and grants at startup.
+- The superuser worker creates the login, membership and grants at startup. (Init SQL runs only on an empty volume, before `iverson_runtime` exists, so it can't do this.)
 - The api uses `iverson_api`.
 - The **worker starts first**: the api `depends_on` the worker being healthy, which reverses today's order.
 - `generate-compose-secrets.sh` emits the tenant key.
@@ -303,6 +307,10 @@ There is no backfill. No stack holds StarRocks tenant data from before round 12 
 - **Registration needs a running worker.** With the worker down, RegisterSchema returns `Unavailable` after 15 s.
 - **The size guard now applies to .NET camelCase writes** (release note, §2.1).
 - **FE connections** grow with concurrently active tenants: at most 10 per tenant per pod, against 4,096 per FE and a per-user default of 1,024.
+- **The StarRocks tenant key must not change** on a stack with tenant logins: provisioning only creates missing logins, so a rotated key locks out every existing tenant until each login is re-keyed by hand (runbook).
+- **Chunk points written before this change** for a type whose owner field was spelled unlike its column keep the old owner key, so owner-scoped SearchChunks finds nothing for them until they are re-ingested. No stack holds such data.
+- **The `stack.py query` benchmark tier** starts the api without the worker, so it needs a volume where a full stack has run once (runbook).
+- **Release notes** (the size guard, registration needing a worker, the tenant key) live in the runbook; the repository has no changelog.
 
 ## Verified assumptions
 
