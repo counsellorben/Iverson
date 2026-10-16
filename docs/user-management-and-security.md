@@ -267,10 +267,12 @@ drives Authentik's flow-executor API (`/api/v3/flows/executor/<slug>/`)
 programmatically:
 
 ```bash
-# --password is required for --target compose: Authentik's dev-only smoke-test password is
-# randomly generated per docker-compose stack by scripts/generate-compose-secrets.sh (CSR round-4
-# finding #8) — read it out of Iverson.Server/.env's IVERSON_SMOKE_TEST_PASSWORD.
-python3 Iverson.Server/deploy/scripts/mint_acting_user_token.py --target compose --password "$(grep IVERSON_SMOKE_TEST_PASSWORD Iverson.Server/.env | cut -d= -f2)"
+# The password comes from IVERSON_ACTING_USER_PASSWORD, never from the command line (CSR round-11
+# #19). --target compose requires it: Authentik's dev-only smoke-test password is randomly
+# generated per docker-compose stack by scripts/generate-compose-secrets.sh (CSR round-4 finding
+# #8) — read it out of Iverson.Server/.env's IVERSON_SMOKE_TEST_PASSWORD.
+IVERSON_ACTING_USER_PASSWORD="$(grep IVERSON_SMOKE_TEST_PASSWORD Iverson.Server/.env | cut -d= -f2)" \
+  python3 Iverson.Server/deploy/scripts/mint_acting_user_token.py --target compose
 python3 Iverson.Server/deploy/scripts/mint_acting_user_token.py --target kind
 ```
 
@@ -283,10 +285,10 @@ Full CLI:
 ```
 --target {compose,kind}   required
 --username                default: iverson-acting-user-smoke-test
---password                required for --target compose (Authentik's dev-only smoke-test password
-                          is randomly generated per stack by scripts/generate-compose-secrets.sh;
-                          read IVERSON_SMOKE_TEST_PASSWORD from Iverson.Server/.env); for
-                          --target kind, default: read from the kind Secret
+(no --password flag)      the password comes from the IVERSON_ACTING_USER_PASSWORD environment
+                          variable: required for --target compose (read IVERSON_SMOKE_TEST_PASSWORD
+                          from Iverson.Server/.env); for --target kind, used when set, otherwise
+                          read from the kind Secret
 --client-id               default: per-target (fixed dev value for compose, read from a kind Secret)
 --redirect-uri            default: matches the provisioned client's redirect_uris
 --base-url                override the computed base URL entirely
