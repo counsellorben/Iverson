@@ -185,8 +185,13 @@ pip-audit-python-sdk:
   extends: .rules-dependency-scan
   script:
     - cd Iverson.Clients/Python
-    - pip install .[dev] pip-audit
-    - pip-audit
+    # the image's own pip 24.0 and setuptools 79.0.1 have published advisories, and the audit reads this interpreter
+    - pip install pip==26.2.1 setuptools==84.0.0
+    - pip install --require-hashes -r requirements.txt
+    - pip install --no-deps .
+    # pip-audit runs from its own venv and audits the interpreter that holds the lock
+    - python -m venv /tmp/pip-audit && /tmp/pip-audit/bin/pip install pip-audit==2.10.1
+    - PIPAPI_PYTHON_LOCATION="$(command -v python)" /tmp/pip-audit/bin/pip-audit
 
 pip-audit-agents:
   stage: dependency-scan
@@ -194,8 +199,15 @@ pip-audit-agents:
   extends: .rules-dependency-scan
   script:
     - cd Iverson.Agents/Python
-    - pip install .[dev] pip-audit
-    - pip-audit
+    # the image's own pip 24.0 and setuptools 79.0.1 have published advisories, and the audit reads this interpreter
+    - pip install pip==26.2.1 setuptools==84.0.0
+    - pip install --require-hashes -r requirements.txt
+    - pip install --no-deps .
+    # the agent imports iverson_client by path (pyproject.toml), as the repo's own venv does
+    - echo "$CI_PROJECT_DIR/Iverson.Clients/Python" > "$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/iverson_client.pth"
+    # pip-audit runs from its own venv and audits the interpreter that holds the lock
+    - python -m venv /tmp/pip-audit && /tmp/pip-audit/bin/pip install pip-audit==2.10.1
+    - PIPAPI_PYTHON_LOCATION="$(command -v python)" /tmp/pip-audit/bin/pip-audit
 
 dotnet-build-test:
   stage: build-test

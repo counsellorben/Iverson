@@ -1,0 +1,9 @@
+# Inputs for requirements.txt, the hashed lock the CI pip-audit jobs install with --require-hashes.
+# Mirrors pyproject.toml: [project].dependencies, then the dev extra; keep the two in step.
+# Regenerate from this directory with:
+#   pip-compile --generate-hashes --allow-unsafe --output-file=requirements.txt requirements.in
+# --allow-unsafe keeps setuptools, which grpcio-tools needs, in the hashed set.
+grpcio>=1.81.1
+protobuf>=5.29.0
+pytest>=8.0
+grpcio-tools>=1.81.1
