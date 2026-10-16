@@ -75,6 +75,22 @@ def test_kind_without_the_environment_variable_reads_the_secret(monkeypatch, fak
     assert fakes["password"] == "from-iverson-authentik-smoke-test-user"
 
 
+def test_kind_names_the_environment_as_the_password_source_without_the_value(monkeypatch, fakes, capsys):
+    monkeypatch.setenv(ENV, "env-pw-value")
+    assert main_with(monkeypatch, "--target", "kind") == 0
+    err = capsys.readouterr().err
+    assert f"password source: {ENV}" in err
+    assert "env-pw-value" not in err
+
+
+def test_kind_names_the_secret_as_the_password_source_without_the_value(monkeypatch, fakes, capsys):
+    monkeypatch.delenv(ENV, raising=False)
+    assert main_with(monkeypatch, "--target", "kind") == 0
+    err = capsys.readouterr().err
+    assert "password source: Secret iverson-authentik-smoke-test-user" in err
+    assert "from-iverson-authentik-smoke-test-user" not in err
+
+
 def test_there_is_no_password_flag(monkeypatch, fakes):
     with pytest.raises(SystemExit) as exit_info:
         main_with(monkeypatch, "--target", "compose", "--password", "argv-pw")

@@ -497,9 +497,13 @@ def main() -> int:
         client_id = args.client_id or kubectl_get_secret_value(
             args.namespace, f"{args.release}-authentik-loadtest-human-client", "client-id"
         )
-        password = os.environ.get(PASSWORD_ENV) or kubectl_get_secret_value(
-            args.namespace, f"{args.release}-authentik-smoke-test-user", "password"
-        )
+        smoke_secret = f"{args.release}-authentik-smoke-test-user"
+        password = os.environ.get(PASSWORD_ENV)
+        if password:
+            log(f"password source: {PASSWORD_ENV}")
+        else:
+            log(f"password source: Secret {smoke_secret}")
+            password = kubectl_get_secret_value(args.namespace, smoke_secret, "password")
         redirect_uri = args.redirect_uri or DEFAULT_KIND_REDIRECT_URI
         return run(args, base_url, host_header, client_id, password, redirect_uri)
 

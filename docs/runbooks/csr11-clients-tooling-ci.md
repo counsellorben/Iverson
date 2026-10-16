@@ -74,7 +74,7 @@ images after the first manual run.
 `ghcr.io/counsellorben/`.
 
 The image tags stay operator-supplied. Set all three on every deploy, to the full commit SHA of a
-`main` build or to `X.Y.Z` for a `vX.Y.Z` tag. The chart's default tag `0.1.0` is never published,
+`main` build or to `X.Y.Z` for a `vX.Y.Z` tag (the git ref is `vX.Y.Z`; the image tag is `X.Y.Z`). The chart's default tag `0.1.0` is never published,
 and the workflow never publishes `latest`.
 
 ```bash
@@ -104,19 +104,21 @@ required. A maintainer's direct push to `main` therefore still skips the require
 
 Run it only when every required check is green on `main`'s latest commit. Once a check is
 required, a pull request whose run of it is red or missing cannot merge. The `deploy-validate`
-jobs report on `main` from this change on. The script lists the 22 checks; read their state with:
+jobs report on `main` from this change on. The script lists the 22 checks; read their state with
+the command below. A `null` conclusion means the run has not finished and is not green.
 
 ```bash
 gh api 'repos/counsellorben/Iverson/commits/main/check-runs?per_page=100' --paginate \
   --jq '.check_runs[] | "\(.conclusion) \(.name)"' | sort
 ```
 
-`--dry-run` prints the request body and sends nothing. Save today's protection before changing it,
-so it can be restored:
+`--dry-run` prints the request body and sends nothing. Save today's protection before changing it
+as a record of the previous settings. A GET response is not shaped like the PUT body, so the file
+cannot be sent back to restore them.
 
 ```bash
 Iverson.Server/deploy/scripts/apply-branch-protection.sh --dry-run
-gh api repos/counsellorben/Iverson/branches/main/protection > protection-before.json
+gh api repos/counsellorben/Iverson/branches/main/protection > "${TMPDIR:-/tmp}/protection-before.json"
 ```
 
 Before the first change to Iverson, apply the body to a throwaway public repository you
@@ -172,3 +174,21 @@ python3 Iverson.Server/deploy/scripts/mint_acting_user_token.py --target compose
 ```
 
 `Iverson.Server/Iverson.LoadTest/scripts/pattern_leg.py` passes the password to the script through this variable itself.
+
+## 7. GitLab image pins
+
+`.gitlab-ci.yml` pins every job image by digest. Dependabot does not read that file, so these pins
+are bumped by hand, and GitLab's tool versions (for example govulncheck's Go toolchain) can lag
+the GitHub workflows, which float.
+
+## 8. SDK behaviour changes
+
+- .NET: `SchemaCatalogClient(mapping, Func<...>)` is now `SchemaCatalogClient(mapping, ActingUserIdentity?)`.
+  This is source-breaking for callers of the old constructor.
+- .NET and Python: a hand-built coordinator refuses an ambient or per-call acting token unless it is
+  told the transport is TLS or the plaintext opt-in is set. A hand-built `ActingUserIdentity` now
+  defaults `refusesPlaintextTokens` to true. The DI and `IversonClient.coordinator()` paths are
+  unchanged.
+- Java: a TLS client no longer needs the insecure opt-in. On a plaintext channel, a call that carries
+  credentials fails unless the opt-in is set, and `OAuth2ClientCredentials` needs its own
+  `allowInsecureCredentials=true` on a plaintext channel.

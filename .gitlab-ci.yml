@@ -30,7 +30,8 @@ stages:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
 
 # CSR round-11 #19: every job image is pinned as name:tag@sha256:<index digest>. The tag keeps the
-# reference readable; the digest is what is pulled. A bump changes both together.
+# reference readable; the digest is what is pulled. A bump changes both together. Dependabot does not
+# read this file, so these pins are bumped by hand.
 helm-lint:
   stage: validate
   image: alpine/helm:3.15.4@sha256:105741fa6621ed9a3ea944066de78bb27d4b9bb93a56ce8e7cb4d621e1e4bbf2
@@ -199,6 +200,7 @@ pip-audit-python-sdk:
     - pip install pip==26.2.1 setuptools==84.0.0
     - pip install --require-hashes -r requirements.txt
     - pip install --no-deps .
+    - pip check
     # pip-audit runs from its own venv and audits the interpreter that holds the lock
     - python -m venv /tmp/pip-audit && /tmp/pip-audit/bin/pip install pip-audit==2.10.1
     - PIPAPI_PYTHON_LOCATION="$(command -v python)" /tmp/pip-audit/bin/pip-audit
@@ -215,6 +217,7 @@ pip-audit-agents:
     - pip install --no-deps .
     # the agent imports iverson_client by path (pyproject.toml), as the repo's own venv does
     - echo "$CI_PROJECT_DIR/Iverson.Clients/Python" > "$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/iverson_client.pth"
+    - pip check
     # pip-audit runs from its own venv and audits the interpreter that holds the lock
     - python -m venv /tmp/pip-audit && /tmp/pip-audit/bin/pip install pip-audit==2.10.1
     - PIPAPI_PYTHON_LOCATION="$(command -v python)" /tmp/pip-audit/bin/pip-audit
