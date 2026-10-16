@@ -18,7 +18,10 @@ set -euo pipefail
 # read before anything touches the cluster, so a missing pin stops the script here.
 OPERATOR_PINS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform/modules/operators/versions" && pwd)"
 operator_version() {   # $1 = chart name in $OPERATOR_PINS/Chart.yaml; prints its version
-  helm dependency list "$OPERATOR_PINS" | awk -v chart="$1" '$1 == chart && !n++ { print $2 } END { exit !n }' ||
+  local list
+  list=$(helm dependency list "$OPERATOR_PINS") ||
+    { echo "helm dependency list failed for $OPERATOR_PINS" >&2; return 1; }
+  printf '%s\n' "$list" | awk -v chart="$1" '$1 == chart && !n++ { print $2 } END { exit !n }' ||
     { echo "no $1 pin in $OPERATOR_PINS/Chart.yaml" >&2; return 1; }
 }
 CNPG_VERSION=$(operator_version cloudnative-pg)

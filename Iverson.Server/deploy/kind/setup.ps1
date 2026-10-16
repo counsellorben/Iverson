@@ -15,7 +15,9 @@ $ErrorActionPreference = "Stop"
 # read before anything touches the cluster, so a missing pin stops the script here.
 $OperatorPins = Join-Path $PSScriptRoot "../terraform/modules/operators/versions"
 function Get-OperatorVersion([string]$Chart) {
-  foreach ($line in (helm dependency list $OperatorPins)) {
+  $list = helm dependency list $OperatorPins
+  if ($LASTEXITCODE -ne 0) { throw "helm dependency list failed for $OperatorPins" }
+  foreach ($line in $list) {
     $cols = "$line".Trim() -split '\s+'
     if ($cols[0] -eq $Chart) { return $cols[1] }
   }
