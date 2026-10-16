@@ -51,7 +51,7 @@ services:
       retries: 5
 
   starrocks:
-    image: starrocks/allin1-ubuntu:4.1.1@sha256:44e657e582fb53e96df249e793f864f3159b82767f5c2aaa06cb173ec7a34550
+    image: starrocks/allin1-ubuntu:4.1.6@sha256:5cbf09c4c788d2ca41a8e38599b650f04dbc6af0de51ebda0952770fb8333e5d
     container_name: iverson-starrocks
     restart: unless-stopped
     ports:
