@@ -42,7 +42,10 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # 18+ keeps its data in /var/lib/postgresql/18/docker and refuses to start with a mount at the
+      # old /var/lib/postgresql/data. It also refuses a volume left by the 16.x image (a 16 cluster
+      # at the volume's root): `docker compose down -v` before the first start.
+      - postgres_data:/var/lib/postgresql
       - ./deploy/postgres/init-authentik-db.sql:/docker-entrypoint-initdb.d/init-authentik-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U iverson"]
