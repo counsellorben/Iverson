@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same ref supersedes the scan of the older commit, so it cancels it instead of
+# queueing behind it.
+concurrency:
+  group: dependency-scan-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   nuget-audit:
     runs-on: ubuntu-latest
@@ -65,6 +71,9 @@ jobs:
 
   owasp-dependency-check-java:
     runs-on: ubuntu-latest
+    # A cold NVD download with an API key has taken up to 40 minutes; without a bound a throttled
+    # download holds its runner for the 6-hour default.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: Iverson.Clients/Java
@@ -74,10 +83,24 @@ jobs:
         with:
           java-version: "21"
           distribution: "temurin"
+      # The NVD database lives under the local Maven repository. Restore the newest copy so the check
+      # fetches only what changed since; PRs (Dependabot's included) can read main's caches.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: nvd-${{ github.run_id }}
+          restore-keys: nvd-
       - run: mvn install -DskipTests
       - run: mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+      # Only main saves, so PR runs do not fill the repository's cache quota with copies of the database.
+      # It saves even when the check fails on a finding, because the updated database is still good.
+      - if: always() && github.ref == 'refs/heads/main' && hashFiles('Iverson.Clients/Java/target/dependency-check-report.html') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: nvd-${{ github.run_id }}
 
   pip-audit-python-sdk:
     runs-on: ubuntu-latest
