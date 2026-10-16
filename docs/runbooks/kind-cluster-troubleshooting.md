@@ -310,10 +310,28 @@ curl -X POST "http://localhost:<forwarded-port>/application/o/token/" \
 ```
 Decode the resulting token's `iss` claim (base64-decode the JWT's middle segment) and confirm it
 matches the API's actual `Authentication:Authority` host before concluding the auth pipeline itself
-is broken. For a gRPC client under test (e.g. `Iverson.LoadTest`) that can't have its Host header
-overridden this way, run it **inside the cluster** (a throwaway debug pod, see 2.6 above for the
-NetworkPolicy allowances it'll need) so its DNS resolution and Host headers match the real in-cluster
-names naturally, rather than fighting port-forward hostname mismatches.
+is broken.
+
+**Running `Iverson.LoadTest` inside the cluster** (a throwaway debug pod; see 2.6 above for the
+NetworkPolicy allowances it needs): LoadTest refuses to send credentials to an `http://` endpoint
+that is not loopback (CSR round-11 #15), so point it at the TLS listeners and trust the chart CAs.
+
+- `IVERSON_GRPC_URL=https://<release>-api:8080`. The API serves 8080 over TLS from the
+  `<release>-api-internal-tls` Secret.
+- `IVERSON_TOKEN_ENDPOINT=https://<release>-authentik:8443/application/o/token/`, set explicitly:
+  its default is loopback, and LoadTest derives the Authentik base URL from it. Authentik's
+  tls-proxy serves 8443 from the `<release>-authentik-internal-tls` Secret.
+- `IVERSON_ACTING_USER_HOST_HEADER=<release>-authentik:8443`. LoadTest sets this Host on every
+  Authentik request (default `authentik-server:9000`), so the in-cluster name does not reach
+  Authentik by itself. Authentik stamps the token's `iss` from it, and the API accepts the issuer
+  it reads from its own 8443 metadata, `https://<release>-authentik:8443/…`. .NET also checks the
+  8443 certificate against this Host. With any other Host, one of the two checks fails.
+- Trust both chart CAs: collect them in one file in the pod and point `SSL_CERT_FILE` at it.
+  ```bash
+  for s in <release>-api-internal-tls <release>-authentik-internal-tls; do
+    kubectl get secret -n <namespace> "$s" -o jsonpath='{.data.ca\.crt}' | base64 -d
+  done > chart-cas.pem   # copy into the pod, then: export SSL_CERT_FILE=/path/to/chart-cas.pem
+  ```
 
 ### 5.2 `secretKeyRef`-sourced env vars look empty/stale after a Secret's data changes
 

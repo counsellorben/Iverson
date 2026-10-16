@@ -3,6 +3,7 @@ using Grpc.Net.Client;
 using Iverson.Client.Contracts;
 using Iverson.ClientConformance;
 using Iverson.ClientConformance.Scenarios;
+using Iverson.LoadTest.Auth;
 using Microsoft.Extensions.Logging;
 
 var flags = CliFlags.Parse(args);
@@ -15,6 +16,16 @@ if (flags.ShowHelp)
 
 var grpcUrl = Env("IVERSON_GRPC_URL", "http://localhost:8080");
 var postgresCs = Env("IVERSON_POSTGRES_CS", "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
+// CSR round-11 #15: the harness's channel below is plaintext and carries both tokens, and the five
+// drivers receive the same URL and secrets, so nothing runs unless the gRPC URL is loopback and
+// the token endpoint and the Authentik base URL are https or loopback. Checked before the base URL
+// is derived, so a malformed token endpoint is named instead of failing inside the derivation.
+if (CredentialEndpoints.Check(grpcUrl, Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT"), grpcMayUseTls: false) is { } endpointRefusal)
+{
+    Console.Error.WriteLine(endpointRefusal);
+    return 1;
+}
+
 // Single source of truth for the Authentik base URL — TokenBroker derives it the same way, so
 // Preflight and TokenBroker never diverge on which host they check/hit.
 var authentikBaseUrl = TokenBroker.DeriveAuthentikBaseUrl(Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT"));

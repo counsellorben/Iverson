@@ -74,9 +74,14 @@ if (needsTenantAndSchema && RecoveryPasswordPolicy.IsTooShort(tenantAdminPasswor
         "Authentik's recovery flow would refuse it after CreateTenant had already created the tenant, leaving " +
         "its admin without a password. Choose a longer one; Authentik also requires a zxcvbn score of at least 2.");
 var actingUserCacheTarget = flags.Target == "kind" ? "kind" : "compose"; // maps LoadTest's own "containers"/"kind" to the Python script's "compose"/"kind" cache-path vocabulary
-var actingUserBaseUrl = tokenEndpoint is not null
-    ? tokenEndpoint[..tokenEndpoint.IndexOf("/application/o/token/", StringComparison.Ordinal)]
-    : "http://localhost:9000";
+// CSR round-11 #15: checked before any command sends a credential, including the provisioning
+// channel and the raw acting-user metadata, which the SDK's transport check does not see.
+if (CredentialEndpoints.Check(grpcUrl, tokenEndpoint, grpcMayUseTls: true) is { } endpointRefusal)
+{
+    Console.Error.WriteLine(endpointRefusal);
+    return 1;
+}
+var actingUserBaseUrl = CredentialEndpoints.AuthentikBaseUrl(tokenEndpoint);
 
 var config = new LoadTestConfig(postgresCs, starRocksCs, kafkaBoots, httpUrl);
 
@@ -180,7 +185,9 @@ var services = new ServiceCollection()
     .AddIversonClient(
         grpcUrl, adminAutomation?.SdkCredentials,
         tenantAdminTokenProvider is not null ? () => tenantAdminTokenProvider.GetTokenAsync() : null,
-        allowInsecureChannelCallCredentials: true,
+        // CSR round-11 #15: plaintext only to a loopback gRPC URL; the startup check has already
+        // refused any other http:// URL.
+        allowInsecureChannelCallCredentials: CredentialEndpoints.IsLoopback(grpcUrl),
         serviceTokenProvider: adminAutomation is { UsesAssertion: true } ? adminAutomation.GetTokenAsync : null,
         entityAssemblies: [typeof(BenchmarkArticle).Assembly])
     .AddSingleton(config)
