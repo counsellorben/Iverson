@@ -321,7 +321,7 @@ services:
   # entrypoint is overridden here because that same routing swallows any bare command.
   # Idempotent: a re-run on a migrated database exits 0 with "No migrations to apply."
   authentik-migrate:
-    image: ghcr.io/goauthentik/server:2026.5.3@sha256:377ee38726785f98aafc3665202ad198a366fa979b0f61c0660a9c05e3a9b1b3
+    image: ghcr.io/goauthentik/server:2026.8.4@sha256:e7226ae116dac5aa0a5643803e735b010038f492c401e08e16b3bf1ac54c090c
     container_name: iverson-authentik-migrate
     entrypoint: ["python", "-m", "lifecycle.migrate"]
     restart: "no"
@@ -336,7 +336,7 @@ services:
         condition: service_healthy
 
   authentik-server:
-    image: ghcr.io/goauthentik/server:2026.5.3@sha256:377ee38726785f98aafc3665202ad198a366fa979b0f61c0660a9c05e3a9b1b3
+    image: ghcr.io/goauthentik/server:2026.8.4@sha256:e7226ae116dac5aa0a5643803e735b010038f492c401e08e16b3bf1ac54c090c
     container_name: iverson-authentik-server
     restart: unless-stopped
     command: server
@@ -379,7 +379,7 @@ services:
       start_period: 30s
 
   authentik-worker:
-    image: ghcr.io/goauthentik/server:2026.5.3@sha256:377ee38726785f98aafc3665202ad198a366fa979b0f61c0660a9c05e3a9b1b3
+    image: ghcr.io/goauthentik/server:2026.8.4@sha256:e7226ae116dac5aa0a5643803e735b010038f492c401e08e16b3bf1ac54c090c
     container_name: iverson-authentik-worker
     restart: unless-stopped
     command: worker
