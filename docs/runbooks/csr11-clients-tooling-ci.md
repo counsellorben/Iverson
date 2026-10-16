@@ -67,9 +67,15 @@ Each run builds and pushes an image only when its tag does not exist yet. A sepa
 digest `publish (<image>)` built, signs that digest and attests its SBOM. A tag that already
 exists is never rebuilt, moved or signed again. `publish (<image>)` runs the two commands above
 against the digest the tag names, with the same identity and issuer (the workflow holds a copy
-of both; change them together). If both pass, the image was published by this workflow: the log
-carries a notice and nothing else happens for it. If either fails, the job fails with an error
-that the tag exists but is not signed and attested by this workflow.
+of both; change them together). For `iverson-api` and `iverson-admin-ui` the signature must also
+belong to the tag's own build: on a commit-SHA tag the commands add
+`--certificate-github-workflow-sha <tag>`, and on an `X.Y.Z` tag they require exactly
+`--certificate-identity https://github.com/counsellorben/Iverson/.github/workflows/publish-images.yml@refs/tags/vX.Y.Z`
+in place of the regexp. The model images keep the general identity: their tags are derived from
+the model inputs, so any digest this workflow signed under such a tag was built from the same
+inputs (an accepted residual). If both commands pass, the image was published by this workflow:
+the log carries a notice and nothing else happens for it. If either fails, the job fails with an
+error that the tag exists but is not signed and attested by this workflow.
 
 When a run fails that way, find out why before anything else:
 

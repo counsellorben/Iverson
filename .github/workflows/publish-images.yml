@@ -37,21 +37,27 @@ jobs:
         run: |
           set -euo pipefail
           fail() { echo "::error::$*"; exit 1; }
+          # bind: what an existing tag's signature must be bound to before the publish job accepts
+          # it. "commit": the tag is the commit SHA the signing run built. "release": the tag is
+          # X.Y.Z and the signing run ran on refs/tags/vX.Y.Z. "content": a content-derived model
+          # tag, accepted under any of this workflow's identities.
           case "$GITHUB_REF" in
-            refs/heads/main) tag=$GITHUB_SHA ;;
+            refs/heads/main)
+              tag=$GITHUB_SHA bind=commit
+              [[ $tag =~ ^[0-9a-f]{40}$ ]] || fail "commit $tag is not a 40-hex SHA" ;;
             refs/tags/v*)
-              tag=${GITHUB_REF#refs/tags/v}
+              tag=${GITHUB_REF#refs/tags/v} bind=release
               [[ $tag =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "tag ${GITHUB_REF#refs/tags/} is not vX.Y.Z" ;;
             *) fail "images publish from main or a vX.Y.Z tag, not $GITHUB_REF" ;;
           esac
           reg=ghcr.io/counsellorben
-          row() {   # name image tag context dockerfile [build-arg ...]: one matrix entry as JSON
-            python3 -c 'import json, sys; n, i, t, c, f, *a = sys.argv[1:]; print(json.dumps({"name": n, "image": i, "tag": t, "context": c, "dockerfile": f, "build_args": "\n".join(a)}))' "$@"
+          row() {   # bind name image tag context dockerfile [build-arg ...]: one matrix entry as JSON
+            python3 -c 'import json, sys; b, n, i, t, c, f, *a = sys.argv[1:]; print(json.dumps({"bind": b, "name": n, "image": i, "tag": t, "context": c, "dockerfile": f, "build_args": "\n".join(a)}))' "$@"
           }
           rows="$RUNNER_TEMP/images.jsonl"
           {
-            row iverson-api "$reg/iverson-api" "$tag" . Iverson.Server/Iverson.Api/Dockerfile
-            row iverson-admin-ui "$reg/iverson-admin-ui" "$tag" . Iverson.AdminUI/Dockerfile
+            row "$bind" iverson-api "$reg/iverson-api" "$tag" . Iverson.Server/Iverson.Api/Dockerfile
+            row "$bind" iverson-admin-ui "$reg/iverson-admin-ui" "$tag" . Iverson.AdminUI/Dockerfile
             if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || [[ $GITHUB_REF == refs/tags/v* ]]; then
               # The model images' references and build args come from the chart render, as
               # deploy/kind/build-and-load-image.sh reads them, so each pushed tag is the
@@ -67,7 +73,7 @@ jobs:
               [ -n "$tei" ] || fail "the chart renders no iverson-tei-model image"
               while IFS='|' read -r image model_id revision; do
                 [[ $image == "$reg"/* ]] || fail "the chart's model image $image is not under $reg/"
-                row iverson-tei-model "${image%:*}" "${image##*:}" "$C/charts/tei/model-image" "$C/charts/tei/model-image/Dockerfile" \
+                row content iverson-tei-model "${image%:*}" "${image##*:}" "$C/charts/tei/model-image" "$C/charts/tei/model-image/Dockerfile" \
                   "MODEL_ID=$model_id" "REVISION=$revision"
               done <<< "$tei"
               image=$(printf '%s\n' "$render" | sed -n 's/.*image: "\([^"]*iverson-ollama-model:[^"]*\)".*/\1/p' | head -1)
@@ -75,7 +81,7 @@ jobs:
               digest=$(printf '%s\n' "$render" | sed -n 's/.*iverson.io\/model-digest: "\(.*\)"/\1/p' | head -1)
               if [ -z "$image" ] || [ -z "$model" ] || [ -z "$digest" ]; then fail "the chart renders no iverson-ollama-model image"; fi
               [[ $image == "$reg"/* ]] || fail "the chart's model image $image is not under $reg/"
-              row iverson-ollama-model "${image%:*}" "${image##*:}" "$C/charts/ollama/model-image" "$C/charts/ollama/model-image/Dockerfile" \
+              row content iverson-ollama-model "${image%:*}" "${image##*:}" "$C/charts/ollama/model-image" "$C/charts/ollama/model-image/Dockerfile" \
                 "MODEL=$model" "DIGEST=$digest"
             fi
           } > "$rows"
@@ -162,23 +168,41 @@ jobs:
         if: steps.published.outputs.digest != ''
         env:
           TAG_REF: ${{ matrix.image }}:${{ matrix.tag }}
+          TAG: ${{ matrix.tag }}
+          BIND: ${{ matrix.bind }}
           REF: ${{ matrix.image }}@${{ steps.published.outputs.digest }}
           DIGEST: ${{ steps.published.outputs.digest }}
           # The same identity and issuer as the verification commands in
-          # docs/runbooks/csr11-clients-tooling-ci.md section 2; change both together.
+          # docs/runbooks/csr11-clients-tooling-ci.md section 2; change both together. WORKFLOW is
+          # the identity's fixed prefix, unescaped.
           IDENTITY: '^https://github\.com/counsellorben/Iverson/\.github/workflows/publish-images\.yml@refs/(heads/main|tags/v.+)$'
+          WORKFLOW: https://github.com/counsellorben/Iverson/.github/workflows/publish-images.yml
           ISSUER: https://token.actions.githubusercontent.com
         run: |
           set -euo pipefail
           # An existing tag is accepted only if this workflow already signed and attested its
-          # digest; this run never signs a digest it did not build.
-          if cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$REF" >/dev/null &&
-             cosign verify-attestation --type spdxjson --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$REF" >/dev/null; then
-            echo "::notice::$TAG_REF is already published at $DIGEST, signed and attested by this workflow; nothing to do"
+          # digest, for the same commit or release where the tag names one; this run never signs a
+          # digest it did not build.
+          case $BIND in
+            commit)
+              [[ $TAG =~ ^[0-9a-f]{40}$ ]] || { echo "::error::$TAG is not a 40-hex commit SHA"; exit 1; }
+              cert_flags=(--certificate-identity-regexp "$IDENTITY" --certificate-github-workflow-sha "$TAG") ;;
+            release)
+              [[ $TAG =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not X.Y.Z"; exit 1; }
+              cert_flags=(--certificate-identity "$WORKFLOW@refs/tags/v$TAG") ;;
+            content)
+              # Accepted residual: any digest this workflow signed under a content-derived tag was
+              # built from the same model inputs, so no commit or release binding is required.
+              cert_flags=(--certificate-identity-regexp "$IDENTITY") ;;
+            *) echo "::error::unknown binding '$BIND' for $TAG_REF"; exit 1 ;;
+          esac
+          if cosign verify "${cert_flags[@]}" --certificate-oidc-issuer "$ISSUER" "$REF" >/dev/null &&
+             cosign verify-attestation --type spdxjson "${cert_flags[@]}" --certificate-oidc-issuer "$ISSUER" "$REF" >/dev/null; then
+            echo "::notice::$TAG_REF is already published at $DIGEST, signed and attested by this workflow ($BIND binding); nothing to do"
             mkdir -p "$RUNNER_TEMP/publish"
             printf '%s\n' "$DIGEST" > "$RUNNER_TEMP/publish/verified"
           else
-            echo "::error::$TAG_REF exists at $DIGEST but is not signed and attested by this workflow, so it was not published by it or an earlier run stopped before signing. Inspect that digest and delete the tag, then re-run."
+            echo "::error::$TAG_REF exists at $DIGEST but is not signed and attested by this workflow ($BIND binding), so it was not published by it or an earlier run stopped before signing. Inspect that digest and delete the tag, then re-run."
             exit 1
           fi
       - name: Build and push
