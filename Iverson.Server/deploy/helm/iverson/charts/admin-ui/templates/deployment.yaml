@@ -8,6 +8,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-admin-ui
+  # The writable root filesystem is deliberate: see the container's securityContext below.
+  annotations:
+    kube-score/ignore: container-security-context-readonlyrootfilesystem
 spec:
   replicas: {{ .Values.replicas }}
   selector:
@@ -70,17 +73,20 @@ spec:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}
               memory: {{ .Values.resources.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.requests "ephemeral-storage" | quote }}
             limits:
               cpu: {{ .Values.resources.limits.cpu | quote }}
               memory: {{ .Values.resources.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.limits "ephemeral-storage" | quote }}
           readinessProbe:
             httpGet:
               path: /
               port: 8080
             initialDelaySeconds: 5
+          # Liveness asks only whether nginx still accepts connections; readiness above also
+          # checks that it serves the app. Restarting on a failed page load would not fix it.
           livenessProbe:
-            httpGet:
-              path: /
+            tcpSocket:
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 15

@@ -2,6 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-authentik-worker
+  # The worker's writable root filesystem is deliberate, as for the server: see deployment-server.yaml.
+  annotations:
+    kube-score/ignore: container-security-context-readonlyrootfilesystem
 spec:
   replicas: 1
   selector:
@@ -55,8 +58,11 @@ spec:
             requests:
               cpu: {{ .Values.resources.jwksRelay.requests.cpu | quote }}
               memory: {{ .Values.resources.jwksRelay.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.jwksRelay.requests "ephemeral-storage" | quote }}
             limits:
+              cpu: {{ .Values.resources.jwksRelay.limits.cpu | quote }}
               memory: {{ .Values.resources.jwksRelay.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.jwksRelay.limits "ephemeral-storage" | quote }}
           volumeMounts:
             - name: jwks-relay-credential
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
@@ -101,15 +107,13 @@ spec:
             requests:
               cpu: {{ .Values.resources.worker.requests.cpu | quote }}
               memory: {{ .Values.resources.worker.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.worker.requests "ephemeral-storage" | quote }}
             limits:
               cpu: {{ .Values.resources.worker.limits.cpu | quote }}
               memory: {{ .Values.resources.worker.limits.memory | quote }}
-          readinessProbe:
-            exec: { command: ["ak", "healthcheck"] }
-            initialDelaySeconds: 30
-            periodSeconds: 15
-            timeoutSeconds: 5
-            failureThreshold: 5
+              ephemeral-storage: {{ index .Values.resources.worker.limits "ephemeral-storage" | quote }}
+          # No readiness probe: no Service selects this pod, so readiness would gate no traffic, and
+          # repeating the liveness check would only report a hung worker twice.
           livenessProbe:
             exec: { command: ["ak", "healthcheck"] }
             initialDelaySeconds: 60

@@ -12,17 +12,17 @@ jwksRelay:
   image: "registry.k8s.io/kubectl:v1.37.1"
 resources:
   server:
-    requests: { cpu: "250m", memory: "512Mi" }
-    limits: { cpu: "500m", memory: "1Gi" }
+    requests: { cpu: "250m", memory: "512Mi", ephemeral-storage: "256Mi" }
+    limits: { cpu: "500m", memory: "1Gi", ephemeral-storage: "1Gi" }
   worker:
-    requests: { cpu: "250m", memory: "512Mi" }
-    limits: { cpu: "500m", memory: "1Gi" }
+    requests: { cpu: "250m", memory: "512Mi", ephemeral-storage: "256Mi" }
+    limits: { cpu: "500m", memory: "1Gi", ephemeral-storage: "1Gi" }
   tlsProxy:
-    requests: { cpu: "10m", memory: "16Mi" }
-    limits: { cpu: "100m", memory: "64Mi" }
+    requests: { cpu: "10m", memory: "16Mi", ephemeral-storage: "32Mi" }
+    limits: { cpu: "100m", memory: "64Mi", ephemeral-storage: "128Mi" }
   jwksRelay:
-    requests: { cpu: "10m", memory: "32Mi" }
-    limits: { memory: "64Mi" }
+    requests: { cpu: "10m", memory: "32Mi", ephemeral-storage: "32Mi" }
+    limits: { cpu: "100m", memory: "64Mi", ephemeral-storage: "128Mi" }
 nodeSelector: {}
 bootstrapEmail: "admin@iverson.local"
 ingress:

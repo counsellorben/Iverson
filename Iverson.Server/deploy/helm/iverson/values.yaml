@@ -270,8 +270,8 @@ adminUi:
     tag: "0.1.0"   # never "latest" — CI/the image-build pipeline must supply a real, immutable tag
     pullPolicy: IfNotPresent
   resources:
-    requests: { cpu: "100m", memory: "128Mi" }
-    limits: { cpu: "250m", memory: "256Mi" }
+    requests: { cpu: "100m", memory: "128Mi", ephemeral-storage: "64Mi" }
+    limits: { cpu: "250m", memory: "256Mi", ephemeral-storage: "256Mi" }
   ingress:
     className: ""
     annotations: {}
@@ -282,10 +282,10 @@ authentik:
   enabled: true
   resources:
     server:
-      requests: { cpu: "250m", memory: "512Mi" }
-      limits: { cpu: "500m", memory: "1Gi" }
+      requests: { cpu: "250m", memory: "512Mi", ephemeral-storage: "256Mi" }
+      limits: { cpu: "500m", memory: "1Gi", ephemeral-storage: "1Gi" }
     worker:
-      requests: { cpu: "250m", memory: "512Mi" }
-      limits: { cpu: "500m", memory: "1Gi" }
+      requests: { cpu: "250m", memory: "512Mi", ephemeral-storage: "256Mi" }
+      limits: { cpu: "500m", memory: "1Gi", ephemeral-storage: "1Gi" }
   nodeSelector: {}
   bootstrapEmail: "admin@iverson.local"

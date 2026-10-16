@@ -9,6 +9,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-authentik-server
+  # The writable root filesystems of `migrate` and `server` are deliberate: see `server`'s securityContext.
+  annotations:
+    kube-score/ignore: container-security-context-readonlyrootfilesystem
 spec:
   replicas: 1
   selector:
@@ -72,9 +75,11 @@ spec:
             requests:
               cpu: {{ .Values.resources.server.requests.cpu | quote }}
               memory: {{ .Values.resources.server.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.server.requests "ephemeral-storage" | quote }}
             limits:
               cpu: {{ .Values.resources.server.limits.cpu | quote }}
               memory: {{ .Values.resources.server.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.server.limits "ephemeral-storage" | quote }}
           volumeMounts:
             - name: postgres-tls
               mountPath: /etc/postgres-tls
@@ -113,9 +118,11 @@ spec:
             requests:
               cpu: {{ .Values.resources.server.requests.cpu | quote }}
               memory: {{ .Values.resources.server.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.server.requests "ephemeral-storage" | quote }}
             limits:
               cpu: {{ .Values.resources.server.limits.cpu | quote }}
               memory: {{ .Values.resources.server.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.server.limits "ephemeral-storage" | quote }}
           readinessProbe:
             httpGet: { path: /-/health/ready/, port: 9000 }
             initialDelaySeconds: 30
@@ -157,9 +164,11 @@ spec:
             requests:
               cpu: {{ .Values.resources.tlsProxy.requests.cpu | quote }}
               memory: {{ .Values.resources.tlsProxy.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.tlsProxy.requests "ephemeral-storage" | quote }}
             limits:
               cpu: {{ .Values.resources.tlsProxy.limits.cpu | quote }}
               memory: {{ .Values.resources.tlsProxy.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.tlsProxy.limits "ephemeral-storage" | quote }}
           # A probe on the public listener (CSR round-10 #4): GCE and AGIC derive the Ingress
           # backend's health check from the readiness probe on the port the container declares, and
           # 9080 needs no NetworkPolicy exception beyond its own rule. Both listeners share one nginx

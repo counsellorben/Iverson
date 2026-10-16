@@ -362,6 +362,10 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-starrocks-create-user-egress
+  # kube-score matches a policy against pod templates, and `job-name` is added by the Job
+  # controller at runtime, never in the template, so it reports this policy as matching nothing.
+  annotations:
+    kube-score/ignore: networkpolicy-targets-pod
 spec:
   podSelector:
     matchLabels: { job-name: {{ .Release.Name }}-starrocks-create-user }
@@ -386,6 +390,10 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-authentik-revoke-cross-db-egress
+  # kube-score matches a policy against pod templates, and `job-name` is added by the Job
+  # controller at runtime, never in the template, so it reports this policy as matching nothing.
+  annotations:
+    kube-score/ignore: networkpolicy-targets-pod
 spec:
   podSelector:
     matchLabels: { job-name: {{ .Release.Name }}-authentik-revoke-cross-db }
@@ -474,6 +482,7 @@ spec:
   # The model is baked into the image (charts/ollama/model-image), so Ollama needs no egress at all.
   egress: []
 ---
+{{- if .Values.adminUi.enabled }}
 # admin-ui is a static nginx server reachable from outside the namespace through
 # ingress-nginx (local/laptop) or the profile's load balancer (`clusterCidrs`), on 8080.
 # Its kubelet probes need no rule (node traffic is always admitted). It needs no egress
@@ -498,6 +507,7 @@ spec:
         {{- end }}
       ports:
         - { protocol: TCP, port: 8080 }
+{{- end }}
 {{- if .Values.global.tracingEnabled }}
 ---
 apiVersion: networking.k8s.io/v1
