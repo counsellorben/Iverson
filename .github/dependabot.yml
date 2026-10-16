@@ -61,5 +61,6 @@ updates:
     directories:
       - "/Iverson.Server/deploy/helm/iverson"
       - "/Iverson.Server/deploy/helm/iverson/charts/*"
+      - "/Iverson.Server/deploy/terraform/modules/operators/versions"
     schedule:
       interval: "weekly"

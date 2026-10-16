@@ -53,19 +53,17 @@ jobs:
           set -eo pipefail
           C=Iverson.Server/deploy/helm/iverson
           helm dependency build "$C"
-          # The CNPG and Strimzi operators are installed by Terraform; read their chart pins from
-          # there, so this list follows a version bump without a second edit.
-          TF=Iverson.Server/deploy/terraform/modules/operators/main.tf
-          tf_pin() {   # $1 = chart name, $2 = attribute (repository or version)
-            awk -v chart="$1" -v attr="$2" '
-              /^(resource|data|module|locals|variable|output) / { delete a }
-              /^ *[a-z_]+ *= *"/ { k = $1; v = $0; sub(/^[^"]*"/, "", v); sub(/".*$/, "", v); a[k] = v }
-              /^}/ { if (a["chart"] == chart) { print a[attr]; exit } }' "$TF"
+          # The CNPG and Strimzi operators are installed by Terraform from the pins in the operators
+          # module's stub Chart.yaml (Dependabot-tracked); read the same pins, so this list follows a
+          # version bump without a second edit.
+          PINS=Iverson.Server/deploy/terraform/modules/operators/versions
+          chart_pin() {   # $1 = chart name, $2 = column of `helm dependency list` (2 = version, 3 = repository)
+            helm dependency list "$PINS" | awk -v chart="$1" -v col="$2" '$1 == chart && !n++ { print $col }'
           }
           render_operator() {   # $1 = chart name; prints the rendered manifests
             local repo version
-            repo=$(tf_pin "$1" repository); version=$(tf_pin "$1" version)
-            [ -n "$repo" ] && [ -n "$version" ] || { echo "no $1 pin in $TF" >&2; return 1; }
+            repo=$(chart_pin "$1" 3); version=$(chart_pin "$1" 2)
+            [ -n "$repo" ] && [ -n "$version" ] || { echo "no $1 pin in $PINS/Chart.yaml" >&2; return 1; }
             helm template op "$1" --repo "$repo" --version "$version"
           }
           {
