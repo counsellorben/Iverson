@@ -116,17 +116,22 @@ jobs:
           REF: ${{ matrix.image }}:${{ matrix.tag }}
         run: |
           set -euo pipefail
-          # A published tag never moves. A tag that already exists is reused at the digest it names,
-          # and only the registry's definite "not found" counts as unpublished: any other failure
-          # stops the run rather than rebuild over a tag that may exist.
+          # A published tag never moves. A tag that already exists is reused at the digest it names.
+          # Only the registry's "not found" or "denied" answers count as unpublished; any other
+          # failure (network, server error, malformed output) stops the run rather than rebuild
+          # over a tag that may exist.
           err="$RUNNER_TEMP/inspect.err"
           if manifest=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' 2>"$err"); then
             digest=$(printf '%s' "$manifest" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("digest", ""))')
             [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::$REF names no sha256 digest"; exit 1; }
             echo "::notice::$REF was already published at $digest; reusing that digest instead of rebuilding"
             echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          elif grep -Fq -- "$REF: not found" "$err"; then
+          elif grep -Fq -- "$REF: not found" "$err" || grep -Eiq 'name_unknown|manifest_unknown|manifest unknown' "$err"; then
             echo "$REF is not published yet; building it"
+          # GHCR may answer a lookup in a package that does not exist yet with denied/unauthorized;
+          # count it as absent, since a real permission problem still fails at the push.
+          elif grep -Eiq 'denied|unauthorized|403 forbidden' "$err"; then
+            echo "$REF is not visible to this run (the registry denied the lookup); treating it as not published and building it"
           else
             cat "$err" >&2
             echo "::error::could not tell whether $REF is published"
