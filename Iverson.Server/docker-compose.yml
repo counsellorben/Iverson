@@ -146,7 +146,7 @@ services:
       retries: 10
 
   ollama-init:
-    image: curlimages/curl:8.18.0@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
     container_name: iverson-ollama-init
     depends_on:
       ollama:
