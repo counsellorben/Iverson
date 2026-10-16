@@ -152,7 +152,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(sp => new SchemaCatalogClient(
             sp.GetRequiredService<ObjectMappingService.ObjectMappingServiceClient>(),
-            actingUserTokenProvider));
+            sp.GetRequiredService<ActingUserIdentity>()));
 
         return services;
     }

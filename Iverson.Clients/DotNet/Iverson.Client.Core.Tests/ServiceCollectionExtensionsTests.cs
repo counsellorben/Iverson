@@ -143,6 +143,25 @@ public class ServiceCollectionExtensionsTests
         provider.GetRequiredService<ActingUserIdentity>().RefusesPlaintextTokens.Should().Be(expected);
     }
 
+    // CSR round-11 #22: AddIversonClient hands SchemaCatalogClient its ActingUserIdentity singleton,
+    // so the catalog call carries the ambient acting-user token.
+    [Fact]
+    public async Task AddIversonClient_SchemaCatalogClient_SendsTheAmbientActingUserToken()
+    {
+        string? seen = null;
+        var services = new ServiceCollection();
+        services.AddIversonClient(
+            grpcEndpoint: "https://localhost:5000",
+            actingUserTokenProvider: ActingUserTokenProvider);
+        services.ConfigureAll<HttpClientFactoryOptions>(o => o.HttpMessageHandlerBuilderActions.Add(b =>
+            b.PrimaryHandler = new RecordingHandler(header => seen = header, ActingUserMetadata.MetadataKey)));
+        using var provider = services.BuildServiceProvider();
+
+        try { await provider.GetRequiredService<SchemaCatalogClient>().GetSchemaAsync(); } catch (RpcException) { }
+
+        seen.Should().Be("Bearer acting-user-token");
+    }
+
     // ---- CSR round-11 #9: the service-token provider ------------------------------------------------
 
     private static Func<Task<string>> ServiceTokenProvider => () => Task.FromResult("service-token");
@@ -249,11 +268,11 @@ public class ServiceCollectionExtensionsTests
         }
     }
 
-    private sealed class RecordingHandler(Action<string?> record) : HttpMessageHandler
+    private sealed class RecordingHandler(Action<string?> record, string header = "authorization") : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
-            record(request.Headers.TryGetValues("authorization", out var values) ? values.Single() : null);
+            record(request.Headers.TryGetValues(header, out var values) ? values.Single() : null);
             throw new HttpRequestException("recorded");
         }
     }

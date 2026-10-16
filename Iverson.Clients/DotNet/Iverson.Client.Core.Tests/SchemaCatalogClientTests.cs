@@ -49,11 +49,24 @@ public class SchemaCatalogClientTests
                 Arg.Any<CancellationToken>())
             .Returns(MakeUnaryCall(new GetSchemaResponse()));
 
-        var client = new SchemaCatalogClient(mapping, () => Task.FromResult("test-token"));
+        var client = new SchemaCatalogClient(
+            mapping, new ActingUserIdentity(() => Task.FromResult("test-token"), refusesPlaintextTokens: false));
 
         await client.GetSchemaAsync();
 
         capturedHeaders.Should().NotBeNull();
         capturedHeaders!.Get("x-acting-user-authorization")!.Value.Should().Be("Bearer test-token");
+    }
+
+    // CSR round-11 #22: an identity built by hand refuses plaintext tokens unless told otherwise, so
+    // an ambient token on it is refused at construction.
+    [Fact]
+    public void Constructor_Throws_ForAnAmbientTokenWhoseIdentityRefusesPlaintextTokens()
+    {
+        var mapping = Substitute.For<ObjectMappingService.ObjectMappingServiceClient>();
+
+        var act = () => new SchemaCatalogClient(mapping, new ActingUserIdentity(() => Task.FromResult("test-token")));
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*refusesPlaintextTokens*");
     }
 }

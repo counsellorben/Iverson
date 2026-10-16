@@ -33,6 +33,8 @@ internal static class TestCoordinatorFactory
             persistence ?? Substitute.For<ObjectPersistenceService.ObjectPersistenceServiceClient>(),
             retrieval,
             search ?? Substitute.For<ObjectSearchService.ObjectSearchServiceClient>(),
-            NullLogger<EntityCoordinator<T>>.Instance);
+            NullLogger<EntityCoordinator<T>>.Instance,
+            // The pipeline and match-pattern tests bind per-call tokens; their transport is known.
+            new ActingUserIdentity(refusesPlaintextTokens: false));
     }
 }

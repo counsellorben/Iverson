@@ -131,7 +131,7 @@ class TestEntityCoordinatorSearchFamily:
 
     def test_match_pattern_pairs_each_row_with_its_match_number_and_classifier(self):
         channel = grpc.insecure_channel("localhost:1")
-        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token")
+        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token", refuse_plaintext_token=False)
         coordinator._search = MagicMock()
         first = struct_pb2.Struct()
         first.fields["Label"].string_value = "pat-python"
@@ -281,7 +281,7 @@ class TestEntityCoordinatorActingUserIdentity:
         """with_acting_user's bound token wins over whatever ambient token the
         coordinator was constructed with."""
         channel = grpc.insecure_channel("localhost:1")
-        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token")
+        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token", refuse_plaintext_token=False)
         coordinator._retrieval = MagicMock()
         coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
 
@@ -293,7 +293,7 @@ class TestEntityCoordinatorActingUserIdentity:
 
     def test_the_clients_ambient_identity_applies_when_nothing_is_bound(self):
         channel = grpc.insecure_channel("localhost:1")
-        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token")
+        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token", refuse_plaintext_token=False)
         coordinator._retrieval = MagicMock()
         coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
 
@@ -319,7 +319,7 @@ class TestEntityCoordinatorActingUserIdentity:
         call with Unauthenticated, rather than being swallowed into rule 4 (no header,
         silent unauthenticated read)."""
         channel = grpc.insecure_channel("localhost:1")
-        coordinator = EntityCoordinator(CoordArticle, channel, "")
+        coordinator = EntityCoordinator(CoordArticle, channel, "", refuse_plaintext_token=False)
         coordinator._retrieval = MagicMock()
         coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
 
@@ -332,7 +332,7 @@ class TestEntityCoordinatorActingUserIdentity:
         """The non-mutation test: with_acting_user must return a new bound coordinator,
         never rebind the receiver it was called on."""
         channel = grpc.insecure_channel("localhost:1")
-        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token")
+        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token", refuse_plaintext_token=False)
         coordinator._retrieval = MagicMock()
         coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
 
@@ -343,6 +343,32 @@ class TestEntityCoordinatorActingUserIdentity:
 
         sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
         assert sent_metadata == (("x-acting-user-authorization", "Bearer ambient-token"),)
+
+    # CSR round-11 #22: a coordinator built directly cannot see its channel's transport, so it
+    # refuses acting-user tokens unless told otherwise.
+
+    def test_a_hand_built_coordinator_refuses_a_per_call_token_by_default(self):
+        import pytest
+
+        coordinator = EntityCoordinator(CoordArticle, grpc.insecure_channel("localhost:1"))
+
+        with pytest.raises(ValueError, match="refuse_plaintext_token"):
+            coordinator.with_acting_user("bound-token")
+
+    def test_a_hand_built_coordinator_refuses_an_ambient_token_by_default(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="refuse_plaintext_token"):
+            EntityCoordinator(CoordArticle, grpc.insecure_channel("localhost:1"), "ambient-token")
+
+    def test_a_hand_built_coordinator_told_the_transport_is_known_binds_a_per_call_token(self):
+        coordinator = EntityCoordinator(
+            CoordArticle, grpc.insecure_channel("localhost:1"), refuse_plaintext_token=False
+        )
+
+        bound = coordinator.with_acting_user("bound-token")
+
+        assert bound._acting_user_metadata() == (("x-acting-user-authorization", "Bearer bound-token"),)
 
 
 # ── Related-object hydration on the read path ────────────────────────────────────
