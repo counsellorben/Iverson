@@ -228,8 +228,8 @@ Every loaded descriptor has a tenant column, and every non-denied decision carri
 
 ### 7.2 Connections
 
-- `EngagementRepository` builds each tenant's connection string deterministically from the base string with `MySqlConnectionStringBuilder`, replacing `UserID` and `Password` and setting `MaximumPoolSize=10` and `ConnectionIdleTimeout=60`. A distinct string means a distinct pool, and an idle tenant's pool drains to zero connections.
-- `SET ROLE` and `SET ROLE NONE` are removed from `RunTenantScopedAsync` and `StreamTenantScopedAsync`. Nothing may change a data connection's role or session state. Live-probed: MySqlConnector's pooled reset does not clear StarRocks session state. With per-tenant pools, leftover state can't cross tenants.
+- `EngagementRepository` builds each tenant's connection string deterministically from the base string with `MySqlConnectionStringBuilder`, replacing `UserID` and `Password` and setting `MaximumPoolSize=10`, `ConnectionIdleTimeout=60` and `ConnectionReset=false`. A distinct string means a distinct pool, and an idle tenant's pool drains to zero connections. The reset is off because StarRocks' reset puts system session variables back to their global defaults, which drops the caps the login carries (Verified assumption 26).
+- `SET ROLE` and `SET ROLE NONE` are removed from `RunTenantScopedAsync` and `StreamTenantScopedAsync`. Nothing may change a data connection's role or session state. With the reset off, session state persists on a pooled connection; with per-tenant pools, leftover state can't cross tenants.
 - The Aggregate RPC runs its specs with concurrency capped at 4 per request (today `Task.WhenAll` is unbounded).
 - Pool exhaustion ("All pooled connections are in use") is excluded from the transient classification that feeds the per-process circuit breaker, so one tenant can't open the breaker for all tenants.
 - The authz-null branches and the public executor keep using `iverson_app`. Their only callers are tests, and they now have no data rights.
@@ -372,10 +372,11 @@ Evidence was gathered on 2026-10-16 against `f7eeba79`. "Probed" means run again
     - it can list `iverson_app`'s grants and revoke tenant roles;
     - `iverson_app` keeps `SHOW BACKENDS`;
     - a revoked role gives "… is not granted to …", which the current read path treats as empty, hence the post-upgrade revoke.
-26. **Pooled reuse keeps session state.** Probed with MySqlConnector 2.6.2 on StarRocks 4.1.6:
+26. **Pooled reuse and session state.** Probed with MySqlConnector 2.6.2 on StarRocks 4.1.6, and the reset rows on 4.1.1:
     - the pool reuses the connection;
-    - the default role persists across reuse;
-    - a session variable set on one checkout persists to the next, because the reset doesn't clear StarRocks session state;
+    - the default role and user variables persist across reuse, with or without the reset;
+    - with the default `ConnectionReset=true`, the reset puts system session variables back to their global defaults: after one reuse a capped login reads `query_timeout` 300 and `exec_mem_limit` 2147483648, not its 180 and 4294967296;
+    - with `ConnectionReset=false` the caps hold, and a system variable set on one checkout persists to the next;
     - `SET ROLE NONE` before return leaves the next checkout with no role.
 27. **MySqlConnector 2.6.2 pool options behave as documented:** `MaximumPoolSize` (default 100), `ConnectionIdleTimeout` (default 180 s, reaped every 30–60 s), `MinimumPoolSize` 0, and a full pool waits up to `ConnectionTimeout` (15 s) and then throws. That a distinct connection string gets a distinct pool is library behaviour that the repo's tests rely on (`MatchRowsIntegrationTests.cs:332-345`).
 28. **StarRocks 4.1.6 FE limits.** Probed: `qe_max_connection` = 4096 (not mutable), and the per-user default is `max_user_connections` 1024.
