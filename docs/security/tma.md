@@ -1,194 +1,365 @@
-# Iverson — Threat Model Analysis (whole repository)
+# Threat Model Analysis — Iverson
 
-*Last refreshed: 2026-09-15 against commit SHA `72c5c4c6df27565dfcbced54f9d714df25efe589`*
+## 1. Header
 
-**Sources**
-- Code: `/home/ben/repositories/Iverson` (this repository, whole-repo scope; monorepo covering `Iverson.Server`, `Iverson.Clients` (5 SDKs), `Iverson.Agents/Python`, `Iverson.AdminUI`, and `Iverson.Server/deploy` (Helm/Terraform/kind/compose))
+**Last refreshed:** 2026-10-08 against commit SHA `19ab57c01056d0bbfb3594a53187dcb9406a421c`.
+- The previous refresh was dated 2026-10-02, at `a8c48db4`, and was never committed; this document replaces it.
+- 140 commits lie between the two. They include all six sub-projects (A, B, C1, C2, D, E) of CSR round 10, `docs/criticalreviews/2026-10-03-iverson-critical-security-review-10.md`.
 
-**References**
-- Threat categorization and severity follow this skill's built-in taxonomy and rubric (Appendices A–B of the `peters-toolkit:tma` skill).
-- Superseded prior version: whole-repo TMA dated 2026-09-13 (commit `5b29301`). 185 commits landed between that baseline and this refresh, including two full peters-toolkit remediation cycles (CSR round-5 remediation, "outstanding fixes") and roughly 70 automated Dependabot dependency bumps across all six ecosystems. Two of that prior version's findings (F2 — enrichment prompt injection, F3 — no CI dependency scanning) are now closed; this refresh replaces them with a narrower residual and a new finding discovered live during this session (see §5.11, §6).
+**Sources:**
+- Code: `/home/ben/repositories/Iverson`, the full monorepo:
+  - the server runtime, `Iverson.Server/Iverson.{Api,Sql,StarRocks,Vector,Embeddings,Events,Patterns,Launcher}` and the protos in `Iverson.Clients/Common/Proto`;
+  - the five SDKs and their conformance drivers, `Iverson.Clients/*`;
+  - the reasoning agent, `Iverson.Agents/Python`;
+  - the admin console, `Iverson.AdminUI`;
+  - the tools, `Iverson.Server/Iverson.LoadTest` and `Iverson.Server/Iverson.ClientConformance`;
+  - deployment: `Iverson.Server/docker-compose.yml`, `Iverson.Server/deploy/` (Helm, Authentik blueprints, kind, Terraform), `docs/runbooks/`;
+  - CI, `.github/` and `.gitlab-ci.yml`.
+- Design inputs: the six round-10 specs in `docs/specs/2026-10-0{3,4,5,6}-csr-round10-*-design.md`, used for their "Known issues" lists. Each claim below was re-checked against the code.
+- Reconnaissance: three parallel read-only surface maps, covering (1) the server runtime, (2) clients, console, agent and tools, and (3) deployment, identity and CI. The deployment map rendered the chart for the aws, azure, gcp and local profiles and queried the live branch-protection settings. The synthesis re-read the StarRocks join builders behind F1.
+
+**References:** threats are categorized with this skill's built-in Vulnerability Taxonomy (Appendix A). Findings are scored with its Severity Classification and SQS rubric (Appendix B). Both ship with the `tma` skill and are not tracked separately here.
 
 ---
 
 ## 2. System overview
 
-Iverson is a multi-tenant .NET 10 gRPC platform for storing, searching, and retrieving caller-defined entity schemas. Tenant data is fanned out asynchronously (via Kafka) into three specialized stores — PostgreSQL (row-level security, source of truth), StarRocks (analytical query/aggregation), and Qdrant (vector/semantic search) — each independently enforcing tenant isolation, with identity provided by a self-hosted Authentik OIDC instance and five language SDKs (DotNet, Go, Java, Python, TypeScript) as the client surface. It matters because it is a content-agnostic multi-tenant data platform: callers define their own schemas and payload contents, so the platform has no visibility into whether stored data is PII, PHI, payment data, or something else — every isolation and authorization guarantee has to hold regardless of what tenants choose to store.
+Iverson is a multi-tenant .NET 10 gRPC platform for schema-driven object storage, retrieval and search. It sits in front of four stores:
+- PostgreSQL, the system of record, with row-level security;
+- StarRocks, for analytics, aggregation, pipelines and pattern matching;
+- Qdrant, for vector and chunk search;
+- Kafka, the outbox fan-out bus.
 
-## 3. Architecture & data flows with trust boundaries
+Around it are five client SDKs, a React admin console, a Python LLM reasoning agent, and Authentik as the single identity provider.
+
+Every tenant's data shares the same database, cluster and vector deployment. Tenants are separated only by software-enforced boundaries, and tenant identity comes from an IdP-issued claim. A failure of identity or isolation is therefore a cross-tenant breach, not a single-customer incident. Inside a tenant, a second boundary separates users: row ownership and field permissions declared per type.
+
+## 3. Architecture & data flows
 
 ### 3.1 Components
 
-| Component | Role |
-|---|---|
-| `Iverson.Api` (api + worker roles, one image) | gRPC entity CRUD/search services, HTTP admin/health endpoints, Kafka consumers (worker role only) |
-| `Iverson.Sql` | PostgreSQL access — row-level security, per-role connection switching |
-| `Iverson.StarRocks` | Per-tenant-database analytical store — query DSL → SQL translation |
-| `Iverson.Vector` | Qdrant vector store — per-tenant collections, scoped short-lived JWTs |
-| `Iverson.Embeddings` | HTTP clients to TEI (embeddings) and Ollama (generative enrichment) |
-| `Iverson.Events` | Kafka event contracts and dispatch/retry/DLQ machinery |
-| Authentik (external, self-hosted) | OIDC identity provider; two JWT audiences (service, acting-user) |
-| `Iverson.AdminUI` | React SPA, OIDC authorization-code login, gRPC-web to the API |
-| `Iverson.Clients/*` | 5 language SDKs; client-credentials + optional acting-user token |
-| `Iverson.Agents/Python` | Anthropic-backed agent layer built on the Python SDK |
-| `deploy/{helm,terraform,kind}` | Kubernetes (3 clouds + local kind), Terraform IaC, Docker Compose for local dev |
+| Component | Role | Key paths |
+|---|---|---|
+| `Iverson.Api` | One binary with two roles (`WORKLOAD_ROLE`). `api` serves six gRPC services (23 RPCs) and `/v1/traces`. `worker` runs six Kafka consumer groups and five timer workers. Both roles map the probes, `/admin/*` and `/admin/console/*`, and both run the startup DDL and RLS re-apply. | `Iverson.Api/Program.cs:37-39, 448-470, 673-797` |
+| Listeners | `:8080` is h2c: gRPC, gRPC-Web, `/admin/reconcile`, `/admin/dlq*`. `:8081` is HTTP/1.1: `/health`, `/health/live`, `/build`, `/metrics`. `RequireListenerPort` plus `ListenerPortGateAsync` pin by the accepting socket. `/admin/console/*` and `/v1/traces` are unpinned and reach the internet through the admin-api ingress. No TLS in-process. | `Program.cs:897-909`; `charts/api/templates/admin-api-ingress.yaml:57-77` |
+| Middleware | Port gate, then the pre-auth limiter (keyed by `ClientPartitionKey`: `X-Forwarded-For` is honoured only from configured proxy CIDRs), then CORS, authentication with revocation, authorization, and the post-auth limiter. gRPC interceptors: rate limit (per `sub`), then acting user. | `Program.cs:497-514`; `RateLimiting/ClientPartitionKey.cs:14-33` |
+| `Iverson.Sql` | Dapper and Npgsql. Runtime reads and writes run `SET LOCAL ROLE iverson_runtime` plus `app.tenant_id` under FORCE RLS. Cross-tenant maintenance runs as `iverson_maintenance` (BYPASSRLS). | `IRecordStoreRoles.cs:100-163`; `PostgresSchemaManager.cs:139-292` |
+| `Iverson.StarRocks` | Query, pipeline and pattern-row builders. Each tenant gets a database `iverson_tenant_{id}` and a hashed role, entered with `SET ROLE`. Tenant and owner predicates are injected. Client-written expressions are validated and spliced as text. | `StarRocksQueryBuilder.cs`, `StarRocksPipelineBuilder.cs`, `EngagementRepository.cs:216-305, 466-515` |
+| `Iverson.Vector` | One collection per tenant, named with a SHA-256 fingerprint. Data-plane calls carry a 30-second HS256 JWT scoped to one collection. Management uses the raw key. TLS with the leaf thumbprint pinned (Helm). | `IntelligenceTenantScope.cs:40-103`; `Vector/ServiceCollectionExtensions.cs:21-64` |
+| `Iverson.Patterns` | MatchPattern: an in-process parser and NFA matcher with step, thread, row and time budgets. Never turned into SQL. | `Iverson.Patterns/*`; `PatternBudget.cs` |
+| `Iverson.Embeddings` | TEI embeddings and the enrichment LLM (`/v1/chat/completions`). Plaintext and unauthenticated. Responses capped at 1 MiB, with a non-backtracking extraction regex. | `EmbeddingService.cs`; `EnrichmentService.cs:24-131` |
+| `Iverson.Events` | Kafka producer and consumer. Events are unsigned JSON carrying the full row and the prior row. DLQ metadata travels in `dlq.*` headers. | `EntityEvent.cs:20-36`; `MessageDispatcher.cs:138-158` |
+| `Tenancy/` | Authentik admin client. CA-pinned TLS trust with a startup guard. The orchestrator token exchange (`AuthentikOrchestratorTokenHandler`). Tenant-status and token-revocation caches. | `AuthentikTrust.cs:19-106`; `AuthentikOrchestratorTokenHandler.cs`; `TokenRevocationCache.cs` |
+| SDKs (`Iverson.Clients/*`) | Send a service bearer plus `x-acting-user-authorization`. TLS by default. Plaintext needs a named opt-in, which is now also enforced on per-call acting-user bindings (.NET, Python, TS). Token endpoints must be https and are not followed through redirects. | §5.10 |
+| `Iverson.AdminUI` | React SPA behind nginx-unprivileged. OIDC code plus PKCE, a public client issued no refresh token, tokens in sessionStorage, strict CSP. JSON `fetch` to the admin-api host; browser spans go to `/v1/traces` with the user's bearer. | `src/auth/AuthProvider.tsx:45-59`; `nginx.conf:32-37`; `src/telemetry.ts` |
+| `Iverson.Agents/Python` | A reasoning agent acting as the calling end user. It retrieves tenant passages and sends them to the Anthropic API. | `session.py`, `retrieval.py`, `planner.py` |
+| Tools | LoadTest and ClientConformance: harnesses that hold privileged datastore and IdP credentials and seed stores directly. | `Iverson.Server/Iverson.LoadTest`, `Iverson.Server/Iverson.ClientConformance` |
+| Authentik 2026.5.3 | The single IdP and JWT issuer (global issuer mode, one signing key). The server pod has three listeners: `:9000` plaintext (loopback and in-cluster), `:8443` TLS (API only), and `:9080`, the filtered public listener. The worker pod carries the `jwks-relay` sidecar. | `charts/authentik/templates/configmap-tls-proxy.yaml:9-37`; `deployment-worker.yaml:32-66` |
+| Deployment | Docker compose (dev, loopback-only). kind local and laptop profiles (loopback-only). Cloud on EKS, AKS or GKE: Helm umbrella chart plus Terraform. Default-deny NetworkPolicy in the `iverson` namespace, with scoped DNS and API-server egress. | `docker-compose.yml`; `deploy/helm/iverson`; `deploy/terraform` |
 
-### 3.2 Data flow — entity write
+### 3.2 Primary data flows
 
-Client (SDK) → gRPC `Post`/`Update` (service JWT + optional acting-user JWT) → `ActingUserInterceptor` (tenant-suspension check) → row/field authorization evaluator (fail-closed) → tenant/owner force-set + field allowlist → payload-size validation → PostgreSQL INSERT/UPDATE under the non-superuser `iverson_runtime` role with `app.tenant_id` set (RLS-enforced) → transactional outbox row → Kafka `iverson.entity.events`.
+1. **Write.** The SDK calls gRPC through the edge to `:8080`.
+   - The API validates the service JWT and the acting-user JWT, including the revocation check on each, and checks that the acting user's tenant is active (30 s cache).
+   - The row and field evaluator runs. It denies by default.
+   - The key is server-assigned (UUIDv7).
+   - Update never creates a row: a key with no row in the caller's tenant gets `NotFound`. Restricted fields the caller omitted are carried forward from the stored row.
+   - The entity and the outbox row are written in one Postgres transaction under RLS, then published to Kafka.
+2. **Projection.** Workers consume the event.
+   - For Created and Updated, they re-derive tenant and owner from the authoritative Postgres row (maintenance role). Other column values come from the event payload.
+   - For Deleted, the tenant comes from the event's pre-delete snapshot.
+   - Workers upsert into the tenant's StarRocks database, embed text through TEI into the tenant's Qdrant collection, and optionally send up to 8,000 characters to the enrichment LLM, whose output is written back into the entity and re-published.
+3. **Read and search.** The evaluator builds a constraint per type, joined types included.
+   - JOIN `ON` columns, filters, sorts and expression tokens are field-checked.
+   - StarRocks runs under `SET ROLE` with tenant and owner predicates, and Qdrant with a collection-scoped JWT.
+   - Responses strip the tenant column and mask fields to AllowedFields.
+4. **Identity provisioning (Helm).**
+   - The API reads its projected service-account token (audience `iverson-authentik-orchestrator`, 600 s) and exchanges it at Authentik's token endpoint, over the CA-pinned `:8443` hop, for a 5-minute access token.
+   - Authentik checks the token's signature against the cluster's service-account keys, which the worker's `kubectl proxy` relay fetches from the API server. A policy then pins the subject, the audience, and membership of a pre-created user in `iverson-admin-orchestrators`.
+   - With that token, CreateTenant and InviteUser create users and return a 15-minute recovery link, rewritten to the public Authentik host.
+   - Compose keeps a static, non-expiring token instead.
+5. **Human login.** The browser reaches `authentik.<host>` through the edge. The public listener `:9080` forwards only the login, flow, OIDC and static paths, and stamps `X-Iverson-Public-Ingress`. MFA is enforced on interactive login.
+6. **Agent.** The agent retrieves under the end user's token and sends the passages and the question to Anthropic. Model-chosen tool inputs come back to Iverson, re-validated against the user's schema.
 
-Worker-role fan-out from Kafka: StarRocks (per-tenant DB), Qdrant (per-tenant collection, `+_chunks`), enrichment → Ollama (prompt injection now defended — see §3.5 TB-9 and §5.7), embeddings → TEI, document template re-render. Every projection consumer re-derives tenant authority from the authoritative Postgres row rather than trusting the Kafka event's own claimed tenant (`ProjectionTenantResolution.cs`, generalized across all projection consumers).
+### 3.3 Trust boundaries
 
-### 3.3 Data flow — entity read
-
-Client → gRPC `Get`/`GetMany`/`Search*`/`Aggregate`/`GroupBy`/`Pipeline` → evaluator decision → store read scoped by `(TenantColumn, TenantValue)` in all three stores independently (Postgres RLS, StarRocks per-tenant DB + role, Qdrant per-tenant collection + scoped JWT) → relation hydration (re-evaluated per related type, cycle-safe, depth-capped) → field masking + tenant-column stripping on the response.
-
-### 3.4 Data flow — identity
-
-Browser → Authentik authorization-code flow (no refresh token issued) → id/access token in `sessionStorage` → admin-ui gRPC-web → API `TenantAdmin`/`TenantLifecycle` RPCs, using the *primary* principal's own `tenant_id`/group claims (no acting-user token involved on these two services) → `IdpAdminClient` → Authentik REST, authenticated with a long-lived orchestrator admin Bearer token.
-
-Service-to-service: SDK client-credentials → Authentik token endpoint → `authorization: Bearer <service token>` + optional `x-acting-user-authorization: Bearer <user token>` on the same RPC call.
-
-### 3.5 Trust boundaries
-
-| ID | Boundary | Crossing point | Existing controls |
+| # | Boundary | What crosses | Enforcement |
 |---|---|---|---|
-| TB-1 | Internet → Ingress | ingress-nginx / ALB / AGIC / GCE | TLS terminated at Ingress where `tlsSecretName` is set (azure/gcp); AWS relies on an externally-managed ACM/ALB listener; local/laptop are plaintext by design |
-| TB-2 | Ingress → API pod | plaintext h2c `:8080` | NetworkPolicy restricts `:8080` to the `ingress-nginx` namespace; `:8081` (health) is open for kubelet |
-| TB-3 | Unauthenticated → authenticated | ASP.NET `FallbackPolicy` | `RequireAuthenticatedUser()` default; explicit anonymous carve-outs for `/metrics`, `/health`, `/health/live`, `/build`, dev-only `/openapi` |
-| TB-4 | Service identity → end-user identity | `x-acting-user-authorization` header | Separate JWT scheme/audience; **absence is not an error** — yields `actingUser == null`, which the row/field evaluator treats as full deny. `GetSchema`/`TenantAdmin`/`/admin/reconcile/{typeName}` operate on the primary principal only (deliberate); `/admin/dlq*` additionally **require** a genuine acting-user token (`Program.cs:414-465`) — corrected this refresh, see §5.4 |
-| TB-5 | Tenant ↔ tenant | every entity read/write | Enforced independently in Postgres (RLS + `FORCE` + non-superuser role), StarRocks (per-tenant DB + `SET ROLE`), Qdrant (per-tenant collision-resistant collection name), and an API-layer tenant predicate/comparison; `iverson_maintenance`/`EntityAccess.CrossTenantMaintenance` are the sole, explicit, code-reviewed exemptions |
-| TB-6 | Caller query DSL → generated SQL | StarRocks query/pipeline builders | Values parameterized; identifiers resolved through a schema allowlist that excludes the tenant column; raw `expression` fragments gated by a character denylist + token allowlist, not parameterization; `StarRocksParameterGuard` additionally throws if generated SQL contains any unbound placeholder, converting StarRocks' own silent-wrong-results behavior into a loud failure |
-| TB-7 | Schema registration → DDL | `RegisterSchema` | `SchemaAdmin` policy + a tight `^[A-Za-z][A-Za-z0-9]*$` identifier regex is the only gate before interpolated `CREATE TABLE`/`ALTER TABLE`/`CREATE POLICY`/`GRANT` in two databases; all identifiers additionally quoted at the SQL-generation site |
-| TB-8 | API → Authentik | plaintext HTTP in-cluster | Long-lived, now object-scoped-where-possible orchestrator admin token; compensated by default-deny NetworkPolicy |
-| TB-9 | Platform → LLM/embedding backends | plaintext, unauthenticated HTTP | Tenant content leaves the tenant-isolation boundary into a shared model server. **Changed since last refresh**: every enrichment prompt template now wraps untrusted source text in `<<<BEGIN_SOURCE_TEXT>>>...<<<END_SOURCE_TEXT>>>` markers with an explicit "not instructions" framing, and escapes literal marker sequences in the source text itself (`EnrichmentPrompts.cs`, commits `fddd073`/`afe9e97`) — see §5.7 |
-| TB-10 | Kafka topic | `iverson.entity.events`/`.dlq` | Full plaintext entity payloads across all tenants on one topic; workers re-derive authority from Postgres rather than trusting the event |
-| TB-11 | Browser → admin-ui | nginx origin | Strong CSP (`default-src 'self'`, `base-uri`/`form-action`/`object-src` locked down), `X-Frame-Options`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`, HSTS when external scheme is https |
-| TB-12 | CI/CD → `main` | GitHub Actions / GitLab CI, PR merge | **Changed since last refresh, only partially for the better**: `contents: read` default, SHA-pinned actions, checksummed tool downloads, Terraform `-lockfile=readonly`, and (new) a dependency-vulnerability scan gate now runs on every PR across all 6 ecosystems. But `main` carries **zero GitHub branch protection** (`gh api repos/.../branches/main/protection` → 404 "Branch not protected") — no required status checks, no required reviews, no push restrictions — so none of those CI signals actually block a merge; see §5.11, F2 |
-| TB-13 | Cloud control plane | EKS public endpoint | CIDR-restricted via a required Terraform variable with no default (fails closed if unset) |
-
----
+| TB1 | Internet → cloud edge → ingress | Four ingresses:<br>- `<host>`: six gRPC prefixes, plus `/admin` for the console SPA;<br>- `admin-api.<host>`: `/admin*`, anonymous `/health`, `/v1/traces`;<br>- `authentik.<host>`: the `:9080` public listener only. | Edge TLS (ACM or Secret). No source allow-list at the edge. **Edge → pod is plaintext on every ingress.** |
+| TB2 | Public listener ↔ Authentik admin plane | Login, flow executor, OIDC (`/application/`, token endpoint included), static | Path allow-list on `:9080`; the admin interface and `/api/v3` answer 404. The marker header lets admin-automation and orchestrator policies refuse public callers (`configmap-tls-proxy.yaml:21-37`). |
+| TB3 | SDK or service → API (service identity) | Bearer JWT for one of the configured audiences | `ValidIssuers` (internal and external), audience allow-list, `RequireHttpsMetadata`, CA-pinned JWKS, revocation hook, fallback `RequireAuthenticatedUser`. |
+| TB4 | Service identity → end user (acting user) | `x-acting-user-authorization` JWT: `tenant_id`, `groups`, `sub` | A separate scheme sharing the issuer and keys, distinguished by audience. Missing, suspended or deleted tenants are refused. Data RPCs with no acting user are denied by the evaluator. Console HTTP endpoints treat the primary token as the acting user. |
+| TB5 | Acting user → tenant data, and user → user within a tenant | Rows, projections, vectors | Evaluator, then Postgres FORCE RLS, StarRocks per-tenant DB and role, and Qdrant per-collection JWT for tenants. Owner predicates and AllowedFields for users. **Each store's connection credential can itself cross tenants** (§5.4). |
+| TB6 | Claim → privilege | `groups ∋ operators` or `scope ∋ admin` gives Operator. `groups ∋ operators` or `scope ∋ schema_admin` gives SchemaAdmin. `groups ∋ tenant-admins` gives TenantAdmin. | Claims come from Authentik groups and scope mappings. `tenant_id` comes from a user attribute users cannot write (verified live 2026-10-02). |
+| TB7 | API → Authentik admin plane | User creation, recovery links, group PATCHes | TLS to `:8443` with a chart CA. 5-minute federated token on Helm; static token on compose. |
+| TB8 | Kubernetes RBAC → Authentik orchestrator rights (new) | Projected tokens for service account `<rel>-api` with the orchestrator audience | The policy pins `sub`, `aud` and the workload user's group. Signature is checked against the cluster's own keys; `iss` is not checked. Anyone allowed to mint such a token (TokenRequest, or creating a pod with that account) holds orchestrator rights for 5 minutes. |
+| TB9 | API and worker ↔ data stores | Tenant records and credentials | Postgres VerifyFull, Kafka TLS plus SCRAM plus ACLs, Qdrant TLS (pinned). **StarRocks, Redis, TEI, Ollama, Jaeger, Prometheus and Qdrant Raft are plaintext.** |
+| TB10 | Worker ↔ ML backends | Tenant text out, model output back into tenant data | No auth or TLS. NetworkPolicy limits who reaches them; model pods have no egress. |
+| TB11 | Agent ↔ Anthropic, and retrieved content ↔ LLM instructions | Tenant passages, questions, model-chosen tool calls | Escaping and delimiters, schema-validated filters, a tool-call budget, citation enforcement. |
+| TB12 | Load-balancer ranges and peers ↔ pods | Everything in TB1 minus the edge TLS | `clusterCidrs` narrowed to the LB subnets (AWS public subnets, Azure AGIC subnet, GCP GFE ranges) plus ingress-nginx (`networkpolicies.yaml:45-62`). Operator namespaces have no NetworkPolicies. |
+| TB13 | Developer host ↔ compose and kind | Dev stacks with test identities | Compose and kind both bind `127.0.0.1` (`kind-config.yaml:17-24`). |
+| TB14 | CI and contributors ↔ `main`; third-party actions, tools, images | Code, build and scan steps | Branch protection with 11 required checks. Every action SHA-pinned; tool downloads hash-checked; read-only `GITHUB_TOKEN`. |
 
 ## 4. Threat actors
 
-| Actor | Capabilities | Motivation | In scope |
+| Actor | Capabilities | Motivation | In scope? |
 |---|---|---|---|
-| External opportunistic attacker | Reaches only what's routed through Ingress: 6 gRPC service prefixes, `/v1/traces`, admin-ui | Credential stuffing against Authentik login, generic scanning/exploitation | Yes |
-| Malicious or compromised tenant user (legitimate acting-user token) | Everything a normal tenant user can do: full CRUD/search within their own tenant, arbitrary entity content | Cross-tenant escalation attempts, prompt injection into the enrichment pipeline, resource exhaustion via the query DSL | Yes — the most realistic and highest-leverage actor given the platform's design |
-| Leaked or compromised *service* credential (no acting-user token) | Schema registration (if `SchemaAdmin`), `/admin/dlq` read + replay and reconciliation triggers (if `Operator`, satisfiable by an OAuth scope alone), trace relay (if merely authenticated) | Cross-tenant data exfiltration, DDL abuse | Yes |
-| Insider / anyone with repo write access | With zero branch protection on `main` (TB-12), any contributor — malicious, careless, or acting on a compromised workstation/credential — can merge or push directly with no required review and no CI gate actually enforced | Malicious insider, accidental breakage, or a compromised commit/PAT | Yes — broadened this refresh; previously scoped only to Authentik/orchestrator-credential holders (still true, see §5.6), now also covers anyone who can open or approve a PR against this repo |
-| Compromised supply-chain dependency | Whatever a malicious/vulnerable package in any of 6 dependency ecosystems can do at build or runtime | Opportunistic or targeted supply-chain compromise | Yes — SCA scanning now exists (closing the prior refresh's F3), but with no branch protection gating on it, and with 2 of 6 ecosystems (.NET solution, TypeScript SDK) having no CI job that even builds/tests them, a compromised or merely broken dependency update reaches `main` unverified. **Demonstrated twice this session** (not hypothetical) — see §5.11, F2 |
-| Automated bots/scanners | Generic internet noise against anonymous endpoints | Reconnaissance, opportunistic exploitation attempts | Yes, low severity — anonymous endpoints leak only non-sensitive operational metadata |
-| Nation-state / advanced persistent threat | — | — | **Out of scope.** Nothing in this system's data classification (a general-purpose multi-tenant data platform, no evidence of government/critical-infrastructure use) suggests it is a plausible nation-state target specifically. |
-
----
+| External opportunistic | Scanning, credential stuffing against Authentik's public login, floods, known-CVE exploitation | Opportunistic compromise, resource abuse | **Yes.** The API, the console and Authentik's login are internet-facing on cloud profiles. |
+| External targeted | Reconnaissance of the public IdP, probing tenant isolation and expression parsers, phishing operators, tenant admins or invitees | Data from a specific tenant, platform-wide compromise | **Yes** |
+| Insider, regular tenant user | Tenant-scoped CRUD, search and pipelines with an acting-user token; authors documents that later feed the LLM | Reading other users' private rows in the same tenant; escalating to another tenant or to admin | **Yes.** The central actor. |
+| Insider, privileged (Operator, SchemaAdmin, TenantAdmin) | Tenant lifecycle, schema DDL, DLQ replay, cross-tenant reconcile, user invites | Abuse, or a stolen privileged credential | **Yes** |
+| Cluster-privileged insider | Kubernetes RBAC in the `iverson` namespace: reads Secrets and Helm release Secrets, creates pods, mints service-account tokens | Credential theft; IdP control through TB8 | **Yes.** Equivalent in reach to the Secret reads the static token was exposed to before C2. |
+| Network-positioned in-cluster or VPC attacker | A compromised pod, node or VM on the paths between the edge, the pods and the stores | Sniff or tamper with plaintext hops | **Yes.** Every edge → pod hop and several store hops are plaintext (§5.11). |
+| Compromised supply chain | Malicious dependency, action, base image, operator chart or model weight | Code execution at build or run time | **Yes.** Five language ecosystems plus third-party images and operators. |
+| Automated bots | High-volume requests | Resource exhaustion, cost inflation | **Yes** |
+| LAN peer of a developer | Reaches a dev stack on the local network | Opportunistic access to test identities | **No longer.** kind now binds loopback, like compose. |
+| Nation-state | Zero-days, persistent access | Espionage | **No.** Nothing indicates Iverson is critical infrastructure. |
 
 ## 5. Threat analysis (STRIDE-per-element)
 
-### 5.1 Anonymous HTTP surface (`/metrics`, `/health`, `/health/live`, `/build`, dev-only `/openapi`)
-- **Information disclosure**: `/metrics` exposes the full Prometheus registry; `/build` exposes assembly names and hashes; `/health` reveals per-backend (Postgres/StarRocks/Qdrant/Kafka) up/down status. All anonymous, all in scope for the external-opportunistic and bot actors.
-- **Existing mitigations**: not routed through the Ingress path table's six gRPC prefixes and `/v1/traces` — but still reachable at the pod's `:8080`/`:8081`, so exposure depends on NetworkPolicy, not routing.
-- **Residual risk**: Low. Reconnaissance-grade value only.
+### 5.1 Listeners, ingress and rate limiting
+- **Spoofing.** The listener partition keys on the accepting socket's port, not on `Host`.
+- **Denial of service.** Closed since the last refresh: the pre-auth limiter no longer collapses every client behind the ingress into one bucket (CSR-10 #3).
+  - It keys on `ClientPartitionKey`, which trusts `X-Forwarded-For` only when the peer is a configured proxy CIDR, at a configured hop count (`ClientPartitionKey.cs:14-33`, `TrustedProxyOptions.cs:20-35`).
+  - Each profile sets its proxy ranges, and the chart refuses an empty list (`charts/api/templates/deployment.yaml:1-8`).
+  - The post-auth limiter, the gRPC per-`sub` limit, per-request query caps, MatchPattern budgets and the 4 MB receive cap stay in place.
+  - Residuals:
+    - A host inside a trusted LB subnet can choose its own bucket (accepted in the edge-transport spec).
+    - Tokens without a `sub` share one gRPC rate bucket (`RateLimitInterceptor.cs:41`). Authentik always issues `sub`.
+- **Information disclosure.** Anonymous `/health` (store up/down) is published on `admin-api.<host>`. `/build` (assembly hashes) and `/metrics` are reachable only from the LB ranges and Prometheus.
+- **Elevation of privilege.** `/admin/console/*` and `/v1/traces` are unpinned and authenticated.
+  - `/v1/traces` now admits only console-audience tokens (CSR-10 #13). Any console user can still write arbitrary spans to Jaeger; that is accepted in the server-authorization spec.
+- **Residual:** Low.
 
-### 5.2 Authenticated entity CRUD/search RPCs (`ObjectMapping`, `ObjectPersistence`, `ObjectRetrieval`, `ObjectSearch`)
-- **Elevation of privilege / tampering**: the query DSL exposes raw `expression` strings on aggregation metrics (`ObjectSearch.Aggregate`/`GroupBy`/`Pipeline`) that reach generated StarRocks SQL.
-- **Existing mitigations**: two independent layers (character denylist including SQL-comment sequences, then a token allowlist restricting anything not a known function/operator/available column); values elsewhere are parameterized; identifiers resolved through a tenant-column-excluding allowlist; `StarRocksParameterGuard` catches unbound placeholders that StarRocks would otherwise silently treat as unset variables; output-size and shape caps bound both cost and injection surface area.
-- **Residual risk**: Low, monitored. A denylist+allowlist combination is inherently more brittle against a *novel* StarRocks syntax feature than pure parameterization, but no concrete bypass is evidenced — tracked as a longer-term architectural note, not a finding.
+### 5.2 Identity: Authentik, the two JWT schemes, acting users and revocation
+- **Spoofing, closed.** The JWKS and discovery hop is now TLS to `:8443`, with a chart CA, `RequireHttpsMetadata = true` on both schemes, and a startup guard refusing http outside Development (`Program.cs:177-203`, `AuthentikTrust.cs:69-106`). An in-cluster attacker can no longer substitute signing keys. Refresh on an unknown `kid` stays on, but it can only fetch genuine keys.
+- **Spoofing, by design.** Both schemes trust one issuer set and one key set and differ only by audience. Privilege still needs `groups` or `scope`, and data access still needs a valid acting user.
+- **Spoofing, verified mitigated.** Users cannot rewrite their own `tenant_id`: a live probe on 2026-10-02 covered the self-service flow and the admin API. Self-service is now also off the public listener.
+- **Elevation of privilege, largely closed.** CSR-10 #4 is addressed on Helm:
+  - Authentik's admin interface and `/api/v3` no longer reach the internet (TB2).
+  - The bootstrap token is removed (`state: absent`).
+  - The admin-automation client is refused on public requests.
+  - The static orchestrator token is replaced by the 5-minute federated token (TB8).
 
-### 5.3 Schema registration → DDL (`RegisterSchema`)
-- **Elevation of privilege**: a successful registration interpolates caller-supplied type/property names directly into `CREATE TABLE`/`ALTER TABLE`/`CREATE POLICY`/`GRANT` statements in both Postgres and StarRocks.
-- **Existing mitigations**: `SchemaAdmin` policy gate; a tight `^[A-Za-z][A-Za-z0-9]*$` allowlist regex (no quotes, no whitespace, no separators) on every identifier; a closed reserved-name enumeration for the tenant column; every identifier additionally quoted at the SQL-generation site (double-quoted Postgres, backtick-quoted StarRocks), so even a reserved-keyword collision parses as a valid quoted identifier.
-- **Residual risk**: Low. The identifier allowlist admits no characters capable of terminating a quoted identifier or introducing a new SQL clause.
+  Residuals (F4):
+  - **The `akadmin` superuser password.** Random and kept forever with no rotation. It can log in through the public flow; MFA is enrolled at first login.
+  - **The admin-automation client secret.** It mints Operator tokens from anywhere inside the cluster or VPC that reaches `:8443` or `:9000`.
+  - **Compose's static orchestrator and bootstrap tokens.** Dev, loopback-only.
+- **Elevation of privilege, residual by permission model.** The orchestrator role's global `add_user` can create a user directly into any non-superuser group, `operators` included. Authentik 2026.5.3 has no group-scoped `add_user`. Since C2 this needs the API pod's identity (TB8), whose compromise already implies cross-tenant access.
+- **Spoofing (new boundary).** TB8 turns Kubernetes RBAC on `<rel>-api` into Authentik orchestrator rights. Authentik does not check `iss`. It accepts only signatures from the cluster's own service-account keys, which the relay fetches through an allow-listed read-only path (`--accept-paths=^/openid/v1/jwks$`, mutating methods rejected, empty `--www`). Two items are accepted as unverified in the C2 spec:
+  - whether the managed clusters publish a new key before signing with it;
+  - whether their API servers serve the projected-token keys.
+- **Elevation of privilege, revocation (new control).** `RemoveUser` and demotion write revocation rows, checked in `OnTokenValidated` on both schemes (`Program.cs:882-895`), with a 30 s cache that fails closed. Gaps:
+  - A token with no `sub` skips the lookup.
+  - Suspending or deleting a tenant writes no rows, relying instead on the tenant-status checks. Those cover the acting-user path, TenantAdmin and four of five console readers; `/admin/console/metrics` is Operator-only and has none.
+  - The production acting-user provider still issues refresh tokens (`secret-service-clients.yaml:386`). A refreshed access token carries a fresh `iat`, so it outlives a demotion's revocation row. Its claims are recomputed at refresh.
+- **Repudiation.** Policy denials and admin operations are audit-logged with the service and acting `sub`.
+  - The public listener does not normalize `X-Forwarded-For`, and Authentik trusts the header from loopback. Client-supplied entries can therefore reach Authentik's event log; which entry Authentik records is unverified.
+- **Residual:** Low (F4, F5).
 
-### 5.4 Acting-user impersonation mechanism — **correction: prior refresh's F1 was stale**
-- **Spoofing / elevation of privilege**: the acting-user header is validated as a full second JWT (separate authority/audience), not trusted metadata.
-- **Existing mitigations**: fail-closed row/field evaluator (denies all entity access when no acting-user principal is present); tenant-suspension check gated on the header's presence. `/admin/dlq` and `/admin/dlq/{id}/replay` now **require** a genuine acting-user token (`AuthenticateAsync("ActingUser")` returns 401 on failure, `Program.cs:414-465`) — fixed by commit `926c3b4` (2026-09-14, an earlier *csr-round4-remediation* fix, unrelated to this session's own work), which is already an ancestor of this document's own cited snapshot commit. **This refresh's own prior version of this document stated F1 as "unchanged, confirmed still present" — that was inaccurate**, carried forward from an even earlier TMA round without independently re-verifying the code; caught and corrected by `docs/criticalreviews/2026-09-15-iverson-critical-security-review-7.md` Finding #4, which also ran the regression test live (`ServiceTokenOnly_GetAdminDlq_Returns401`, 6/6 passed) as evidence.
-- **Required mitigation / residual risk (Low — see F4)**: `GetSchema` and `TenantAdmin` surfaces still run off the primary principal only (architecturally deliberate). The one real remaining gap: `/admin/reconcile/{typeName}` (`Program.cs:400-412`) requires only the `Operator` policy against the primary principal, no acting-user check — but this endpoint returns no data, only triggers a reconciliation run, so blast radius is narrow.
+### 5.3 Row and field authorization evaluator
+- **Elevation of privilege.** Denial is the default. It applies when a type has no rules, there is no acting user, the type has no tenant column, the token has no `tenant_id`, or there is no owner field for a caller without a bypass role.
+- **Elevation of privilege, closed since the last refresh (CSR-10 sub-project A):**
+  - JOIN `ON` columns are field-authorized against each side's own constraint (`StarRocksQueryBuilder.cs:867-902`).
+  - Update never creates a row and returns `NotFound` after the denial check. That closes the cross-tenant existence oracle and the Update-as-create path.
+  - Omitted restricted fields are carried forward rather than cleared, and the Mapping Update response strips the carried keys.
+- **Elevation of privilege, intra-tenant, open (F1).** In both builders, a joined type's owner and tenant predicates sit in the JOIN's `ON` clause, so that LEFT joins are not collapsed to INNER joins.
+  - **Search.** The primary type's tenant predicate stays in the outer `WHERE`, which drops the rows a RIGHT or FULL join would preserve.
+  - **Pipeline.** A non-aggregate step that outer-joins a fresh row-owned type has only the caller's own filters in its outer `WHERE` (`StarRocksPipelineBuilder.cs:640-680`). Rows of the joined type that the caller does not own are therefore not removed by anything.
+  - Tenant isolation is unaffected: the join target is qualified to the caller's tenant database.
+  - Field masking still applies.
+  - This was established by reading; no test pins outer-join ownership in the pipeline builder.
+- **Tampering.** `RelationValidator` checks only the shape of a foreign key. Relation reads are tenant-scoped, so a key into another tenant resolves to nothing.
+- **Information disclosure.** Document templates are guarded at registration: no restricted properties, no relations to row-owned types. The renderer reads related rows tenant-scoped, without a runtime evaluator (`DocumentRenderer.cs:100-160`). CSR-10 #2 was refuted on that basis.
+- **Residual:** Medium (F1).
 
-### 5.5 Tenant isolation (Postgres / StarRocks / Qdrant)
-- **Elevation of privilege / information disclosure (tenant boundary bypass)**: the platform's core multi-tenancy guarantee.
-- **Existing mitigations**: four independent layers — Postgres RLS (policy + `FORCE` + non-superuser `iverson_runtime` role), StarRocks per-tenant database + role switch, Qdrant per-tenant collision-resistant collection naming (SHA-256 fingerprinted specifically to defeat separator-based aliasing) + 30-second scoped JWTs, and an API-layer tenant predicate applied independently of all three stores. The `iverson_maintenance`/`EntityAccess.CrossTenantMaintenance` exemption is explicit, narrow, and previously subject to a two-round adversarial review (confirmed to leak no cross-tenant row content).
-- **Residual risk**: Low. The most heavily fortified and most recently, thoroughly reviewed boundary in the system.
+### 5.4 Data stores and tenant isolation
+- **Information disclosure, Postgres.** FORCE RLS with a per-transaction role and GUC; `ForTenant(null)` fails closed. The app login `iverson` owns the database and is a member of `iverson_maintenance BYPASSRLS` (`charts/postgres/templates/cluster.yaml:43-47`). RLS therefore guards against query bugs, not a compromised app. Compose runs the app as superuser.
+- **Information disclosure, StarRocks.** Each tenant has its own database and role. The single app login `iverson_app` also holds `user_admin`, `CREATE DATABASE` and `OPERATE ON SYSTEM`, and every tenant role it grants itself (`job-create-user.yaml:68-77`, `EngagementRepository.cs:481-500`). Its transport is plaintext MySQL protocol.
+- **Information disclosure, Qdrant.** Data calls use 30-second JWTs scoped to one collection. The raw key is used for management and the console listing.
+- **Tampering and injection.**
+  - Values are always parameters.
+  - Identifiers are interpolated behind `^[A-Za-z][A-Za-z0-9]*$`, re-validated on rehydration.
+  - Client-written aggregation, metric and derive expressions are spliced into StarRocks SQL after a character denylist (now also `"` and `\`) and a token allow-list. Function names count only when followed by `(`, so a same-named column is field-checked (`StarRocksPipelineBuilder.cs:23-53, 395-409`).
+  - The parser and the credential split, CSR-10 #7's primary and architectural remediations, are deferred. One validator bypass would run as a login that can cross tenants and administer users (F3).
+- **Residual:** Medium (F3).
 
-### 5.6 API ↔ Authentik integration
-- **Spoofing / tampering**: a compromised orchestrator admin token is the single highest-value credential in the system for identity-plane compromise.
-- **Existing mitigations**: object-scoped `change_user`/`reset_user_password`; `is_superuser: false` explicitly pinned in both deployment targets; default-deny NetworkPolicy compensates for the plaintext transport; MFA enforced on human logins; pagination/response-shape assertions in `IdpAdminClient` throw rather than silently truncate on an unrecognized Authentik response shape.
-- **Required mitigation / residual risk (Medium — see F3)**: Authentik's global `add_user` permission cannot currently be object-scoped, so a leaked orchestrator token can still create a *new* user directly into any non-superuser group. Unchanged since last refresh; not re-touched this session.
+### 5.5 Schema registry and DDL (RegisterSchema)
+- **Tampering.** SchemaAdmin defines tables, columns, rules, templates and enrichment hints.
+  - Re-registering drops undeclared columns after the drift check, so it is destructive by design.
+  - Re-registration across owners is denied (`SchemaRegistrationOrchestrator.cs:78-81`).
+  - A SchemaAdmin call with no acting user registers an ownerless, global type.
+- **Information disclosure.** Type names share one platform-wide namespace, so `RequireSchema` tells a foreign name apart from one never registered (F9, accepted).
+- **Elevation of privilege.** SchemaAdmin and Operator can be satisfied by an OAuth scope on a client-credentials token (the admin-automation client). That client is refused on public requests.
+- **Residual:** Low.
 
-### 5.7 Enrichment / embedding pipeline (LLM integration) — **materially changed since last refresh**
-- **Tampering (prompt injection)**: entity content a tenant user controls is interpolated into enrichment prompt templates, and the model's output is written back into that entity's columns and republished.
-- **Existing mitigations — now closed**: every prompt template in `Iverson.Server/Iverson.Embeddings/EnrichmentPrompts.cs` wraps untrusted source text in `<<<BEGIN_SOURCE_TEXT>>>...<<<END_SOURCE_TEXT>>>` markers with an explicit "not instructions" framing, and `EscapeUntrustedText` neutralizes literal marker sequences in the source text itself so attacker content cannot forge a fake boundary (commits `fddd073`, `afe9e97`, both 2026-09-14 — ancestors of current HEAD). Source text is also truncated to a configured character cap; the source row is re-derived from the authoritative Postgres row (not the possibly-stale Kafka event payload) with a fail-closed check if the tenant cannot be resolved.
-- **Independently, the Python agent layer** (`Iverson.Agents/Python/iverson_agent/{retrieval,evaluate}.py`) has its own, separately-verified defense for the same threat class: `_escape` HTML-escapes `<`/`>` in all attacker-influenceable text before wrapping in `<doc n="..." key="...">...</doc>` (retrieval) or `<passage>`/`<answer>` (the LLM-judge harness) tags, with an explicit system-prompt instruction that tagged content is data, not instructions. Both halves (tag boundary + escaping) were verified together this session via literal mutation testing (revert either half, confirm the forged-tag test then fails).
-- **Residual risk**: Low. This finding (prior refresh's F2) is **closed** — both the production enrichment path and the agent/evaluation path now have tag-boundary-plus-escaping defenses, and both were verified by reproducing the original bypass and confirming the fix defeats it, not just by reading the diff.
+### 5.6 Query languages: search, pipeline and MatchPattern
+- **Tampering and injection.** See §5.4 for the expression path. MatchPattern patterns and expressions are interpreted in-process and never become SQL text.
+- **Elevation of privilege.** See §5.3 for outer joins in pipeline steps (F1).
+- **Denial of service.** MatchPattern is bounded by steps, threads, rows and a 30 s timeout. Length caps bound parser recursion. Similarity terms are capped per request.
+- **Residual:** Medium, through F1 and F3.
 
-### 5.8 Async event pipeline (Kafka)
-- **Information disclosure**: `iverson.entity.events`/`.dlq` carry full plaintext entity payloads for every tenant on shared topics.
-- **Existing mitigations**: SASL_SCRAM-SHA-512 + TLS in the Helm profile; consumers re-derive tenant authority from the authoritative Postgres row rather than trusting the event's own claimed tenant (this pattern was generalized across all projection consumers since last refresh — `ProjectionTenantResolution.cs`); retry/DLQ contract with poison-message detection.
-- **Residual risk**: Low for boundary bypass; Medium for confidentiality if broker access controls or TLS configuration were misconfigured, since the payload itself carries no additional protection — a single-control dependency, not a currently-demonstrated gap.
+### 5.7 Kafka, consumers and the DLQ
+- **Tampering.**
+  - Events are unsigned. Created and Updated re-derive tenant and owner from Postgres, but other projected columns come from the event payload.
+  - Deleted events trust the tenant in the snapshot.
+  - DLQ tenant attribution is parsed from the payload, and replay produces to the `SourceTopic` header without an allow-list.
+  - Every path needs Kafka write access: SCRAM plus prefix ACLs, one principal shared by the api and worker.
+- **Information disclosure.** DLQ rows and headers can embed SQL text, Authentik error bodies and LLM output. `/admin/dlq` serves `ExceptionMessage` (not `MessageValue`) to Operators, filtered to the caller's tenant.
+- **Residual:** Low. Each path presumes a compromised Kafka credential, and Postgres overrides tampered projections on the next reconcile.
 
-### 5.9 Observability relay (`POST /v1/traces`)
-- **Tampering / denial of service**: any authenticated service principal — no acting-user token, no specific scope beyond `RequireAuthorization()` — can relay an arbitrary JSON or protobuf blob directly into the cluster's Jaeger collector.
-- **Existing mitigations**: content-type allowlist (`json`/`x-protobuf` only); a 1 MiB cap enforced both via declared `Content-Length` and the actual request-body-size feature.
-- **Required mitigation / residual risk (Low — see F5)**: no structural/schema validation of the relayed payload beyond content-type and size.
+### 5.8 ML backends and enrichment
+- **Information disclosure.** Tenant text reaches TEI and Ollama over plaintext with no authentication. Model pods now have no egress at all: weights are baked into the images (`networkpolicies.yaml:427-428, 452-453`).
+- **Tampering, prompt injection into persisted data.** A tenant document can steer the enrichment LLM, whose output is written back into that entity and re-embedded. The blast radius is that tenant's own data (F8). The schema-admin-controlled extraction hint sits outside the escaped markers.
+- **Denial of service, closed.** The quadratic fence regex is gone, and responses are capped at 1 MiB under one deadline (CSR-10 #21).
+- **Supply chain.**
+  - TEI weights are pinned to a revision SHA.
+  - The Ollama build compares the full SHA-256 of the pulled manifest; the image tag carries a 12-character prefix.
+  - Compose still pulls floating models at runtime.
+- **Residual:** Low.
 
-### 5.10 Admin console (browser)
-- **Information disclosure (token theft via XSS)**: id/access tokens live in `sessionStorage`.
-- **Existing mitigations**: strong CSP (`base-uri`/`form-action`/`object-src` locked down), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy`, HSTS when serving over https, and no refresh token ever issued or stored, bounding the value of a stolen token to its short access-token lifetime.
-- **Residual risk**: Low. No code-level XSS evidenced in this recon (that determination is CSR's job); existing controls meaningfully bound blast radius if one is later found.
+### 5.9 Admin plane: `/admin/*`, the console and the tenant services
+- **Elevation of privilege.**
+  - `/admin/reconcile` and `/admin/dlq*` need Operator on both the primary and the acting principal. They are pinned to `:8080`, so they are not reachable through the admin-api ingress.
+  - Tenant lifecycle requires Operator.
+  - TenantAdmin takes the tenant from the primary principal, requires it to be active, and checks the target user against it.
+  - CreateTenant and InviteUser return 15-minute recovery links (F5).
+- **Information disclosure.** The console readers check tenant status (new), and evaluate the console token as the acting user. `ListUsersByTenantAsync` pages every Authentik user into API memory before filtering by tenant.
+- **Residual:** Low.
 
-### 5.11 CI/CD and supply chain — **materially changed since last refresh, mixed result**
-- **Tampering (build/dependency compromise)**: six independent dependency ecosystems (NuGet, two npm trees, Go modules, Maven, two Python trees), all on Dependabot's weekly schedule (`.github/dependabot.yml`).
-- **Genuinely closed since last refresh**: `.github/workflows/dependency-scan.yml` and `.gitlab-ci.yml` now run a dependency-vulnerability scan across **all six** ecosystems on every PR and push to `main` (`dotnet list package --vulnerable`, `npm audit --audit-level=high` ×2, `govulncheck`, OWASP dependency-check for Maven, `pip-audit` ×2). This closes the prior refresh's F3 as stated. CodeQL SAST separately covers 5 languages.
-- **One narrow residual (Low — see F4)**: the Maven/Java gate is correctly *configured* (plugin pinned, `-DnvdApiKeyEnvironmentVariable` used correctly so the raw key never reaches the command line or logs) but cannot complete a scan without a human-provisioned `NVD_API_KEY` secret, which does not currently exist in either CI system's settings. It fails closed (a visibly red check, not a silent pass) — a prior critical-security-review round already flagged and disclosed this as an ops task, not a code defect.
-- **New finding, discovered live this session (Medium — see F2)**: `main` carries **zero GitHub branch protection** — confirmed via `gh api repos/counsellorben/Iverson/branches/main/protection` returning 404 "Branch not protected". This means the dependency-scan gate above, and CodeQL, run and report a status on every PR, but **nothing requires either check to pass before a merge**. Separately, **no CI workflow anywhere in this repository builds or runs the test suite for the .NET solution or the TypeScript SDK** — `dependency-scan.yml` only runs `npm audit`/`dotnet list package --vulnerable` (a manifest scan) against those two ecosystems, never `dotnet build`/`dotnet test` or `npm ci && npm test`. The combination is not hypothetical: during this session, two of the ~70 Dependabot PRs that auto-merged this way were genuinely broken and shipped to `main` undetected until manually caught —
-  - `vitest` 3.2.6→5.0.0 in the TypeScript SDK: vitest 5.0.0 ships a `config.d.ts` that imports `@vitest/expect`, a package it no longer lists as a dependency (an upstream packaging defect), breaking the SDK's `tsc -p tsconfig.test.json` typecheck outright; its unpinned `vite` peer also resolved to a known-incompatible v8.
-  - `FluentAssertions` 7.0.0→8.11.0 across 10 .NET test projects: FluentAssertions 8 introduces its own public `FluentAssertions.Value` type, colliding with `Google.Protobuf.WellKnownTypes.Value`/`Qdrant.Client.Grpc.Value` wherever both are wildcard-imported — 27+ `CS0104` compile errors across 7 files, meaning the entire .NET solution failed to build on `main` until this session's manual fix.
-  Both were fixed this session (`dce9094`, `7107e1e`), but the structural gap that let them land unreviewed and unverified — no branch protection, no build job for 2 of 6 ecosystems — remains open. A third such incident, or a genuinely malicious (not merely broken) dependency update in either of those two ecosystems, would land on `main` the same way.
+### 5.10 Clients: SDKs, admin console and reasoning agent
+- **Spoofing and information disclosure.**
+  - **SDKs:** TLS by default, with plaintext needing a named opt-in. The per-call acting-user binding is now checked against that guard in .NET, Python and TS (CSR-10 #24). Go and Java rely on their credential-level guards. The raw acting-user metadata helpers in .NET, Python and TS have no transport check, by design.
+  - **Admin console:** no refresh token at the provider (CSR-10 #12), tokens in sessionStorage, strict CSP with no `innerHTML` sinks. Node 22 and nginx 1.30.5, digest-pinned. `OIDC_ORIGIN` reaches the CSP header unvalidated, but it is derived from the validated `ingressHost`.
+- **Tampering, agent prompt injection.** Retrieved passages could steer the agent. Its tools are retrieval-only, filters are re-validated, the budget is 3 tool calls, and citations are enforced. Model-chosen `query_text` is echoed outside the escaped `<doc>` boundary (`session.py:226, 241`) (F8).
+- **Information disclosure, agent.** Tenant passages go to Anthropic, an accepted processor. The CLI now opts into insecure credentials only when every plaintext leg is loopback.
+- **Information disclosure, tools.** Closed:
+  - LoadTest requires the tenant-admin password and logs in at once, enrolling TOTP.
+  - TOTP caches are 0600 in a 0700 directory.
+  - The conformance harness passes secrets in the environment, not on argv.
 
-### 5.12 Cloud control plane / IaC
-- **Elevation of privilege**: public EKS API endpoint.
-- **Existing mitigations**: CIDR restriction is a *required* Terraform variable with no default — fails closed if an operator omits it.
-- **Residual risk**: Low. A positive control, not a gap; included for completeness.
+  Remaining (F7):
+  - LoadTest sets `allowInsecureChannelCallCredentials: true` unconditionally (`LoadTest/Program.cs:187`).
+  - LoadTest sends its Operator-level admin-automation token as raw metadata to whatever `IVERSON_GRPC_URL` names, minted by a client that follows redirects and accepts http (`:389-424`; the harness repeats this at `TokenBroker.cs:178-194`).
+  - `scripts/pattern_leg.py:668-669` still passes a password on argv.
+  - The .NET and Java samples opt into insecure credentials unconditionally.
+- **Residual:** Low.
 
-### 5.13 At-rest encryption (node disks, storage classes) — **not covered by the prior refresh**
-- **Information disclosure (data at rest)**: cluster node boot/OS disks and dynamically-provisioned volumes.
-- **Existing mitigations**: GKE node boot disks encrypted with a customer-managed data-volume key (`9869c64`); AKS node OS disks encrypted with a disk-encryption-set (`b281e6f`); an admission-time deny rule blocks PVCs requesting a storage class outside an explicit encrypted-storageclass allowlist (`b16b9ea`). Predates this refresh's baseline (committed 2026-09-08) but was absent from the prior TMA document — added here for completeness, not independently re-verified live in this pass (evidence is the commit history and the project's own memory index, not a fresh Terraform/Helm read).
-- **Residual risk**: Unknown for the Azure check specifically — the project's own tracking (`project-at-rest-encryption`) records "Azure check 5 ships unverified by choice," i.e., a known, deliberate gap in that platform's own verification coverage, not a code defect found here.
+### 5.11 Deployment, network and secrets
+- **Information disclosure, in-cluster transport (F2).** API ↔ Authentik is now TLS. Still plaintext:
+  - every edge → pod hop: gRPC bearer and acting-user tokens, console tokens, and on Authentik's `:9080` the passwords, TOTP codes, recovery flow tokens and authorization codes;
+  - StarRocks, including the root password the bootstrap job sends;
+  - Redis, TEI, Ollama, Jaeger and Prometheus;
+  - Qdrant Raft;
+  - Authentik → Postgres (sslmode unset).
+- **Information disclosure, reach.** Closed (CSR-10 #15, #17):
+  - `clusterCidrs` is narrowed to the LB ranges.
+  - DNS egress is scoped to kube-dns, and API-server egress to `apiServerCidrs` for CNPG, Strimzi and the Authentik worker only.
+  - EKS IMDS hop limit is 1; GKE uses `GKE_METADATA`.
 
-### 5.14 Dev-only tooling and secrets (docker-compose, LoadTest CLI, Agent CLI, conformance harness)
-- **Cryptographic failure (hardcoded secrets)**: `docker-compose.yml` and the compose-only Authentik blueprint commit static credentials (`POSTGRES_PASSWORD`, `AUTHENTIK_SECRET_KEY` ×3, `AUTHENTIK_POSTGRESQL__PASSWORD`, `AUTHENTIK_BOOTSTRAP_PASSWORD`/`_TOKEN`, `QDRANT__SERVICE__API_KEY` — roughly seven distinct secrets, including a non-expiring Authentik API token).
-- **Existing mitigations**: every instance is self-labeled dev-only; confined to a localhost-only compose target with no production code path reading these files; the file's own header comment states Kubernetes targets generate real per-release secrets at deploy time. A separate, newer set of compose secrets (`IVERSON_LOADTEST_CLIENT_SECRET` and five siblings) already uses the stronger `${VAR:?message}` required-with-no-default pattern via `scripts/generate-compose-secrets.sh` — a pattern not yet extended to the older seven.
-- **Residual risk (Low — see F6)**: trips a strict reading of "hardcoded secrets in source" even though real-world exposure is minimal given the containment already verified.
+  Remaining (F6):
+  - The first-deploy fallback toggles (`dnsAnyDestination`, `apiServerAnyDestination`) restore any-destination rules.
+  - The documented AKS fallback adds the node subnet, which Azure CNI shares with pods, and so admits every pod.
+  - The operator namespaces (`cnpg-system`, `kafka`, `starrocks`, `ingress-nginx`) have no NetworkPolicies.
+  - AKS has no node-level IMDS block.
+- **Information disclosure, secrets.**
+  - Helm generates secrets with `keep` and never rotates them.
+  - The credential-bearing blueprint Secret, and the Helm release Secrets that embed it, hold every client secret, so reading Secrets in the namespace exposes them.
+  - EKS and GKE use KMS envelope encryption; AKS has no explicit etcd KMS configuration in Terraform.
+  - Closed:
+    - The root `.dockerignore` excludes `**/.env*`, and the API Dockerfile copies named projects only (CSR-10 #19).
+    - AKS local accounts are disabled, so no cluster-admin certificate sits in Terraform state, and the Azure state account rejects shared keys (CSR-10 #6).
+- **Tampering, container hardening.**
+  - First-party workloads run non-root with `RuntimeDefault` seccomp, all capabilities dropped and no privilege escalation.
+  - All have a read-only root filesystem except admin-ui and Authentik.
+  - `automountServiceAccountToken` is off everywhere except the two deliberate projected tokens.
+  - Pod Security Admission enforces `baseline`.
+  - StarRocks, CNPG and Strimzi pods take operator defaults; the StarRocks CR sets no security context.
+- **Elevation of privilege, dev stacks.**
+  - Compose and kind bind loopback.
+  - kind's ingress-nginx enables snippet annotations at the Critical risk level (`setup.sh:110-118`). `setup.ps1` omits both those flags and the TLS certificate step.
+  - Dev tenants provisioned before sub-project E keep LoadTest's former public default tenant-admin password, because a changed variable does not reset an existing tenant (E spec, Known issues).
+- **Residual:** Medium (F2). The rest is Low.
 
----
+### 5.12 Supply chain and CI
+- **Tampering.**
+  - **Pinning:** every Dockerfile base and compose image is digest-pinned. Helm third-party images use exact tags so that Dependabot can track them. CNPG and Strimzi workload images come from operator defaults.
+  - **Actions:** every `uses:` is SHA-pinned, and tool downloads are hash-checked. GitLab CI images use floating tags.
+  - **Dependabot:** covers 14 entries across nuget, npm, gomod, maven, pip, actions, docker, compose, terraform and helm. It does not cover operator chart versions in Terraform or setup scripts, or EKS add-on versions.
+  - **Scanning:**
+    - Dependency scans across six ecosystems.
+    - CodeQL in six languages.
+    - Trivy: first-party images fail on fixable HIGH and CRITICAL findings; third-party images are report-only.
+    - kube-score, tfsec, kubeconform and `helm lint`.
+  - **Images:** no registry publish, signing, SBOM or provenance for first-party or model images, which are built and pushed by hand.
+  - **Branch protection:** 11 required checks, but no required reviews, admins exempt, and govulncheck, OWASP, pip-audit, image-scan and deploy-validate not required. The repository is public with secret-scanning push protection off.
+  - **Lockfiles:** the Python SDK and the agent have none. The .NET SDK uses the archived `IdentityModel` 7.0.0.
+  - **Git history:** the removed `.pyc` keeps LoadTest's former default password in history.
+- **Residual:** Low (F7).
 
 ## 6. Findings — prioritized roadmap
 
-| # | Title | Tag | Severity | Category |
+Ordered by severity × exploitability × blast radius.
+
+| # | Finding | Type | Severity | Rationale |
 |---|---|---|---|---|
-| F1 | `/admin/reconcile/{typeName}` requires only the `Operator` policy against the primary principal (no acting-user check) — triggers reconciliation only, returns no data | Implemented | Low | Broken Access Control (A01) |
-| F2 | `main` has zero branch protection, and 2 of 6 dependency ecosystems (.NET solution, TypeScript SDK) have no CI build/test job — demonstrated twice this session by real broken Dependabot merges reaching `main` unverified | Implemented | Medium | Vulnerable Components & Supply Chain (A06) / Security Misconfiguration (A05) |
-| F3 | Authentik orchestrator's global `add_user` cannot be object-scoped — new-user-into-group residual | Planned | Medium | Broken Access Control (A01) |
-| F4 | Java/Maven dependency-scan gate is correctly configured but cannot complete a scan without a provisioned `NVD_API_KEY` secret (fails closed) | Implemented | Low | Vulnerable Components & Supply Chain (A06) |
-| F5 | Unvalidated trace relay (`/v1/traces`) reachable by any authenticated service principal | Implemented | Low | Security Misconfiguration (A05) |
-| F6 | Seven static dev-only credentials committed in source (docker-compose + compose blueprint) | Implemented | Low | Cryptographic Failures & Data Exposure (A02) |
-| F7 | Pervasive in-cluster plaintext transport is compensated by a single NetworkPolicy control | Implemented | Low | Cryptographic Failures / Security Misconfiguration (A02/A05) |
-| F8 | Audit log has no tamper-evident store; sanitization is CRLF-stripping only | Implemented | Low | Repudiation |
-| F9 | `values-aws.yaml`'s TLS termination lives entirely outside this chart's management (ALB-assumed, unverified) | Planned | Low | Security Misconfiguration — Requires Verification |
+| F1 | **Owner scoping is lost on outer joins in pipeline steps.** A non-aggregate pipeline step that RIGHT- or FULL-joins a fresh row-owned type places that type's owner predicate only in the `ON` clause. Its outer `WHERE` holds only the caller's own filters, so the outer join keeps joined rows the caller does not own (`StarRocksPipelineBuilder.cs:640-680`). The Search builder is not affected: its primary-type tenant predicate in `WHERE` removes those rows. | **Implemented** (by code reading; confirm in CSR) | **Medium** | A regular tenant user could read other users' rows of a row-owned type in the same tenant. Row ownership is the platform's per-user privacy boundary. Tenant isolation holds (the join target is the caller's tenant database), and field masking still applies, which keeps this at Medium. Re-score if confirmed against owner-private data. Fix: enforce the joined type's ownership on the rows each join kind preserves (for example, filter the joined source in a derived table before joining), and pin every join kind with tests in both builders. |
+| F2 | **Authentication-carrying hops are still plaintext.** Every edge → pod hop carries bearer tokens, acting-user tokens and console tokens. Authentik's `:9080` hop also carries passwords, TOTP codes, recovery flow tokens and authorization codes. StarRocks carries the `iverson_app` password, the bootstrap root password and all tenants' projections. Redis, TEI, Ollama, Jaeger, Prometheus and Qdrant Raft are plaintext too. | **Implemented** (documented choice, partly remediated) | **Medium** | Needs network position inside the VPC or cluster (§4). The worst case was closed: the JWKS hop is now TLS, so keys cannot be substituted to forge identities. What remains is credential capture. A captured Operator token gives cross-tenant reach for its hour of life, and the StarRocks password gives every tenant's projections. Fix: TLS or a mesh on the edge → pod hops (Authentik first), then StarRocks `SslMode`. |
+| F3 | **StarRocks tenant isolation rests on validating client-written SQL expressions, run by a session that can cross tenants.** Aggregation, metric and derive expressions are spliced as text after a denylist and a token allow-list. They run as `iverson_app`, which holds `user_admin` and every tenant role. The Postgres app login likewise holds `BYPASSRLS` membership. | **Planned** (a constraint; no bypass known) | **Medium** | No injection is known, and the round-10 interim patch narrowed the validator. One bypass would still become cross-tenant reads and StarRocks user administration, so the validator is a single point of failure for isolation. Constraints: replace the token scan with a real expression parser (CSR-10 #7's deferred primary remediation), split the provisioning credential (`user_admin`, `CREATE DATABASE`) from the query credential, and limit the query login to the active tenant's role. |
+| F4 | **Standing Authentik credentials remain.** These are:<br>- the `akadmin` superuser password: random, kept forever, never rotated, and usable through the public login flow, where MFA is enrolled on first login;<br>- the admin-automation client secret, which mints 1-hour Operator tokens from anywhere that reaches `:8443` or `:9000`;<br>- compose's static, non-expiring orchestrator token and bootstrap token.<br>All Helm client secrets are also readable from the blueprint Secret and the Helm release Secrets. | **Implemented** | **Low** | Down from Medium. The admin interface and admin API are no longer public, the bootstrap token and the static Helm orchestrator token are gone, and admin-automation is refused on public requests. Exploitation now needs a leaked Secret and, for admin-automation, a position inside the cluster or VPC. A public `akadmin` session has no Operator group and no admin paths. Fix: rotate or disable the `akadmin` password after bootstrap, give admin-automation a federated or short-lived credential like C2's, and move the compose orchestrator to an expiring token if compose ever leaves loopback. |
+| F5 | **Recovery links are MFA-free bearer credentials, and so is the session they open.** CreateTenant and InviteUser return links, now valid for 15 minutes and pointing at the public host. The recovery flow signs the invitee in, so console sign-ins in that browser need no second factor until the Authentik session ends. | **Planned** (inherent to passwordless onboarding; accepted in the C1 spec) | **Low** | Takeover of a not-yet-onboarded account, or a tenant's user management if the invitee is a tenant admin. The link crosses the plaintext edge → pod hop (F2). It is single-use and short-lived, and never logged. Constraint: keep links out of telemetry and support tickets, deliver them only over TLS, and keep the expiry short. |
+| F6 | **Network-policy residuals.** These are:<br>- operator namespaces (`cnpg-system`, `kafka`, `starrocks`, `ingress-nginx`) without NetworkPolicies;<br>- first-deploy fallback toggles that restore any-destination DNS and API-server egress;<br>- the AKS fallback that admits the node subnet, shared with every pod;<br>- no node-level IMDS block on AKS. | **Implemented** | **Low** | Each widens what a compromised pod can reach without granting access by itself. The narrowing from round 10 is real on the default path. Fix: default-deny policies for the operator namespaces, and a runbook gate that refuses to finish a deploy with a fallback toggle still on. |
+| F7 | **Supply-chain, CI and tooling hygiene (grouped).**<br>- No image registry publish, signing, SBOM or provenance.<br>- GitLab CI images use floating tags.<br>- Operator charts and EKS add-ons are outside Dependabot.<br>- Branch protection has no required reviews, exempts admins, and leaves several security scans optional, on a public repository with push protection off.<br>- No lockfiles for the Python SDK and agent; legacy `IdentityModel`.<br>- LoadTest waives the SDK transport guards and mints its Operator-level token through a redirect-following, http-accepting client.<br>- `pattern_leg.py` passes a password on argv. | **Implemented** | **Low** | Each needs a separate compromise or an operator misconfiguration to matter. Grouped as one finding. |
+| F8 | **Prompt injection through tenant-authored content.** Enrichment output is written back into the entity and re-embedded. Retrieved passages can steer the agent's answers and tool queries, and model-chosen query text is echoed unescaped. | **Planned** (monitor) | **Low** | Bounded to the authoring tenant: projections and retrieval are tenant-scoped, and the agent's tools are retrieval-only with a budget. Re-assess if either gains write or cross-tenant action surface. |
+| F9 | **Type-name existence oracle.** `RequireSchema` distinguishes a name another tenant registered from one never registered, because the type namespace is platform-wide. | **Planned** (accepted in its design spec) | **Low** | Discloses type names only, never data. The closing mechanism (`IsShared` opt-in) remains deferred. |
 
-**Closed since last refresh** (carried here for continuity, not active findings):
-- *Prior F2 — unmitigated prompt injection into the enrichment pipeline*: closed. Tag-boundary + escaping defense shipped in both the production enrichment path and the agent/evaluation path, verified by reproducing the original bypass. See §5.7.
-- *Prior F3 — no CI-gated dependency-vulnerability scanning*: closed for 5 of 6 ecosystems; narrowed to F4 above for the Java/Maven ecosystem's operational (not code) gap.
-- *This refresh's own F1 (as first written) — leaked Operator-credential DLQ bypass*: **was stale at the moment it was written** — the fix (`926c3b4`) predates this document's own cited snapshot commit. Corrected the same day by `docs/criticalreviews/2026-09-15-iverson-critical-security-review-7.md` Finding #4 (regression test run live, 6/6 passed); F1 above now reflects only the genuine, narrower residual.
+**Closed or reduced since the 2026-10-02 refresh:**
 
-Prioritization rationale (severity × exploitability × blast radius):
-1. **F2** ranks first: not a single scoped credential leak — it is a structural gap in the path every code change takes to reach production, and it has already produced two real (if non-malicious) incidents in the ~36 hours before this refresh. Exploitability requires either compromising a contributor's write access or a supply-chain actor timing a malicious update against these two unguarded ecosystems; blast radius is whatever that update can do once it ships to `main` unreviewed.
-2. **F3** ranks second: a leaked high-privilege credential (the orchestrator token), already substantially mitigated by prior remediation work — the residual is narrow (new-user-into-group only).
-3. **F4** is a disclosed, fail-closed ops task, not a live gap — a red CI check is the direct, visible symptom, not a silent pass.
-4. **F1, F5, F6, F7, F8, F9** are Low: each has either a narrow blast radius, a real compensating control, or (F9) is unverified rather than confirmed.
+| Previous refresh's finding | Status now |
+|---|---|
+| F1, long-lived MFA-exempt Authentik tokens usable from the internet | **Reduced to Low (now F4).** Public listener, bootstrap token removed, admin-automation in-cluster only, orchestrator federated (C1, C2). |
+| F2, plaintext hops including the JWKS hop | **Reduced (now F2).** The Authentik hop, which carried JWKS, discovery and the admin API, is TLS. Identity forgery by key substitution is closed. |
+| F4, VPC-wide reach | **Closed.** LB-range `clusterCidrs`, scoped DNS and API-server egress, no model egress, IMDS hop limit 1 (D). Residuals are in F6. |
+| F5, recovery links | **Reduced.** 15 minutes, public host, the flow ends at the console (C1). |
+| F6, kind on the LAN plus LoadTest's default password | **Closed.** kind binds loopback; the password is required and the first login is immediate (D, E). |
+| F8, supply chain | **Reduced (now F7).** `.env` excluded from the build context, all actions SHA-pinned, Trivy, Dependabot for docker, compose, terraform and helm, Node 22 console, full-digest Ollama check, `setup.ps1` pins (D). |
 
----
+**Closed from the CSR-10 round** (net-new there, not in the previous TMA):
+- JOIN `ON` field authorization (#1);
+- the restricted-field clearing on Update (#8);
+- Update-as-create and the existence oracle (#10);
+- revocation on removal and demotion (#11);
+- console refresh tokens (#12);
+- `/v1/traces` restricted to console tokens (#13);
+- the console tenant-status check (#14);
+- the rate-limiter key behind the proxy (#3);
+- the AKS certificate in state (#6);
+- the enrichment regex (#21).
+
+**SQS:** 100 − 8 × 3 (F1–F3; Medium) − 2 × 6 (F4–F9; Low; F7 is already grouped as one) = **64**.
+
+No hard gate triggers:
+- **Critical findings:** none.
+- **CVEs:** dependency scans cover every ecosystem in CI, and CSR-10 found no Critical or High CVE. This refresh ran no new scan.
+- **Hardcoded credentials:** none live in a deployable profile. The remaining literals are dev-only compose and tool defaults. LoadTest's former tenant-admin default survives in git history and on dev tenants provisioned before sub-project E; both are loopback-only.
+
+**Posture: Unacceptable by the rubric (< 70).**
+- The score matches the previous refresh's 64, but it is made up differently. Round 10 closed or reduced six of the previous nine findings, and the old F1 fell from Medium to Low. The new F1 is an intra-tenant ownership gap this refresh found by reading the join builders.
+- Fixing F1, a contained builder change, brings the score to 72 (Acceptable with a remediation commitment).
+- F2 and F3 are the architectural items that remain before a production cloud deployment.
 
 ## 7. When to refresh
 
-Refresh this document after any of the triggers in Appendix C fire for this system — most relevant given Iverson's own trajectory: a new or changed auth/authz model, a new external integration, a new class of sensitive data being handled, or a major architectural change (a new store, a new SDK language, a rewrite of the query DSL). This refresh adds one more standing trigger specific to this repository: **any change to CI/CD gating or branch protection**, given F2 above — the next refresh should re-check `gh api repos/.../branches/main/protection` directly rather than assume it's unchanged. Given how frequently the auth/authz, tenant-isolation, and now CI/supply-chain posture of this codebase has been revised (three prior critical-security-review rounds, two remediation cycles, and ~70 automated dependency bumps in the 48 hours before this refresh alone), a lighter-weight, more frequent refresh cadence than the generic "quarterly check-in" remains warranted — consider refreshing after any batch of security remediation work, or after any large wave of automated dependency updates, rather than waiting for a full quarter.
+Refresh this model:
+- **after any change on the security-trigger list:** a new or changed auth/authz model, tenant model or isolation boundary, external integration, class of sensitive data or trust boundary, or a major architectural change;
+- **after an incident;**
+- **at least quarterly.**
+
+Iverson-specific triggers that should force a refresh:
+- any change to the Authentik blueprints: providers, grants, scope mappings, groups, MFA or recovery flows, the federation source, its pin or marker policies, or the public listener's path list;
+- any change to who can mint tokens for the API's service account, or to the JWKS relay;
+- new uses of `CrossTenantMaintenance`, `BYPASSRLS` or the StarRocks `user_admin` path;
+- new client-written expression or query languages, or new join kinds, join sources or query builders;
+- the agent or enrichment gaining actions beyond retrieval or write-back;
+- any change to `clusterCidrs`, `trustedProxies`, the egress fallbacks or the ingress host layout;
+- moving any plaintext hop in F2 to TLS, or the reverse.
