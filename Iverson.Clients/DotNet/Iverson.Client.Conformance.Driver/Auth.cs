@@ -1,7 +1,7 @@
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
-using IdentityModel.Client;
+using Duende.IdentityModel.Client;
 
 namespace Iverson.Client.Conformance.Driver;
 

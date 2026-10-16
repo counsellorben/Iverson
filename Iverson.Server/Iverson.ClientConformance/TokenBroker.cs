@@ -1,6 +1,6 @@
 using Grpc.Core;
 using Grpc.Net.Client;
-using IdentityModel.Client;
+using Duende.IdentityModel.Client;
 using Iverson.Client.Contracts;
 using Iverson.Client.Core;
 using Iverson.LoadTest.Auth;
