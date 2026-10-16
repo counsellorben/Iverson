@@ -62,13 +62,27 @@ the repository, workflow and ref.
 The clusters do not check signatures at admission. Verification is the operator's check before a
 deploy.
 
-Each run builds and pushes an image only when its tag does not exist yet. A tag that already
-exists is never rebuilt or moved: the run reuses the digest the tag names, and its log carries a
-notice saying so. Either way, a separate `sign (<image>)` job, the only job with an OIDC token,
-signs that digest and attests its SBOM after `publish (<image>)` pushed or reused it. A run that
-pushed a tag but failed before signing it is therefore completed by the next run on the same
-tag, which re-signs the digest under the same identity. Two runs that would push the same tag
-queue behind each other instead of racing.
+Each run builds and pushes an image only when its tag does not exist yet. A separate
+`sign (<image>)` job, the only job with an OIDC token, then checks that the tag still names the
+digest `publish (<image>)` built, signs that digest and attests its SBOM. A tag that already
+exists is never rebuilt, moved or signed again. `publish (<image>)` runs the two commands above
+against the digest the tag names, with the same identity and issuer (the workflow holds a copy
+of both; change them together). If both pass, the image was published by this workflow: the log
+carries a notice and nothing else happens for it. If either fails, the job fails with an error
+that the tag exists but is not signed and attested by this workflow.
+
+When a run fails that way, find out why before anything else:
+
+- If another run for the same tag was still running, it had not finished signing yet. Re-run the
+  failed run once that run has finished.
+- If an earlier run pushed the tag and then stopped before its sign job finished, re-run that
+  run's failed jobs within a day; its build is kept for one day. After that, or if the digest is
+  not one this workflow built, inspect the digest, delete that package version (the package's
+  page, then **Package settings**, then **Manage versions**), and re-run the workflow.
+
+Two runs that would push the same tag do not race: the second waits for the first's publish job.
+GitHub keeps one waiting run per tag, so a third run cancels the waiting one, which is harmless
+because the running job publishes the same tag.
 
 The publish workflow's first real run is unexercised before the push. Its acceptance check is
 this section: run it against the `main` SHA tags after the first push, and against the model
@@ -100,9 +114,9 @@ gh workflow run publish-images.yml --ref main
 ```
 
 A manual run also covers `iverson-api` and `iverson-admin-ui` under the commit SHA. Any image
-whose tag is already published, including model images whose pins did not change, is reused at
-its existing digest and re-signed, not rebuilt. The workflow refuses any ref other than `main` or
-a `vX.Y.Z` tag.
+whose tag is already published, including model images whose pins did not change, is not rebuilt
+or re-signed: the run accepts it if this workflow signed and attested it, and fails otherwise
+(§2). The workflow refuses any ref other than `main` or a `vX.Y.Z` tag.
 
 ## 4. Branch protection
 
