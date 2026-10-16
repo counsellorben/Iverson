@@ -68,7 +68,7 @@ The full guide — all five languages, joins, GroupBy, facets, and semantic sear
 
 ### Clients (`Iverson.Clients/`)
 
-Idiomatic client libraries generated from shared protos in `Iverson.Clients/Common/Proto/`: [.NET](Iverson.Clients/DotNet/), [Java](Iverson.Clients/Java/), [Python](Iverson.Clients/Python/), [Go](Iverson.Clients/Go/), [TypeScript](Iverson.Clients/TypeScript/).
+Idiomatic client libraries generated from shared protos in `Iverson.Clients/Common/Proto/`: [.NET](Iverson.Clients/DotNet/), [Java](Iverson.Clients/Java/), [Python](Iverson.Clients/Python/), [Go](Iverson.Clients/Go/), [TypeScript](Iverson.Clients/TypeScript/). The Go client needs Go 1.26 or later (its `go.mod` declares `go 1.26.0`).
 
 ### Deployment (`Iverson.Server/deploy/`)
 

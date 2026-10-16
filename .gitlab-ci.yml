@@ -162,11 +162,12 @@ npm-audit-ts-sdk:
 
 govulncheck:
   stage: dependency-scan
-  image: golang:1.25
+  # Go 1.26.9 with GOTOOLCHAIN=local, which meets go.mod's `toolchain go1.26.9` without a download
+  image: golang:1.26@sha256:d7722066f0b60ceccb6c0643cbed1f5f9e15506ac237146c95333504d7805d89
   extends: .rules-dependency-scan
   script:
     - cd Iverson.Clients/Go
-    - go install golang.org/x/vuln/cmd/govulncheck@latest
+    - go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
     - govulncheck ./...
 
 owasp-dependency-check-java:
