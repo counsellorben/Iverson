@@ -10,7 +10,7 @@
 2. #13 must both **contain query bugs** (request-path SQL cannot leave the caller's tenant, enforced by connection rights) and **narrow the api** (the api process holds no owner, BYPASSRLS, DDL or provisioning credential).
 3. **Approach α:** the worker runs every privileged request-driven operation (RegisterSchema's DDL and registry write, `/admin/reconcile/{type}`, DLQ replay). The api queues each one and waits.
 4. Recommended options for #1, #2, #7, #8, #9 and #18, as set out below.
-5. The revoke of `iverson_app`'s tenant roles runs in the **post-upgrade hook**, and new api pods become ready only after the worker's backfill.
+5. The revoke of `iverson_app`'s tenant roles runs in the **post-upgrade hook**. No stack holds StarRocks tenant data from before round 12 (user, CDR-1 §3.1), so there is no backfill and no readiness marker.
 6. RegisterSchema's wait is **capped below every edge's default timeout** (§5).
 7. **Case-duplicate columns** (`Url` and `URL` on one type) are refused at registration. A stored type that already has them stays loaded, but a payload key that matches more than one column is refused.
 
@@ -103,8 +103,10 @@ New plumbing table `IversonPrivilegedRequests`. The worker creates it through `A
 - Columns: `Id uuid PK`, `Kind text` (`RegisterSchema`, `ReconcileType` or `ReplayDlq`), `Payload jsonb`, `RequestedBy text`, `Status text` (`pending`, `running`, `succeeded`, `failed` or `expired`), `ResultJson jsonb`, `RequestedAt`, `ExpiresAt`, `CompletedAt`.
 
 `PrivilegedRequestWorker` runs in the worker role only:
-- **Polling:** every 1 s for `Status='pending' AND "ExpiresAt" > now()`, oldest first.
-- **Claiming:** `UPDATE … SET "Status"='running' WHERE "Id"=@Id AND "Status"='pending' AND "ExpiresAt" > now()`. Zero rows means it lost the race.
+- **Polling:** every 1 s for `Status='pending' AND ("ExpiresAt" IS NULL OR "ExpiresAt" > now())`, oldest first.
+- **Claiming:** `UPDATE … SET "Status"='running' WHERE "Id"=@Id AND "Status"='pending' AND ("ExpiresAt" IS NULL OR "ExpiresAt" > now())`. Zero rows means it lost the race.
+- **Expiry:** `ExpiresAt` is `RequestedAt + 15 s` for RegisterSchema and NULL for ReconcileType and ReplayDlq. Both can safely run late: reconcile is idempotent, and the worker's replay re-checks `Replayed=false`.
+- **Concurrency:** each claimed request runs on its own task, and the poll loop keeps claiming while earlier requests run. Serialisation comes only from the advisory locks below.
 - **Locks:** session advisory locks on dedicated pooled connections, released in `finally`, with keys chosen outside the `int4` `hashtext` range used elsewhere.
   - `RegisterSchema` takes one global registration lock, which serialises it across worker replicas.
   - `ReconcileType` takes a per-type lock, so a long reconcile never blocks registration.
@@ -180,7 +182,7 @@ The worker issues all of these itself, as database owner, and none comes from a 
 | `iverson_token_revocations` | `SELECT`, `INSERT`, `UPDATE` | RemoveUser and SetTenantAdmin, and the revocation cache |
 | `_iverson_schema` | `SELECT` | loading the registry |
 | `IversonPrivilegedRequests` | `INSERT`, `SELECT`, `UPDATE ("Status")` | §5's requests, waits and expiry |
-| `IversonStarRocksTenants`, `IversonStarRocksBackfill` | `SELECT` | §7's provisioned-tenant check, and the readiness check for the backfill marker |
+| `IversonStarRocksTenants` | `SELECT` | §7's provisioned-tenant check |
 | `DocumentRerenderQueue`, `iverson_enrichment_state` | none | worker only |
 
 ### 6.3 The api runs no DDL and starts tolerantly
@@ -195,8 +197,7 @@ The worker issues all of these itself, as database owner, and none comes from a 
 - The api's role check only runs the `SET LOCAL ROLE iverson_runtime` probe.
 - The api no longer crash-loops on a missing table or grant. Its startup registry load retries in the background, and `/health` reports not-ready while any of these hold:
   - `has_table_privilege('iverson_api', '"IversonReconciliationQueue"', 'INSERT')` is false;
-  - the registry hasn't loaded;
-  - the StarRocks backfill marker (§7.5) is absent.
+  - the registry hasn't loaded.
 - `ReadinessPolicy` keeps its `AuthPending` tolerance.
 
 ### 6.4 Dead code removed
@@ -233,7 +234,7 @@ Every loaded descriptor has a tenant column, and every non-denied decision carri
 
 ### 7.3 Provisioned-tenant record
 
-- New plumbing table `IversonStarRocksTenants (TenantId text PK, ProvisionedAt timestamptz)`. The worker inserts a row after each successful provisioning and backfill.
+- New plumbing table `IversonStarRocksTenants (TenantId text PK, ProvisionedAt timestamptz)`. The worker inserts a row after each successful provisioning.
 - `Iverson.StarRocks` takes an injected `IProvisionedTenantDirectory`, implemented over Postgres in `Iverson.Api` and cached per process once a tenant is found. Every StarRocks reader consults it before connecting: the api's read paths and the worker's popularity aggregates.
   - An unrecorded tenant reads as empty: `[]`, `null` or an empty stream, as today.
   - A recorded tenant whose login fails is a real error. The gRPC services map it to `Unavailable`, not `Unknown`.
@@ -243,23 +244,11 @@ Every loaded descriptor has a tenant column, and every non-denied decision carri
 
 It keeps only `OPERATE ON SYSTEM`, for `/health`, the readiness gate and the post-failure liveness probe (`SHOW BACKENDS`). It holds no tenant data rights.
 
-### 7.5 Backfill and revoke
-
-**Backfill**, in the worker at startup, idempotent, as the provisioner:
-1. Enumerate the `iverson_tenant_%` databases. The provisioner sees every fully provisioned tenant database through its direct `ALTER` grant, and the tenant id is the suffix of the database name.
-2. For each tenant:
-   - `CREATE ROLE IF NOT EXISTS` and the role's grants (reusing the provisioning code);
-   - `CREATE USER IF NOT EXISTS … DEFAULT ROLE`;
-   - `GRANT <role> TO USER` (required before `ALTER USER … DEFAULT ROLE`);
-   - `ALTER USER … IDENTIFIED BY <derived>` (keeps passwords aligned with the key);
-   - `ALTER USER … DEFAULT ROLE`;
-   - the session caps;
-   - insert the tenant into `IversonStarRocksTenants`.
-3. Mark the backfill complete in a single-row plumbing table, `IversonStarRocksBackfill (Id int PRIMARY KEY CHECK (Id = 1), CompletedAt timestamptz)`. A separate table avoids a sentinel id that a real tenant id could collide with. The api's readiness requires this row.
-
-**On a fresh install** the provisioner login doesn't exist until the post-install hook, which runs after `--wait`. So when the provisioner login is refused and `IversonTenants` is empty, the worker writes the marker without a backfill (nothing to backfill). On an upgrade, the provisioner already exists.
+### 7.5 Revoke
 
 **Revoke:** `job-create-user.yaml` (post-install and post-upgrade, as root, after the rollout) revokes every role still granted to `iverson_app`, which after this change should hold none. It parses `SHOW GRANTS FOR 'iverson_app'@'%'`, which covers the hashed and the legacy verbatim role names. Old pods are gone by then, so there's no window of empty results, dead-lettered writes or re-grants. Compose has no hooks: its `starrocks-init` runs the same revoke, and the compose worker starts before the api.
+
+There is no backfill. No stack holds StarRocks tenant data from before round 12 (user decision, CDR-1 §3.1), so every tenant's login is created by its first provisioning; an existing dev stack starts StarRocks fresh.
 
 ## 8. Deployment and compose
 
@@ -267,7 +256,7 @@ It keeps only `OPERATE ON SYSTEM`, for `/health`, the readiness gate and the pos
 - `postgres/cluster.yaml`: the managed role `iverson_api`.
 - New Secrets `<release>-postgres-api` and `<release>-starrocks-tenant-key`.
 - The api Deployment: `ConnectionStrings__Postgres` uses `Username=iverson_api` with the new Secret; it mounts the tenant key and drops `<release>-postgres-app`.
-- The worker Deployment mounts the tenant key.
+- The worker Deployment mounts the tenant key, and sets `Tenancy__SeedLegacyTenants` from `global.provisionTestIdentities`, moved from the api Deployment, which no longer seeds.
 - `job-create-user.yaml` gains the revoke.
 - `job-revoke-cross-db.yaml` also polls for `iverson_api` and grants it CONNECT, as belt-and-braces; the worker's grant is the one the api depends on.
 
@@ -277,14 +266,15 @@ It keeps only `OPERATE ON SYSTEM`, for `/health`, the readiness gate and the pos
 - The **worker starts first**: the api `depends_on` the worker being healthy, which reverses today's order.
 - `generate-compose-secrets.sh` emits the tenant key.
 
-**Runbook:** an upgrade note covering the new login, what the worker grants and backfills, what the hook revokes, and how to check (`SHOW GRANTS FOR 'iverson_app'@'%'`, `\du iverson_api`).
+**Runbook:** an upgrade note covering the new login, what the worker grants, what the hook revokes, and how to check (`SHOW GRANTS FOR 'iverson_app'@'%'`, `\du iverson_api`).
 
 ## 9. Testing and verification
 
 **Unit and integration:**
 - §2: re-cased owner key refused on both Update RPCs; acronym key persists on Post and Update; two keys or an ambiguous key refused; normalised declared names stop owner spoofing on Create and the skipped `OwnerImmutable`; `FoldKeys` keeps `url`; StarRocks upsert exact; `WithOwnerValue` drops variants; the registration refusals.
-- §3: eligibility cases, including an owner-scoped parent, a missing child and field permissions; the response allow-list; equal scores for callers who differ only in access to the decay column.
+- §3: eligibility cases, including an owner-scoped parent, a missing child and field permissions; the response allow-list; for a caller denied the decay column, two rows that differ only in that column's value get equal scores, and the caller's scores equal those with decay disabled.
 - §4: a reloaded descriptor that breaks the rule loads with no targets; the hint is escaped.
+- §5, first: a real-Postgres round trip of an owner-stamped descriptor through `SchemaRegistryRepository` into a fresh `SchemaRegistry`, asserting the whole descriptor (including `OwnerTenantId`) and an equal `ToTableSchema` output, before the worker work (CDR-1 §3.2).
 - §5: the worker's owner race, adoption (refused for a plumbing table, a view and another tenant's rows; the model-change recovery still adopts) and drift; the api's waits (succeeded, failed, expiry, timeout after claim, reconcile 200/202/404, replay 200/202/404); two owners racing to register a new name.
 - §6: the api's repositories run as a non-owner login with exactly the §6.2 grants across every data RPC, the outbox fast path, tenant lifecycle, revocation, the DLQ list and requests. Negative cases: reading outbox payloads, `MessageValue`, `SET ROLE iverson_maintenance` and DDL are each denied. Readiness waits for the grants.
 - §7, against the StarRocks container fixture:
@@ -292,20 +282,20 @@ It keeps only `OPERATE ON SYSTEM`, for `/health`, the readiness gate and the pos
   - an unrecorded tenant reads as empty;
   - a recorded tenant with a wrong key returns `Unavailable`;
   - worker upserts and aggregates use the tenant login;
-  - backfill creates logins and records tenants;
   - the hook revoke leaves `iverson_app` with no roles;
   - `/health` still passes;
   - pool exhaustion doesn't open the breaker.
 - Updated: the 10–14 popularity ranking tests and the orchestrator tests, which now expect the queued path.
 
 **Live:**
-- compose: register, write, read, cross-tenant denial, and backfill on a populated StarRocks;
+- compose: register, write, read, and cross-tenant denial;
 - kind laptop: install from scratch and an upgrade from current `main`, for the Postgres split, the readiness gating and the hooks;
 - throwaway StarRocks 4.1.6 containers for the per-tenant mechanics, since the laptop profile deploys no StarRocks;
 - kube-score, kubeconform, `helm lint` and tfsec on all five overlays.
 
 ## 10. Known issues / accepted as out of scope
 
+- **No StarRocks tenant data from before round 12.** No stack holds any (user, 2026-10-16, CDR-1 §3.1), so the design has no backfill. An existing dev stack must start StarRocks fresh (compose `down -v`, or a new kind cluster).
 - **A compromised api or worker process can still reach every tenant.** The api derives any tenant's StarRocks password; the worker keeps owner, BYPASSRLS and provisioning rights. This is inherent to a single multi-tenant service (user decision 2026-10-16).
 - **Model-change recovery for some owned types.** Owned types whose tables still hold rows another tenant wrote before `02abddb3` (16 Sep – 9 Oct) can't be adopted until those rows are removed.
 - **Tenant deletion leaves the StarRocks database, role and login in place**, as today. The api refuses deleted tenants.
@@ -333,7 +323,7 @@ Evidence was gathered on 2026-10-16 against `f7eeba79`. "Probed" means run again
 13. **No plumbing table carries `__TenantId`,** and only `iverson_token_revocations` can collide by derived name. Plumbing DDL: `TokenRevocationRepository.cs:15`, `EnrichmentStateRepository.cs:8`, `SchemaRegistryRepository.cs:8`, `DocumentRerenderQueueRepository.cs:19`, `ReconciliationSchema.cs:29`, `DlqSchema.cs:12`, `TenantSchema.cs:7`.
 14. **Owned tables can hold other tenants' rows written before `02abddb3`,** so the adoption check queries.
 15. **The worker has every service the requests need** (schema manager, registry, rerender queue, `ReconciliationService`, DLQ repository, event producer). The worker's registry can be stale, hence §5.1's reload.
-16. **Edge timeouts:** nothing overrides the nginx (60 s) or ALB (60 s idle) defaults. GCE and AGIC default to 30 s, though gRPC through them already fails today (`values-gcp.yaml:102`). Kestrel has no request timeout. `/admin` reconcile and DLQ routes are port-forward only (`Program.cs:621,657,696`; `admin-api-ingress.yaml:167-173`). Defaults are from vendor documentation and were not re-checked live.
+16. **Edge timeouts:** nothing overrides the nginx (60 s) or ALB (60 s idle) defaults. GCE and AGIC default to 30 s, though gRPC through them already fails today (`values-gcp.yaml:102`). Kestrel has no request timeout. `/admin` reconcile and DLQ routes are port-forward only (`Program.cs:621,657,696`; `admin-api-ingress.yaml:68-74`). Defaults are from vendor documentation and were not re-checked live.
 17. **The claim and expiry race resolves cleanly.** Probed on Postgres 18: with the worker's claim holding the row, the api's `UPDATE … WHERE Status='pending'` waits, re-evaluates and affects 0 rows; the status stays `running`.
 18. **CNPG 1.30.0 (chart 0.29.0) supports managed roles with `inRoles` and a basic-auth `passwordSecret`,** reconciled on existing clusters (CNPG docs). The repo already uses one (`cluster.yaml:48-54`).
 19. **The api's complete Postgres access list is in §6.2:**
@@ -385,3 +375,7 @@ Evidence was gathered on 2026-10-16 against `f7eeba79`. "Probed" means run again
 30. **The provisioner still needs its self-granted role and ALTER** (`EngagementRepository.cs:529-544`). `DEFAULT ROLE` requires the role to be granted first (StarRocks ALTER USER docs).
 31. **The tenant key must be its own Secret.** Adding a key to an existing lookup Secret renders empty on upgrade (`secret-provisioner.yaml:17-21`).
 32. **Only the api and worker Deployments, the Authentik hook and compose reference `<release>-postgres-app` or `ConnectionStrings__Postgres`.** ClientConformance and LoadTest have their own owner strings, outside the api pod.
+33. **Every `EntityEvent` producer emits exact column names,** which the ordinal StarRocks upsert relies on (CDR-1 §0 R4 producer closure).
+34. **`iverson_runtime` exists before CNPG reconciles `iverson_api`'s `inRoles`.** `postInitApplicationSQL` creates it at initdb (`charts/postgres/templates/cluster.yaml:43-47`), and existing clusters already have it (CDR-1 U8).
+35. **The api needs no sequence grants.** Every plumbing key it inserts is uuid or text (`ReconciliationSchema.cs:31-44`, `TenantSchema.cs:9-16`, `TokenRevocationRepository.cs:15-18`, and the new uuid `Id`) (CDR-1 U9).
+36. **PUBLIC keeps USAGE on schema `public`.** `git grep -i "on schema public\|REVOKE ALL" -- Iverson.Server/` finds nothing (CDR-1 U10).
