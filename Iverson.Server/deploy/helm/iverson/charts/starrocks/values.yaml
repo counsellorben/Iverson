@@ -1,6 +1,6 @@
 storageClassName: ""
 fe:
-  image: "starrocks/fe-ubuntu:4.1.1"
+  image: "starrocks/fe-ubuntu:4.1.6"
   replicas: 1
   storageSize: 50Gi
   resources:
