@@ -11,6 +11,11 @@ updates:
         patterns:
           - "Microsoft.Extensions.*"
           - "Microsoft.AspNetCore.*"
+    # Microsoft.AspNetCore.OpenApi 10.x generates code against Microsoft.OpenApi 2.x; 3.x breaks the API
+    # build (CS0200 on IOpenApiMediaType.Example, #179). Its major moves with the next ASP.NET Core major.
+    ignore:
+      - dependency-name: "Microsoft.OpenApi"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "npm"
     directory: "/Iverson.AdminUI"
     schedule:
