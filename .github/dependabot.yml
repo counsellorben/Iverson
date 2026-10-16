@@ -4,6 +4,13 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # The .NET servicing packages ship together and depend on each other's exact patch, so bumping one
+    # alone fails restore with NU1605 (a downgrade of its sibling). Move them as one PR.
+    groups:
+      dotnet-servicing:
+        patterns:
+          - "Microsoft.Extensions.*"
+          - "Microsoft.AspNetCore.*"
   - package-ecosystem: "npm"
     directory: "/Iverson.AdminUI"
     schedule:
