@@ -64,8 +64,10 @@ minted here, not read once:
 Authentik issues it with access_token_validity hours=2 (compose-only/service-clients.yaml,
 iverson-loadtest-human provider) and a per-candidate pass may run for up to 8 hours. So this script
 runs deploy/scripts/mint_acting_user_token.py --target compose --username
-iverson-loadtest-bypass-user --password $IVERSON_ACTING_USER_BYPASS_PASSWORD as a subprocess, and
-re-mints once the token is TOKEN_REFRESH_SECONDS (90 minutes) old. Both tokens live in one
+iverson-loadtest-bypass-user as a subprocess, and re-mints once the token is TOKEN_REFRESH_SECONDS
+(90 minutes) old. The child gets $IVERSON_ACTING_USER_BYPASS_PASSWORD as its
+IVERSON_ACTING_USER_PASSWORD, in its environment rather than on its command line, which any local
+user can read from the process list (CSR round-11 #19). Both tokens live in one
 TokenSession and ride the gRPC channel as metadata-call-credentials plugins that read the session's
 current token on every call (Iverson.Clients/Python/conformance/driver.py's build_driver_channel
 pattern), so a refresh takes effect on the next call without rebuilding the channel or the
@@ -666,7 +668,8 @@ def mint_acting_user_token(username):
     """stdout of mint_acting_user_token.py (everything else it prints goes to stderr)."""
     password = require_env(BYPASS_PASSWORD_ENV)
     result = subprocess.run(
-        [sys.executable, MINT_SCRIPT, "--target", "compose", "--username", username, "--password", password],
+        [sys.executable, MINT_SCRIPT, "--target", "compose", "--username", username],
+        env={**os.environ, "IVERSON_ACTING_USER_PASSWORD": password},
         capture_output=True, text=True)
     token = result.stdout.strip()
     if result.returncode != 0 or not token:

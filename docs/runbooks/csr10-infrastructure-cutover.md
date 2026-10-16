@@ -43,7 +43,7 @@ Iverson.Server/deploy/kind/build-and-load-image.sh 0.1.0 <cluster> --model-image
 
 **Cloud:** set `global.modelImageRegistry` to the registry prefix **with its trailing `/`**
 (for example `myregistry.azurecr.io/`) in the values you deploy with. The default is empty (local
-images). Then build and push each image with the inputs the chart renders, read the same way
+images). The cloud profiles now default to GHCR instead; see `docs/runbooks/csr11-clients-tooling-ci.md`. Then build and push each image with the inputs the chart renders, read the same way
 `build-and-load-image.sh --model-images` reads them, rather than copying them by hand:
 
 ```bash

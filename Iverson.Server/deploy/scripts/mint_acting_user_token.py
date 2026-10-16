@@ -9,7 +9,8 @@ Prints the resulting access token to stdout on success. Everything else
 (progress, diagnostics) goes to stderr, so this script's stdout can be
 piped straight into a file/variable, e.g.:
 
-    python3 deploy/scripts/mint_acting_user_token.py --target compose \
+    IVERSON_ACTING_USER_PASSWORD=... \
+        python3 deploy/scripts/mint_acting_user_token.py --target compose \
         > /tmp/acting-user-token.txt
 
 Two deployment targets are supported, since they differ in base URL,
@@ -35,10 +36,18 @@ Both targets force a matching Host header to avoid this.
            `<release>-authentik` Service, then talks to it over
            localhost with every request's Host header forced to
            `<release>-authentik:9000` (the in-cluster DNS name the API's
-           OIDC `Authority` is actually configured with). client_id and
-           the smoke-test user's password are read from the Secrets Task 5
-           provisions (`<release>-authentik-loadtest-human-client`,
-           `<release>-authentik-smoke-test-user`) unless overridden.
+           OIDC `Authority` is actually configured with). client_id is read
+           from the `<release>-authentik-loadtest-human-client` Secret
+           unless --client-id overrides it.
+
+The user's password comes from the environment variable
+IVERSON_ACTING_USER_PASSWORD (LoadTest's name for the same smoke-test
+user), never from the command line, which any local user can read from the
+process list. compose requires it: Authentik's dev-only smoke-test password
+is randomly generated per docker-compose stack by
+scripts/generate-compose-secrets.sh (IVERSON_SMOKE_TEST_PASSWORD in
+Iverson.Server/.env). kind uses it when set, and otherwise reads the
+`<release>-authentik-smoke-test-user` Secret.
 
 TOTP enrollment is one-time per environment: the first run enrolls a new
 TOTP device for the smoke-test user and caches the shared secret locally
@@ -76,6 +85,8 @@ DEFAULT_KIND_LOCAL_PORT = 19000
 MAX_FLOW_STAGES = 20
 MAX_TOTP_ATTEMPTS = 4
 CACHE_DIR = os.path.expanduser("~/.cache/iverson")
+# CSR round-11 #19: the password is read from the environment, never from argv.
+PASSWORD_ENV = "IVERSON_ACTING_USER_PASSWORD"
 
 
 def log(msg):
@@ -441,7 +452,6 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--target", required=True, choices=["compose", "kind"])
     p.add_argument("--username", default=DEFAULT_USERNAME)
-    p.add_argument("--password", default=None, help="Required for --target compose (Authentik's dev-only smoke-test password is randomly generated per docker-compose stack by scripts/generate-compose-secrets.sh -- read IVERSON_SMOKE_TEST_PASSWORD from Iverson.Server/.env); read from the kind Secret otherwise")
     p.add_argument("--client-id", default=None, help="Defaults per-target (fixed dev value for compose, read from the kind Secret otherwise)")
     p.add_argument("--redirect-uri", default=None, help="Defaults per-target to match the provisioned OAuth2 client's redirect_uris")
     p.add_argument("--base-url", default=None, help="Override the computed base URL entirely")
@@ -467,15 +477,15 @@ def main() -> int:
         # override the mismatch causes a bare 401 with no useful server-side log line.
         host_header = args.host_header if args.host_header is not None else "authentik-server:9000"
         client_id = args.client_id or DEFAULT_COMPOSE_CLIENT_ID
-        if args.password is None:
+        password = os.environ.get(PASSWORD_ENV)
+        if not password:
             log(
-                "ERROR: --password is required for --target compose. Authentik's dev-only "
+                f"ERROR: {PASSWORD_ENV} must be set for --target compose. Authentik's dev-only "
                 "smoke-test password is randomly generated per docker-compose stack by "
-                "scripts/generate-compose-secrets.sh -- read IVERSON_SMOKE_TEST_PASSWORD out of "
-                "Iverson.Server/.env and pass it explicitly."
+                "scripts/generate-compose-secrets.sh -- export IVERSON_SMOKE_TEST_PASSWORD's value "
+                f"from Iverson.Server/.env as {PASSWORD_ENV}."
             )
             return 1
-        password = args.password
         redirect_uri = args.redirect_uri or DEFAULT_COMPOSE_REDIRECT_URI
         return run(args, base_url, host_header, client_id, password, redirect_uri)
 
@@ -487,9 +497,13 @@ def main() -> int:
         client_id = args.client_id or kubectl_get_secret_value(
             args.namespace, f"{args.release}-authentik-loadtest-human-client", "client-id"
         )
-        password = args.password or kubectl_get_secret_value(
-            args.namespace, f"{args.release}-authentik-smoke-test-user", "password"
-        )
+        smoke_secret = f"{args.release}-authentik-smoke-test-user"
+        password = os.environ.get(PASSWORD_ENV)
+        if password:
+            log(f"password source: {PASSWORD_ENV}")
+        else:
+            log(f"password source: Secret {smoke_secret}")
+            password = kubectl_get_secret_value(args.namespace, smoke_secret, "password")
         redirect_uri = args.redirect_uri or DEFAULT_KIND_REDIRECT_URI
         return run(args, base_url, host_header, client_id, password, redirect_uri)
 

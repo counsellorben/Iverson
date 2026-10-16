@@ -168,6 +168,11 @@ spec:
             - name: Authentication__ValidAudiences__2
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-webtest-client, key: client-id }
+            # Mirrors compose's ValidAudiences__4: LoadTest's data-plane calls carry the tenant admin's
+            # token, minted from the loadtest-human client. Renders only where test identities are provisioned.
+            - name: Authentication__ValidAudiences__4
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-loadtest-human-client, key: client-id }
             {{- end }}
             - name: Authentication__ValidAudiences__3
               valueFrom:

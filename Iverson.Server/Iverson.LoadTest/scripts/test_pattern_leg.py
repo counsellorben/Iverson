@@ -521,6 +521,30 @@ def test_mint_service_token_never_leaks_the_secret_or_the_token_in_an_abort_mess
     assert "top-secret-value" not in str(exc_info.value)
 
 
+# ── mint_acting_user_token: the password reaches the child through its environment ─────────────
+
+def test_mint_acting_user_token_passes_the_password_in_the_childs_environment_not_its_argv(monkeypatch):
+    # CSR round-11 #19: a command line is visible to every local user; a process environment is not.
+    seen = {}
+
+    class Completed:
+        returncode, stdout, stderr = 0, "user-tok\n", ""
+
+    def fake_run(argv, **kwargs):
+        seen["argv"], seen["kwargs"] = argv, kwargs
+        return Completed()
+
+    monkeypatch.setenv(pl.BYPASS_PASSWORD_ENV, "bypass-pw")
+    monkeypatch.setenv("IVERSON_ACTING_USER_PASSWORD", "smoke-test-pw")
+    monkeypatch.setattr(pl.subprocess, "run", fake_run)
+    assert pl.mint_acting_user_token("iverson-loadtest-bypass-user") == "user-tok"
+    assert not any("pw" in a for a in seen["argv"]) and "--password" not in seen["argv"]
+    assert seen["argv"][1:] == [pl.MINT_SCRIPT, "--target", "compose", "--username", "iverson-loadtest-bypass-user"]
+    env = seen["kwargs"]["env"]
+    assert env["IVERSON_ACTING_USER_PASSWORD"] == "bypass-pw"      # the bypass user's, not the smoke-test user's
+    assert env["PATH"] == os.environ["PATH"]                        # the rest of the environment is inherited
+
+
 # ── /build ──────────────────────────────────────────────────────────────────────────────
 
 def test_run_checked_pass_records_both_checks_when_the_build_matches():

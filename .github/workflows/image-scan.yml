@@ -46,24 +46,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.15.0
       - name: List the chart's third-party images
         run: |
           set -eo pipefail
           C=Iverson.Server/deploy/helm/iverson
           helm dependency build "$C"
-          # The CNPG and Strimzi operators are installed by Terraform; read their chart pins from
-          # there, so this list follows a version bump without a second edit.
-          TF=Iverson.Server/deploy/terraform/modules/operators/main.tf
-          tf_pin() {   # $1 = chart name, $2 = attribute (repository or version)
-            awk -v chart="$1" -v attr="$2" '
-              /^(resource|data|module|locals|variable|output) / { delete a }
-              /^ *[a-z_]+ *= *"/ { k = $1; v = $0; sub(/^[^"]*"/, "", v); sub(/".*$/, "", v); a[k] = v }
-              /^}/ { if (a["chart"] == chart) { print a[attr]; exit } }' "$TF"
+          # The CNPG and Strimzi operators are installed by Terraform from the pins in the operators
+          # module's stub Chart.yaml (Dependabot-tracked); read the same pins, so this list follows a
+          # version bump without a second edit.
+          PINS=Iverson.Server/deploy/terraform/modules/operators/versions
+          chart_pin() {   # $1 = chart name, $2 = column of `helm dependency list` (2 = version, 3 = repository)
+            # Returns 1 when the chart has no pin, 2 when helm itself failed.
+            local list
+            list=$(helm dependency list "$PINS") || { echo "helm dependency list failed for $PINS" >&2; return 2; }
+            printf '%s\n' "$list" | awk -v chart="$1" -v col="$2" '$1 == chart && !n++ { print $col } END { exit !n }'
           }
           render_operator() {   # $1 = chart name; prints the rendered manifests
             local repo version
-            repo=$(tf_pin "$1" repository); version=$(tf_pin "$1" version)
-            [ -n "$repo" ] && [ -n "$version" ] || { echo "no $1 pin in $TF" >&2; return 1; }
+            # A missing pin (1) falls through to the empty check; a helm failure stops here.
+            repo=$(chart_pin "$1" 3) || [ $? -eq 1 ] || return 1
+            version=$(chart_pin "$1" 2) || [ $? -eq 1 ] || return 1
+            [ -n "$repo" ] && [ -n "$version" ] || { echo "no $1 pin in $PINS/Chart.yaml" >&2; return 1; }
             helm template op "$1" --repo "$repo" --version "$version"
           }
           {

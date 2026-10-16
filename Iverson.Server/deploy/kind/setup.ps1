@@ -9,6 +9,24 @@ $ErrorActionPreference = "Stop"
 # by that environment — this is a podman-wide default, not something this script can set
 # per-container. Not needed when using real Docker Desktop as the provider.
 
+# CSR round-11 #19: the CNPG, Strimzi and StarRocks operator chart versions come from the stub
+# Chart.yaml the cloud Terraform installs read (terraform/modules/operators/versions), which
+# Dependabot keeps current, so kind and the cloud installs run the same operator builds. They are
+# read before anything touches the cluster, so a missing pin stops the script here.
+$OperatorPins = Join-Path $PSScriptRoot "../terraform/modules/operators/versions"
+function Get-OperatorVersion([string]$Chart) {
+  $list = helm dependency list $OperatorPins
+  if ($LASTEXITCODE -ne 0) { throw "helm dependency list failed for $OperatorPins" }
+  foreach ($line in $list) {
+    $cols = "$line".Trim() -split '\s+'
+    if ($cols[0] -eq $Chart) { return $cols[1] }
+  }
+  throw "no $Chart pin in $(Join-Path $OperatorPins 'Chart.yaml')"
+}
+$CnpgVersion = Get-OperatorVersion "cloudnative-pg"
+$StrimziVersion = Get-OperatorVersion "strimzi-kafka-operator"
+$StarRocksOperatorVersion = Get-OperatorVersion "operator"
+
 Write-Host "Installing Calico (kind's default CNI, kindnet, does not enforce NetworkPolicy)..."
 kubectl create namespace tigera-operator --dry-run=client -o yaml | kubectl apply -f -
 # The tigera-operator chart bundles both the operator and its Custom Resources
@@ -60,7 +78,7 @@ helm upgrade --install ingress-nginx ingress-nginx `
 Write-Host "Installing CloudNativePG operator..."
 helm upgrade --install cnpg cloudnative-pg `
   --repo https://cloudnative-pg.github.io/charts `
-  --version 0.29.0 `
+  --version $CnpgVersion `
   --namespace cnpg-system --create-namespace `
   --wait
 
@@ -77,7 +95,7 @@ Write-Host "Installing Strimzi operator..."
 # 0 broker pods forever, no error, no event, nothing to grep for.
 helm upgrade --install strimzi strimzi-kafka-operator `
   --repo https://strimzi.io/charts/ `
-  --version 1.1.0 `
+  --version $StrimziVersion `
   --namespace kafka --create-namespace `
   --set watchNamespaces="{iverson}" `
   --wait
@@ -86,7 +104,7 @@ Write-Host "Installing StarRocks operator..."
 # Chart was renamed upstream from "kube-starrocks-operator" to "operator".
 helm upgrade --install starrocks-operator operator `
   --repo https://starrocks.github.io/starrocks-kubernetes-operator `
-  --version 1.11.5 `
+  --version $StarRocksOperatorVersion `
   --namespace starrocks --create-namespace `
   --wait
 

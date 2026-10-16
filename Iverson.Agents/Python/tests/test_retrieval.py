@@ -104,6 +104,21 @@ def test_locate_fails_the_session_when_every_query_is_rejected():
         locate(coord, "Doc", "Body", [("q1", []), ("q2", [])], k=5, fanout=4, trace_id="t")
 
 
+def test_retrieval_warnings_quote_server_text(caplog):
+    # CSR round-11 #17: the server's error details reach stderr through logging; %r prints control
+    # characters as escapes instead of passing them to the terminal.
+    err = rpc_error(grpc.StatusCode.INVALID_ARGUMENT)
+    err.details = lambda: "bad\x1b[2Jfilter"
+    coord = MagicMock()
+    coord.search_chunks.side_effect = [err, err, [chunk("A", "a1", 0.7)]]
+    with caplog.at_level("WARNING", logger="iverson_agent.retrieval"):
+        locate(coord, "Doc", "Body", [("q1", [ValidFilter("Source", "x")]), ("q2", [])],
+               k=5, fanout=4, trace_id="t")
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 2
+    assert all("\x1b" not in m and "bad\\x1b[2Jfilter" in m for m in messages)
+
+
 def entity(key, title="T", summary="S"):
     e = object.__new__(Doc)
     e.id, e.title, e.source, e.published_at, e.body, e.summary = key, title, "legal", "2025-11-02", "B", summary

@@ -12,6 +12,22 @@ set -euo pipefail
 # podman-wide default, not something kind-config.yaml or this script can set per-container.
 # Not needed at all when using real Docker as the provider.
 
+# CSR round-11 #19: the CNPG, Strimzi and StarRocks operator chart versions come from the stub
+# Chart.yaml the cloud Terraform installs read (terraform/modules/operators/versions), which
+# Dependabot keeps current, so kind and the cloud installs run the same operator builds. They are
+# read before anything touches the cluster, so a missing pin stops the script here.
+OPERATOR_PINS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform/modules/operators/versions" && pwd)"
+operator_version() {   # $1 = chart name in $OPERATOR_PINS/Chart.yaml; prints its version
+  local list
+  list=$(helm dependency list "$OPERATOR_PINS") ||
+    { echo "helm dependency list failed for $OPERATOR_PINS" >&2; return 1; }
+  printf '%s\n' "$list" | awk -v chart="$1" '$1 == chart && !n++ { print $2 } END { exit !n }' ||
+    { echo "no $1 pin in $OPERATOR_PINS/Chart.yaml" >&2; return 1; }
+}
+CNPG_VERSION=$(operator_version cloudnative-pg)
+STRIMZI_VERSION=$(operator_version strimzi-kafka-operator)
+STARROCKS_OPERATOR_VERSION=$(operator_version operator)
+
 echo "Installing Calico (kind's default CNI, kindnet, does not enforce NetworkPolicy)..."
 kubectl create namespace tigera-operator --dry-run=client -o yaml | kubectl apply -f -
 # The tigera-operator chart bundles both the operator and its Custom Resources
@@ -118,12 +134,11 @@ helm upgrade --install ingress-nginx ingress-nginx \
   --wait
 
 echo "Installing CloudNativePG operator..."
-# CSR round-2 finding #12: pinned to the same version as
-# modules/operators/main.tf's cloudnative_pg helm_release, so kind and the
-# cloud Terraform installs run the identical operator build.
+# CSR round-2 finding #12: the same version as modules/operators/main.tf's
+# cloudnative_pg helm_release (both read versions/Chart.yaml, see the top).
 helm upgrade --install cnpg cloudnative-pg \
   --repo https://cloudnative-pg.github.io/charts \
-  --version 0.29.0 \
+  --version "$CNPG_VERSION" \
   --namespace cnpg-system --create-namespace \
   --wait
 
@@ -138,24 +153,22 @@ echo "Installing Strimzi operator..."
 # are installed into the "iverson" namespace (wherever the app release goes)
 # — without this, the operator never sees them and the KafkaNodePool sits at
 # 0 broker pods forever, no error, no event, nothing to grep for.
-# CSR round-2 finding #12: pinned to the same version as
-# modules/operators/main.tf's strimzi helm_release, so kind and the cloud
-# Terraform installs run the identical operator build.
+# CSR round-2 finding #12: the same version as modules/operators/main.tf's
+# strimzi helm_release (both read versions/Chart.yaml, see the top).
 helm upgrade --install strimzi strimzi-kafka-operator \
   --repo https://strimzi.io/charts/ \
-  --version 1.1.0 \
+  --version "$STRIMZI_VERSION" \
   --namespace kafka --create-namespace \
   --set watchNamespaces="{iverson}" \
   --wait
 
 echo "Installing StarRocks operator..."
 # Chart was renamed upstream from "kube-starrocks-operator" to "operator".
-# CSR round-2 finding #12: pinned to the same version as
-# modules/operators/main.tf's starrocks_operator helm_release, so kind and
-# the cloud Terraform installs run the identical operator build.
+# CSR round-2 finding #12: the same version as modules/operators/main.tf's
+# starrocks_operator helm_release (both read versions/Chart.yaml, see the top).
 helm upgrade --install starrocks-operator operator \
   --repo https://starrocks.github.io/starrocks-kubernetes-operator \
-  --version 1.11.5 \
+  --version "$STARROCKS_OPERATOR_VERSION" \
   --namespace starrocks --create-namespace \
   --wait
 

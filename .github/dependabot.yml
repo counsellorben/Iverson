@@ -36,7 +36,6 @@ updates:
     directories:
       - "/Iverson.AdminUI"
       - "/Iverson.Server/Iverson.Api"
-      - "/Iverson.Server/Iverson.Launcher"
       - "/Iverson.Server/Iverson.Events"
       - "/Iverson.Server/Iverson.Sql"
       - "/Iverson.Server/Iverson.Vector"
@@ -62,5 +61,12 @@ updates:
     directories:
       - "/Iverson.Server/deploy/helm/iverson"
       - "/Iverson.Server/deploy/helm/iverson/charts/*"
+      - "/Iverson.Server/deploy/terraform/modules/operators/versions"
     schedule:
       interval: "weekly"
+    # These two move in lockstep with other files (see the coupling notes in the stub's Chart.yaml): minor/major bumps are done by hand.
+    ignore:
+      - dependency-name: "cluster-autoscaler"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "aws-load-balancer-controller"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]

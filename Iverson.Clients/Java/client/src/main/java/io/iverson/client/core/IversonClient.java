@@ -159,14 +159,9 @@ public final class IversonClient implements AutoCloseable {
 
     /**
      * Equivalent to {@link #IversonClient(ManagedChannel, CallCredentials, boolean)} with
-     * {@code allowInsecureCredentials=false} — since that always refuses non-null credentials,
-     * this overload only remains usable when {@code credentials} is null.
-     *
-     * @deprecated call {@link #IversonClient(ManagedChannel, CallCredentials, boolean)} and pass
-     *     {@code allowInsecureCredentials=true} explicitly when {@code channel} is a known-local,
-     *     non-TLS channel.
+     * {@code allowInsecureCredentials=false}: the credentials are sent only when {@code channel}
+     * is TLS, and on a channel without TLS every call fails {@code UNAUTHENTICATED}.
      */
-    @Deprecated
     public IversonClient(ManagedChannel channel, CallCredentials credentials) {
         this(channel, credentials, false);
     }
@@ -175,22 +170,18 @@ public final class IversonClient implements AutoCloseable {
      * Creates a client using an already-configured channel, attaching the given call
      * credentials to every stub. grpc-java attaches {@link CallCredentials} to any channel with
      * no guard of its own (unlike grpc-dotnet, which refuses call credentials on a plaintext
-     * channel unless explicitly told otherwise) — and this constructor is handed an opaque,
-     * already-built {@link ManagedChannel}, so it has no reliable way to detect whether that
-     * channel is actually TLS-protected. It therefore requires the explicit opt-in below
-     * whenever {@code credentials} is non-null, regardless of the channel's real transport: a
-     * caller building a genuinely-TLS channel and wiring up interceptors externally (the
-     * documented use case for this constructor) must still pass {@code true} here to confirm
-     * they intend credentials to be attached, rather than the library silently assuming safety.
+     * channel unless explicitly told otherwise), and an already-built {@link ManagedChannel}
+     * does not say whether it is TLS. So the check happens when each call is sent, where the
+     * transport is known (CSR round-11 #16): on a TLS channel the credentials are sent; on a
+     * channel without TLS the call fails {@code UNAUTHENTICATED} before the credentials run,
+     * unless {@code allowInsecureCredentials} is true.
      *
-     * @param allowInsecureCredentials explicit, named opt-in required to attach non-null
-     *     {@code credentials} to {@code channel}. Defaults to false via the deprecated 2-arg
-     *     overload.
-     * @throws IllegalArgumentException if {@code credentials} is non-null and
-     *     {@code allowInsecureCredentials} is false.
+     * @param allowInsecureCredentials explicit, named opt-in to send non-null {@code credentials}
+     *     over a channel without TLS; pass {@code true} only for a known-local, non-TLS endpoint.
+     *     A TLS channel needs no opt-in.
      */
     public IversonClient(ManagedChannel channel, CallCredentials credentials, boolean allowInsecureCredentials) {
-        requireInsecureCredentialsOptIn(credentials, null, allowInsecureCredentials);
+        credentials = transportGuarded(credentials, allowInsecureCredentials);
         this.channel         = channel;
         this.mappingStub     = ObjectMappingServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
@@ -201,15 +192,10 @@ public final class IversonClient implements AutoCloseable {
 
     /**
      * Equivalent to {@link #IversonClient(ManagedChannel, CallCredentials, String, boolean)}
-     * with {@code allowInsecureCredentials=false} — since that always refuses a non-null
-     * {@code credentials} or {@code actingUserToken}, this overload only remains usable when
-     * both are null.
-     *
-     * @deprecated call {@link #IversonClient(ManagedChannel, CallCredentials, String, boolean)}
-     *     and pass {@code allowInsecureCredentials=true} explicitly when {@code channel} is a
-     *     known-local, non-TLS channel.
+     * with {@code allowInsecureCredentials=false}: the credentials, and the acting-user token
+     * they carry, are sent only when {@code channel} is TLS, and on a channel without TLS every
+     * call fails {@code UNAUTHENTICATED}.
      */
-    @Deprecated
     public IversonClient(ManagedChannel channel, CallCredentials credentials, String actingUserToken) {
         this(channel, credentials, actingUserToken, false);
     }
@@ -220,14 +206,16 @@ public final class IversonClient implements AutoCloseable {
      * (per-call explicit token, then coordinator-bound token via {@code withActingUser}, then
      * this ambient one).
      *
+     * <p>The acting-user token is sent by the credentials ({@link OAuth2ClientCredentials} reads
+     * it from the call options), so it is subject to the same send-time transport check; with
+     * null {@code credentials} nothing sends it.
+     *
      * @param allowInsecureCredentials see
      *     {@link #IversonClient(ManagedChannel, CallCredentials, boolean)}.
-     * @throws IllegalArgumentException if {@code credentials} or {@code actingUserToken} is
-     *     non-null and {@code allowInsecureCredentials} is false.
      */
     public IversonClient(ManagedChannel channel, CallCredentials credentials, String actingUserToken,
                           boolean allowInsecureCredentials) {
-        requireInsecureCredentialsOptIn(credentials, actingUserToken, allowInsecureCredentials);
+        credentials = transportGuarded(credentials, allowInsecureCredentials);
         this.channel         = channel;
         this.mappingStub     = ObjectMappingServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
@@ -237,7 +225,19 @@ public final class IversonClient implements AutoCloseable {
     }
 
     /**
-     * The construction-time guard closing CSR finding #10 for the Java SDK: refuses to combine
+     * Wraps non-null credentials in the send-time transport check (CSR round-11 #16). Called
+     * once, by the two credential-attaching constructors, into which every other constructor and
+     * factory funnels.
+     */
+    private static CallCredentials transportGuarded(CallCredentials credentials, boolean allowInsecureCredentials) {
+        return credentials == null ? null : new TransportGuardedCredentials(credentials, allowInsecureCredentials);
+    }
+
+    /**
+     * The construction-time guard closing CSR finding #10 for the Java SDK, kept for the
+     * {@code plaintext(…)} factories, whose transport is known to be plaintext, so they fail fast
+     * at construction (caller-built channels are checked at send time instead, by
+     * {@link TransportGuardedCredentials}): refuses to combine
      * non-null {@link CallCredentials} <em>or</em> a non-null {@code actingUserToken} with a
      * plaintext channel unless the caller has explicitly set
      * {@code allowInsecureCredentials=true}. Mirrors the .NET reference

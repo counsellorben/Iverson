@@ -38,6 +38,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # CSR round-11 #19: no later step pushes or fetches, so the job token is not left in .git/config.
+          persist-credentials: false
 
       # csharp/java-kotlin run with build-mode: autobuild (see the sibling
       # /language:csharp and /language:java-kotlin default-setup analyses,

@@ -1,6 +1,6 @@
 using Grpc.Core;
 using Grpc.Net.Client;
-using IdentityModel.Client;
+using Duende.IdentityModel.Client;
 using Iverson.Client.Contracts;
 using Iverson.Client.Core;
 using Iverson.LoadTest.Auth;
@@ -87,15 +87,15 @@ public sealed class TokenBroker : IDisposable
     }
 
     /// <summary>
-    /// Derives the Authentik base URL the same way <c>Iverson.LoadTest/Program.cs:48-51</c> does:
-    /// strip the token endpoint down to its origin when <c>IVERSON_TOKEN_ENDPOINT</c> is set,
-    /// otherwise fall back to the compose default. This is the single source of truth for the
-    /// value — <see cref="Program"/> computes it once here and feeds the same string to both
-    /// <see cref="TokenBroker"/> and <see cref="Preflight"/> so the two never diverge.
+    /// Derives the Authentik base URL with LoadTest's <see cref="CredentialEndpoints.AuthentikBaseUrl"/>,
+    /// the derivation Program.cs's startup check accepted: strip the token endpoint down to its
+    /// origin when <c>IVERSON_TOKEN_ENDPOINT</c> is set, otherwise fall back to the compose default.
+    /// This is the single source of truth for the value — <see cref="Program"/> computes it once
+    /// here and feeds the same string to both <see cref="TokenBroker"/> and <see cref="Preflight"/>
+    /// so the two never diverge.
     /// </summary>
-    public static string DeriveAuthentikBaseUrl(string? tokenEndpoint) => tokenEndpoint is not null
-        ? tokenEndpoint[..tokenEndpoint.IndexOf("/application/o/token/", StringComparison.Ordinal)]
-        : "http://localhost:9000";
+    public static string DeriveAuthentikBaseUrl(string? tokenEndpoint) =>
+        CredentialEndpoints.AuthentikBaseUrl(tokenEndpoint);
 
     /// <summary>
     /// The SERVICE identity token — what the server reads out of the <c>authorization</c> header

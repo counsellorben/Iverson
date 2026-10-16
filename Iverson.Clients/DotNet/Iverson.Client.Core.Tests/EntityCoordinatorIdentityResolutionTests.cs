@@ -24,6 +24,10 @@ public class EntityCoordinatorIdentityResolutionTests
 {
     private const string MetadataKey = ActingUserMetadata.MetadataKey;
 
+    // An identity whose transport is known to be TLS or opted in, with no ambient token: what
+    // AddIversonClient registers for such an endpoint when no actingUserTokenProvider is given.
+    private static readonly ActingUserIdentity KnownTransport = new(refusesPlaintextTokens: false);
+
     private static (EntityCoordinator<IdentityResolutionTestEntity> Coordinator, Func<Metadata?> Captured)
         CreateSut(ActingUserIdentity? identity = null)
     {
@@ -64,7 +68,7 @@ public class EntityCoordinatorIdentityResolutionTests
     [Fact]
     public async Task BoundIdentity_WinsOverAmbientIdentity()
     {
-        var ambient = new ActingUserIdentity(() => Task.FromResult("ambient-token"));
+        var ambient = new ActingUserIdentity(() => Task.FromResult("ambient-token"), refusesPlaintextTokens: false);
         var (sut, captured) = CreateSut(ambient);
         var bound = sut.WithActingUser(() => Task.FromResult("bound-token"));
 
@@ -77,7 +81,7 @@ public class EntityCoordinatorIdentityResolutionTests
     [Fact]
     public async Task AmbientIdentity_AppliesWhenNothingBound()
     {
-        var ambient = new ActingUserIdentity(() => Task.FromResult("ambient-token"));
+        var ambient = new ActingUserIdentity(() => Task.FromResult("ambient-token"), refusesPlaintextTokens: false);
         var (sut, captured) = CreateSut(ambient);
 
         await sut.PostMappedAsync(NewEntity());
@@ -100,7 +104,7 @@ public class EntityCoordinatorIdentityResolutionTests
     [Fact]
     public async Task WithActingUser_DoesNotMutateReceiver()
     {
-        var ambient = new ActingUserIdentity(() => Task.FromResult("ambient-token"));
+        var ambient = new ActingUserIdentity(() => Task.FromResult("ambient-token"), refusesPlaintextTokens: false);
         var (sut, captured) = CreateSut(ambient);
 
         // Binding a copy must not affect the original, unbound coordinator.
@@ -122,7 +126,7 @@ public class EntityCoordinatorIdentityResolutionTests
         // "Bearer " prefix check, so the caller fails as UNAUTHENTICATED instead of being denied.
         // A presence-only assertion on the bound value would pass even if duplication occurred, so
         // this asserts the exact count.
-        var (sut, captured) = CreateSut();
+        var (sut, captured) = CreateSut(KnownTransport);
         var bound = sut.WithActingUser(() => Task.FromResult("bound-token"));
         var headers = new Metadata
         {
@@ -142,7 +146,7 @@ public class EntityCoordinatorIdentityResolutionTests
     [Fact]
     public async Task SuppliedHeaders_WithUnrelatedEntries_ReceiveResolvedIdentityInAddition()
     {
-        var ambient = new ActingUserIdentity(() => Task.FromResult("ambient-token"));
+        var ambient = new ActingUserIdentity(() => Task.FromResult("ambient-token"), refusesPlaintextTokens: false);
         var (sut, captured) = CreateSut(ambient);
         var headers = new Metadata { { "x-trace-id", "abc-123" } };
 
@@ -160,8 +164,8 @@ public class EntityCoordinatorIdentityResolutionTests
         // two calls on coordinators bound to two DIFFERENT identities, must not leak the first
         // call's resolved identity into the second — and must never end up carrying an
         // acting-user entry itself, since ResolveHeadersAsync must copy rather than mutate it.
-        var (aliceCoordinator, aliceCaptured) = CreateSut();
-        var (bobCoordinator, bobCaptured) = CreateSut();
+        var (aliceCoordinator, aliceCaptured) = CreateSut(KnownTransport);
+        var (bobCoordinator, bobCaptured) = CreateSut(KnownTransport);
         var alice = aliceCoordinator.WithActingUser(() => Task.FromResult("alice-token"));
         var bob = bobCoordinator.WithActingUser(() => Task.FromResult("bob-token"));
 
@@ -198,5 +202,53 @@ public class EntityCoordinatorIdentityResolutionTests
         await sut.WithActingUser(() => Task.FromResult("bound-token")).PostMappedAsync(NewEntity());
 
         captured()!.Get(MetadataKey)!.Value.Should().Be("Bearer bound-token");
+    }
+
+    // ---- CSR round-11 #22: a hand-built identity or coordinator fails closed ------------------------
+
+    [Fact]
+    public void ActingUserIdentity_RefusesPlaintextTokens_UnlessToldOtherwise()
+    {
+        new ActingUserIdentity().RefusesPlaintextTokens.Should().BeTrue();
+        new ActingUserIdentity(() => Task.FromResult("ambient-token")).RefusesPlaintextTokens.Should().BeTrue();
+        new ActingUserIdentity(refusesPlaintextTokens: false).RefusesPlaintextTokens.Should().BeFalse();
+    }
+
+    [Fact]
+    public void WithActingUser_Throws_WithoutAnIdentity()
+    {
+        var (sut, _) = CreateSut(identity: null);
+
+        var act = () => sut.WithActingUser(() => Task.FromResult("bound-token"));
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*transport is unknown*");
+    }
+
+    [Fact]
+    public void WithActingUser_Throws_WithADefaultIdentity()
+    {
+        var (sut, _) = CreateSut(new ActingUserIdentity());
+
+        var act = () => sut.WithActingUser(() => Task.FromResult("bound-token"));
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*transport is unknown*");
+    }
+
+    [Fact]
+    public void Constructor_Throws_ForAnAmbientTokenWhoseIdentityRefusesPlaintextTokens()
+    {
+        var act = () => CreateSut(new ActingUserIdentity(() => Task.FromResult("ambient-token")));
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*refusesPlaintextTokens*");
+    }
+
+    [Fact]
+    public async Task Constructor_AcceptsAnIdentityWithoutAnAmbientToken_AndSendsNoHeader()
+    {
+        var (sut, captured) = CreateSut(new ActingUserIdentity());
+
+        await sut.PostMappedAsync(NewEntity());
+
+        captured()!.Get(MetadataKey).Should().BeNull();
     }
 }

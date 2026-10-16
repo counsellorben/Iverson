@@ -115,9 +115,38 @@ def test_evaluate_prints_the_report_as_json(monkeypatch, capsys, tmp_path):
     assert (report["items"], report["citation_recall"], report["grounding"], report["tool_calls"]) == (1, 1.0, 1.0, [1])
 
 
-def test_missing_credentials_fail_before_any_connection(monkeypatch):
+def test_missing_credentials_fail_before_any_connection(monkeypatch, capsys):
     client_cls, _ = _env(monkeypatch)
     monkeypatch.delenv("IVERSON_CLIENT_SECRET")
-    with pytest.raises(KeyError, match="IVERSON_CLIENT_SECRET"):
-        cli.main(["ask", "--entity", "tests.test_session:PolicyDoc", "--question", "q"])
+    rc = cli.main(["ask", "--entity", "tests.test_session:PolicyDoc", "--question", "q"])
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "KeyError" in err and "IVERSON_CLIENT_SECRET" in err
     client_cls.assert_not_called()
+
+
+def test_printable_removes_terminal_controls_but_keeps_newline_and_tab():
+    assert cli._printable("a\x1b]0;title\x07b\x9bc\x7fd\x00e\rf\n\tg") == "a]0;titlebcdef\n\tg"
+    assert cli._printable("Leave policy é ✓") == "Leave policy é ✓"
+
+
+def test_ask_neutralises_tenant_and_model_text_before_printing(monkeypatch, capsys):
+    _, session_cls = _env(monkeypatch)
+    session_cls.return_value.run.return_value = AgentAnswer(
+        text="Answer\x1b[2J [doc 1].", citations=[Citation(1, "A\x1b[1m", "Title\x07\x9b", ["p"])],
+        tool_calls=0, context_tokens=10, flags=["flag\x1b[0m"])
+    rc = cli.main(["ask", "--entity", "tests.test_session:PolicyDoc", "--question", "q"])
+    out = capsys.readouterr()
+    assert rc == 0
+    assert out.out == "Answer[2J [doc 1].\n  [doc 1] A[1m Title\n"
+    assert out.err == "  ! flag[0m\n"
+
+
+def test_an_error_is_reported_neutralised_and_without_a_traceback(monkeypatch, capsys):
+    _, session_cls = _env(monkeypatch)
+    session_cls.return_value.run.side_effect = RuntimeError("server said \x1b]8;;x\x07no\nmore")
+    rc = cli.main(["ask", "--entity", "tests.test_session:PolicyDoc", "--question", "q"])
+    out = capsys.readouterr()
+    assert rc == 1
+    assert out.out == ""
+    assert out.err == "RuntimeError: server said ]8;;xno\nmore\n"

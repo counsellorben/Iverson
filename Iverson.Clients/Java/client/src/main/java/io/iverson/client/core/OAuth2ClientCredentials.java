@@ -19,6 +19,14 @@ import java.util.concurrent.locks.ReentrantLock;
 /**
  * Attaches an OAuth2 client-credentials Bearer token to every gRPC call, caching the
  * token in memory and refreshing it 60 seconds before expiry.
+ *
+ * <p>The token, and any acting-user token, are sent only over TLS (CSR round-11 #16): on a
+ * channel without TLS every call fails {@code UNAUTHENTICATED} before a token is fetched, unless
+ * this instance's own {@code allowInsecureCredentials} is true. That one flag also allows a
+ * non-https token endpoint. So an instance used on a plaintext channel needs
+ * {@code allowInsecureCredentials=true} even when its token endpoint is https and the
+ * {@link IversonClient} it is given to was opted in too; the check also covers an instance
+ * attached directly to the caller's own stubs.
  */
 public final class OAuth2ClientCredentials extends CallCredentials {
 
@@ -45,6 +53,13 @@ public final class OAuth2ClientCredentials extends CallCredentials {
         this(clientId, clientSecret, tokenEndpoint, scope, false);
     }
 
+    /**
+     * @param allowInsecureCredentials explicit, named opt-in, for a known-local, non-TLS
+     *     endpoint only, to fetch the token from a non-https {@code tokenEndpoint} and to send the
+     *     tokens over a channel without TLS. The shorter constructors pass false.
+     * @throws IllegalArgumentException if {@code tokenEndpoint} is not https and
+     *     {@code allowInsecureCredentials} is false.
+     */
     public OAuth2ClientCredentials(
             String clientId, String clientSecret, String tokenEndpoint, String scope,
             boolean allowInsecureCredentials) {
@@ -62,6 +77,9 @@ public final class OAuth2ClientCredentials extends CallCredentials {
 
     @Override
     public void applyRequestMetadata(RequestInfo requestInfo, Executor executor, MetadataApplier applier) {
+        if (TransportGuardedCredentials.refusedWithoutTls(requestInfo, allowInsecureCredentials, applier)) {
+            return;
+        }
         executor.execute(() -> {
             try {
                 Metadata headers = new Metadata();

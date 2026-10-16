@@ -620,6 +620,15 @@ class EntityCoordinator(Generic[T]):
     Args:
         entity_class: the ``@iverson_entity``-decorated class.
         channel: an open ``grpc.Channel``.
+        acting_user_token: optional ambient acting-user token, sent on every call as
+            ``x-acting-user-authorization`` metadata.
+        refuse_plaintext_token: whether acting-user tokens must be refused because the channel
+            is plaintext without an opt-in, or its transport is unknown. Defaults to ``True``
+            (CSR round-11 #22: fail closed), because a coordinator built directly cannot see its
+            channel's transport: it then raises ``ValueError`` at construction when given an
+            ``acting_user_token``, and from ``with_acting_user``. ``IversonClient.coordinator()``
+            passes the value computed from ``use_tls`` and ``allow_insecure_credentials``. Pass
+            ``False`` only for a TLS channel or a known-local, non-TLS endpoint.
     """
 
     def __init__(
@@ -628,8 +637,19 @@ class EntityCoordinator(Generic[T]):
         channel: grpc.Channel,
         acting_user_token: str | None = None,
         *,
-        refuse_plaintext_token: bool = False,
+        refuse_plaintext_token: bool = True,
     ) -> None:
+        # The ambient token travels as per-call metadata, which no channel option guards, so it is
+        # refused here, as IversonClient's constructor refuses one on plaintext without the opt-in.
+        if acting_user_token is not None and refuse_plaintext_token:
+            raise ValueError(
+                "Refusing an ambient acting-user token on a coordinator whose channel is plaintext "
+                "without an explicit allow_insecure_credentials=True opt-in, or whose transport is "
+                "unknown (a coordinator built directly defaults to refuse_plaintext_token=True): the "
+                "token would otherwise risk being sent in the clear. Use IversonClient.coordinator(), "
+                "or pass refuse_plaintext_token=False only for a TLS channel or a known-local, "
+                "non-TLS endpoint."
+            )
         meta = getattr(entity_class, "_iverson_meta", None)
         if meta is None:
             raise ValueError(
@@ -646,15 +666,21 @@ class EntityCoordinator(Generic[T]):
         self._refuse_plaintext_token = refuse_plaintext_token
 
     def with_acting_user(self, token: str) -> "EntityCoordinator[T]":
-        """Return a coordinator bound to ``token``, leaving this one untouched."""
+        """Return a coordinator bound to ``token``, leaving this one untouched.
+
+        Raises ``ValueError`` while ``refuse_plaintext_token`` is true, which it is by default for
+        a coordinator built directly.
+        """
         # The per-call token travels as per-call metadata, as the ambient one does, so it needs
         # the same plaintext guard IversonClient's constructor applies to the ambient one.
         if self._refuse_plaintext_token:
             raise ValueError(
-                "Refusing to bind an acting-user token on a plaintext (use_tls=False) channel "
-                "without an explicit allow_insecure_credentials=True opt-in on IversonClient: "
-                "the acting-user token would otherwise be sent in the clear. Pass "
-                "allow_insecure_credentials=True only for a known-local, non-TLS endpoint."
+                "Refusing to bind an acting-user token on a coordinator whose channel is plaintext "
+                "(use_tls=False) without an explicit allow_insecure_credentials=True opt-in on "
+                "IversonClient, or whose transport is unknown (a coordinator built directly "
+                "defaults to refuse_plaintext_token=True): the acting-user token would otherwise "
+                "risk being sent in the clear. Pass allow_insecure_credentials=True only for a "
+                "known-local, non-TLS endpoint."
             )
         bound = copy.copy(self)
         bound._acting_user_token = token

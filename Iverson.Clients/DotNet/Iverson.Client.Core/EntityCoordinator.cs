@@ -25,6 +25,11 @@ public sealed class EntityCoordinator<T>(
 {
     private readonly EntityDescriptor _descriptor = registry.Get<T>();
 
+    // CSR round-11 #22: an ambient token on an identity that refuses plaintext tokens is refused
+    // here, as SchemaCatalogClient does. In DI this never throws: AddIversonClient refuses the same
+    // configuration first. Every other member reads _identity, never the parameter.
+    private readonly ActingUserIdentity? _identity = ActingUserIdentity.RequireSendableAmbientToken(identity);
+
     private IReadOnlyCollection<string> NavPropertyNames =>
         _descriptor.Relations.Select(r => r.Property.Name).ToList();
 
@@ -37,23 +42,30 @@ public sealed class EntityCoordinator<T>(
     /// Returns a coordinator bound to <paramref name="tokenProvider"/>, leaving this one
     /// untouched. The bound identity outranks the client's ambient one. This is the only
     /// per-call override; the Metadata bag passed to individual calls is not an identity channel.
+    /// Refused unless the coordinator's <see cref="ActingUserIdentity"/> says the transport is TLS or
+    /// opted in (<see cref="ActingUserIdentity.RefusesPlaintextTokens"/> false). A coordinator built
+    /// by hand with no identity, or with an identity left at its default, cannot bind a per-call
+    /// token (CSR round-11 #22); one resolved through <c>AddIversonClient</c> gets the computed value.
     /// </summary>
     public EntityCoordinator<T> WithActingUser(Func<Task<string>> tokenProvider)
     {
         // The per-call token travels as raw Metadata, as the ambient one does, so it needs the same
-        // plaintext guard AddIversonClient applies to the ambient one.
-        if (identity?.RefusesPlaintextTokens == true)
+        // plaintext guard AddIversonClient applies to the ambient one. An unknown transport (no
+        // identity, or one that did not say) fails closed.
+        if (_identity?.RefusesPlaintextTokens != false)
         {
             throw new InvalidOperationException(
-                "Refusing to bind an acting-user token on a plaintext (h2c) endpoint without an " +
-                "explicit allowInsecureChannelCallCredentials=true opt-in. The acting-user identity " +
-                "travels as raw Metadata, not CallCredentials, so grpc-dotnet's own " +
+                "Refusing to bind an acting-user token: this coordinator's endpoint is plaintext " +
+                "without an explicit allowInsecureChannelCallCredentials=true opt-in, or its transport " +
+                "is unknown (no ActingUserIdentity, or one left at refusesPlaintextTokens: true). The " +
+                "acting-user identity travels as raw Metadata, not CallCredentials, so grpc-dotnet's own " +
                 "UnsafeUseInsecureChannelCallCredentials guard cannot see it — the acting-user Bearer " +
-                "token would otherwise be sent in the clear. Pass allowInsecureChannelCallCredentials: " +
-                "true to AddIversonClient only for a known-local, non-TLS endpoint.");
+                "token would otherwise be sent in the clear. Resolve the coordinator through " +
+                "AddIversonClient, which computes the flag from the endpoint; pass " +
+                "allowInsecureChannelCallCredentials: true there only for a known-local, non-TLS endpoint.");
         }
 
-        return new(registry, assembler, mapping, persistence, retrieval, search, logger, identity)
+        return new(registry, assembler, mapping, persistence, retrieval, search, logger, _identity)
         {
             _boundActingUser = tokenProvider,
         };
@@ -66,7 +78,7 @@ public sealed class EntityCoordinator<T>(
     {
         headers ??= new Metadata();
 
-        var provider = _boundActingUser ?? identity?.TokenProvider;
+        var provider = _boundActingUser ?? _identity?.TokenProvider;
 
         // Never write into the caller's own Metadata instance: build a fresh copy so a bag the
         // caller reuses across calls (e.g. on different coordinators bound to different

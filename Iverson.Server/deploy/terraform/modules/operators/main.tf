@@ -5,6 +5,13 @@ terraform {
   }
 }
 
+# CSR round-11 #19: the remote charts' repositories and versions come from versions/Chart.yaml, a
+# dependencies-only stub that Dependabot's helm ecosystem keeps current. deploy/kind/setup.sh,
+# setup.ps1 and .github/workflows/image-scan.yml read the same file.
+locals {
+  operator_charts = { for d in yamldecode(file("${path.module}/versions/Chart.yaml")).dependencies : d.name => d }
+}
+
 # Cloud-profile equivalent of the kind setup scripts' namespace step in the
 # companion Helm chart plan — same Pod Security Admission baseline
 # (`baseline`, not `restricted`; see that plan's Global Constraints for why)
@@ -19,28 +26,23 @@ resource "kubernetes_namespace" "iverson" {
 }
 
 resource "helm_release" "cloudnative_pg" {
-  name       = "cnpg"
-  repository = "https://cloudnative-pg.github.io/charts"
-  chart      = "cloudnative-pg"
-  # Pinned deliberately — bump by hand, don't let this float to whatever is
-  # newest at apply time. Verified current stable as of this fix pass.
-  version          = "0.29.0"
+  name             = "cnpg"
+  repository       = local.operator_charts["cloudnative-pg"].repository
+  chart            = "cloudnative-pg"
+  version          = local.operator_charts["cloudnative-pg"].version
   namespace        = "cnpg-system"
   create_namespace = true
 }
 
 resource "helm_release" "strimzi" {
   name       = "strimzi"
-  repository = "https://strimzi.io/charts/"
+  repository = local.operator_charts["strimzi-kafka-operator"].repository
   chart      = "strimzi-kafka-operator"
-  # Pinned deliberately — bump by hand, don't let this float to whatever is
-  # newest at apply time. Verified current stable as of this fix pass.
-  #
   # No featureGates set: KafkaNodePools and UseKRaft graduated to GA in this
   # pinned operator version and their feature-gate flags were removed
   # entirely — setting them crashes the operator with "Unknown feature gate".
   # Both behaviors are already the default.
-  version          = "1.1.0"
+  version          = local.operator_charts["strimzi-kafka-operator"].version
   namespace        = "kafka"
   create_namespace = true
 
@@ -58,14 +60,12 @@ resource "helm_release" "strimzi" {
 
 resource "helm_release" "starrocks_operator" {
   name       = "starrocks-operator"
-  repository = "https://starrocks.github.io/starrocks-kubernetes-operator"
+  repository = local.operator_charts["operator"].repository
   # The chart is published under the key "operator" in this repo's
   # index.yaml, not "kube-starrocks-operator" — confirmed live against
   # https://starrocks.github.io/starrocks-kubernetes-operator/index.yaml.
-  # Pinned deliberately — bump by hand, don't let this float to whatever is
-  # newest at apply time.
   chart            = "operator"
-  version          = "1.11.5"
+  version          = local.operator_charts["operator"].version
   namespace        = "starrocks"
   create_namespace = true
 }
@@ -78,12 +78,10 @@ resource "helm_release" "cluster_autoscaler" {
   count = var.cloud == "aws" ? 1 : 0
 
   name       = "cluster-autoscaler"
-  repository = "https://kubernetes.github.io/autoscaler"
+  repository = local.operator_charts["cluster-autoscaler"].repository
   chart      = "cluster-autoscaler"
-  # Pinned deliberately — bump by hand, don't let this float to whatever is
-  # newest at apply time. Chosen to match this module's pinned EKS
-  # kubernetes_version ("1.30"): chart 9.37.0 has appVersion 1.30.0.
-  version   = "9.37.0"
+  # The version must match the EKS kubernetes_version (see the note in versions/Chart.yaml).
+  version   = local.operator_charts["cluster-autoscaler"].version
   namespace = "kube-system"
 
   set {
@@ -111,14 +109,10 @@ resource "helm_release" "aws_load_balancer_controller" {
   count = var.cloud == "aws" ? 1 : 0
 
   name       = "aws-load-balancer-controller"
-  repository = "https://aws.github.io/eks-charts"
+  repository = local.operator_charts["aws-load-balancer-controller"].repository
   chart      = "aws-load-balancer-controller"
-  # Pinned deliberately — bump by hand, don't let this float to whatever is
-  # newest at apply time. Chart 1.9.0 has appVersion v2.9.0, matching the
-  # aws-load-balancer-controller IAM policy version already pinned in
-  # cluster-aws's data.http.lb_controller_policy fetch (verified against
-  # https://aws.github.io/eks-charts/index.yaml).
-  version   = "1.9.0"
+  # The version must match cluster-aws's committed IAM policy (see the note in versions/Chart.yaml).
+  version   = local.operator_charts["aws-load-balancer-controller"].version
   namespace = "kube-system"
 
   set {
