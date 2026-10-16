@@ -74,7 +74,8 @@ def _search(coordinator, request: pb.SearchChunksRequest, *,
             raise RetrievalUnavailable(err.details()) from err
         if code == grpc.StatusCode.INVALID_ARGUMENT:
             if request.filter and retry_unfiltered:
-                log.warning("[locate] trace=%s InvalidArgument with filters; retrying unfiltered: %s",
+                # %r, not %s: the details are server text and reach the terminal (CSR round-11 #17).
+                log.warning("[locate] trace=%s InvalidArgument with filters; retrying unfiltered: %r",
                             request.trace_id, err.details())
                 retry = pb.SearchChunksRequest()
                 retry.CopyFrom(request)
@@ -100,7 +101,7 @@ def locate(coordinator, type_name: str, chunk_property: str,
         except QueryRejected as err:
             # §6 row 1: the unfiltered retry recurred, so this one query is skipped — it is
             # reported to the model as an empty query and the remaining queries still run.
-            log.warning("[locate] trace=%s skipping query %r after unfiltered retry: %s",
+            log.warning("[locate] trace=%s skipping query %r after unfiltered retry: %r",
                         trace_id, query_text, err)
             skipped += 1
             empty_queries.append(query_text)

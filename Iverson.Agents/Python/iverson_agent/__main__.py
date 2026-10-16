@@ -7,6 +7,7 @@ import importlib
 import ipaddress
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -47,6 +48,18 @@ def _is_loopback(host: str | None) -> bool:
         return False
 
 
+# C0 controls except tab (\x09) and newline (\x0a), DEL (\x7f), and C1 controls (\x80-\x9f).
+_TERMINAL_CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _printable(text: str) -> str:
+    """`text` with the characters a terminal acts on removed (CSR round-11 #17).
+
+    Answers, document keys and titles, flags and error messages carry tenant-authored or model
+    text; printed raw, an escape or control sequence in them would drive the operator's terminal."""
+    return _TERMINAL_CONTROLS.sub("", text)
+
+
 def _entity(spec: str) -> type:
     """Resolve `module:Class` to the @iverson_entity class, failing with the spec in the message."""
     module, sep, name = spec.partition(":")
@@ -62,6 +75,17 @@ def _entity(spec: str) -> type:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Runs the CLI. Any error ends it with one `Type: message` report on stderr and exit status 1
+    instead of a traceback, because tracebacks would carry server and model text raw
+    (CSR round-11 #17). argparse's own exits are SystemExit and pass through unchanged."""
+    try:
+        return _run(argv)
+    except Exception as err:  # noqa: BLE001 -- top-level CLI error reporting
+        print(f"{type(err).__name__}: {_printable(str(err))}", file=sys.stderr)
+        return 1
+
+
+def _run(argv: list[str] | None) -> int:
     ap = argparse.ArgumentParser(prog="iverson_agent")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("ask", "evaluate"):
@@ -97,11 +121,11 @@ def main(argv: list[str] | None = None) -> int:
             title_field=args.title_field)
         if args.cmd == "ask":
             answer = session.run(args.question, token, trace_id=args.trace_id)
-            print(answer.text)
+            print(_printable(answer.text))
             for c in answer.citations:
-                print(f"  [doc {c.doc_number}] {c.key} {c.title or ''}")
+                print(f"  [doc {c.doc_number}] {_printable(c.key)} {_printable(c.title or '')}")
             for f in answer.flags:
-                print(f"  ! {f}", file=sys.stderr)
+                print(f"  ! {_printable(f)}", file=sys.stderr)
             return 0
         report = evaluate(session, load_items(args.items), token,
                           lambda text, passages: judge_grounding(client, cfg.model, text, passages))

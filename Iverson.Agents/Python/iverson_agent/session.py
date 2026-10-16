@@ -12,7 +12,7 @@ from iverson_client.core import _to_pascal_case
 from iverson_agent.config import AgentConfig
 from iverson_agent.planner import plan
 from iverson_agent.retrieval import (
-    DocumentContext, RankedParent, _render_one, assemble, estimate_tokens, locate, render_context,
+    DocumentContext, RankedParent, _escape, _render_one, assemble, estimate_tokens, locate, render_context,
 )
 from iverson_agent.schema import SchemaCache, render_schema, resolve_type, validate_filters
 
@@ -223,7 +223,8 @@ class AgentSession:
         if state.contexts:
             parts.append(render_context(state.contexts, self._cfg.context_tokens))
         for q in state.empty_queries:
-            parts.append(f"No documents were found for: {q}")
+            # CSR round-11 #23: model text outside the <doc> wrapper is escaped like the text inside it.
+            parts.append(f"No documents were found for: {_escape(q)}")
         if not state.contexts and not state.empty_queries:
             parts.append("No documents were found.")
         parts.append(f"Question: {question}")
@@ -238,7 +239,7 @@ class AgentSession:
             known = {c.key for c in state.contexts}
             fresh = [c for c in new_contexts if c.key not in known]
             if not fresh:
-                return f"No new documents were found for: {inp['query_text']}"
+                return f"No new documents were found for: {_escape(inp['query_text'])}"
             start = len(state.contexts)
             state.contexts.extend(fresh)
             return "\n\n".join(_render_block(start + i + 1, c) for i, c in enumerate(fresh))
@@ -261,7 +262,7 @@ class AgentSession:
             # place that wraps document content in <doc>...</doc>): expand_document pulls MORE
             # passages out of a document, exactly where an injected instruction would surface.
             return _render_one(n, target, new_passages)
-        return f"Unknown tool {name}."
+        return f"Unknown tool {_escape(name)}."
 
 
 @dataclass
