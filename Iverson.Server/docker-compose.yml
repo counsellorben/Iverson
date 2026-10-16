@@ -209,7 +209,7 @@ services:
   # pre-allocate a 32k context and take twenty). HF_HUB_DISABLE_XET: the Hub's Xet download path
   # fails from this box, the classic path works. First start: ~11 min download + ~10 min warm-up.
   tgi:
-    image: ghcr.io/huggingface/text-generation-inference:3.3.4-intel-cpu@sha256:38c57c4c0ab9150caa3a6e69e1403d84e2f06fe2278bbe013944f6d2c240f1e1
+    image: ghcr.io/huggingface/text-generation-inference:3.3.7-intel-cpu@sha256:89b4cc8d6e4f7c184c63485a63094760ac9454be658a90f68bc8ecc3cde228bc
     container_name: iverson-tgi
     profiles: ["tgi"]
     command: ["--model-id", "${GEN_MODEL_ID:-Qwen/Qwen2.5-1.5B-Instruct}", "--dtype", "bfloat16", "--max-input-tokens", "3072", "--max-total-tokens", "3584", "--max-batch-prefill-tokens", "3072"]
