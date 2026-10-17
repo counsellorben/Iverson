@@ -4,7 +4,7 @@ metadata:
   name: {{ .Release.Name }}-postgres
 spec:
   instances: {{ .Values.instances }}
-  enableSuperuserAccess: false   # least privilege — api never authenticates as `postgres`, only the app user below
+  enableSuperuserAccess: false   # least privilege — nothing authenticates as `postgres`: the worker and the hooks use the owner `iverson`, the api uses iverson_api below
   storage:
     size: {{ .Values.storageSize }}
     storageClass: {{ .Values.storageClassName | quote }}
@@ -24,7 +24,7 @@ spec:
     initdb:
       database: iverson
       owner: iverson
-      # Run once, as superuser, right after initdb. The API's startup (PostgresSchemaManager
+      # Run once, as superuser, right after initdb. The worker's startup (PostgresSchemaManager
       # .EnsureRolesAsync) creates two NOLOGIN roles and every entity-table access then runs under
       # one of them via `SET LOCAL ROLE`: `iverson_runtime` for tenant-scoped reads and writes
       # (owns nothing, holds no BYPASSRLS, so the tenant-isolation policy genuinely applies), and
@@ -35,7 +35,7 @@ spec:
       # On docker-compose the app user is the Postgres superuser, so both creations work
       # implicitly; here enableSuperuserAccess is false and the app user can neither CREATE ROLE
       # (SqlState 42501) nor grant BYPASSRLS nor SET ROLE without membership. Creating both roles
-      # and granting membership at bootstrap makes the API's own CREATEs a no-op.
+      # and granting membership at bootstrap makes the worker's own CREATEs a no-op.
       #
       # An already-initialised cluster does not re-run this: apply the four statements by hand
       # (`kubectl cnpg psql <release>-postgres -- -d iverson`). EnsureRolesAsync fails startup with
@@ -52,6 +52,17 @@ spec:
         login: true
         passwordSecret:
           name: {{ .Release.Name }}-authentik-postgres
+      # CSR round 12 §6.1: the api's own login. A member of iverson_runtime, which
+      # postInitApplicationSQL above creates at initdb, so it exists before CNPG reconciles this.
+      # No BYPASSRLS, no iverson_maintenance, owns nothing. CNPG creates it on an existing cluster
+      # too. Its CONNECT and table grants come from the worker at startup, as the database owner.
+      - name: iverson_api
+        ensure: present
+        login: true
+        inRoles:
+          - iverson_runtime
+        passwordSecret:
+          name: {{ .Release.Name }}-postgres-api
   postgresql:
     parameters:
       max_connections: "200"

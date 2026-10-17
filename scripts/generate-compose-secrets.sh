@@ -25,6 +25,9 @@ NAMES=(
     AUTHENTIK_SECRET_KEY
     AUTHENTIK_BOOTSTRAP_PASSWORD
     AUTHENTIK_BOOTSTRAP_TOKEN
+    # CSR round 12 §7.1: the master key every StarRocks tenant login's password is derived from.
+    # Never change it on a stack that has tenant logins: provisioning only creates missing ones.
+    IVERSON_STARROCKS_TENANT_KEY
 )
 
 umask 077

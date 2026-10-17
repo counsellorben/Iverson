@@ -92,9 +92,21 @@ spec:
                   key: password
             - name: ConnectionStrings__StarRocksProvisioner
               value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;User Id=iverson_provisioner;Password=$(STARROCKS_PROVISIONER_PASSWORD);SslMode=VerifyFull;SslCa=/etc/starrocks-tls/ca.crt;"
+            # CSR round 12 §7.1: the api's master key. The worker's upserts and popularity
+            # aggregates log in as each tenant, and provisioning creates each tenant's login with
+            # the password derived from it.
+            - name: StarRocks__TenantKey
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-starrocks-tenant-key
+                  key: tenant-key
             {{- end }}
             - name: Engagement__Enabled
               value: {{ .Values.global.engagementEnabled | quote }}
+            # CSR round 12 §6.3: the legacy-tenant seed is part of the startup DDL, which only the
+            # worker runs. Moved from the api Deployment.
+            - name: Tenancy__SeedLegacyTenants
+              value: {{ .Values.global.provisionTestIdentities | quote }}
             - name: QDRANT_API_KEY
               valueFrom:
                 secretKeyRef:
