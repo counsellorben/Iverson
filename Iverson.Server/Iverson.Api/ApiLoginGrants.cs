@@ -55,11 +55,29 @@ internal static class ApiLoginGrants
     ];
 
     /// <summary>
+    /// Every table <see cref="Statements"/> grants on. The worker's grant transaction takes each
+    /// one's schema-apply lock first, so a GRANT here never races another replica's
+    /// <c>ApplySchemaAsync</c> of the same table. A statement added above must add its table here.
+    /// </summary>
+    public static readonly IReadOnlyList<string> Tables =
+    [
+        ReconciliationSchema.TableName,
+        DlqSchema.TableName,
+        TenantSchema.TableName,
+        "iverson_token_revocations",
+        "_iverson_schema",
+        PrivilegedRequestSchema.TableName,
+        StarRocksTenantSchema.TableName,
+    ];
+
+    /// <summary>
     /// /health's grants check. One-argument <c>has_table_privilege</c> checks <c>current_user</c>:
     /// for the api that is its own login, and for the worker, which owns the table, it is always
     /// true. The worker grants everything in <see cref="Statements"/> in one transaction, so this
-    /// one privilege stands for all of them. It raises 42P01, which /health reads as false, until
-    /// the worker has created the table.
+    /// one privilege stands for all of them. That holds only because every grant has shipped with
+    /// this login in that one transaction: a later release that adds a grant must also move this
+    /// probe to the new grant, or a login granted by an older worker reads as ready without it. It
+    /// raises 42P01, which /health reads as false, until the worker has created the table.
     /// </summary>
     public static readonly string ReadinessProbeSql =
         $"""SELECT has_table_privilege('"{ReconciliationSchema.TableName}"', 'INSERT')""";

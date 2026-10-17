@@ -90,10 +90,13 @@ public interface IRecordStoreSchemaManager
     /// either by waiting up to <paramref name="roleWait"/> for a managed one or, when
     /// <paramref name="password"/> is given, by creating it. It then makes the login a member of
     /// <c>iverson_runtime</c> and grants it every statement in <paramref name="grantStatements"/>,
-    /// all in one transaction. Idempotent. Run it after the plumbing DDL, since the statements name
-    /// those tables.
+    /// all in one transaction. <paramref name="grantedTables"/> names every table those statements
+    /// grant on: the transaction holds each one's schema-apply lock, so its GRANTs never run
+    /// concurrently with another process's <see cref="IRecordStoreSchemaManager.ApplySchemaAsync"/>
+    /// of that table. Idempotent. Run it after the plumbing DDL, since the statements name those tables.
     /// </summary>
-    Task EnsureApiLoginAsync(string? password, IReadOnlyList<string> grantStatements, TimeSpan roleWait);
+    Task EnsureApiLoginAsync(
+        string? password, IReadOnlyList<string> grantStatements, IReadOnlyList<string> grantedTables, TimeSpan roleWait);
 }
 
 public interface IRecordStoreTransactionRunner

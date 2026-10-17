@@ -49,6 +49,6 @@ internal static class WorkerStoreBootstrap
         await schemaManager.ApplySchemaAsync(Iverson.Api.PrivilegedRequests.PrivilegedRequestSchema.Table);
 
         // Last, once every table the grants name exists (CSR round 12 §6.2).
-        await schemaManager.EnsureApiLoginAsync(apiLoginPassword, ApiLoginGrants.Statements, apiLoginWait);
+        await schemaManager.EnsureApiLoginAsync(apiLoginPassword, ApiLoginGrants.Statements, ApiLoginGrants.Tables, apiLoginWait);
     }
 }

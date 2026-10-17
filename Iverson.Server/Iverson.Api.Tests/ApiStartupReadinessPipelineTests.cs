@@ -177,7 +177,7 @@ public class ApiStartupReadinessPipelineTests
         await factory.SchemaManager.Received(1).EnsureCanEnterRuntimeRoleAsync();
         await factory.SchemaManager.DidNotReceive().EnsureRolesAsync();
         await factory.SchemaManager.DidNotReceiveWithAnyArgs().ApplySchemaAsync(default!, default);
-        await factory.SchemaManager.DidNotReceiveWithAnyArgs().EnsureApiLoginAsync(default, default!, default);
+        await factory.SchemaManager.DidNotReceiveWithAnyArgs().EnsureApiLoginAsync(default, default!, default!, default);
         await factory.RegistryRepository.DidNotReceive().EnsureTableAsync();
         await factory.RegistryRepository.Received(1).LoadAllAsync();
         await factory.EnrichmentState.DidNotReceive().EnsureTableAsync();

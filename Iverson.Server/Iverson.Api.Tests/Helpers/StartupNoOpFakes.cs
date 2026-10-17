@@ -75,7 +75,8 @@ internal sealed class NoOpRecordStoreSchemaManager : IRecordStoreSchemaManager
         SchemaDriftPolicy driftPolicy = SchemaDriftPolicy.Warn) => Task.CompletedTask;
     public Task EnsureRolesAsync() => Task.CompletedTask;
     public Task EnsureCanEnterRuntimeRoleAsync() => Task.CompletedTask;
-    public Task EnsureApiLoginAsync(string? password, IReadOnlyList<string> grantStatements, TimeSpan roleWait) =>
+    public Task EnsureApiLoginAsync(
+        string? password, IReadOnlyList<string> grantStatements, IReadOnlyList<string> grantedTables, TimeSpan roleWait) =>
         Task.CompletedTask;
 }
 

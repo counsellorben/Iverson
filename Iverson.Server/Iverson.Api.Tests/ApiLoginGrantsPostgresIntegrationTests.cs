@@ -1,3 +1,4 @@
+using Dapper;
 using FluentAssertions;
 using Iverson.Api.Reconciliation;
 using Iverson.Api.Tenancy;
@@ -54,7 +55,7 @@ public sealed class ApiLoginGrantsPostgresContainerFixture : IAsyncLifetime
 
     /// <summary>The worker's grant step again, with the password: recreates the login if a test dropped it.</summary>
     public Task RestoreApiLoginAsync() =>
-        OwnerSchemaManager.EnsureApiLoginAsync(ApiPassword, ApiLoginGrants.Statements, TimeSpan.Zero);
+        OwnerSchemaManager.EnsureApiLoginAsync(ApiPassword, ApiLoginGrants.Statements, ApiLoginGrants.Tables, TimeSpan.Zero);
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
 }
@@ -351,13 +352,32 @@ public sealed class ApiLoginGrantsPostgresIntegrationTests(ApiLoginGrantsPostgre
     public async Task EnsureApiLogin_RunAgain_WithAndWithoutAPassword_IsIdempotent()
     {
         var withPassword = () => fixture.OwnerSchemaManager.EnsureApiLoginAsync(
-            ApiLoginGrantsPostgresContainerFixture.ApiPassword, ApiLoginGrants.Statements, TimeSpan.Zero);
+            ApiLoginGrantsPostgresContainerFixture.ApiPassword, ApiLoginGrants.Statements, ApiLoginGrants.Tables, TimeSpan.Zero);
         var withoutPassword = () => fixture.OwnerSchemaManager.EnsureApiLoginAsync(
-            null, ApiLoginGrants.Statements, TimeSpan.Zero);
+            null, ApiLoginGrants.Statements, ApiLoginGrants.Tables, TimeSpan.Zero);
 
         await withPassword.Should().NotThrowAsync();
         await withoutPassword.Should().NotThrowAsync();
         (await _api.QuerySingleOrDefaultAsync<bool>(ApiLoginGrants.ReadinessProbeSql)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task EnsureApiLogin_WaitsForTheSchemaApplyLockOfEveryTableItGrantsOn()
+    {
+        foreach (var table in ApiLoginGrants.Tables)
+        {
+            await using var holder = new NpgsqlConnection(fixture.OwnerConnectionString);
+            await holder.OpenAsync();
+            // ApplySchemaAsync's lock statement, verbatim: a replica applying this table's schema.
+            await holder.ExecuteAsync("SELECT pg_advisory_lock(hashtext(@TableName)::bigint)", new { TableName = table });
+
+            var ensure = fixture.RestoreApiLoginAsync();
+            await Task.Delay(500);
+            ensure.IsCompleted.Should().BeFalse($"the grants on {table} must wait for its schema apply");
+
+            await holder.ExecuteAsync("SELECT pg_advisory_unlock(hashtext(@TableName)::bigint)", new { TableName = table });
+            await ensure.WaitAsync(TimeSpan.FromSeconds(10));
+        }
     }
 
     [Fact]
@@ -369,7 +389,7 @@ public sealed class ApiLoginGrantsPostgresIntegrationTests(ApiLoginGrantsPostgre
 
         try
         {
-            var act = () => fixture.OwnerSchemaManager.EnsureApiLoginAsync(null, ApiLoginGrants.Statements, TimeSpan.Zero);
+            var act = () => fixture.OwnerSchemaManager.EnsureApiLoginAsync(null, ApiLoginGrants.Statements, ApiLoginGrants.Tables, TimeSpan.Zero);
 
             (await act.Should().ThrowAsync<InvalidOperationException>())
                 .Which.Message.Should().Contain("iverson_api").And.Contain("Postgres__ApiLoginPassword");

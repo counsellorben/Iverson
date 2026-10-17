@@ -17,6 +17,10 @@ public sealed class PostgresSchemaManager(
 
     private NpgsqlConnection CreateConnection() => new(connectionString);
 
+    // The per-table schema-apply lock's key, bound to @TableName: ApplySchemaAsync holds it for the
+    // whole apply, and EnsureApiLoginAsync's grant transaction for each table it grants on.
+    private const string TableLockKeySql = "hashtext(@TableName)::bigint";
+
     public async Task ApplySchemaAsync(TableSchema schema, SchemaDriftPolicy driftPolicy = SchemaDriftPolicy.Warn)
     {
         // Every name is quoted before any connection is opened, so a name the helper refuses never
@@ -63,7 +67,7 @@ public sealed class PostgresSchemaManager(
         // finally rather than left to connection close: Npgsql pools connections, and a pooled
         // connection handed back while still holding a session advisory lock keeps holding it.
         await conn.ExecuteAsync(
-            "SELECT pg_advisory_lock(hashtext(@TableName)::bigint)", new { schema.TableName });
+            $"SELECT pg_advisory_lock({TableLockKeySql})", new { schema.TableName });
 
         try
         {
@@ -224,7 +228,7 @@ public sealed class PostgresSchemaManager(
         finally
         {
             await conn.ExecuteAsync(
-                "SELECT pg_advisory_unlock(hashtext(@TableName)::bigint)", new { schema.TableName });
+                $"SELECT pg_advisory_unlock({TableLockKeySql})", new { schema.TableName });
         }
     }
 
@@ -283,7 +287,8 @@ public sealed class PostgresSchemaManager(
         await EnsureCanEnterRoleAsync(conn, "iverson_runtime");
     }
 
-    public async Task EnsureApiLoginAsync(string? password, IReadOnlyList<string> grantStatements, TimeSpan roleWait)
+    public async Task EnsureApiLoginAsync(
+        string? password, IReadOnlyList<string> grantStatements, IReadOnlyList<string> grantedTables, TimeSpan roleWait)
     {
         await using var conn = CreateConnection();
         await conn.OpenAsync();
@@ -297,10 +302,17 @@ public sealed class PostgresSchemaManager(
 
         await using var tx = await conn.BeginTransactionAsync();
 
-        // Serialises worker replicas. Concurrent GRANTs on one table fail with XX000 "tuple
-        // concurrently updated" (see ApplySchemaAsync), and two replicas could both try CREATE ROLE.
-        // Transaction-scoped, so the lock is never left on a pooled connection.
+        // Serialises worker replicas: two could both try CREATE ROLE, or GRANT on one table at once.
+        // Transaction-scoped, like the table locks below, so no lock is left on a pooled connection.
         await conn.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtext('iverson_api_login')::bigint)", null, tx);
+
+        // Then each granted table's schema-apply lock, so these GRANTs never run concurrently with
+        // another process's ApplySchemaAsync of the table: both rewrite its pg_class row, and
+        // Postgres fails the loser with XX000 "tuple concurrently updated". All of them before any
+        // grant, in one fixed order. ApplySchemaAsync holds one table's lock at a time and waits for
+        // no other advisory lock while it holds it, so no cycle can form.
+        foreach (var table in grantedTables.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+            await conn.ExecuteAsync($"SELECT pg_advisory_xact_lock({TableLockKeySql})", new { TableName = table }, tx);
 
         try
         {
