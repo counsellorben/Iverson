@@ -1,3 +1,4 @@
+using Dapper;
 using FluentAssertions;
 using Grpc.Core;
 using Iverson.Api.Grpc;
@@ -7,6 +8,7 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.Sql;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 using NSubstitute;
 using Testcontainers.PostgreSql;
 using Xunit;
@@ -365,7 +367,7 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
     [Fact]
     public async Task TheRegistrationLock_IsHeldByOneHolderAtATime()
     {
-        var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
+        await using var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
 
         var first = await locks.AcquireRegistrationAsync(CancellationToken.None);
         var second = locks.AcquireRegistrationAsync(CancellationToken.None);
@@ -380,7 +382,7 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
     public async Task ALockWaiter_OutlastsTheConnectionsCommandTimeout()
     {
         // A one-second command timeout stands in for Npgsql's 30 s default.
-        var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString + ";Command Timeout=1");
+        await using var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString + ";Command Timeout=1");
 
         var first = await locks.AcquireRegistrationAsync(CancellationToken.None);
         var second = locks.AcquireRegistrationAsync(CancellationToken.None);
@@ -394,7 +396,7 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
     [Fact]
     public async Task ATypeLock_SerialisesOneTypeIgnoringCase_AndBlocksNeitherAnotherTypeNorRegistration()
     {
-        var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
+        await using var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
 
         var article = await locks.AcquireTypeAsync("LockArticle", CancellationToken.None);
         await using (var other = await locks.AcquireTypeAsync("LockOther", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10))) { }
@@ -409,9 +411,78 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
     }
 
     [Fact]
+    public async Task ALockWaiter_HoldsNoConnectionWhileItWaits()
+    {
+        await using var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
+
+        var first = await locks.AcquireRegistrationAsync(CancellationToken.None);
+        var second = locks.AcquireRegistrationAsync(CancellationToken.None);
+        await Task.Delay(1000);
+
+        // A waiter blocked inside pg_advisory_lock shows as an ungranted advisory lock, on a
+        // connection it keeps checked out of the pool for the whole wait.
+        second.IsCompleted.Should().BeFalse("the first holder still has the lock");
+        (await fixture.Repository.QuerySingleOrDefaultAsync<long>(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")).Should().Be(0);
+
+        await first.DisposeAsync();
+        await using var secondLease = await second.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task ALeaseWhoseUnlockFails_DoesNotLeaveTheLockHeld()
+    {
+        // pg_advisory_unlock refused to a non-superuser, in a database of the test's own (function
+        // privileges are per database), so the unlock fails on a connection that is still healthy.
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var database = $"unlock_probe_{suffix}";
+        var login = $"unlock_probe_{suffix}";
+        await fixture.Repository.ExecuteAsync($"CREATE DATABASE {database}");
+        await fixture.Repository.ExecuteAsync($"CREATE ROLE {login} LOGIN PASSWORD 'unlock-probe'");
+        var ownerInProbe = new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Database = database }.ConnectionString;
+        var loginInProbe = new NpgsqlConnectionStringBuilder(ownerInProbe) { Username = login, Password = "unlock-probe" }.ConnectionString;
+
+        try
+        {
+            await using (var owner = new NpgsqlConnection(ownerInProbe))
+            {
+                await owner.OpenAsync();
+                await owner.ExecuteAsync("REVOKE EXECUTE ON FUNCTION pg_advisory_unlock(bigint) FROM PUBLIC");
+            }
+
+            await using (var locks = new PostgresPrivilegedRequestLocks(loginInProbe))
+            {
+                var lease = await locks.AcquireRegistrationAsync(CancellationToken.None);
+                (await lease.Invoking(l => l.DisposeAsync().AsTask()).Should().ThrowAsync<PostgresException>())
+                    .Which.SqlState.Should().Be("42501");
+
+                await using var probe = new NpgsqlConnection(ownerInProbe);
+                await probe.OpenAsync();
+                var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+                var taken = false;
+                while (!taken && DateTimeOffset.UtcNow < deadline)
+                {
+                    taken = await probe.ExecuteScalarAsync<bool>(
+                        "SELECT pg_try_advisory_lock(@Key)", new { Key = 1L << 41 }); // the registration key
+                    if (!taken)
+                        await Task.Delay(100);
+                }
+
+                taken.Should().BeTrue("the failed lease's connection must not go back to the pool still holding the lock");
+            }
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await fixture.Repository.ExecuteAsync($"DROP DATABASE {database} WITH (FORCE)");
+            await fixture.Repository.ExecuteAsync($"DROP ROLE {login}");
+        }
+    }
+
+    [Fact]
     public async Task TheLockKeys_LieOutsideTheRangeOfTheHashtextTableLocks()
     {
-        var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
+        await using var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
         await using var registration = await locks.AcquireRegistrationAsync(CancellationToken.None);
         await using var type = await locks.AcquireTypeAsync("LockKeyProbe", CancellationToken.None);
 
