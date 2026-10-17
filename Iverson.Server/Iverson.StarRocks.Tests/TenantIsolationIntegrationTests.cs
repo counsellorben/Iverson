@@ -25,13 +25,16 @@ public sealed class TenantIsolationIntegrationTests
 
         // The two production logins (CSR round 11 §3), set up exactly as job-create-user.yaml sets them
         // up. StarRocksSplitLogins explains the grants, why they are safe to re-run in any class order,
-        // and why the connection strings name no default database. _appRepo queries as iverson_app and
-        // provisions as iverson_provisioner, as the worker does.
+        // and why the connection strings name no default database. _appRepo provisions as
+        // iverson_provisioner, which creates each tenant's own login, and reads and writes as that login
+        // (CSR round 12 §7.2), recording tenants in memory as the worker records them in Postgres.
         var (appConnectionString, provisionerConnectionString) =
             StarRocksSplitLogins.EnsureAsync(fx).GetAwaiter().GetResult();
 
         _appRepo = new EngagementRepository(appConnectionString, NullLogger<EngagementRepository>.Instance,
-            provisionerConnectionString: provisionerConnectionString);
+            provisionerConnectionString: provisionerConnectionString,
+            tenantLoginKey: StarRocksSplitLogins.TenantLoginKey,
+            provisionedTenants: new InMemoryProvisionedTenantDirectory());
     }
 
     private static EngagementTableSchema ProbeSchema(string tableName) =>
@@ -47,7 +50,7 @@ public sealed class TenantIsolationIntegrationTests
         JsonSerializer.Serialize(new { Id = id, Name = name });
 
     // TenantColumn deliberately left null throughout this file: the point of these tests is to
-    // prove the SET ROLE / GRANT boundary (Tasks 2-6) blocks cross-tenant reads on its own, not
+    // prove the per-tenant login / GRANT boundary blocks cross-tenant reads on its own, not
     // that StarRocksQueryBuilder's application-level WHERE-clause tenant filter (Part A) does.
     private static Dictionary<string, AuthorizationConstraint> AuthzFor(string typeName, string tenantId) =>
         new() { [typeName] = new AuthorizationConstraint(null, null, null, TenantValue: tenantId) };

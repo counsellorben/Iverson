@@ -43,6 +43,9 @@ internal static class WorkerStoreBootstrap
         await schemaManager.ApplySchemaAsync(ReconciliationSchema.Table);
         await schemaManager.ApplySchemaAsync(DlqSchema.Table);
         await schemaManager.ApplySchemaAsync(TenantSchema.Table);
+
+        // CSR round 12 §7.3: which tenants have a StarRocks login. Before the grants below, which name it.
+        await schemaManager.ApplySchemaAsync(StarRocksTenantSchema.Table);
         await schemaManager.ApplySchemaAsync(Iverson.Api.PrivilegedRequests.PrivilegedRequestSchema.Table);
 
         // Last, once every table the grants name exists (CSR round 12 §6.2).

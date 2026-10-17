@@ -113,6 +113,28 @@ public static class TenantIdentifier
         return new string(buffer);
     }
 
+    // ── tenant logins (CSR round 12 §7.1) ─────────────────────────────────────────────────────
+
+    private const string LoginPrefix = "iverson_t_";
+
+    /// <summary>
+    /// The tenant's own StarRocks login, <c>iverson_t_{fingerprint}</c>: the same 25-digit fingerprint
+    /// <see cref="RoleName"/> ends in, so 35 characters for every tenant. The fingerprint alone keeps tenants
+    /// apart (see <see cref="RoleName"/>); a login name has no readable part, because nobody greps for it.
+    /// </summary>
+    internal static string LoginName(string tenantId) => LoginPrefix + Fingerprint(tenantId);
+
+    /// <summary>
+    /// The tenant login's password: lower-case hex HMAC-SHA256 of <c>"starrocks-tenant:" + tenantId</c> under
+    /// the UTF-8 bytes of <paramref name="tenantLoginKey"/>, 64 characters. Deterministic, so the api and the
+    /// worker derive the same password from the key they share with nothing stored, and every caller builds the
+    /// identical connection string for a tenant, hence the same pool.
+    /// </summary>
+    internal static string LoginPassword(string tenantId, string tenantLoginKey) =>
+        Convert.ToHexStringLower(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(tenantLoginKey),
+            Encoding.UTF8.GetBytes("starrocks-tenant:" + tenantId)));
+
     internal static string Qualify(string? tenantDatabase, string tableName) =>
         tenantDatabase is null ? $"`{tableName}`" : $"`{tenantDatabase}`.`{tableName}`";
 }

@@ -28,6 +28,9 @@ namespace Iverson.StarRocks.Tests;
 internal static class StarRocksSplitLogins
 {
     internal const string AppPassword = "test_pw";
+
+    /// <summary>The key every test repository derives tenant login passwords from (CSR round 12 §7.1).</summary>
+    internal const string TenantLoginKey = "test-tenant-login-key";
     private const string ProvisionerPassword = "test_provisioner_pw";
 
     public static async Task<(string App, string Provisioner)> EnsureAsync(StarRocksContainerFixture fx)

@@ -49,6 +49,9 @@ internal static class ApiLoginGrants
         // expires its own.
         $"""GRANT INSERT, SELECT ON "IversonPrivilegedRequests" TO {Login}""",
         $"""GRANT UPDATE ("Status") ON "IversonPrivilegedRequests" TO {Login}""",
+
+        // Spec §7.3's provisioned-tenant check before every StarRocks read. Only the worker records.
+        $"""GRANT SELECT ON "{StarRocksTenantSchema.TableName}" TO {Login}""",
     ];
 
     /// <summary>

@@ -280,6 +280,17 @@ if (string.IsNullOrWhiteSpace(starRocksProvisionerConnectionString))
     starRocksProvisionerConnectionString = null;
 }
 
+// CSR round 12 §7.1: every StarRocks data connection logs in as the tenant's own user, whose password is
+// derived from this key. Both roles derive it: the api to read, the worker to provision, write and aggregate.
+var starRocksTenantLoginKey = cfg["StarRocks:TenantKey"];
+if (string.IsNullOrWhiteSpace(starRocksTenantLoginKey))
+{
+    if (engagementStoreEnabledAtStartup)
+        throw new InvalidOperationException(
+            "StarRocks:TenantKey is required when Engagement:Enabled is true and was not configured.");
+    starRocksTenantLoginKey = null;
+}
+
 builder.Services.AddStarRocks(
     string.IsNullOrWhiteSpace(starRocksConnectionString)
         ? (engagementStoreEnabledAtStartup
@@ -319,7 +330,8 @@ builder.Services.AddStarRocks(
         MaxTopK            = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxTopK", EngagementQueryLimitOptions.Default.MaxTopK),
         MaxRelationDepth   = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxRelationDepth", EngagementQueryLimitOptions.Default.MaxRelationDepth)
     },
-    provisionerConnectionString: starRocksProvisionerConnectionString);
+    provisionerConnectionString: starRocksProvisionerConnectionString,
+    tenantLoginKey: starRocksTenantLoginKey);
 
 builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",
@@ -394,6 +406,10 @@ builder.Services.AddSingleton<IDlqRepository>(sp => new DlqRepository(
 builder.Services.AddSingleton<ITenantRepository>(sp => new TenantRepository(
     Iverson.Api.Tenancy.TenantSchema.TableName,
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+// CSR round 12 §7.3: which tenants have a StarRocks login. AddStarRocks hands it to EngagementRepository, whose
+// readers consult it before connecting and whose provisioning (worker only) records into it.
+builder.Services.AddSingleton<IProvisionedTenantDirectory>(sp =>
+    new Iverson.Api.Tenancy.PostgresProvisionedTenantDirectory(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITenantStatusCache, Iverson.Api.Tenancy.TenantStatusCache>();
 // CSR round-10 #11: the subs of removed and demoted users, and the 30 s snapshot of them that

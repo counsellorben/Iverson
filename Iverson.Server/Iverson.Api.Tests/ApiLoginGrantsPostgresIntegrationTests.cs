@@ -144,6 +144,7 @@ public sealed class ApiLoginGrantsPostgresIntegrationTests(ApiLoginGrantsPostgre
             "iverson_token_revocations:SELECT", "iverson_token_revocations:INSERT", "iverson_token_revocations:UPDATE",
             "_iverson_schema:SELECT",
             "IversonPrivilegedRequests:INSERT", "IversonPrivilegedRequests:SELECT",
+            "IversonStarRocksTenants:SELECT",
         });
         columnPrivileges.Should().BeEquivalentTo(new[]
         {

@@ -11,7 +11,8 @@ public static class ServiceCollectionExtensions
         EngagementResilienceOptions? resilienceOptions = null,
         bool engagementEnabled = true,
         EngagementQueryLimitOptions? queryLimitOptions = null,
-        string? provisionerConnectionString = null)
+        string? provisionerConnectionString = null,
+        string? tenantLoginKey = null)
     {
         var resolvedQueryLimits = queryLimitOptions ?? EngagementQueryLimitOptions.Default;
 
@@ -25,8 +26,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<EngagementRepository>>();
+            // CSR round 12 §7.3: the provisioned-tenant directory comes from the host (Iverson.Api registers the
+            // Postgres one). Without it, tenant-scoped data calls refuse rather than connect.
             return new EngagementRepository(
-                connectionString, logger, resilienceOptions, resolvedQueryLimits, provisionerConnectionString);
+                connectionString, logger, resilienceOptions, resolvedQueryLimits, provisionerConnectionString,
+                tenantLoginKey, sp.GetService<IProvisionedTenantDirectory>());
         });
         services.AddSingleton<IEngagementStoreQueryExecutor>(sp => sp.GetRequiredService<EngagementRepository>());
         services.AddSingleton<IEngagementStoreEntityStore>(sp => sp.GetRequiredService<EngagementRepository>());

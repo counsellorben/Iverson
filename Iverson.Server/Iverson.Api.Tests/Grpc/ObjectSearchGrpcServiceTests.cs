@@ -2385,6 +2385,66 @@ public class ObjectSearchGrpcServiceTests
             .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
     }
 
+    // CSR round 12 §7.3: a recorded tenant whose StarRocks login is refused surfaces from EngagementRepository
+    // as EngagementNotReadyException (StarRocksTenantLoginIntegrationTests). Every read RPC must answer it with
+    // Unavailable, not Unknown; Pipeline and MatchPattern are pinned above and in MatchPatternGrpcServiceTests.
+    private const string TenantLoginRefused = "StarRocks refused the tenant's login.";
+
+    [Fact]
+    public async Task Search_TenantLoginRefused_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.SearchAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementNotReadyException(TenantLoginRefused));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+    }
+
+    [Fact]
+    public async Task Aggregate_TenantLoginRefused_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<SrAggResult?>>(_ => throw new EngagementNotReadyException(TenantLoginRefused));
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Aggregations.Add(new AggregationSpec { Name = "name_terms", Type = AggregationType.Terms, Field = "Name" });
+        var act = async () => await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+    }
+
+    [Fact]
+    public async Task GroupBy_TenantLoginRefused_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+        _search.GroupByAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementNotReadyException(TenantLoginRefused));
+
+        var request = new GroupByRequest { TypeName = "Owned", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+    }
+
     [Fact]
     public async Task Pipeline_EngagementStoreDisabled_ThrowsFailedPrecondition()
     {
