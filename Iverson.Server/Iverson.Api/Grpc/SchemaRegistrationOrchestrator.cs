@@ -83,6 +83,8 @@ public sealed class SchemaRegistrationOrchestrator(
                 ValidateIdentifier(relation.RelatedType, $"relation related type on type '{typeDesc.TypeName}'");
             }
 
+            RejectCaseDuplicateProperties(typeDesc);
+
             var priorRegistered = registry.Get(typeDesc.TypeName);
             if (priorRegistered is not null && priorRegistered.OwnerTenantId != ownerTenantId)
                 throw new RpcException(new Status(StatusCode.PermissionDenied,
@@ -267,6 +269,26 @@ public sealed class SchemaRegistrationOrchestrator(
                 }
             }
 
+            // CSR round 12 §2.4. A navigation property is a payload key, never a column. The write
+            // RPCs rename every payload key to the column it names ignoring case, so a navigation
+            // name that matches a column would be renamed onto that column. This runs after the
+            // collision check above, so a navigation property named exactly like its own foreign
+            // key keeps that message.
+            foreach (var relation in descriptor.Relations)
+            {
+                var column = descriptor.ScalarColumns
+                    .Select(c => c.Name)
+                    .Prepend(descriptor.KeyColumn.Name)
+                    .FirstOrDefault(name => string.Equals(name, relation.PropertyName, StringComparison.OrdinalIgnoreCase));
+                if (column is not null)
+                {
+                    throw new RpcException(new Status(StatusCode.InvalidArgument,
+                        $"Relation '{relation.PropertyName}' ({relation.Kind}) on '{descriptor.TypeName}' has a " +
+                        $"navigation-property name that matches column '{column}' ignoring case. A navigation " +
+                        "property must not share its name with any property, in any letter case."));
+                }
+            }
+
             descriptors.Add(descriptor);
             batchDescriptors[descriptor.TypeName] = descriptor;
         }
@@ -438,6 +460,24 @@ public sealed class SchemaRegistrationOrchestrator(
                 $"Document template references property '{propertyName}' on '{context.TypeName}', which " +
                 "carries a FieldPermission; a document template cannot selectively exclude fields per caller."));
         }
+    }
+
+    // CSR round 12 §2.4 (user decision 7). This refuses two properties, or the key and a property,
+    // whose names are equal ignoring case. Postgres would create both quoted columns, but StarRocks
+    // resolves column names case-insensitively and cannot hold both. A write RPC also could not
+    // tell which column a payload key names. Runs on the inbound typeDesc, which holds the key and
+    // every property.
+    private static void RejectCaseDuplicateProperties(TypeDescriptor typeDesc)
+    {
+        var duplicate = typeDesc.Properties
+            .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is null) return;
+
+        throw new RpcException(new Status(StatusCode.InvalidArgument,
+            $"'{typeDesc.TypeName}' declares properties {string.Join(", ", duplicate.Select(p => $"'{p.Name}'"))} " +
+            "whose names are equal ignoring letter case. Property names must be distinct ignoring case; " +
+            "rename one of them."));
     }
 
     /// <summary>

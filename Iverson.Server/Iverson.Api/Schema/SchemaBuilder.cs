@@ -228,7 +228,7 @@ internal static class SchemaBuilder
         //    violation rather than orphan a row behind RLS with no tenant.
         scalars.Add(new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false));
 
-        return new SchemaDescriptor
+        return NormalizeDeclaredNames(new SchemaDescriptor
         {
             TypeName          = typeDesc.TypeName,
             TableName         = tableName,
@@ -252,6 +252,56 @@ internal static class SchemaBuilder
             EnrichmentTargets = enrichmentTargets,
             DocumentTemplate       = documentTemplate,
             DocumentTemplateSource = string.IsNullOrEmpty(typeDesc.DocumentTemplate) ? null : typeDesc.DocumentTemplate
+        });
+    }
+
+    /// <summary>
+    /// CSR round 12 §2.2. Rewrites the names a type declares by reference to the spelling of the one
+    /// column each names, ignoring case. These are <c>Authorization.OwnerField</c>, every
+    /// <c>Authorization.FieldPermissions[].FieldName</c>, and the <c>ForeignKey</c> of every relation
+    /// that is not OneToMany.
+    /// <para>
+    /// Registration matches these names case-insensitively, but it used to store the caller's
+    /// spelling. The write gate looks a name up exactly or lower-first
+    /// (<c>StructFieldAccess.Candidates</c>). So with an owner field spelled unlike its column beyond
+    /// the first letter, an owner-scoped writer could set the owner on create, because the
+    /// authoritative value went in under a second key, and a bypass writer skipped
+    /// <c>OwnerImmutable</c>.
+    /// </para>
+    /// <para>
+    /// A name that matches no column is left as declared. So is a name that matches more than one,
+    /// on a type stored before case-duplicate columns were refused. The server-owned tenant column
+    /// is never a target. A OneToMany foreign key names a column of the related type, so this
+    /// type's columns cannot spell it. Called by <see cref="BuildDescriptor"/>, and by
+    /// <c>SchemaRegistry.LoadAsync</c> for stored descriptors.
+    /// </para>
+    /// </summary>
+    internal static SchemaDescriptor NormalizeDeclaredNames(SchemaDescriptor descriptor)
+    {
+        var columnSpelling = descriptor.ScalarColumns
+            .Select(c => c.Name)
+            .Prepend(descriptor.KeyColumn.Name)
+            .Where(name => !SchemaDescriptor.IsTenantColumn(name))
+            .Distinct(StringComparer.Ordinal)
+            .GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Where(spellings => spellings.Count() == 1)
+            .ToDictionary(spellings => spellings.Key, spellings => spellings.Single(), StringComparer.OrdinalIgnoreCase);
+
+        string ColumnSpelling(string name) =>
+            columnSpelling.TryGetValue(name, out var column) ? column : name;
+
+        return descriptor with
+        {
+            Relations = descriptor.Relations
+                .Select(r => r.Kind == SchemaRelationKind.OneToMany ? r : r with { ForeignKey = ColumnSpelling(r.ForeignKey) })
+                .ToList(),
+            Authorization = descriptor.Authorization is not { } authorization ? null : authorization with
+            {
+                OwnerField       = authorization.OwnerField is null ? null : ColumnSpelling(authorization.OwnerField),
+                FieldPermissions = authorization.FieldPermissions
+                    .Select(fp => fp with { FieldName = ColumnSpelling(fp.FieldName) })
+                    .ToList()
+            }
         };
     }
 

@@ -1650,6 +1650,62 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.Status.Detail.Should().Contain("WidgetId").And.Contain("identical to its foreign key");
     }
 
+    // ── CSR round 12 §2.4: names a write payload could not tell apart ─────────
+    // The write RPCs map each payload key to the column it names ignoring case, so two columns
+    // that differ only by case, or a navigation property named like a column, cannot be told apart.
+
+    [Fact]
+    public async Task RegisterAsync_TwoPropertiesWhoseNamesDifferOnlyByCase_ThrowsInvalidArgument()
+    {
+        var td = SimpleType("Widget", "Url", "URL");
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("'Url'").And.Contain("'URL'");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_TheKeyAndAPropertyWhoseNamesDifferOnlyByCase_ThrowsInvalidArgument()
+    {
+        var td = SimpleType("Widget", "ID");
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("'Id'").And.Contain("'ID'");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(Client.Contracts.RelationKind.ManyToOne, "Name")]
+    [InlineData(Client.Contracts.RelationKind.ManyToOne, "name")]
+    [InlineData(Client.Contracts.RelationKind.ManyToOne, "id")]
+    [InlineData(Client.Contracts.RelationKind.OneToMany, "NAME")]
+    public async Task RegisterAsync_ANavigationPropertyNamedLikeAColumnInAnyCase_ThrowsInvalidArgument(
+        Client.Contracts.RelationKind kind, string navigationProperty)
+    {
+        var td = SimpleType("Widget", "Name");
+        td.Properties.Add(new PropertyDescriptor { Name = "AuthorId", ObjectType = ObjectType.Guid });
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = navigationProperty,
+            Kind         = kind,
+            RelatedType  = "Author",
+            ForeignKey   = kind == Client.Contracts.RelationKind.OneToMany ? "WidgetId" : "AuthorId"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain($"'{navigationProperty}'").And.Contain("matches column");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
     [Fact]
     public async Task RegisterAsync_TypeAlreadyOwnedByAnotherTenant_ThrowsPermissionDenied()
     {

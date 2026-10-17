@@ -207,6 +207,11 @@ public sealed class SchemaRegistry(
                     continue;
                 }
 
+                // CSR round 12 §2.2: the rewrite registration applies. A descriptor stored before it
+                // reaches the write gate with its owner field, field permissions and foreign keys
+                // spelled as its columns are.
+                descriptor = SchemaBuilder.NormalizeDeclaredNames(descriptor);
+
                 _schemas[typeName] = descriptor;
             }
         }
