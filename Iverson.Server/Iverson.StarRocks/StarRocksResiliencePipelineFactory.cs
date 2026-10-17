@@ -6,9 +6,9 @@ using Polly.Retry;
 
 namespace Iverson.StarRocks;
 
-internal static class StarRocksResiliencePipelineFactory
+public static class StarRocksResiliencePipelineFactory
 {
-    public static ResiliencePipeline Build(EngagementCircuitBreakerOptions options, ILogger logger) =>
+    internal static ResiliencePipeline Build(EngagementCircuitBreakerOptions options, ILogger logger) =>
         new ResiliencePipelineBuilder()
             .AddCircuitBreaker(new CircuitBreakerStrategyOptions
             {
@@ -48,8 +48,9 @@ internal static class StarRocksResiliencePipelineFactory
 
     // MySqlConnector 2.6.2 raises a full pool as UnableToConnectToHost with "Connect Timeout expired. All
     // pooled connections are in use." (MySqlConnection.CreateSessionAsync). The same code without that suffix
-    // is a real connect timeout, which still counts.
-    private static bool IsPoolExhausted(MySqlException ex) =>
+    // is a real connect timeout, which still counts. Public so the gRPC read paths can answer a full pool as
+    // Unavailable rather than letting the raw exception surface as Unknown.
+    public static bool IsPoolExhausted(MySqlException ex) =>
         ex.ErrorCode == MySqlErrorCode.UnableToConnectToHost &&
         ex.Message.Contains("All pooled connections are in use", StringComparison.Ordinal);
 }

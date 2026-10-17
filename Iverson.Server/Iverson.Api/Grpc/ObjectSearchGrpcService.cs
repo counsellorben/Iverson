@@ -10,6 +10,7 @@ using Iverson.Embeddings;
 using Iverson.StarRocks;
 using Iverson.Vector;
 using Microsoft.Extensions.Options;
+using MySqlConnector;
 using Qdrant.Client;
 
 using Filter = Qdrant.Client.Grpc.Filter;
@@ -51,6 +52,15 @@ public sealed partial class ObjectSearchGrpcService(
     private readonly DecayOptions _decayOptions = decayOptions.Value;
     private readonly VectorRankingOptions _ranking = rankingOptions.Value;
     private readonly PopularitySignalOptions _popularitySignal = popularitySignalOptions.Value;
+
+    /// <summary>
+    /// CSR round 12 §7.2: each tenant's StarRocks pool holds at most 10 connections per process, and a full one is
+    /// kept out of the breaker and the retry, so it reaches the read RPCs as MySqlConnector's own exception. Every
+    /// StarRocks read path answers it with this retryable status. The message names no login, password or
+    /// connection string.
+    /// </summary>
+    private static RpcException TenantPoolFull() => new(new Status(StatusCode.Unavailable,
+        "StarRocks is busy: every connection this tenant may hold in this process is in use. Retry shortly."));
 
     /// <summary>
     /// CSR finding #6: bounds a vector RPC's requested top_k before it drives any Qdrant fetch
@@ -118,6 +128,10 @@ public sealed partial class ObjectSearchGrpcService(
         catch (EngagementStoreDisabledException ex)
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
+        }
+        catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
+        {
+            throw TenantPoolFull();
         }
 
         var primaryConstraint = auth.Constraints.TryGetValue(schema.TypeName, out var pc) ? pc : null;
@@ -812,6 +826,10 @@ public sealed partial class ObjectSearchGrpcService(
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
         }
+        catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
+        {
+            throw TenantPoolFull();
+        }
     }
 
     // ── Compound GROUP BY ──────────────────────────────────────────────────────
@@ -859,6 +877,10 @@ public sealed partial class ObjectSearchGrpcService(
         catch (EngagementStoreDisabledException ex)
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
+        }
+        catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
+        {
+            throw TenantPoolFull();
         }
 
         foreach (var row in rows)
@@ -940,6 +962,10 @@ public sealed partial class ObjectSearchGrpcService(
         catch (EngagementStoreDisabledException ex)
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
+        }
+        catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
+        {
+            throw TenantPoolFull();
         }
 
         foreach (var row in rows)

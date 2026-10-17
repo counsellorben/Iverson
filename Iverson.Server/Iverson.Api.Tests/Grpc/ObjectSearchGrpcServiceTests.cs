@@ -2482,6 +2482,108 @@ public class ObjectSearchGrpcServiceTests
             .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
     }
 
+    // CSR round 12 §7.2: each tenant's StarRocks pool holds at most 10 connections per process, and a full one is
+    // kept out of the breaker and the retry, so it reaches the read RPCs as MySqlConnector's raw exception. It must
+    // answer as a retryable Unavailable with a fixed message, not Unknown.
+    internal const string TenantPoolFull =
+        "StarRocks is busy: every connection this tenant may hold in this process is in use. Retry shortly.";
+
+    [Fact]
+    public async Task Search_TenantPoolFull_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.SearchAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw MySqlExceptions.PoolExhausted());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
+    [Fact]
+    public async Task Aggregate_TenantPoolFull_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<SrAggResult?>>(_ => throw MySqlExceptions.PoolExhausted());
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Aggregations.Add(new AggregationSpec { Name = "name_terms", Type = AggregationType.Terms, Field = "Name" });
+        var act = async () => await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
+    [Fact]
+    public async Task GroupBy_TenantPoolFull_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+        _search.GroupByAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw MySqlExceptions.PoolExhausted());
+
+        var request = new GroupByRequest { TypeName = "Owned", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
+    [Fact]
+    public async Task Pipeline_TenantPoolFull_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
+        _search.PipelineAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw MySqlExceptions.PoolExhausted());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Pipeline(new PipelineRequest { TypeName = "Article" }, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
+    [Fact]
+    public async Task Search_ConnectTimeoutThatIsNotAFullPool_StillPropagates()
+    {
+        // The mapping is for a full pool only: a real connect timeout carries the same error code without the
+        // pool suffix, and keeps its existing path (it is the breaker's business, not a busy tenant's).
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var connectTimeout = MySqlExceptions.Create(
+            MySqlConnector.MySqlErrorCode.UnableToConnectToHost, "Unable to connect to any of the specified MySQL hosts.");
+        _search.SearchAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw connectTimeout);
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<MySqlConnector.MySqlException>()).Which.Should().BeSameAs(connectTimeout);
+    }
+
     [Fact]
     public async Task Pipeline_EngagementStoreDisabled_ThrowsFailedPrecondition()
     {
