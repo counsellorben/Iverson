@@ -35,10 +35,9 @@ public class DocumentTemplateValidationTests
             new SchemaRegistryRepository(_sql),
             NullLogger<SchemaRegistry>.Instance);
         _sut = new SchemaRegistrationOrchestrator(
-            _schemaManager,
             _resolver,
             _registry,
-            _rerenderQueue,
+            new InProcessSchemaRegistrationExecutor(_schemaManager, _registry, _rerenderQueue),
             NullLogger<SchemaRegistrationOrchestrator>.Instance);
     }
 

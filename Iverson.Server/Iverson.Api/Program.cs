@@ -375,6 +375,14 @@ builder.Services.AddSingleton<IEntityRelationResolver, EntityRelationResolver>()
 builder.Services.AddSingleton<Iverson.Api.Schema.SchemaCatalogReader>();
 builder.Services.AddSingleton<Iverson.Api.Search.AggregateReader>();
 builder.Services.AddSingleton<ISchemaRegistrationOrchestrator, SchemaRegistrationOrchestrator>();
+// CSR round 12 §5: RegisterSchema's DDL and registry write run in the worker. The api queues them
+// in IversonPrivilegedRequests and waits; the worker-only services below run them.
+builder.Services.AddSingleton<IPrivilegedRequestRepository>(sp => new PrivilegedRequestRepository(
+    Iverson.Api.PrivilegedRequests.PrivilegedRequestSchema.TableName,
+    sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+builder.Services.AddSingleton(new Iverson.Api.PrivilegedRequests.PrivilegedRequestWaits());
+builder.Services.AddSingleton<Iverson.Api.PrivilegedRequests.PrivilegedRequestClient>();
+builder.Services.AddSingleton<ISchemaRegistrationExecutor, Iverson.Api.PrivilegedRequests.QueuedSchemaRegistrationExecutor>();
 builder.Services.AddSingleton<IReconciliationQueueRepository>(sp => new ReconciliationQueueRepository(
     Iverson.Api.Reconciliation.ReconciliationSchema.TableName,
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
@@ -476,6 +484,11 @@ if (workloadRole == "worker")
     builder.Services.Configure<Iverson.Api.Reconciliation.DocumentRerenderOptions>(
         cfg.GetSection(Iverson.Api.Reconciliation.DocumentRerenderOptions.Section));
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.DocumentRerenderQueueWorker>();
+
+    // CSR round 12 §5.1: the worker runs the privileged requests the api queues.
+    builder.Services.AddSingleton<Iverson.Api.PrivilegedRequests.SchemaRegistrationApplier>();
+    builder.Services.AddSingleton<Iverson.Api.PrivilegedRequests.IPrivilegedRequestExecutor, Iverson.Api.PrivilegedRequests.PrivilegedRequestExecutor>();
+    builder.Services.AddHostedService<Iverson.Api.PrivilegedRequests.PrivilegedRequestWorker>();
 }
 
 // Registered for both roles (not gated on workloadRole): api itself runs multiple replicas
@@ -750,6 +763,7 @@ await schemaManager.EnsureRolesAsync();
 await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
 await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
 await schemaManager.ApplySchemaAsync(Iverson.Api.Tenancy.TenantSchema.Table);
+await schemaManager.ApplySchemaAsync(Iverson.Api.PrivilegedRequests.PrivilegedRequestSchema.Table);
 
 if (cfg.GetValue("Tenancy:SeedLegacyTenants", false))
 {

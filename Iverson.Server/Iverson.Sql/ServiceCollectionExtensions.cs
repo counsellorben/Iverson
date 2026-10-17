@@ -28,6 +28,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISchemaRegistryRepository>(sp =>
             new SchemaRegistryRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 
+        // CSR round 12 §5.3: the worker's RegisterSchema adoption check and its request locks.
+        services.AddSingleton<IExistingTableInspector>(sp =>
+            new ExistingTableInspector(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+        services.AddSingleton<IPrivilegedRequestLocks>(_ => new PostgresPrivilegedRequestLocks(connectionString));
+
         return services;
     }
 }

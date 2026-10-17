@@ -12,10 +12,9 @@ public interface ISchemaRegistrationOrchestrator
 }
 
 public sealed class SchemaRegistrationOrchestrator(
-    IRecordStoreSchemaManager schemaManager,
     IEmbeddingServiceResolver resolver,
     SchemaRegistry registry,
-    IDocumentRerenderQueueRepository rerenderQueue,
+    ISchemaRegistrationExecutor executor,
     ILogger<SchemaRegistrationOrchestrator> logger)
     : ISchemaRegistrationOrchestrator
 {
@@ -85,10 +84,12 @@ public sealed class SchemaRegistrationOrchestrator(
 
             RejectCaseDuplicateProperties(typeDesc);
 
+            // The fast pre-check, against this process's cache. The worker repeats it against the
+            // stored row under the registration lock (SchemaRegistrationApplier), which is the check
+            // that holds when two registrations race.
             var priorRegistered = registry.Get(typeDesc.TypeName);
             if (priorRegistered is not null && priorRegistered.OwnerTenantId != ownerTenantId)
-                throw new RpcException(new Status(StatusCode.PermissionDenied,
-                    $"Type '{typeDesc.TypeName}' is registered to another tenant and cannot be re-registered here."));
+                throw PrivilegedRequests.SchemaRegistrationApplier.OwnedByAnotherTenant(typeDesc.TypeName);
 
             var declared = DeclaredModel(typeDesc);
 
@@ -300,8 +301,8 @@ public sealed class SchemaRegistrationOrchestrator(
             ValidateDocumentTemplate(descriptor);
 
         // Capture which of this request's types have a changed document template, while
-        // registry.Get still returns the PRIOR descriptor (registry.RegisterAsync in phase 3
-        // below overwrites it). Compared on DocumentTemplateSource — the raw template string —
+        // registry.Get still returns the PRIOR descriptor (this process's registry changes only by
+        // reloading once phase 3 succeeds). Compared on DocumentTemplateSource — the raw template string —
         // not the parsed DocumentTemplate: record equality on the parsed model's segment list
         // uses EqualityComparer<T>.Default, which for a collection is reference equality, so two
         // structurally identical templates would never compare equal and every registration
@@ -343,33 +344,14 @@ public sealed class SchemaRegistrationOrchestrator(
             changedTemplateTypes.Add(descriptor.TypeName);
         }
 
-        // Phase 3: apply + register. Only reached once every type in the request has passed
-        // every validation above — an invalid template never applies DDL or persists.
-        var registered = new List<string>();
-        foreach (var descriptor in descriptors)
-        {
-            try
-            {
-                await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor), SchemaDriftPolicy.Throw);
-            }
-            catch (SchemaDriftException ex)
-            {
-                throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
-            }
+        // Phase 3: the privileged effects — the DDL, the registry write and the re-render
+        // enqueue — which the worker runs (CSR round 12 §5). Only reached once every type in the
+        // request has passed every validation above — an invalid template never applies DDL or
+        // persists. The descriptors are owner-stamped here and go in request order.
+        var stamped = descriptors.Select(d => d with { OwnerTenantId = ownerTenantId }).ToList();
+        await executor.ExecuteAsync(stamped, changedTemplateTypes, ct);
 
-            var stamped = descriptor with { OwnerTenantId = ownerTenantId };
-            await registry.RegisterAsync(stamped);
-            registered.Add(stamped.TypeName);
-        }
-
-        // A changed template invalidates every document of that type, because the rendered
-        // text is derived data with no stored copy — a type-level row is how "re-render
-        // everything of this type" is represented before the key set is known (T8 expands it
-        // by paging every entity of the type).
-        foreach (var typeName in changedTemplateTypes)
-            await rerenderQueue.EnqueueTypeAsync(typeName);
-
-        return registered;
+        return stamped.Select(d => d.TypeName).ToList();
     }
 
     // Sits beside ValidateFieldReference/ValidateEnrichmentTargets. The parser (T1) knows

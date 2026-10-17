@@ -194,6 +194,73 @@ public interface ISchemaRegistryRepository
     Task<IEnumerable<(string TypeName, string SchemaJson)>> LoadAllAsync();
     Task UpsertAsync(string typeName, string schemaJson);
     Task DeleteAsync(string typeName);
+
+    /// <summary>
+    /// The stored owner of every row whose type name equals <paramref name="typeName"/> ignoring
+    /// case: null for an ownerless row or a legacy row with no owner key. Empty when the type has
+    /// no row.
+    /// </summary>
+    Task<IReadOnlyList<string?>> GetOwnersAsync(string typeName);
+
+    /// <summary>
+    /// Inserts the row, or replaces it only when its stored owner is
+    /// <paramref name="ownerTenantId"/> (null matching null). False when a row of another owner
+    /// kept its place.
+    /// </summary>
+    Task<bool> UpsertIfOwnerAsync(string typeName, string schemaJson, string? ownerTenantId);
+
+    /// <summary>
+    /// Whether a stored row derives this type name's table: the same name, except that the first
+    /// letter's case may differ (SchemaBuilder.ToTableName lower-cases it without a separator).
+    /// </summary>
+    Task<bool> ExistsAsync(string typeName);
+}
+
+public interface IExistingTableInspector
+{
+    /// <summary>The relation named <paramref name="tableName"/> in <c>public</c>, or null when there is none.</summary>
+    Task<ExistingTable?> DescribeAsync(string tableName, string tenantColumn);
+
+    /// <summary>
+    /// Whether any row of the table has a tenant other than <paramref name="ownerTenantId"/>, read
+    /// across every tenant under <c>iverson_maintenance</c>.
+    /// </summary>
+    Task<bool> HasRowsOfAnotherTenantAsync(string tableName, string tenantColumn, string ownerTenantId);
+}
+
+public interface IPrivilegedRequestRepository
+{
+    /// <summary>A null <paramref name="expiresAfter"/> means the request never expires.</summary>
+    Task InsertAsync(Guid id, string kind, string payloadJson, string? requestedBy, TimeSpan? expiresAfter);
+    Task<PrivilegedRequestRow?> GetAsync(Guid id);
+
+    /// <summary>pending → expired. False when the request was no longer pending.</summary>
+    Task<bool> ExpireIfPendingAsync(Guid id);
+
+    /// <summary>Pending, unexpired requests, oldest first.</summary>
+    Task<IEnumerable<PrivilegedRequestRow>> ListClaimableAsync(int limit);
+
+    /// <summary>pending and unexpired → running. False when another claim or the expiry won.</summary>
+    Task<bool> TryClaimAsync(Guid id);
+
+    Task CompleteAsync(Guid id, string status, string resultJson);
+
+    /// <summary>
+    /// running → failed, recording <paramref name="resultJson"/>, for every request claimed longer
+    /// ago than <paramref name="claimedBefore"/>: its worker stopped without recording an outcome.
+    /// </summary>
+    Task<int> FailAbandonedAsync(TimeSpan claimedBefore, string resultJson);
+
+    Task<int> DeleteFinishedOlderThanAsync(TimeSpan age);
+}
+
+public interface IPrivilegedRequestLocks
+{
+    /// <summary>The one registration lock, held while a RegisterSchema request runs.</summary>
+    Task<IAsyncDisposable> AcquireRegistrationAsync(CancellationToken ct);
+
+    /// <summary>A lock per type name, case-insensitive, held while a reconcile of that type runs.</summary>
+    Task<IAsyncDisposable> AcquireTypeAsync(string typeName, CancellationToken ct);
 }
 
 public interface IReconciliationQueueRepository

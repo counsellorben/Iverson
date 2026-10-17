@@ -265,6 +265,13 @@ public sealed class SchemaRegistry(
         logger.LogInformation("Unregistered schema for {TypeName}", typeName);
     }
 
+    /// <summary>
+    /// The options every <c>_iverson_schema</c> row is written and read with. The privileged-request
+    /// payloads (CSR round 12 §5.2) carry descriptors with these same options, so the worker reads
+    /// exactly what <see cref="LoadAsync"/> would.
+    /// </summary>
+    internal static JsonSerializerOptions JsonOptions => s_jsonOptions;
+
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,

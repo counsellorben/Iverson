@@ -34,10 +34,10 @@ public class SchemaRegistrationOrchestratorTests
             new SchemaRegistryRepository(_sql),
             NullLogger<SchemaRegistry>.Instance);
         _sut = new SchemaRegistrationOrchestrator(
-            _schemaManager,
             _resolver,
             _registry,
-            Substitute.For<IDocumentRerenderQueueRepository>(),
+            new Helpers.InProcessSchemaRegistrationExecutor(
+                _schemaManager, _registry, Substitute.For<IDocumentRerenderQueueRepository>()),
             NullLogger<SchemaRegistrationOrchestrator>.Instance);
     }
 
@@ -1740,6 +1740,47 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
         ex.Which.Status.Detail.Should().Contain($"'{navigationProperty}'").And.Contain("matches column");
         _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_HandsTheOwnerStampedDescriptorsToTheExecutor_AndDoesNotWriteItself()
+    {
+        var executor = Substitute.For<ISchemaRegistrationExecutor>();
+        var sut = new SchemaRegistrationOrchestrator(
+            _resolver, _registry, executor, NullLogger<SchemaRegistrationOrchestrator>.Instance);
+        var request = new SchemaRequest
+        {
+            RootType   = SimpleType("Widget", "Name"),
+            Dependents = { SimpleType("Gadget", "Name") }
+        };
+
+        var registered = await sut.RegisterAsync(request, "tenant-a", CancellationToken.None);
+
+        registered.Should().Equal("Widget", "Gadget");
+        await executor.Received(1).ExecuteAsync(
+            Arg.Is<IReadOnlyList<SchemaDescriptor>>(d =>
+                d.Select(x => x.TypeName).SequenceEqual(new[] { "Widget", "Gadget" }) &&
+                d.All(x => x.OwnerTenantId == "tenant-a")),
+            Arg.Any<IReadOnlyList<string>>(),
+            Arg.Any<CancellationToken>());
+        // Spec §5.2: the api's registry changes only when the queued request succeeds and the api
+        // reloads it, which the executor does.
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_TheExecutorsRefusal_ReachesTheCallerUnchanged()
+    {
+        var executor = Substitute.For<ISchemaRegistrationExecutor>();
+        executor.ExecuteAsync(Arg.Any<IReadOnlyList<SchemaDescriptor>>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new RpcException(new Status(StatusCode.Unavailable, "The worker did not pick the registration up; retry.")));
+        var sut = new SchemaRegistrationOrchestrator(
+            _resolver, _registry, executor, NullLogger<SchemaRegistrationOrchestrator>.Instance);
+
+        var act = () => sut.RegisterAsync(new SchemaRequest { RootType = SimpleType("Widget", "Name") }, "tenant-a", CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.Unavailable);
     }
 
     [Fact]
