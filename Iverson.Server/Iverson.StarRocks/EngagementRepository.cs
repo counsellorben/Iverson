@@ -35,7 +35,8 @@ public sealed class EngagementRepository(
     private MySqlConnection CreateConnection() => new(connectionString);
 
     // CSR round 11 §3: tenant provisioning's own login, which only the worker is given. Used by
-    // EnsureTenantProvisionedAsync and nothing else; every query runs on CreateConnection's login.
+    // EnsureTenantProvisionedAsync and nothing else. Tenant data queries run on the tenant's own login
+    // (below); CreateConnection's login runs none of them.
     private MySqlConnection CreateProvisionerConnection() => new(provisionerConnectionString);
 
     // ── Per-tenant logins (CSR round 12 §7.2) ───────────────────────────────────
@@ -134,8 +135,8 @@ public sealed class EngagementRepository(
     /// <paramref name="bound"/>; a false result, a throw, or a timeout returns an
     /// <see cref="EngagementNotReadyException"/> wrapping <paramref name="ex"/>, which the projection consumers'
     /// classifier treats as transient and the gRPC read paths map to <c>Unavailable</c>. Null means rethrow the
-    /// original. Expected missing-resource errors are exempt so that a read of an unwritten type or an
-    /// unprovisioned tenant never pays a liveness round-trip.
+    /// original. Expected missing-resource errors are exempt so that a read of a type the tenant has never
+    /// written never pays a liveness round-trip. (An unrecorded tenant never connects at all, spec §7.3.)
     /// </summary>
     internal static async Task<EngagementNotReadyException?> RewrapIfBackendUnavailableAsync(
         Exception ex, Func<CancellationToken, Task<bool>> checkBackendAlive, TimeSpan bound,
@@ -291,13 +292,13 @@ public sealed class EngagementRepository(
 
     // isExpectedException: lets a read-path caller (SearchAsync/AggregateAsync/GroupByAsync/
     // PipelineAsync) identify IsExpectedMissingResourceError as a non-exceptional, expected
-    // outcome (a brand-new tenant's first-ever read, or a provisioned tenant's first-ever read of
-    // a type it has never written) *before* this method's own Activity is stopped — the caller's
-    // own catch block runs after `using var activity` above has already disposed (and therefore
-    // exported) the Activity, so setting its status there is too late. Left null (the default)
-    // for UpsertAsync/DeleteAsync, which must keep marking Error: either shape on the write path
-    // is a real invariant violation, not an expected case, and must not be masked from
-    // error-rate telemetry.
+    // outcome (a recorded tenant's first-ever read of a type it has never written; an unrecorded
+    // tenant is answered empty before any connection) *before* this method's own Activity is
+    // stopped — the caller's own catch block runs after `using var activity` above has already
+    // disposed (and therefore exported) the Activity, so setting its status there is too late.
+    // Left null (the default) for UpsertAsync/DeleteAsync, which must keep marking Error: a
+    // missing table on the write path is a real invariant violation, not an expected case, and
+    // must not be masked from error-rate telemetry.
     private async Task<T> RunTenantScopedAsync<T>(
         string activityName, string tenantId, string sql, Func<MySqlConnection, Task<T>> operation,
         Func<Exception, bool>? isExpectedException = null)

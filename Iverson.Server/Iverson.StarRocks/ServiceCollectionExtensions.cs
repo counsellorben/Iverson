@@ -27,7 +27,9 @@ public static class ServiceCollectionExtensions
         {
             var logger = sp.GetRequiredService<ILogger<EngagementRepository>>();
             // CSR round 12 §7.3: the provisioned-tenant directory comes from the host (Iverson.Api registers the
-            // Postgres one). Without it, tenant-scoped data calls refuse rather than connect.
+            // Postgres one). Without it, the tenant-scoped reads and deletes refuse rather than connect; an
+            // upsert does not consult it (it runs only after the worker's own provisioning) and needs only
+            // the tenant login key.
             return new EngagementRepository(
                 connectionString, logger, resilienceOptions, resolvedQueryLimits, provisionerConnectionString,
                 tenantLoginKey, sp.GetService<IProvisionedTenantDirectory>());

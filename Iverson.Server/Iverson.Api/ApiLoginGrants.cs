@@ -1,3 +1,4 @@
+using Iverson.Api.PrivilegedRequests;
 using Iverson.Api.Reconciliation;
 using Iverson.Api.Tenancy;
 using Iverson.Sql;
@@ -45,10 +46,9 @@ internal static class ApiLoginGrants
         // Loading the registry. Registration writes it through the worker (spec §5).
         $"GRANT SELECT ON _iverson_schema TO {Login}",
 
-        // Spec §5's privileged requests (Task 7's table): the api queues them, polls them, and
-        // expires its own.
-        $"""GRANT INSERT, SELECT ON "IversonPrivilegedRequests" TO {Login}""",
-        $"""GRANT UPDATE ("Status") ON "IversonPrivilegedRequests" TO {Login}""",
+        // Spec §5's privileged requests: the api queues them, polls them, and expires its own.
+        $"""GRANT INSERT, SELECT ON "{PrivilegedRequestSchema.TableName}" TO {Login}""",
+        $"""GRANT UPDATE ("Status") ON "{PrivilegedRequestSchema.TableName}" TO {Login}""",
 
         // Spec §7.3's provisioned-tenant check before every StarRocks read. Only the worker records.
         $"""GRANT SELECT ON "{StarRocksTenantSchema.TableName}" TO {Login}""",

@@ -24,7 +24,8 @@ public sealed class MatchRowsIntegrationTests
         _fx = fx;
         _rootRepo = fx.Repository;
         // The two production logins, set up by the same helper as TenantIsolationIntegrationTests (see
-        // StarRocksSplitLogins). The pooled repositories below reuse the query login only.
+        // StarRocksSplitLogins). iverson_app is the base login only: every tenant query below runs on that
+        // tenant's own login, derived from the tenant login key (CSR round 12 §7.2).
         (_appConnectionString, var provisionerConnectionString) =
             StarRocksSplitLogins.EnsureAsync(fx).GetAwaiter().GetResult();
         _appRepo = new EngagementRepository(_appConnectionString, NullLogger<EngagementRepository>.Instance,

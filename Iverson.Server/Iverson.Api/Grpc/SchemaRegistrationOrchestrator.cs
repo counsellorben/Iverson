@@ -104,8 +104,8 @@ public sealed class SchemaRegistrationOrchestrator(
             var hasEmbedded = typeDesc.Properties.Any(p => p.IsEmbedding || p.IsChunk);
             var nextModel   = hasEmbedded ? (declared ?? defaultService!.ModelId) : null;
 
-            // batchDescriptors, not registry.Get alone: registry.RegisterAsync does not run until
-            // phase 3, so if this SAME request names typeDesc.TypeName twice (a root colliding with a
+            // batchDescriptors, not registry.Get alone: this process's registry changes only by
+            // reloading after the worker has run phase 3, so if this SAME request names typeDesc.TypeName twice (a root colliding with a
             // dependent, or two dependents sharing a name — nothing above rejects that), the registry
             // is unchanged between the two occurrences and would report the SAME stale priorModel for
             // both, letting two different resolved models both slip past a null-vs-null or

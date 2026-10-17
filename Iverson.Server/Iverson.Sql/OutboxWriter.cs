@@ -74,8 +74,9 @@ public sealed class OutboxWriter(
     /// <summary>
     /// Returns <paramref name="payloadJson"/> with <paramref name="tenantColumn"/> set to
     /// <paramref name="tenantId"/>, dropping any client-supplied key that differs from it only by
-    /// case. Returns the payload unchanged when the schema declares no tenant column or the caller
-    /// passed no tenant value.
+    /// case. Returns the payload unchanged when the schema declares no tenant column. Its one caller,
+    /// <see cref="UpsertAndEnqueueOutboxAsync"/>, refuses a null tenant first (CSR round 12 §6.4), so
+    /// the null-tenant return below cannot be reached from it.
     /// <para>
     /// Two properties this must not lose. First, the canonical key casing: the upsert runs through
     /// <c>json_populate_record</c>, which matches column names CASE-SENSITIVELY, so a re-cased key

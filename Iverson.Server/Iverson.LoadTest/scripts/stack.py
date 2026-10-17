@@ -46,16 +46,17 @@ readiness -- there is no tier left running afterward to wait on.
 and for iverson-api a raw TCP connect to 127.0.0.1:8080 -- port 8080 is h2c/gRPC-only
 (Kestrel configured Http2-only) and refuses HTTP/1.1, so an HTTP probe against it hangs or
 errors rather than reporting readiness. Postgres/authentik-server have no readiness
-check of their own here, and that is still sound even though iverson-api's bootstrap DDL
-(the thing that gates Kestrel binding 8080) only ever touches postgres, not
-authentik: `docker compose up -d --no-deps <tier services>` still enforces
-`depends_on: service_healthy` among the services *named on the command line*, and
-iverson-api's compose entry declares `authentik-server: condition: service_healthy` --
-verified experimentally, not merely reasoned from the DDL. So a successful connect to 8080
-already implies postgres and authentik-server were both reachable, via compose's own
-dependency gate rather than anything iverson-api's startup code does. (A DDL-only argument
-would wrongly license dropping authentik-server from this tier -- it is required here for a
-different reason.)
+check of their own here, and that is still sound even though iverson-api's startup
+only ever touches postgres, not authentik. (Since CSR round 12 the api runs no DDL; it binds
+8080 after its startup registry load attempt, even a failed one, so a connect to 8080 means
+the api is listening, not that /health would answer 200.) `docker compose up -d --no-deps
+<tier services>` still enforces `depends_on: service_healthy` among the services *named on
+the command line*, and iverson-api's compose entry declares `authentik-server: condition:
+service_healthy` -- verified experimentally, not merely reasoned from the startup code. So a
+successful connect to 8080 already implies postgres and authentik-server were both
+reachable, via compose's own dependency gate rather than anything iverson-api's startup code
+does. (A startup-code-only argument would wrongly license dropping authentik-server from
+this tier -- it is required here for a different reason.)
 
 Exit status is nonzero, with a diagnostic on stderr, if `docker compose up`/`docker stop`
 fails or a tier does not reach readiness within --timeout seconds -- so a caller can chain
