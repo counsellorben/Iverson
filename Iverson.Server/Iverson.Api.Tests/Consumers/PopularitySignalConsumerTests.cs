@@ -697,4 +697,54 @@ public class PopularitySignalConsumerTests
 
         await act.Should().ThrowAsync<RpcException>().Where(e => e.StatusCode == StatusCode.Unavailable);
     }
+
+    // ── CSR round 12 #8: an ineligible signal is never computed ───────────────
+
+    private static Iverson.Api.Schema.AuthorizationRules ReadableBy(string role) =>
+        new(null, [new Iverson.Api.Schema.RowPermission(role, true, false, false)], []);
+
+    // The child carries Authorization; the parent's rows are readable by a role the child's are
+    // not, so a parent reader would learn a count of rows they cannot read. Skipped before any
+    // StarRocks or Qdrant call.
+    [Fact]
+    public async Task UpdateAsync_IneligibleSignal_ReturnsSkippedWithoutCountingOrWriting()
+    {
+        StubCount(3);
+        var article = ArticleSchema() with { Authorization = ReadableBy("staff") };
+
+        var outcome = await BuildUpdater().UpdateAsync(
+            article, new PopularitySignalEntry("Article", "Comments"),
+            CommentSchema() with { Authorization = ReadableBy("editors") },
+            article.Relations[0], ArticleId, TenantA);
+
+        outcome.Should().Be(PopularityUpdateOutcome.Skipped);
+        await _search.DidNotReceiveWithAnyArgs().AggregateAsync(
+            default!, default, default!, default, default, default, default);
+        await _vector.DidNotReceiveWithAnyArgs().SetPayloadAsync(
+            default!, default, Arg.Any<IReadOnlyDictionary<string, object>>());
+    }
+
+    // An owner-scoped parent is read by every caller in the tenant (each sees their own rows), so a
+    // count of all of its children is never eligible, whatever roles the child grants.
+    [Fact]
+    public async Task Dispatch_OwnerScopedParent_SkipsTheSignalWithoutCountingOrWriting()
+    {
+        await _registry.RegisterAsync(ArticleSchema() with
+        {
+            Authorization = ReadableBy("readers") with { OwnerField = "OwnerId" }
+        });
+        await _registry.RegisterAsync(CommentSchema() with { Authorization = ReadableBy("readers") });
+        StubCount(3);
+
+        var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","ArticleId":"{{ArticleId}}","TenantId":"{{TenantA}}"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId, Arg.Any<EntityAccess>()).Returns(payload);
+        var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
+
+        await BuildSut(OptionsWith("Article", "Comments")).DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _search.DidNotReceiveWithAnyArgs().AggregateAsync(
+            default!, default, default!, default, default, default, default);
+        await _vector.DidNotReceiveWithAnyArgs().SetPayloadAsync(
+            default!, default, Arg.Any<IReadOnlyDictionary<string, object>>());
+    }
 }

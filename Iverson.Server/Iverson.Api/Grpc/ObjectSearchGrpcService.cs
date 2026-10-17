@@ -261,17 +261,16 @@ public sealed partial class ObjectSearchGrpcService(
         // embedding-only property there is no such named vector.
         var centroidPossible = chunkDesc is not null;
 
-        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
+        var decayField = ReadableDecayField(schema, decision);
 
-        var popularityPossible = _popularitySignal.Signals.Any(s =>
-            string.Equals(s.ParentType, schema.TypeName, StringComparison.OrdinalIgnoreCase));
+        var popularitySignal = EligiblePopularitySignal(schema);
 
         // When NEITHER signal can be present, the fused score provably equals the base score for
         // every candidate and the re-rank is a mathematical identity — Qdrant's own ordering is
         // already final. Over-fetching 4x then discarding 3/4 of the payloads (which carry the
         // full source text of every vector field) buys nothing, so fetch exactly topK. Whenever
         // either signal CAN be present the over-fetch stays exactly 4x with no ceiling.
-        var rerankIsIdentity = !centroidPossible && decayField is null && !popularityPossible;
+        var rerankIsIdentity = !centroidPossible && decayField is null && popularitySignal is null;
         var fetchLimit       = rerankIsIdentity ? topK : topK * OverFetchFactor;
 
         IReadOnlyList<VectorSearchResult> results;
@@ -310,7 +309,7 @@ public sealed partial class ObjectSearchGrpcService(
             BaseScore:  r.Score,
             Centroid:   centroids.TryGetValue(r.Id, out var centroid) ? centroid : null,
             Decay:      DecayFor(r, decayField, now, _decayOptions.HalfLifeDays),
-            Popularity: PopularityFor(schema, r, _popularitySignal, now))).ToList();
+            Popularity: PopularityFor(popularitySignal, r, _popularitySignal, now))).ToList();
 
         var byId = ResultsById(results);
 
@@ -460,9 +459,12 @@ public sealed partial class ObjectSearchGrpcService(
         // Covers ScalarColumns and KeyColumn, plus the explicit "key" special case:
         // IntelligenceStoreConsumer.cs:417 writes the identity value under the literal payload key
         // "key", which ToCamelCase("Id") would never produce, so it cannot be derived from the
-        // lookup and must be seeded directly. StructSerializer.UpperFirst below only fires for a
-        // payload key with no matching descriptor column at all — e.g. a stale key left behind by
-        // a since-removed column.
+        // lookup and must be seeded directly.
+        //
+        // The lookup is also the response's allow-list (CSR round 12 #8). Every other payload key is
+        // dropped: the popularity counts the worker writes onto the point, keys left over from a
+        // removed signal or a since-removed column, and any future server-side extra. No client
+        // reads them.
         var columnLookup = new Dictionary<string, ColumnDescriptor>(StringComparer.Ordinal);
         foreach (var col in schema.ScalarColumns)
             columnLookup[col.Name.ToCamelCase()] = col;
@@ -476,8 +478,6 @@ public sealed partial class ObjectSearchGrpcService(
             {
                 if (columnLookup.TryGetValue(kvp.Key, out var col))
                     protoStruct.Fields[col.Name] = ConvertPayloadValue(kvp.Value, col.SqlType);
-                else
-                    protoStruct.Fields[StructSerializer.UpperFirst(kvp.Key)] = Value.ForString(kvp.Value);
             }
 
             AuthorizationFieldMasking.MaskDisallowedFields(protoStruct, decision.AllowedFields, exemptField: "Key");
@@ -680,9 +680,9 @@ public sealed partial class ObjectSearchGrpcService(
         // same distinct parent ids the centroid fetch above already collected.
         var popularities = await RetrievePopularityOrDegradeAsync(
             tenantScope.ResolveCollectionName(schema.CollectionName!, decision.TenantValue, isChunks: false),
-            parentIds, schema, _popularitySignal, now, rpcName);
+            parentIds, EligiblePopularitySignal(schema), _popularitySignal, now, rpcName);
 
-        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
+        var decayField = ReadableDecayField(schema, decision);
 
         var candidates = results.Select(r =>
         {
@@ -985,16 +985,15 @@ public sealed partial class ObjectSearchGrpcService(
     /// <summary>
     /// Batched popularity lookup for a chunk search's distinct parent ids, against the object
     /// collection's own payload (the same "<relation>Count" field the object-vector path reads
-    /// via PopularityFor). A failure here degrades the ranking rather than failing the search:
-    /// every popularity becomes ABSENT (never a substituted neutral value), same contract as
-    /// RetrieveVectorsOrDegradeAsync.
+    /// via PopularityFor). <paramref name="signal"/> is the type's eligible signal
+    /// (EligiblePopularitySignal), or null, which reads nothing. A failure here degrades the
+    /// ranking rather than failing the search: every popularity becomes ABSENT (never a
+    /// substituted neutral value), same contract as RetrieveVectorsOrDegradeAsync.
     /// </summary>
     private async Task<IReadOnlyDictionary<ulong, double>> RetrievePopularityOrDegradeAsync(
-        string collection, IReadOnlyList<ulong> parentIds, SchemaDescriptor schema,
+        string collection, IReadOnlyList<ulong> parentIds, PopularitySignalEntry? signal,
         PopularitySignalOptions options, DateTimeOffset now, string rpcName)
     {
-        var signal = options.Signals.FirstOrDefault(s =>
-            string.Equals(s.ParentType, schema.TypeName, StringComparison.OrdinalIgnoreCase));
         if (signal is null || parentIds.Count == 0)
             return new Dictionary<ulong, double>();
 
@@ -1047,13 +1046,12 @@ public sealed partial class ObjectSearchGrpcService(
     /// Reads the raw relation count from the object point's own payload — written by
     /// PopularitySignalConsumer/PopularitySignalReconciliationWorker under "<relation>Count" —
     /// and squashes it into [0,1) via the standard saturating-count curve. Null when the type
-    /// has no configured signal or the field is absent/unparseable (degrade, never substitute).
+    /// has no eligible signal (<paramref name="signal"/> is null) or the field is
+    /// absent/unparseable (degrade, never substitute).
     /// </summary>
     private static double? PopularityFor(
-        SchemaDescriptor schema, VectorSearchResult result, PopularitySignalOptions options, DateTimeOffset now)
+        PopularitySignalEntry? signal, VectorSearchResult result, PopularitySignalOptions options, DateTimeOffset now)
     {
-        var signal = options.Signals.FirstOrDefault(s =>
-            string.Equals(s.ParentType, schema.TypeName, StringComparison.OrdinalIgnoreCase));
         if (signal is null) return null;
 
         var fieldName = signal.Relation.ToCamelCase() + "Count";
@@ -1064,6 +1062,41 @@ public sealed partial class ObjectSearchGrpcService(
         var d         = DecayFieldResolver.ComputeRecencySum(series, now, options.RecencyHalfLifeDays);
         var effective = count + options.RecencyBoost * d;
         return effective / (effective + options.SaturationPoint);
+    }
+
+    /// <summary>
+    /// The type's configured popularity signal when it is eligible (CSR round 12 #8), else null: a
+    /// count is ranked on only when every caller who can read this type could read the child rows
+    /// it counts (PopularitySignalEligibility). Checked here as well as where the count is written,
+    /// because counts written before a signal became ineligible stay on the Qdrant points until
+    /// each point is next re-upserted.
+    /// </summary>
+    private PopularitySignalEntry? EligiblePopularitySignal(SchemaDescriptor schema)
+    {
+        var signal = _popularitySignal.Signals.FirstOrDefault(s =>
+            string.Equals(s.ParentType, schema.TypeName, StringComparison.OrdinalIgnoreCase));
+        if (signal is null) return null;
+
+        var relation = schema.Relations.FirstOrDefault(r =>
+            string.Equals(r.PropertyName, signal.Relation, StringComparison.OrdinalIgnoreCase));
+        return relation is not null && PopularitySignalEligibility.IsEligible(schema, relation, registry)
+            ? signal
+            : null;
+    }
+
+    /// <summary>
+    /// The decay field, or null when the caller may not read it (CSR round 12 #9). Decay re-ranks
+    /// on the column's value, so a caller whose AllowedFields excludes that column could otherwise
+    /// read its order from the scores. AllowedFields compares case-insensitively, so the camelCase
+    /// payload key DecayFieldResolver returns matches the column name as it is. Decided per
+    /// caller, outside DecayFieldResolver's per-schema cache.
+    /// </summary>
+    private string? ReadableDecayField(SchemaDescriptor schema, AuthorizationDecision decision)
+    {
+        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
+        return decayField is not null && decision.AllowedFields is not null && !decision.AllowedFields.Contains(decayField)
+            ? null
+            : decayField;
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

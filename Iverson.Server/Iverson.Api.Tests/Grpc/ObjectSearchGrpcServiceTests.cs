@@ -2730,13 +2730,14 @@ public class ObjectSearchGrpcServiceTests
     }
 
     // FIX 3 regression: neither centroid nor decay can be present (ArticleSchema, Title is
-    // embedding-only and the schema has no timestamp metadata column) but a PopularitySignalEntry
-    // IS configured for the type — popularityPossible must alone keep rerankIsIdentity false and
-    // preserve the 4x over-fetch, exactly like the decay-only case above does for decayField.
+    // embedding-only and the schema has no timestamp metadata column) but an eligible
+    // PopularitySignalEntry IS configured for the type — the popularity signal must alone keep
+    // rerankIsIdentity false and preserve the 4x over-fetch, exactly like the decay-only case above
+    // does for decayField.
     [Fact]
     public async Task SearchSimilar_NoCentroidOrDecayButPopularityConfigured_StillOverFetchesFourTimesTopK()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         var sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _resolver,
@@ -2832,7 +2833,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task SearchSimilar_PopularityRecencyBoostZero_IgnoresBucketSeriesEntirely()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
         var sut = new ObjectSearchGrpcService(
@@ -2889,7 +2890,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task SearchSimilar_PopularityRecencyBoostPositive_RanksRecentSeriesAboveEqualCountAncientSeries()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         var sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _resolver,
@@ -2949,7 +2950,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task SearchSimilar_PopularityMissingBucketsKeyWithRecencyBoostEnabled_UsesPlainCountFormula()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
         var sut = new ObjectSearchGrpcService(
@@ -3008,7 +3009,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task SearchChunks_PopularityRecencyBoostZero_IgnoresBucketSeriesEntirely()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
         var sut = new ObjectSearchGrpcService(
@@ -3073,7 +3074,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task SearchChunks_PopularityMissingBucketsKeyWithRecencyBoostEnabled_UsesPlainCountFormula()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
         var sut = new ObjectSearchGrpcService(
@@ -4729,7 +4730,7 @@ public class ObjectSearchGrpcServiceTests
 
         popularity!.Signals = [new PopularitySignalEntry("Article", "Author")];
         popularity.SaturationPoint = 100.0;
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
         var sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _resolver,
             NullLogger<ObjectSearchGrpcService>.Instance,
@@ -4785,7 +4786,7 @@ public class ObjectSearchGrpcServiceTests
 
         popularity!.Signals = [new PopularitySignalEntry("Article", "Author")];
         popularity.SaturationPoint = 100.0;
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
         var sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _resolver,
             NullLogger<ObjectSearchGrpcService>.Instance,
@@ -4829,5 +4830,298 @@ public class ObjectSearchGrpcServiceTests
         // The recency term was actually computed: popularity ≈ 1 lifts the fused score far above what
         // the parent's lifetime count of 5 alone would give.
         written[0].Score.Should().BeGreaterThan(0.9f);
+    }
+
+    // ── CSR round 12 #8: popularity is ranked on only when eligible ──────────────
+
+    // SchemaFixtures.ArticleSchema declares "Author" as ManyToOne, and a signal over a relation that
+    // is not OneToMany, or whose child is not registered, is never eligible. The popularity tests in
+    // this class configure ("Article", "Author") and plant "authorCount"/"authorCountBuckets" payload
+    // keys, so this re-declares that relation as OneToMany and registers its Author child. The
+    // default child carries the same bypass role as Article, so every Article reader can read every
+    // counted row and the signal is eligible. Pass a child with other read rules to make it
+    // ineligible.
+    private async Task RegisterArticleCountingAuthorsAsync(SchemaDescriptor? author = null)
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with
+        {
+            Relations =
+            [
+                new Iverson.Api.Schema.RelationDescriptor(
+                    "Author", Iverson.Api.Schema.RelationKind.OneToMany, "Author", "ArticleId")
+            ]
+        });
+        await _registry.RegisterAsync(author ?? SchemaFixtures.AuthorSchema());
+    }
+
+    // Every Article reader holds "test-bypass"; this child's rows are readable only by "editors".
+    private static SchemaDescriptor AuthorReadableOnlyByEditors() => SchemaFixtures.AuthorSchema() with
+    {
+        Authorization = new Iverson.Api.Schema.AuthorizationRules(
+            null, new List<Iverson.Api.Schema.RowPermission> { new("editors", true, true, true) }, [])
+    };
+
+    // The signal is configured but not eligible: a caller who can read an Article could not read
+    // every Author row it counts. It is not ranked on (the score is the base score), and it does
+    // not keep the over-fetch alive either (exactly top_k is fetched).
+    [Fact]
+    public async Task SearchSimilar_PopularitySignalNotEligible_IsNotRankedOn()
+    {
+        await RegisterArticleCountingAuthorsAsync(AuthorReadableOnlyByEditors());
+
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WBase = 0.45, WPopularity = 5.0 })),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions
+            {
+                Signals         = [new PopularitySignalEntry("Article", "Author")],
+                SaturationPoint = 100.0
+            }),
+            EngagementQueryLimitOptions.Default);
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.80, new Dictionary<string, string> { ["title"] = "a1", ["authorCount"] = "7" })
+        };
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        CapturedLimit(_vector).Should().Be(1);
+        written.Should().HaveCount(1);
+        written[0].Score.Should().Be(0.80f);
+    }
+
+    // The chunk path's batched popularity lookup follows the same predicate: an ineligible signal
+    // never even reads the parents' payloads.
+    [Fact]
+    public async Task SearchChunks_PopularitySignalNotEligible_IsNotRankedOn()
+    {
+        await RegisterArticleCountingAuthorsAsync(AuthorReadableOnlyByEditors());
+
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WBase = 0.45, WPopularity = 5.0 })),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions
+            {
+                Signals         = [new PopularitySignalEntry("Article", "Author")],
+                SaturationPoint = 100.0
+            }),
+            EngagementQueryLimitOptions.Default);
+
+        var queryVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
+        const string parent = "parent-1";
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   new(1, 0.70, new Dictionary<string, string> { ["text"] = "c1", ["parent_id"] = parent })
+               }.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
+        _vector.RetrievePayloadAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
+                   new Dictionary<ulong, IReadOnlyDictionary<string, string>>
+                   {
+                       [InvokeKeyToUlong(parent)] = new Dictionary<string, string> { ["authorCount"] = "9" }
+                   });
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Score.Should().Be(0.70f);
+        await _vector.DidNotReceiveWithAnyArgs().RetrievePayloadAsync(default!, default!);
+    }
+
+    // SearchSimilar builds each response object from an allow-list: the descriptor's columns plus the
+    // identity key. A count the worker wrote onto the point, its bucket series, and a key left over
+    // from a since-removed column or signal are all dropped, never passed through.
+    [Fact]
+    public async Task SearchSimilar_StreamsOnlyDescriptorColumnsAndTheKey()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.80, new Dictionary<string, string>
+            {
+                ["key"]                  = "article-1",
+                ["title"]                = "a1",
+                ["authorCount"]          = "7",
+                ["authorCountBuckets"]   = "2026-01:7",
+                ["retiredColumn"]        = "left over"
+            })
+        };
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Keys.Should().BeEquivalentTo(["Id", "Title"]);
+    }
+
+    // ── CSR round 12 #9: decay only from a readable decay column ─────────────────
+
+    // Rows of every caller in this class are readable through "test-bypass", but PublishedAt is
+    // readable only by "editors", so the caller's AllowedFields excludes the decay column.
+    private static Iverson.Api.Schema.AuthorizationRules DecayColumnReadableOnlyByEditors() => new(
+        null,
+        new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+        new List<Iverson.Api.Schema.FieldPermission> { new("PublishedAt", ["editors"], []) });
+
+    private static VectorSearchResult DatedChunk(ulong id, double score, string parentKey, DateTimeOffset publishedAt) =>
+        new(id, score, new Dictionary<string, string>
+        {
+            ["text"]        = $"chunk-of-{parentKey}",
+            ["parent_id"]   = parentKey,
+            ["publishedAt"] = publishedAt.ToString("O")
+        });
+
+    // Two candidates with the same base score whose timestamps are a year apart. Decay would separate
+    // them and so reveal the order of a column the caller cannot read. With decay disabled, and no
+    // centroid or popularity signal, the fused score is exactly the base score (ResultReranker's
+    // no-other-signal short circuit), so both score 0.80.
+    [Fact]
+    public async Task SearchSimilar_CallerDeniedTheDecayColumn_ScoresAsWithDecayDisabled()
+    {
+        await _registry.RegisterAsync(EmbeddingOnlyWithDecaySchema() with { Authorization = DecayColumnReadableOnlyByEditors() });
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        var now = DateTimeOffset.UtcNow;
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.80, new Dictionary<string, string> { ["title"] = "fresh", ["publishedAt"] = now.ToString("O") }),
+            new(2, 0.80, new Dictionary<string, string> { ["title"] = "old", ["publishedAt"] = now.AddDays(-365).ToString("O") })
+        };
+        _vector.SearchNamedAsync("dated_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Dated", Property = "Title", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written.Select(w => w.Score).Should().Equal(0.80f, 0.80f);
+    }
+
+    [Fact]
+    public async Task SearchChunks_CallerDeniedTheDecayColumn_ScoresAsWithDecayDisabled()
+    {
+        await _registry.RegisterAsync(DualAnnotatedWithDecaySchema() with { Authorization = DecayColumnReadableOnlyByEditors() });
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubNoCentroids();
+        var now = DateTimeOffset.UtcNow;
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   DatedChunk(1, 0.70, "parent-fresh", now),
+                   DatedChunk(2, 0.70, "parent-old", now.AddDays(-365))
+               }.AsReadOnly());
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written.Select(w => w.Score).Should().Equal(0.70f, 0.70f);
+    }
+
+    // SearchSimilar routed via chunks shares SearchChunksFusedAsync with SearchChunks; pinned through
+    // its own entry point all the same.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_CallerDeniedTheDecayColumn_ScoresAsWithDecayDisabled()
+    {
+        await _registry.RegisterAsync(DualAnnotatedWithDecaySchema() with { Authorization = DecayColumnReadableOnlyByEditors() });
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+        var now = DateTimeOffset.UtcNow;
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   DatedChunk(1, 0.90, "parent-fresh", now),
+                   DatedChunk(2, 0.90, "parent-old", now.AddDays(-365))
+               }.AsReadOnly());
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
+                   ParentPayloads(["parent-fresh", "parent-old"]));
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written.Select(w => w.Score).Should().Equal(0.90f, 0.90f);
+    }
+
+    // Controller-requested addition (pre-flight coverage gap). The caller's field permissions DO
+    // restrict a field ("Secret"), but the decay column is not among the restricted ones, so
+    // AllowedFields is non-null and still contains it: decay must still apply. The same two
+    // candidates as the denied-column test now separate, fresh above old.
+    [Fact]
+    public async Task SearchSimilar_CallerWithRestrictedFieldsWhoCanReadTheDecayColumn_StillAppliesDecay()
+    {
+        var dated = EmbeddingOnlyWithDecaySchema();
+        await _registry.RegisterAsync(dated with
+        {
+            ScalarColumns = [.. dated.ScalarColumns, new ColumnDescriptor("Secret", "text", true)],
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission> { new("Secret", ["editors"], []) })
+        });
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        var now = DateTimeOffset.UtcNow;
+        var results = new List<VectorSearchResult>
+        {
+            new(2, 0.80, new Dictionary<string, string> { ["title"] = "old", ["publishedAt"] = now.AddDays(-365).ToString("O") }),
+            new(1, 0.80, new Dictionary<string, string> { ["title"] = "fresh", ["publishedAt"] = now.ToString("O") })
+        };
+        _vector.SearchNamedAsync("dated_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Dated", Property = "Title", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written[0].Data.Fields["Title"].StringValue.Should().Be("fresh");
+        written[0].Score.Should().BeGreaterThan(written[1].Score);
     }
 }

@@ -160,6 +160,32 @@ public class PopularitySignalReconciliationWorkerTests
             Arg.Any<IReadOnlyDictionary<string, object>>());
     }
 
+    // ── CSR round 12 #8: the sweep goes through the same UpdateAsync, which skips an ineligible
+    //    signal. Here the parent carries Authorization and the child none, so nobody could read the
+    //    counted rows: no parent's count is computed or written. ────────────────────────────
+    [Fact]
+    public async Task SweepSignalAsync_IneligibleSignal_ComputesAndWritesNothing()
+    {
+        await _registry.RegisterAsync(ArticleSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null, [new Iverson.Api.Schema.RowPermission("readers", true, false, false)], [])
+        });
+        await _registry.RegisterAsync(CommentSchema());
+        StubAggregate(1);
+
+        var page = new[] { new KeyedTenantRow("article-1", TenantA) };
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), null, 500, Arg.Any<EntityAccess>()).Returns(page);
+        _entities.FetchKeysAndTenantsPagedAsync(Arg.Any<TableSchema>(), "article-1", 500, Arg.Any<EntityAccess>()).Returns([]);
+
+        await BuildSut().SweepSignalAsync(Signal(), CancellationToken.None);
+
+        await _search.DidNotReceiveWithAnyArgs().AggregateAsync(
+            default!, default, default!, default, default, default, default);
+        await _vector.DidNotReceiveWithAnyArgs().SetPayloadAsync(
+            default!, default, Arg.Any<IReadOnlyDictionary<string, object>>());
+    }
+
     // ── Per-row isolation: one parent's UpdateAsync throwing does not stop the sweep for the
     //    remaining parents (mirrors Task 4's per-item isolation). ──────────────────────────
     [Fact]
