@@ -342,17 +342,19 @@ public sealed class ObjectMappingGrpcService(
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
         var outboxRowId  = Guid.CreateVersion7();
 
+        // CSR round 12 §6.4. Every loaded descriptor has a tenant column, and every non-denied
+        // decision carries it, so this never fires. If it ever did, the delete is refused before its
+        // transaction rather than run across tenants: the api never enters BYPASSRLS.
+        if (decision.TenantColumn is null)
+            throw new RpcException(new Status(StatusCode.Internal, "The type declares no tenant boundary."));
+
         await _txRunner.ExecuteInTransactionAsync(async tx =>
         {
             await _entities.DeleteAsync(
                 tx,
                 SchemaBuilder.ToTableSchema(schema),
                 request.Key,
-                // A type with no tenant column carries no RLS policy and no iverson_runtime grant,
-                // so a tenant-scoped delete of it would be 42501 rather than a filtered delete.
-                decision.TenantColumn is not null
-                    ? EntityAccess.ForTenant(decision.TenantValue)
-                    : EntityAccess.CrossTenantMaintenance);
+                EntityAccess.ForTenant(decision.TenantValue));
 
             await _outboxWriter.EnqueueDeleteOutboxRowAsync(
                 tx,

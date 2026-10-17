@@ -11,7 +11,9 @@ namespace Iverson.Sql;
 public enum RecordStoreRole
 {
     /// <summary>
-    /// The connection's own role — the table owner. Correct only for the plumbing tables, which
+    /// The connection's own role: the table owner in the worker, and in the api its own login,
+    /// <c>iverson_api</c>, which owns nothing and holds direct grants on the plumbing tables it uses
+    /// (CSR round 12 §6.2). Correct only for the plumbing tables, which
     /// carry no RLS policy: the outbox / reconciliation queue, the DLQ, the tenant registry, the
     /// schema registry and the enrichment state table. Never correct for an entity table: see
     /// <see cref="EntityAccess"/>, which is what <see cref="IEntityRepository"/> takes instead of
@@ -74,6 +76,24 @@ public interface IRecordStoreSchemaManager
     /// <see cref="ApplySchemaAsync"/> call, since that DDL GRANTs to both.
     /// </summary>
     Task EnsureRolesAsync();
+
+    /// <summary>
+    /// The api's role check (CSR round 12 §6.3), run at startup and by /health's readiness. It
+    /// proves this connection can enter <c>iverson_runtime</c>, the only role the api's login belongs
+    /// to, in a transaction it rolls back, so it writes nothing. It never creates a role, and never
+    /// probes <c>iverson_maintenance</c>, which the api may not enter.
+    /// </summary>
+    Task EnsureCanEnterRuntimeRoleAsync();
+
+    /// <summary>
+    /// The worker's part of the api's login (CSR round 12 §6.1–6.2). It makes sure the login exists,
+    /// either by waiting up to <paramref name="roleWait"/> for a managed one or, when
+    /// <paramref name="password"/> is given, by creating it. It then makes the login a member of
+    /// <c>iverson_runtime</c> and grants it every statement in <paramref name="grantStatements"/>,
+    /// all in one transaction. Idempotent. Run it after the plumbing DDL, since the statements name
+    /// those tables.
+    /// </summary>
+    Task EnsureApiLoginAsync(string? password, IReadOnlyList<string> grantStatements, TimeSpan roleWait);
 }
 
 public interface IRecordStoreTransactionRunner

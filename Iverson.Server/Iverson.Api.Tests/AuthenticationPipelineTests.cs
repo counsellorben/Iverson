@@ -376,6 +376,8 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         // request. Two sequential calls inside the cache window must hit each dependency once.
         using var factory = new HealthCacheTestFactory();
         factory.Db.QuerySingleOrDefaultAsync<int>(Arg.Any<string>()).Returns(1);
+        // The api login's grants probe (CSR round 12 §6.3), also behind the cache.
+        factory.Db.QuerySingleOrDefaultAsync<bool>(Arg.Any<string>()).Returns(true);
         factory.StarRocks.CheckHealthAsync().Returns(EngagementHealthStatus.Healthy);
         factory.Vector.PingAsync().Returns(true);
         factory.Kafka.PingAsync().Returns(true);
@@ -389,6 +391,7 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         second.StatusCode.Should().Be(HttpStatusCode.OK);
 
         await factory.Db.Received(1).QuerySingleOrDefaultAsync<int>(Arg.Any<string>());
+        await factory.Db.Received(1).QuerySingleOrDefaultAsync<bool>(Arg.Any<string>());
         await factory.StarRocks.Received(1).CheckHealthAsync();
         await factory.Vector.Received(1).PingAsync();
         await factory.Kafka.Received(1).PingAsync();

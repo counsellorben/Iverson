@@ -74,6 +74,9 @@ internal sealed class NoOpRecordStoreSchemaManager : IRecordStoreSchemaManager
         TableSchema schema,
         SchemaDriftPolicy driftPolicy = SchemaDriftPolicy.Warn) => Task.CompletedTask;
     public Task EnsureRolesAsync() => Task.CompletedTask;
+    public Task EnsureCanEnterRuntimeRoleAsync() => Task.CompletedTask;
+    public Task EnsureApiLoginAsync(string? password, IReadOnlyList<string> grantStatements, TimeSpan roleWait) =>
+        Task.CompletedTask;
 }
 
 internal sealed class NoOpTenantRepository : ITenantRepository

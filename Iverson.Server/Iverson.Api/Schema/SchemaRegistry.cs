@@ -18,6 +18,14 @@ public sealed class SchemaRegistry(
 
     public bool IsRegistered(string typeName) => _schemas.ContainsKey(typeName);
 
+    // CSR round 12 §6.3. The api can start before the worker has created or granted the registry
+    // table, so its first load may fail; SchemaRefreshWorker retries it every 30 s. /health reports
+    // not-ready until one load has succeeded.
+    private volatile bool _hasLoaded;
+
+    /// <summary>True once a <see cref="LoadAsync"/> has completed.</summary>
+    public bool HasLoaded => _hasLoaded;
+
     // Serialises the on-demand reloads below and throttles them. Without the throttle a backlog
     // of genuinely-unknown-type messages would issue one Postgres round trip per delivery
     // attempt; with it, a burst collapses to one reload per interval and every waiter re-reads
@@ -66,8 +74,9 @@ public sealed class SchemaRegistry(
 
     public async Task LoadAsync(CancellationToken ct = default)
     {
-        await repository.EnsureTableAsync();
-
+        // No EnsureTableAsync here (CSR round 12 §6.3). This runs in the api at startup and every
+        // 30 s, and the api's login may not run DDL. The worker creates the table once, at startup
+        // (WorkerStoreBootstrap).
         var rows = await repository.LoadAllAsync();
 
         var loadedTypeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -243,6 +252,7 @@ public sealed class SchemaRegistry(
             if (!loadedTypeNames.Contains(typeName))
                 _schemas.TryRemove(typeName, out _);
 
+        _hasLoaded = true;
         logger.LogInformation("SchemaRegistry loaded {Count} schema(s)", _schemas.Count);
     }
 

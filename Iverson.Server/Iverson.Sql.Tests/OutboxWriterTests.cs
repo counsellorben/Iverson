@@ -29,26 +29,23 @@ public class OutboxWriterTests
     [Fact]
     public async Task UpsertAndEnqueueOutboxAsync_RunsInsideOneTransaction()
     {
-        var id = await _sut.UpsertAndEnqueueOutboxAsync(ArticleSchema, "Article", Guid.NewGuid().ToString(), "{}");
+        var id = await _sut.UpsertAndEnqueueOutboxAsync(
+            ArticleSchema, "Article", Guid.NewGuid().ToString(), "{}", tenantId: "tenant-a");
 
         id.Should().NotBe(Guid.Empty);
         await _txRunner.Received(1).ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>());
     }
 
     [Fact]
-    public async Task UpsertAndEnqueueOutboxAsync_NullTenantId_DoesNotIssueSetLocalRoleOrResetRole()
+    public async Task UpsertAndEnqueueOutboxAsync_NullTenantId_IsRefusedBeforeTheTransaction()
     {
-        var tx = Substitute.For<IDbTransactionContext>();
-        var calls = new List<string>();
-        tx.WhenForAnyArgs(t => t.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
-          .Do(call => calls.Add(call.ArgAt<string>(0)));
-        _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
-            .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(tx));
+        // CSR round 12 §6.4. Every caller passes the tenant of a non-denied authorization decision,
+        // which is never null. A null used to run the upsert on the connection's own role, which
+        // was the owner; nothing may fall back to that, so a null fails closed.
+        var act = () => _sut.UpsertAndEnqueueOutboxAsync(ArticleSchema, "Article", Guid.NewGuid().ToString(), "{}");
 
-        await _sut.UpsertAndEnqueueOutboxAsync(ArticleSchema, "Article", Guid.NewGuid().ToString(), "{}");
-
-        calls.Should().HaveCount(2); // upsert, then outbox insert — no role switch at all
-        calls.Should().NotContain(s => s.Contains("ROLE"));
+        await act.Should().ThrowAsync<ArgumentNullException>();
+        await _txRunner.DidNotReceive().ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>());
     }
 
     [Fact]
@@ -80,7 +77,8 @@ public class OutboxWriterTests
             new ColumnSchema("Id", "uuid", false),
             new List<ColumnSchema> { new("Ti\"tle", "text", false) });
 
-        var act = () => _sut.UpsertAndEnqueueOutboxAsync(schema, "Article", Guid.NewGuid().ToString(), "{}");
+        var act = () => _sut.UpsertAndEnqueueOutboxAsync(
+            schema, "Article", Guid.NewGuid().ToString(), "{}", tenantId: "tenant-a");
 
         await act.Should().ThrowAsync<ArgumentException>();
         await _txRunner.DidNotReceive().ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>());
@@ -257,15 +255,6 @@ public class OutboxWriterTests
         json.Should().NotContain("attacker-tenant");
         json.Should().NotContain("__tenantid");
         json.Should().Contain($"\"{TenantCol}\":\"tenant-a\"");
-    }
-
-    [Fact]
-    public async Task UpsertAndEnqueueOutboxAsync_NullTenantId_LeavesThePayloadUntouched()
-    {
-        var json = await CaptureUpsertJsonAsync(
-            TenantArticleSchema, """{"Id":"a","Title":"Hello"}""", tenantId: null);
-
-        json.Should().Be("""{"Id":"a","Title":"Hello"}""");
     }
 
     [Fact]

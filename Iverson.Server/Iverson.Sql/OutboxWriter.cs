@@ -18,6 +18,11 @@ public sealed class OutboxWriter(
     public async Task<Guid> UpsertAndEnqueueOutboxAsync(
         TableSchema schema, string typeName, string key, string payloadJson, string? tenantId = null)
     {
+        // CSR round 12 §6.4. Every caller passes the tenant of a non-denied authorization decision,
+        // which is never null. A null used to run the upsert on the connection's own role, which was
+        // the owner. Nothing may fall back to that, so a null fails closed.
+        ArgumentNullException.ThrowIfNull(tenantId);
+
         // Schema-derived names are quoted as identifiers; outboxTableName below is a constant.
         var table     = PostgresIdentifier.Quote(schema.TableName);
         var keyColumn = PostgresIdentifier.Quote(schema.KeyColumn.Name);
@@ -51,13 +56,9 @@ public sealed class OutboxWriter(
 
         await txRunner.ExecuteInTransactionAsync(async tx =>
         {
-            if (tenantId is not null)
-            {
-                await tx.EnterTenantScopeAsync(tenantId);
-            }
+            await tx.EnterTenantScopeAsync(tenantId);
             await tx.ExecuteAsync(upsertSql, new { Json = payloadJson });
-            if (tenantId is not null)
-                await tx.ExitRoleScopeAsync();
+            await tx.ExitRoleScopeAsync();
             await tx.ExecuteAsync(outboxSql, new
             {
                 Id = outboxRowId,

@@ -568,6 +568,8 @@ app.MapGet("/health", async (
     IVectorSchemaManager vector,
     IEventBrokerHealthCheck kafka,
     IOptions<EngagementStoreOptions> engagementOptions,
+    SchemaRegistry registry,
+    IRecordStoreSchemaManager storeRoles,
     IMemoryCache cache) =>
 {
     if (cache.TryGetValue("health-composite", out IResult? cached))
@@ -579,24 +581,38 @@ app.MapGet("/health", async (
     // (never creates one), and Kafka's PingAsync reads broker metadata (never produces). None of
     // the four performs a write; do not reintroduce one here.
     var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
+    // CSR round 12 §6.3. The worker grants the api's login its privileges at startup, so an api can
+    // be up before they exist. Readiness waits for them; for the login's iverson_runtime membership,
+    // probed with the same SET LOCAL ROLE the api's startup runs, in a transaction that is rolled
+    // back; and for the registry's first load, which the api retries in the background instead of
+    // crash-looping. A read, a rolled-back role switch and a flag, so the endpoint stays passive,
+    // and all three sit behind the 2 s cache below. For the worker all three hold once its own
+    // startup has run: it owns the tables and is a member of iverson_runtime.
+    var grantsTask = db.QuerySingleOrDefaultAsync<bool>(ApiLoginGrants.ReadinessProbeSql).ContinueWith(t => t.IsCompletedSuccessfully && t.Result);
+    var roleTask   = storeRoles.EnsureCanEnterRuntimeRoleAsync().ContinueWith(t => t.IsCompletedSuccessfully);
     var srTask     = sr.CheckHealthAsync();
     var vectorTask = vector.PingAsync();
     var kafkaTask  = kafka.PingAsync();
 
-    await Task.WhenAll(pgTask, srTask, vectorTask, kafkaTask);
+    await Task.WhenAll(pgTask, grantsTask, roleTask, srTask, vectorTask, kafkaTask);
 
     var srStatus = await srTask;
     var engagementEnabled = engagementOptions.Value.Enabled;
+    var registryLoaded = registry.HasLoaded;
     var checks = new
     {
-        postgres  = pgTask.Result,
-        starrocks = engagementEnabled ? (object)(srStatus == EngagementHealthStatus.Healthy) : "disabled",
-        qdrant    = vectorTask.Result,
-        kafka     = kafkaTask.Result
+        postgres    = pgTask.Result,
+        apiGrants   = grantsTask.Result,
+        runtimeRole = roleTask.Result,
+        registry    = registryLoaded,
+        starrocks   = engagementEnabled ? (object)(srStatus == EngagementHealthStatus.Healthy) : "disabled",
+        qdrant      = vectorTask.Result,
+        kafka       = kafkaTask.Result
     };
 
     var readiness = ReadinessPolicy.Evaluate(
-        pgTask.Result, srStatus, vectorTask.Result, kafkaTask.Result, engagementEnabled);
+        pgTask.Result && grantsTask.Result && roleTask.Result && registryLoaded,
+        srStatus, vectorTask.Result, kafkaTask.Result, engagementEnabled);
 
     var result = readiness.Ready
         ? Results.Ok(new { status = readiness.FullyHealthy ? "healthy" : "degraded", checks })
@@ -780,48 +796,65 @@ catch (Exception ex)
         "Embedding service not initialized at startup; will initialize on first schema registration.");
 }
 var schemaRegistry = app.Services.GetRequiredService<SchemaRegistry>();
-await schemaRegistry.LoadAsync();
+var schemaManager  = app.Services.GetRequiredService<IRecordStoreSchemaManager>();
+
+if (workloadRole == "worker")
+{
+    // CSR round 12 §6.3. All startup DDL and the owner's startup writes run here, in the worker,
+    // which connects as the database owner. WorkerStoreBootstrap creates the plumbing tables,
+    // ensures the entity roles, and grants the api's login what it may do. On Helm that login is a
+    // CNPG managed role that can appear shortly after the worker starts, so the worker waits up to
+    // a minute for it. Compose has no CNPG, and its superuser worker creates the login from
+    // Postgres:ApiLoginPassword.
+    await WorkerStoreBootstrap.RunAsync(
+        schemaManager,
+        app.Services.GetRequiredService<ISchemaRegistryRepository>(),
+        app.Services.GetRequiredService<IEnrichmentStateRepository>(),
+        app.Services.GetRequiredService<IDocumentRerenderQueueRepository>(),
+        app.Services.GetRequiredService<ITokenRevocationRepository>(),
+        cfg["Postgres:ApiLoginPassword"],
+        TimeSpan.FromMinutes(1));
+
+    if (cfg.GetValue("Tenancy:SeedLegacyTenants", false))
+    {
+        var tenantRepository = app.Services.GetRequiredService<ITenantRepository>();
+        foreach (var legacyTenantId in new[] { "tenant_loadtest", "tenant_webtest", "tenant_admin", "tenant_smoke_test", "tenant_bypass" })
+            await tenantRepository.SeedIfMissingAsync(legacyTenantId, legacyTenantId, "active");
+    }
+
+    await schemaRegistry.LoadAsync();
+
+    // Self-heal RLS state for tables whose descriptor was registered before this change shipped —
+    // their physical DDL predates the tenant policy/RLS/grant this schema manager now applies.
+    foreach (var descriptor in schemaRegistry.All.Values)
+        await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
+}
+else
+{
+    // CSR round 12 §6.3. The api runs no DDL, and its role check is only the iverson_runtime probe.
+    // On a fresh install it can start before the worker has created the tables or granted its
+    // login, so a failure here is logged, not thrown. SchemaRefreshWorker retries the load every
+    // 30 s, and /health reports not-ready until the registry has loaded and the login holds its
+    // grants and can enter iverson_runtime (/health repeats this probe).
+    try
+    {
+        await schemaManager.EnsureCanEnterRuntimeRoleAsync();
+        await schemaRegistry.LoadAsync();
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex,
+            "The api's Postgres access is not ready yet, most likely because the worker has not "
+            + "finished its startup. The schema registry load retries in the background, and /health "
+            + "reports not-ready until it succeeds.");
+    }
+}
 
 PopularitySignalValidator.ValidateAtStartup(
     app.Services.GetRequiredService<IOptions<PopularitySignalOptions>>().Value,
     schemaRegistry,
     cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true),
     app.Logger);
-
-// Plumbing table for the enrichment loop breaker — created the same way SchemaRegistry creates
-// its own backing table (SchemaRegistry.LoadAsync → repository.EnsureTableAsync).
-await app.Services.GetRequiredService<IEnrichmentStateRepository>().EnsureTableAsync();
-
-// Plumbing table for the document re-render queue — same bootstrap shape as the enrichment
-// loop breaker above; raw DDL because it needs the two partial unique indexes ApplySchemaAsync
-// cannot express.
-await app.Services.GetRequiredService<IDocumentRerenderQueueRepository>().EnsureTableAsync();
-
-// Token revocations (CSR round-10 #11) — same bootstrap shape: raw DDL, run as the owner role
-// through the plain executor, so no grants are needed.
-await app.Services.GetRequiredService<ITokenRevocationRepository>().EnsureTableAsync();
-
-// EnsureRolesAsync must run before ANY ApplySchemaAsync call, since that DDL now GRANTs to
-// iverson_maintenance on every table (and to iverson_runtime on the tenant-scoped ones) — both
-// roles have to exist first.
-var schemaManager = app.Services.GetRequiredService<IRecordStoreSchemaManager>();
-await schemaManager.EnsureRolesAsync();
-await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
-await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
-await schemaManager.ApplySchemaAsync(Iverson.Api.Tenancy.TenantSchema.Table);
-await schemaManager.ApplySchemaAsync(Iverson.Api.PrivilegedRequests.PrivilegedRequestSchema.Table);
-
-if (cfg.GetValue("Tenancy:SeedLegacyTenants", false))
-{
-    var tenantRepository = app.Services.GetRequiredService<ITenantRepository>();
-    foreach (var legacyTenantId in new[] { "tenant_loadtest", "tenant_webtest", "tenant_admin", "tenant_smoke_test", "tenant_bypass" })
-        await tenantRepository.SeedIfMissingAsync(legacyTenantId, legacyTenantId, "active");
-}
-
-// Self-heal RLS state for tables whose descriptor was registered before this change shipped —
-// their physical DDL predates the tenant policy/RLS/grant this schema manager now applies.
-foreach (var descriptor in schemaRegistry.All.Values)
-    await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
 
 // ── gRPC endpoints ─────────────────────────────────────────────────────────────
 if (workloadRole == "api")
