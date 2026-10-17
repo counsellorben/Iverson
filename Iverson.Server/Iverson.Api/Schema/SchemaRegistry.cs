@@ -207,6 +207,22 @@ public sealed class SchemaRegistry(
                     continue;
                 }
 
+                // The enrichment-target rules (CSR round 12 #18). Registration refuses a type that
+                // breaks one, but rehydration never passes through registration, so a stored row that
+                // breaks one (written before the rule existed, or altered in storage) would otherwise
+                // drive the enrichment pipeline unchecked. The type still loads, so every other read,
+                // write and projection keeps working, but with no targets: EnrichmentConsumer returns
+                // early for a type with none. The check is independent of the name normalisation
+                // below (every comparison is case-insensitive) and runs before it.
+                if (EnrichmentTargetRules.Violation(descriptor) is { } enrichmentViolation)
+                {
+                    logger.LogError(
+                        "Schema '{TypeName}' loaded from storage breaks an enrichment-target rule and was " +
+                        "loaded with enrichment disabled: {Violation} Re-register the type to restore enrichment.",
+                        typeName, enrichmentViolation.SanitizeForLog());
+                    descriptor = descriptor with { EnrichmentTargets = [] };
+                }
+
                 // CSR round 12 §2.2: the rewrite registration applies. A descriptor stored before it
                 // reaches the write gate with its owner field, field permissions and foreign keys
                 // spelled as its columns are.

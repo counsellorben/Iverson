@@ -175,7 +175,7 @@ public sealed class SchemaRegistrationOrchestrator(
                     $"Document template on '{typeDesc.TypeName}' is invalid: {ex.Message} (placeholder: '{ex.Placeholder}')"));
             }
 
-            ValidateEnrichmentTargets(typeDesc, descriptor);
+            ValidateEnrichmentTargets(descriptor);
 
             var ownerField = descriptor.Authorization?.OwnerField;
             if (!string.IsNullOrEmpty(ownerField))
@@ -664,132 +664,14 @@ public sealed class SchemaRegistrationOrchestrator(
     }
 
     // Enrichment targets (properties tagged [IversonSummary]/[IversonKeywords]/[IversonExtracted])
-    // are columns the enrichment pipeline writes to, not reads from. Five rules keep that
-    // invariant sound at registration time rather than failing obscurely at ingest, and two more
-    // keep a target's FieldPermissions consistent with that: the pipeline is its only writer, and
-    // its text is derived from the source properties.
-    private static void ValidateEnrichmentTargets(TypeDescriptor typeDesc, SchemaDescriptor descriptor)
+    // are columns the enrichment pipeline writes to, not reads from. The rules that keep that sound
+    // live in EnrichmentTargetRules, stated over the descriptor alone so that SchemaRegistry.LoadAsync
+    // applies the same ones to stored rows (CSR round 12 #18). Registration refuses the first one
+    // broken, rather than failing obscurely at ingest.
+    private static void ValidateEnrichmentTargets(SchemaDescriptor descriptor)
     {
-        var ownerField = descriptor.Authorization?.OwnerField;
-
-        foreach (var target in descriptor.EnrichmentTargets)
-        {
-            var property = typeDesc.Properties.First(p =>
-                string.Equals(p.Name, target.ColumnName, StringComparison.OrdinalIgnoreCase));
-
-            if (property.ObjectType != ObjectType.String)
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' must be a string " +
-                    $"property; it is '{property.ObjectType}'."));
-            }
-
-            // The TenantColumn clause is UNREACHABLE BY CONSTRUCTION, and is kept for the same
-            // reason as the __TenantId exclusion on the FK lookup above rather than deleted:
-            // target.ColumnName is always a DECLARED property name (the First() lookup directly
-            // above would throw otherwise), and RejectReservedTenantName rejects a declared
-            // property named __TenantId before BuildDescriptor ever runs. It is the standing
-            // statement that an enrichment target may never be the tenant column — the property
-            // that keeps this check correct if the reserved-name guard is ever reordered or the
-            // tenant column ever becomes client-addressable again. The user-facing message names
-            // only the two things a caller can still actually collide with: tenant_field is no
-            // longer accepted at all (RejectDeclaredTenantField), so naming it in the remedy would
-            // point the caller at a field that no longer exists.
-            if (property.IsKey ||
-                string.Equals(target.ColumnName, descriptor.TenantColumn, StringComparison.OrdinalIgnoreCase) ||
-                (!string.IsNullOrEmpty(ownerField) &&
-                 string.Equals(target.ColumnName, ownerField, StringComparison.OrdinalIgnoreCase)))
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' cannot be the key " +
-                    "or owner_field."));
-            }
-
-            if (property.IsEmbedding || property.IsChunk)
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' cannot also carry " +
-                    "[IversonEmbedding]/[IversonChunk]: if this property were also a source property, the " +
-                    "enrichment writeback would mutate the hashed text, causing the enricher to re-enrich its " +
-                    "own republished event without bound."));
-            }
-
-            if (target.Kind == EnrichmentKind.Extracted && string.IsNullOrWhiteSpace(target.Hint))
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' has [IversonExtracted] " +
-                    "with an empty hint."));
-            }
-        }
-
-        if (descriptor.EnrichmentTargets.Count > 0)
-        {
-            var targetNames = descriptor.EnrichmentTargets
-                .Select(t => t.ColumnName)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            // Source text is defined as the concatenation of the type's [IversonEmbedding]/
-            // [IversonChunk] properties — nothing else counts. A type with an enrichment target
-            // but no embedding/chunk property would hash an empty source text and call the
-            // enrichment model with an empty prompt.
-            var hasSourceProperty = typeDesc.Properties.Any(p => p.IsEmbedding || p.IsChunk);
-
-            if (!hasSourceProperty)
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"'{descriptor.TypeName}' declares enrichment targets but has no source text property " +
-                    "for the enrichment pipeline to read from."));
-            }
-
-            // The two rules below use RowFieldAuthorizationEvaluator's own comparisons: a
-            // FieldPermission names a property case-insensitively, role names compare ordinally
-            // (the way the caller's `groups` claim is matched), and an empty role list means
-            // unrestricted, so only non-empty lists are acted on.
-            var fieldPermissions = descriptor.Authorization?.FieldPermissions ?? [];
-
-            // Write: the enrichment pipeline is a target's only writer, so a write restriction on
-            // a target could never be enforced against anyone.
-            var writeRestricted = fieldPermissions.FirstOrDefault(fp =>
-                fp.WritableRoles.Count > 0 && targetNames.Contains(fp.FieldName));
-            if (writeRestricted is not null)
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Enrichment target '{writeRestricted.FieldName}' on '{descriptor.TypeName}' carries a " +
-                    "FieldPermission with writable_roles. The enrichment pipeline is the target's only writer, so " +
-                    "a write restriction on it cannot be enforced; remove writable_roles from that FieldPermission."));
-            }
-
-            // Read: a target's text is generated from the source text, so every caller who can read
-            // a target must be able to read every source. The evaluator excludes a field when ANY
-            // FieldPermission naming it excludes the caller, so each restricted source permission
-            // needs one target permission whose roles are a subset of its roles.
-            var sourceNames = typeDesc.Properties
-                .Where(p => p.IsEmbedding || p.IsChunk)
-                .Select(p => p.Name)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var source in fieldPermissions.Where(fp =>
-                         fp.ReadableRoles.Count > 0 && sourceNames.Contains(fp.FieldName)))
-            {
-                foreach (var target in descriptor.EnrichmentTargets)
-                {
-                    var covered = fieldPermissions.Any(fp =>
-                        fp.ReadableRoles.Count > 0 &&
-                        string.Equals(fp.FieldName, target.ColumnName, StringComparison.OrdinalIgnoreCase) &&
-                        fp.ReadableRoles.All(role => source.ReadableRoles.Contains(role, StringComparer.Ordinal)));
-
-                    if (!covered)
-                    {
-                        throw new RpcException(new Status(StatusCode.InvalidArgument,
-                            $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' is generated from " +
-                            $"source property '{source.FieldName}', whose readable_roles are restricted, but the " +
-                            "target carries no FieldPermission whose readable_roles are a subset of them. Every " +
-                            "caller who can read an enrichment target must be able to read every source it is " +
-                            "generated from."));
-                    }
-                }
-            }
-        }
+        if (EnrichmentTargetRules.Violation(descriptor) is { } violation)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, violation));
     }
 
     // The single definition of the client identifier shape lives in Iverson.Sql, which needs it

@@ -760,6 +760,129 @@ public class SchemaRegistryTests
             e.Message.Contains("failed identifier/key-type validation on rehydration"));
     }
 
+    // ── CSR round 12 #18: the enrichment-target rules re-applied on rehydration ────────────────
+    // Registration refuses a type that breaks one of the rules, but LoadAsync never passes through
+    // registration. A stored row that breaks one (written before the rule existed, or altered in
+    // storage) must not drive the enrichment pipeline. The type still loads, so every other
+    // read, write and projection keeps working, but with no targets; EnrichmentConsumer returns
+    // early for a type with none.
+
+    // ArticleSchema plus a TEXT "Summary" column. Title (embedding) and Body (chunk) are its sources.
+    private static SchemaDescriptor EnrichedArticle(params EnrichmentTarget[] targets)
+    {
+        var article = SchemaFixtures.ArticleSchema();
+        return article with
+        {
+            ScalarColumns     = [.. article.ScalarColumns, new ColumnDescriptor("Summary", "text", true)],
+            EnrichmentTargets = targets.Length > 0 ? targets : [new EnrichmentTarget("Summary", EnrichmentKind.Summary, null)]
+        };
+    }
+
+    private static SchemaDescriptor EnrichedArticleBreaking(string rule)
+    {
+        var article = EnrichedArticle();
+        var bypass  = article.Authorization!;
+        return rule switch
+        {
+            "target-not-a-column" => EnrichedArticle(new EnrichmentTarget("Missing", EnrichmentKind.Summary, null)),
+            "target-not-text"     => EnrichedArticle(new EnrichmentTarget("AuthorId", EnrichmentKind.Summary, null)),
+            "target-is-the-key"   => EnrichedArticle(new EnrichmentTarget("Id", EnrichmentKind.Summary, null)),
+            "target-is-a-source"  => EnrichedArticle(new EnrichmentTarget("Body", EnrichmentKind.Summary, null)),
+            "extracted-no-hint"   => EnrichedArticle(new EnrichmentTarget("Summary", EnrichmentKind.Extracted, " ")),
+            "target-is-the-tenant-column" => article with
+            {
+                ScalarColumns     = [.. article.ScalarColumns, new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)],
+                TenantColumn      = SchemaDescriptor.TenantColumnName,
+                EnrichmentTargets = [new EnrichmentTarget(SchemaDescriptor.TenantColumnName, EnrichmentKind.Summary, null)]
+            },
+            // A document template adds a synthetic "Document" chunk field. Its text is rendered from
+            // the template, not read as source text, so on its own it is no source.
+            "only-source-is-the-synthetic-document" => article with
+            {
+                VectorFields           = [],
+                ChunkFields            = [new ChunkDescriptor("Document", 512, 64, "nomic-embed-text", 768)],
+                DocumentTemplate       = DocumentTemplateParser.Parse("{Title}"),
+                DocumentTemplateSource = "{Title}"
+            },
+            "target-write-restricted" => article with
+            {
+                Authorization = bypass with { FieldPermissions = [new FieldPermission("Summary", [], ["editors"])] }
+            },
+            "target-more-readable-than-its-source" => article with
+            {
+                Authorization = bypass with { FieldPermissions = [new FieldPermission("Body", ["editors"], [])] }
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(rule), rule, null)
+        };
+    }
+
+    [Theory]
+    [InlineData("target-not-a-column")]
+    [InlineData("target-not-text")]
+    [InlineData("target-is-the-key")]
+    [InlineData("target-is-a-source")]
+    [InlineData("extracted-no-hint")]
+    [InlineData("target-is-the-tenant-column")]
+    [InlineData("only-source-is-the-synthetic-document")]
+    [InlineData("target-write-restricted")]
+    [InlineData("target-more-readable-than-its-source")]
+    public async Task LoadAsync_DescriptorBreakingAnEnrichmentRule_LoadsWithNoTargetsAndLogsError(string rule)
+    {
+        var stored = EnrichedArticleBreaking(rule);
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(stored))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeTrue("breaking an enrichment rule disables enrichment, not the type");
+        var loaded = _sut.Get("Article")!;
+        loaded.EnrichmentTargets.Should().BeEmpty();
+        loaded.ScalarColumns.Should().HaveCount(stored.ScalarColumns.Count);
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("'Article'") &&
+            e.Message.Contains("enrichment disabled"));
+    }
+
+    // The positive controls: without them, a LoadAsync that stripped every type's targets would
+    // satisfy the theory above. TEXT[] is a string array, which the rules have always admitted, and
+    // a template does not count against a type that has a real source as well.
+    [Theory]
+    [InlineData("text")]
+    [InlineData("text-array")]
+    [InlineData("template-beside-a-real-source")]
+    public async Task LoadAsync_DescriptorKeepingTheEnrichmentRules_KeepsItsTargets(string shape)
+    {
+        var article = EnrichedArticle();
+        var stored = shape switch
+        {
+            "text"       => article,
+            "text-array" => article with
+            {
+                ScalarColumns     = [.. article.ScalarColumns, new ColumnDescriptor("Tags", "TEXT[]", true)],
+                EnrichmentTargets = [new EnrichmentTarget("Tags", EnrichmentKind.Keywords, null)]
+            },
+            "template-beside-a-real-source" => article with
+            {
+                ChunkFields            = [.. article.ChunkFields, new ChunkDescriptor("Document", 512, 64, "nomic-embed-text", 768)],
+                DocumentTemplate       = DocumentTemplateParser.Parse("{Title}"),
+                DocumentTemplateSource = "{Title}"
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, null)
+        };
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(stored))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.Get("Article")!.EnrichmentTargets.Should().BeEquivalentTo(stored.EnrichmentTargets);
+        _logs.Entries.Should().NotContain(e => e.Level == LogLevel.Error);
+    }
+
     // Serializes exactly as SchemaRegistry.RegisterAsync does, so the fixtures above are real
     // _iverson_schema rows minus/with the one key under test rather than hand-written JSON that
     // could drift from the shape LoadAsync actually meets.
