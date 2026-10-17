@@ -152,6 +152,9 @@ public sealed class ObjectMappingGrpcService(
 
         var schema = RequireSchema(request.TypeName);
 
+        // CSR round 12 #2: ahead of every step that reads a payload key by name.
+        PayloadKeyCanonicalizer.Canonicalize(schema, request.Payload);
+
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
             AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null,
@@ -161,7 +164,7 @@ public sealed class ObjectMappingGrpcService(
 
         var key = _keyAccessor.AssignNewKey(request.Payload, schema.KeyColumn.Name);
 
-        var payloadJson = StructSerializer.SerializePayload(request.Payload);
+        var payloadJson = StructSerializer.SerializePayload(request.Payload, schema);
 
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
         var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
@@ -207,6 +210,10 @@ public sealed class ObjectMappingGrpcService(
         var schema = _registry.TryGetVisible(request.TypeName, _actingUserAccessor.ActingUser)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"'{request.TypeName}' row not found."));
 
+        // CSR round 12 #2: before the key read, so a key column such as ID, which the .NET client
+        // sends as "id", is found.
+        PayloadKeyCanonicalizer.Canonicalize(schema, request.Payload);
+
         var key = _keyAccessor.ExtractKey(request.Payload, schema.KeyColumn.Name);
         if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
             throw new RpcException(new Status(StatusCode.InvalidArgument,
@@ -232,7 +239,7 @@ public sealed class ObjectMappingGrpcService(
 
         _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
-        var payloadJson = StructSerializer.SerializePayload(request.Payload);
+        var payloadJson = StructSerializer.SerializePayload(request.Payload, schema);
 
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
         var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(

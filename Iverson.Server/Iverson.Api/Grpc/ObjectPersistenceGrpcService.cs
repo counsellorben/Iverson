@@ -32,6 +32,9 @@ public sealed class ObjectPersistenceGrpcService(
     {
         var schema = RequireSchema(request.TypeName);
 
+        // CSR round 12 #2: ahead of every step that reads a payload key by name.
+        PayloadKeyCanonicalizer.Canonicalize(schema, request.Payload);
+
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             authEvaluator,
             actingUserAccessor.ActingUser,
@@ -50,7 +53,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         var key = keyAccessor.AssignNewKey(request.Payload, schema.KeyColumn.Name);
 
-        var payloadJson = StructSerializer.SerializePayload(request.Payload);
+        var payloadJson = StructSerializer.SerializePayload(request.Payload, schema);
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Persistence.Post] type={Type} key={Key} stores={Stores}",
@@ -100,6 +103,10 @@ public sealed class ObjectPersistenceGrpcService(
         var schema = registry.TryGetVisible(request.TypeName, actingUserAccessor.ActingUser)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"'{request.TypeName}' row not found."));
 
+        // CSR round 12 #2: before the key read, so a key column such as ID, which the .NET client
+        // sends as "id", is found.
+        PayloadKeyCanonicalizer.Canonicalize(schema, request.Payload);
+
         var key = keyAccessor.ExtractKey(request.Payload, schema.KeyColumn.Name);
         if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
             throw new RpcException(new Status(StatusCode.InvalidArgument,
@@ -130,7 +137,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
-        var payloadJson = StructSerializer.SerializePayload(request.Payload);
+        var payloadJson = StructSerializer.SerializePayload(request.Payload, schema);
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Persistence.Update] type={Type} key={Key} stores={Stores}",
