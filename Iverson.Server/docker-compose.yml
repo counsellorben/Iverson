@@ -678,9 +678,13 @@ services:
     # CSR round 12 §6.3: iverson-api waits for this. The worker's startup block (the plumbing and
     # entity-table DDL, the roles, iverson_api and its grants, the legacy-tenant seed) is awaited
     # before Kestrel listens, so an HTTP 200 from /health on 8081 means it has finished and the
-    # stores answer. bash /dev/tcp again: the runtime image has no curl or wget.
+    # stores answer. bash /dev/tcp again: the runtime image has no curl or wget. CMD-SHELL wrapping
+    # `bash -c '...'`, as qdrant's does, rather than ["CMD", "bash", "-c", "..."]: podman's Docker
+    # API splits every CMD argument on whitespace, which turns that form into `bash -c exec`, a
+    # check that always passes. The script holds no single quote (it sits inside one) and no `$`
+    # (compose would interpolate it).
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8081 && printf \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && head -n 1 <&3 | grep -q \" 200 \"'"]
       interval: 5s
       timeout: 10s
       retries: 60
