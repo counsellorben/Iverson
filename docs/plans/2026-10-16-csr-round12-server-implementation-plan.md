@@ -330,7 +330,7 @@ Newly introduced by this plan and verified at plan-write time (drafting reads; t
 | 111 | 2 | `KeyedTenantRow(Key, TenantId)` and `EntityAccess` are the types of `FetchKeysAndTenantsPagedAsync` | `KeyedRow.cs:5`; `IRecordStoreRoles.cs:171` |
 | 112 | 3 | Every bash block either `cd`s to the worktree or its `Iverson.Server`; heavy runs are under `systemd-run --user --scope -q -p MemoryMax=6G` with `MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false` exported (a `--scope` run inherits the caller's environment) | Brief "Session conventions"; template plan `:954,968` |
 | 113 | 3 | `dotnet test … --filter "Category!=Integration"` excludes the container classes, which carry `[Trait("Category", "Integration")]` | Template plan `:1074`; every container class in `Iverson.Api.Tests` carries the trait (e.g. `RegisterSchemaAuthorizationIntegrationTests.cs:198`) |
-| 114 | 3 | The expected counts: Task 6 1; Task 7 unit 27 (11 + 6 + 5 + 5), container 23, plus 2 for the round-trip and authorization integration classes; Task 8 executor 10, endpoints 7 | Counted `[Fact]`s per class in the replayed tree (CIR-1 §2.7): `SchemaRegistrationApplierTests` 11, `QueuedSchemaRegistrationExecutorTests` 6, `PrivilegedRequestWorkerTests` 5, `PrivilegedRequestExecutorTests` 5 at Task 7 and 10 after Task 8, `PrivilegedRequestPostgresIntegrationTests` 23 (21, plus row 304's fact, plus row 310's; the class ran 23/23), `PrivilegedAdminEndpointTests` 7 |
+| 114 | 3 | The expected counts: Task 6 1; Task 7 unit 27 (11 + 6 + 5 + 5), container 24, plus 2 for the round-trip and authorization integration classes; Task 8 executor 10, endpoints 7 | Counted `[Fact]`s per class in the replayed tree (CIR-1 §2.7): `SchemaRegistrationApplierTests` 11, `QueuedSchemaRegistrationExecutorTests` 6, `PrivilegedRequestWorkerTests` 5, `PrivilegedRequestExecutorTests` 5 at Task 7 and 10 after Task 8, `PrivilegedRequestPostgresIntegrationTests` 24 (21, plus row 304's fact, plus row 310's, plus row 311's; the class ran 24/24), `PrivilegedAdminEndpointTests` 7 |
 | 115 | 4 | Task 6 runs before Task 7, which reuses the registry's JSON options for its payload (spec §9 "before the worker work") | Spec `:277` |
 | 116 | 4 | Tasks 1 and 5 do not change Task 6's fixture: its declared names equal their columns and its one enrichment target is `TEXT` (Task 5's predicate) | Task 6 fixture type; spec §2.2, §4 |
 | 117 | 4 | Task 7 edits orchestrator regions Tasks 1 and 5 do not: the constructor, the 4-line owner pre-check, two phase-2 comment lines and phase 3 | Brief's file table (T1: refusals, T5: `ValidateEnrichmentTargets`); spec §2.2, §2.4, §4 |
@@ -519,14 +519,17 @@ Newly introduced by this plan and verified at plan-write time (drafting reads; t
 | 300 | 5 | `ALTER USER '<login>'@'%' IDENTIFIED BY '<pw>'` re-keys a tenant login when run as root or as `iverson_provisioner` (which holds `user_admin`) | spec VA24: `ALTER USER IDENTIFIED BY` works from the provisioner with `user_admin` (probed on 4.1.1 and 4.1.6); root holds every right |
 | 301 | 4 | At Task 12 Step 2, `appsettings.Development.json` already holds `StarRocks:TenantKey`, so that compose check passes before Task 12's edits | Task 10's Development hunk adds `"StarRocks": { "TenantKey": "dev-only-not-for-production-starrocks-tenant-key-0123456789" }`, and Task 12 (j) was rebased onto it to drop only `Database=iverson;` |
 | 302 | 3 | Every task's edits apply in order on `6b942e1c`, and after each of Tasks 1–12 the solution builds and its unit tests pass | Plan-time replay of this text (`replay.py apply --through-task N`, N = 1…12) on a scratch worktree, then `dotnet build Iverson.slnx` and `dotnet test --filter "Category!=Integration"` after each: replay exit 0, 0 build errors and 0 failed tests at every N, across 11 test projects; 3775 passed after Task 1, 3916 after Task 12 |
-| 303 | 3 | The integration suites pass on the state Task 12 leaves | Same replay through Task 12, `dotnet test --filter "Category=Integration"` per project: `Iverson.Sql.Tests` 63/63, `Iverson.StarRocks.Tests` 76/76 (including both tests that read the tenant login's caps, after the `ConnectionReset=false` fix in row 221), `Iverson.Api.Tests` 85/85. Re-run after UIP-1 on a fresh replay of the updated plan through Task 12: build 0 errors; `Category!=Integration` 0 failed, 3916 passed (11 projects); integration Sql 63/63, StarRocks 76/76, Api 86/86 (row 304's fact added one). Re-run after UIP-2 on a fresh replay through Task 12: build 0 errors; `Category!=Integration` 0 failed, 3916 passed (11 projects; the first attempt's `dotnet test` driver aborted at start with `Internal CLR error. (0x80131506)` before any project ran, and the re-run completed); integration Sql 63/63, StarRocks 76/76, Api 87/87 (row 310's fact added one) |
+| 303 | 3 | The integration suites pass on the state Task 12 leaves | Same replay through Task 12, `dotnet test --filter "Category=Integration"` per project: `Iverson.Sql.Tests` 63/63, `Iverson.StarRocks.Tests` 76/76 (including both tests that read the tenant login's caps, after the `ConnectionReset=false` fix in row 221), `Iverson.Api.Tests` 85/85. Re-run after UIP-1 on a fresh replay of the updated plan through Task 12: build 0 errors; `Category!=Integration` 0 failed, 3916 passed (11 projects); integration Sql 63/63, StarRocks 76/76, Api 86/86 (row 304's fact added one). Re-run after UIP-2 on a fresh replay through Task 12: build 0 errors; `Category!=Integration` 0 failed, 3916 passed (11 projects; the first attempt's `dotnet test` driver aborted at start with `Internal CLR error. (0x80131506)` before any project ran, and the re-run completed); integration Sql 63/63, StarRocks 76/76, Api 87/87 (row 310's fact added one). Re-run after UIP-3 on a fresh replay through Task 12: build 0 errors; `Category!=Integration` 0 failed, 3916 passed (11 projects); integration Sql 63/63, StarRocks 76/76, Api 88/88 (row 311's fact added one) |
 | 304 | 5 | A `pg_advisory_lock` wait with `commandTimeout: 0` waits until the holder releases, whatever the connection's command timeout; without it the wait faults at the timeout (Npgsql's default is 30 s) | CIR-1 P1: Npgsql 10.0.3 + Dapper 2.1.89 on `postgres:18-alpine`, the plan's call shape, no Command Timeout set: the waiter faulted at 30.1 s (`NpgsqlException` / `TimeoutException`); with `commandTimeout: 0` it was still waiting at 40 s and acquired after release. UIP-1 replay: `ALockWaiter_OutlastsTheConnectionsCommandTimeout` fails without the fix (`second.IsCompleted` True), and `PrivilegedRequestPostgresIntegrationTests` runs 22/22 with it |
 | 305 | 3 | On a fresh FE the create-user Job's post-batch `fe` calls need `ROOT_HAS_PW=1`, and the added check and M11 catch its removal | CIR-1 P5, live on `starrocks/allin1-ubuntu:4.1.6` with Task 13 Step 4's sequence: without the line, fresh exit=1 (`Access denied for user 'root' (using password: NO)`); with it, fresh exit=0, two revokes on the rerun, none on the second rerun. UIP-1 replay: `check_t12.py` PASS on all five overlays, `check_t12_compose.py` PASS, `t12_job.sh` PASS, M1–M10 unchanged, M11 prints `create-user Job does not switch fe() to root's new password before the revoke`; on the unmodified tree the new check is skipped (no `SHOW GRANTS`) |
 | 306 | 3 | Task 11's live pool-exhaustion test fails under M2 and passes on the real code once the parked streams open through `holder` | CIR-1 P3/P4: with the streams opened through `repo`, the test passes under M2 (its successes keep the breaker's ratio below 0.5); through `holder`, it fails under M2 with "Expected a <MySqlConnector.MySqlException> to be thrown, but found <Iverson.StarRocks.EngagementNotReadyException>" and passes on the real code |
 | 307 | 5 | `has_column_privilege` takes the column name literally (no identifier quoting), while the table argument is parsed as an identifier | CIR-1 P6: on `postgres:18-alpine`, `'"Payload"'` errors (`column ""Payload"" … does not exist`) and `'Payload'` returns `t`. UIP-1: with `iverson_api`'s grants from `ApiLoginGrants.cs` mirrored on Postgres 18, the fixed C3 and K2 queries print `t\|t\|f\|f\|t\|f` and the runbook query `t\|t\|f\|f\|f`; C3 as previously written errored |
 | 308 | 5 | `Get` answers a key the acting user cannot see with `Success = false` and no `Data`, and an unset `Data` reads as null | CIR-1 P7: `new MappingResponse { Success = false }.Data is null` → True, and dereferencing it throws `NullReferenceException`. `ObjectMappingGrpcServiceTests.Get_WithNonMatchingTenant_ReturnsNotFound` and `Get_WithBypassRoleAndNonMatchingTenant_ReturnsNotFound` assert `Success` false (row 302's run). UIP-1: Task 13 Step 7's probe project builds with the guarded `get` case |
 | 309 | 3 | Every condition of a multi-class `--filter` names its property | CIR-1 P2: `FullyQualifiedName~.A.\|~.B.` is rejected ("Invalid Condition") and runs nothing; the fixed M2 form ran 18/18. UIP-1: the fixed M6 HEAVY filter with M6 applied ran 35 tests, and both named tests failed reading 300 |
-| 310 | 5 | The adoption check runs unless a registry row of this exact spelling exists: a case variant of a stored name that derives another table (`ToTableName` puts `_` before each capital after the first) is checked, and refused for the plumbing table, a view, or another tenant's leftover table, for an owned or a null-owner registration | CIR-2 Q1/Q2, plan as written: `ACaseVariantOfTheOwnersOwnType_StillRunsTheAdoptionCheck` fails (no exception), and registering `Iversontokenrevocation` then `IversonTokenRevocation` leaves `iverson_token_revocations` with only `Title,__TenantId`. UIP-2, on a replay of the edited plan through Task 12 with throwaway probes: the class plus probes runs 26/26 — the view case (`ViewCaseProbe` after `Viewcaseprobe`) and the null-owner view case are refused (`is not an ordinary table`), the first-letter variant (`abccaseprobe` after `Abccaseprobe`, same table) re-registers; the null-owner plumbing case, run alone, is refused (`has no __TenantId column`) and the table keeps `sub`; with the gate reverted to `if (storedOwners.Count == 0)` (M8) the fact and all three refusal probes fail and the first-letter case still passes |
+| 310 | 5 | The adoption check runs unless a stored registry row derives this name's table (the same name up to the first letter's case): a case variant of a stored name that derives another table (`ToTableName` puts `_` before each capital after the first) is checked, and refused for the plumbing table or a view, and for an owned registration also for another tenant's leftover table; a first-letter variant is the stored row's own table and is not checked | CIR-2 Q1/Q2, plan as written: `ACaseVariantOfTheOwnersOwnType_StillRunsTheAdoptionCheck` fails (no exception), and registering `Iversontokenrevocation` then `IversonTokenRevocation` leaves `iverson_token_revocations` with only `Title,__TenantId`. UIP-2, on a replay of the edited plan through Task 12 with throwaway probes: the class plus probes runs 26/26 — the view case (`ViewCaseProbe` after `Viewcaseprobe`) and the null-owner view case are refused (`is not an ordinary table`), the first-letter variant (`abccaseprobe` after `Abccaseprobe`, same table) re-registers; the null-owner plumbing case, run alone, is refused (`has no __TenantId column`) and the table keeps `sub`; with the gate reverted to `if (storedOwners.Count == 0)` (M8) the fact and all three refusal probes fail and the first-letter case still passes |
+| 311 | 5 | A stored registry row derives a type name's table exactly when it is the same name up to the first letter's case, so the adoption check is skipped for a first-letter variant (the stored row's own table) and runs for every other case variant | Type names match `\A[A-Za-z][A-Za-z0-9]*\z` (`PostgresIdentifier.cs:16`, via `SchemaRegistrationOrchestrator.IsValidIdentifier`); `ToSnakeCase` lower-cases index 0 and emits `_` plus the lower-case letter for every later capital, and `_` never occurs in an admitted name, so `lower(a) = lower(b) AND substr(a, 2) = substr(b, 2)` is table equality (CIR-3 G2-R4: 624 names, 0 mismatches). CIR-3 R1, plan as written before UIP-3: `AFirstLetterVariantOfTheOwnersOwnType_SkipsTheAdoptionCheck` fails with AlreadyExists "holds rows of another tenant". CIR-3 R2 with the same-table predicate: class 24/24; M8 fails `ACaseVariantOfTheOwnersOwnType_StillRunsTheAdoptionCheck`; M9 (`WHERE type_name = @TypeName`) fails the new fact; `Iverson.Api.Tests` unit 1639/0 |
+| 312 | 3 | Task 13 Step 9's `npm ci` (in `scratch_env`, under `systemd-run`) installs the TypeScript driver's dependencies in a fresh worktree, and the driver then builds and resolves its imports | CIR-3 F-R8: without `node_modules` the driver fails `ERR_MODULE_NOT_FOUND`. UIP-3, the exact edited line on a fresh replay's `Iverson.Clients/TypeScript` (no `node_modules` before): `added 78 packages in 3s`; `npx tsc -p tsconfig.conformance.json` rc 0; `node dist-conformance/conformance/driver.js` → `Error: missing required flag --scenario` (imports resolved); `git status --porcelain -- Iverson.Clients/TypeScript` empty (`node_modules/` is gitignored) |
+| 313 | 5 | `SHOW ROLES` with `--batch --skip-column-names` prints three tab-separated columns on StarRocks 4.1.6, so Task 13 Step 8 takes the first with `cut -f1` | CIR-3 R3 on a throwaway `starrocks/allin1-ubuntu:4.1.6`: `cat -A` → `role_tenant_tenant_smoke_test_0123456789abcdefghijklmno^Ifalse^INULL$`; the whole line in `GRANT $R TO USER …` → `ERROR 1064`; with `cut -f1` the GRANT succeeds and `SHOW GRANTS` lists the role |
 
 ## Tasks
 
@@ -4353,7 +4356,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Create: `Iverson.Server/Iverson.Sql/ExistingTableInspector.cs`. What sits at a derived table name (relkind, tenant column), and the foreign-row `EXISTS` under `iverson_maintenance`.
 - Create: `Iverson.Server/Iverson.Sql/PostgresPrivilegedRequestLocks.cs`. Session advisory locks on dedicated pooled connections, keys outside the `int4` `hashtext` range.
 - Modify: `Iverson.Server/Iverson.Sql/IRecordStoreRoles.cs:191-197`. `ISchemaRegistryRepository` gains `GetOwnersAsync`, `UpsertIfOwnerAsync` and `ExistsAsync`; `IExistingTableInspector`, `IPrivilegedRequestRepository` and `IPrivilegedRequestLocks` follow it.
-- Modify: `Iverson.Server/Iverson.Sql/SchemaRegistryRepository.cs:33-35`. The owner read (`lower(type_name) = lower(@TypeName)`), the conditional upsert and the exact-name check, appended after `DeleteAsync`.
+- Modify: `Iverson.Server/Iverson.Sql/SchemaRegistryRepository.cs:33-35`. The owner read (`lower(type_name) = lower(@TypeName)`), the conditional upsert and the same-table check, appended after `DeleteAsync`.
 - Modify: `Iverson.Server/Iverson.Sql/ServiceCollectionExtensions.cs:28-31`. `AddPostgres` registers the inspector and the locks.
 - Modify: `Iverson.Server/Iverson.Api/Schema/SchemaRegistry.cs:247`. An `internal` accessor for the JSON options, which the payload reuses (B2's "would have to be exposed").
 - Create: `Iverson.Server/Iverson.Api/Grpc/ISchemaRegistrationExecutor.cs`. The seam between RegisterSchema's validation (api) and its privileged effects.
@@ -5330,6 +5333,20 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
     }
 
     [Fact]
+    public async Task AFirstLetterVariantOfTheOwnersOwnType_SkipsTheAdoptionCheck()
+    {
+        // "Firstletterprobe" and "firstletterprobe" derive the same table, firstletterprobes, which
+        // the stored row adopted. Another tenant's earlier row in it must not block its owner.
+        await Applier().ExecuteAsync([Descriptor("Firstletterprobe", "tenant-a")], [], CancellationToken.None);
+        await fixture.Repository.ExecuteAsync(
+            """INSERT INTO firstletterprobes ("Id", "Title", "__TenantId") VALUES (gen_random_uuid(), 'theirs', 'tenant-b')""");
+
+        await Applier().ExecuteAsync([Descriptor("firstletterprobe", "tenant-a")], [], CancellationToken.None);
+
+        (await Registry.GetOwnersAsync("Firstletterprobe")).Should().OnlyContain(owner => owner == "tenant-a");
+    }
+
+    [Fact]
     public async Task TheModelChangeRecovery_AdoptsATableHoldingOnlyTheOwnersRows()
     {
         // The documented recovery: delete the registry row, then register again.
@@ -5948,7 +5965,8 @@ public interface ISchemaRegistryRepository
     Task<bool> UpsertIfOwnerAsync(string typeName, string schemaJson, string? ownerTenantId);
 
     /// <summary>
-    /// Whether a row is stored under exactly this spelling of the type name, case included.
+    /// Whether a stored row derives this type name's table: the same name, except that the first
+    /// letter's case may differ (SchemaBuilder.ToTableName lower-cases it without a separator).
     /// </summary>
     Task<bool> ExistsAsync(string typeName);
 }
@@ -6035,11 +6053,17 @@ with:
             """,
             new { TypeName = typeName, Json = schemaJson, Owner = ownerTenantId }) > 0;
 
-    // Exact, unlike GetOwnersAsync: a case variant of a stored name can derive another table
-    // (SchemaBuilder.ToTableName), which only a row of that exact spelling has adopted.
+    // Narrower than GetOwnersAsync: SchemaBuilder.ToTableName puts '_' before every capital after
+    // the first letter, so a case variant of a stored name derives another table, which the stored
+    // row never adopted. Only the first letter's case leaves the table unchanged (type names are
+    // plain ASCII identifiers, PostgresIdentifier.IsPlain).
     public Task<bool> ExistsAsync(string typeName) =>
         sql.QuerySingleOrDefaultAsync<bool>(
-            "SELECT EXISTS (SELECT 1 FROM _iverson_schema WHERE type_name = @TypeName)",
+            """
+            SELECT EXISTS (SELECT 1 FROM _iverson_schema
+                           WHERE lower(type_name) = lower(@TypeName)
+                             AND substr(type_name, 2) = substr(@TypeName, 2))
+            """,
             new { TypeName = typeName });
 }
 ```
@@ -6446,9 +6470,9 @@ internal sealed class SchemaRegistrationApplier(
                 throw OwnedByAnotherTenant(descriptor.TypeName);
 
             // 2. A type with no registry row whose table already exists would adopt that table. The
-            // row must be this exact spelling's: ToTableName puts '_' before every capital after the
-            // first letter, so a case variant of a stored name ("CaseProbe" for "Caseprobe") derives
-            // another table, which the stored row never adopted.
+            // row must derive this table: ToTableName puts '_' before every capital after the first
+            // letter, so a case variant of a stored name ("CaseProbe" for "Caseprobe") derives another
+            // table, which the stored row never adopted; a first-letter variant derives the same one.
             if (!await registryRepository.ExistsAsync(descriptor.TypeName))
                 await RequireAdoptableAsync(descriptor);
 
@@ -6737,13 +6761,13 @@ Container tests (**heavy: each command starts containers. Run each alone, one af
 ```bash
 cd /home/ben/repositories/Iverson/.worktrees/csr12-server/Iverson.Server && export MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false && systemd-run --user --scope -q -p MemoryMax=6G dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~.PrivilegedRequestPostgresIntegrationTests."
 ```
-Expected: 23 passed, 0 failed.
+Expected: 24 passed, 0 failed.
 ```bash
 cd /home/ben/repositories/Iverson/.worktrees/csr12-server/Iverson.Server && export MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false && systemd-run --user --scope -q -p MemoryMax=6G dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~.RegisterSchemaAuthorizationIntegrationTests.|FullyQualifiedName~.SchemaRegistryPostgresRoundTripTests."
 ```
 Expected: 2 passed, 0 failed (this starts Postgres, StarRocks and Qdrant for the first class).
 
-- [ ] **Step 5: Mutation proof** (make each mutation by hand, undo it by hand; M1, M2 and M6 run the unit command from Step 4, M3, M4, M5, M7 and M8 the `PrivilegedRequestPostgresIntegrationTests` command, alone)
+- [ ] **Step 5: Mutation proof** (make each mutation by hand, undo it by hand; M1, M2 and M6 run the unit command from Step 4, M3, M4, M5, M7, M8 and M9 the `PrivilegedRequestPostgresIntegrationTests` command, alone)
 
 | # | Guard | One-line mutation | Must fail |
 |---|---|---|---|
@@ -6754,7 +6778,8 @@ Expected: 2 passed, 0 failed (this starts Postgres, StarRocks and Qdrant for the
 | M5 | Only claims older than the cutoff are failed | In `PrivilegedRequestRepository.FailAbandonedAsync`, change `AND "ClaimedAt" < now() - @AgeSeconds * interval '1 second'` to `AND "ClaimedAt" IS NOT NULL` | `FailAbandoned_FailsOnlyRequestsClaimedLongerAgoThanTheCutoff` |
 | M6 | Cleanup ends abandoned claims | In `PrivilegedRequestWorker.PollOnceAsync`, delete the line `await requests.FailAbandonedAsync(AbandonedAfter, Abandoned.ToJson());` | `PollOnce_FailsRequestsClaimedOverAnHourAgo_AsUnavailable_AtMostOncePerInterval` |
 | M7 | A lock wait has no command timeout | In `PostgresPrivilegedRequestLocks.AcquireAsync`, delete `commandTimeout: 0, ` | `ALockWaiter_OutlastsTheConnectionsCommandTimeout` |
-| M8 | Only a row of this exact spelling skips the adoption check (#1) | In `SchemaRegistrationApplier.ExecuteAsync`, change `if (!await registryRepository.ExistsAsync(descriptor.TypeName))` to `if (storedOwners.Count == 0)` | `ACaseVariantOfTheOwnersOwnType_StillRunsTheAdoptionCheck` |
+| M8 | Only a row deriving this table skips the adoption check (#1) | In `SchemaRegistrationApplier.ExecuteAsync`, change `if (!await registryRepository.ExistsAsync(descriptor.TypeName))` to `if (storedOwners.Count == 0)` | `ACaseVariantOfTheOwnersOwnType_StillRunsTheAdoptionCheck` |
+| M9 | A first-letter variant is the stored row's own table (#1) | In `SchemaRegistryRepository.ExistsAsync`, replace the `WHERE` clause with `WHERE type_name = @TypeName` | `AFirstLetterVariantOfTheOwnersOwnType_SkipsTheAdoptionCheck` |
 
 Record the failing test names under each mutation, revert it, and re-run the same command: all green.
 
@@ -7587,7 +7612,7 @@ Container suite (**heavy, alone**): `NewExecutor` changed, so re-run Task 7's in
 ```bash
 cd /home/ben/repositories/Iverson/.worktrees/csr12-server/Iverson.Server && export MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false && systemd-run --user --scope -q -p MemoryMax=6G dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~.PrivilegedRequestPostgresIntegrationTests."
 ```
-Expected: 23 passed, 0 failed.
+Expected: 24 passed, 0 failed.
 
 - [ ] **Step 5: Mutation proof** (unit and pipeline only, with the first command of Step 4; make each mutation by hand and undo it by hand)
 
@@ -13492,7 +13517,7 @@ Expected:
 
 ```bash
 source /tmp/claude-1000/-home-ben-repositories-Iverson/a8dc481d-50d9-445a-974d-18c6594e3306/scratchpad/csr12-sdd/env.sh
-R="$(docker exec csr12-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot --batch --skip-column-names -e "SHOW ROLES;" | command grep '^role_tenant_tenant_smoke_test_' | head -1)"; echo "role=$R"
+R="$(docker exec csr12-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot --batch --skip-column-names -e "SHOW ROLES;" | cut -f1 | command grep '^role_tenant_tenant_smoke_test_' | head -1)"; echo "role=$R"
 docker exec csr12-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot -e "GRANT $R TO USER 'iverson_app'@'%';"
 $DC up --no-deps --force-recreate starrocks-init > $LIVE/init-rerun.log 2>&1; echo "rerun exit=$(docker inspect -f '{{.State.ExitCode}}' csr12-starrocks-init-1)"
 docker logs csr12-starrocks-init-1 2>&1 | command grep '^revoking role'
@@ -13510,6 +13535,7 @@ Expected:
 
 ```bash
 source /tmp/claude-1000/-home-ben-repositories-Iverson/a8dc481d-50d9-445a-974d-18c6594e3306/scratchpad/csr12-sdd/env.sh
+( scratch_env; cd $WT/Iverson.Clients/TypeScript && systemd-run --user --scope -q -p MemoryMax=3G npm ci --no-fund --no-audit 2>&1 | tail -1 )
 ( scratch_env
   export IVERSON_CLIENT_ID=dev-iverson-loadtest-client-id IVERSON_CLIENT_SECRET="$(val IVERSON_LOADTEST_CLIENT_SECRET)"
   export IVERSON_TOKEN_ENDPOINT=http://localhost:9000/application/o/token/ IVERSON_CLIENT_SCOPE="schema_admin tenant_id_loadtest"
@@ -13520,6 +13546,7 @@ docker logs csr12-iverson-api-1 2>&1 | command grep -c -E '42501|permission deni
 ```
 
 Expected:
+- `added <n> packages …` from `npm ci`. A fresh worktree has no `Iverson.Clients/TypeScript/node_modules`, which the TypeScript driver needs. It is gitignored, so Step 15's `git status` stays empty.
 - `harness exit=0`, and every scenario row reads `ok` in all five language columns.
 - `api permission errors after the harness: 0`. No RPC needed a grant beyond §6.2.
 
