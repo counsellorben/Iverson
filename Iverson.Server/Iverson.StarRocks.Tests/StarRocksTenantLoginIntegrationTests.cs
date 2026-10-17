@@ -192,4 +192,68 @@ public sealed class StarRocksTenantLoginIntegrationTests
         count.Should().NotBeNull();
         count!.MetricValue.Should().Be(1);
     }
+
+    // ── one tenant's full pool (CSR round 12 §7.2) ──────────────────────────────────────────────
+
+    // A full pool says nothing about StarRocks' health, so it must not count toward the process's one circuit
+    // breaker, or one busy tenant would fail every tenant fast. Streams parked mid-read hold tenant A's whole
+    // pool; A's next reads wait out the 2 s connect timeout and fail, and the same repository still serves B.
+    [Fact]
+    public async Task OneTenantsFullPool_FailsOnlyThatTenant_AndNeverOpensTheBreaker()
+    {
+        // The streams that fill tenant A's pool are opened through `holder`, built on the identical base string:
+        // the same tenant connection string is the same MySqlConnector pool, so they fill the pool `repo` reads
+        // from, while their ten successful opens land in holder's breaker, not repo's. repo's breaker then sees
+        // only the reads below, and a predicate that counted a full pool would open it after two of them.
+        var baseConnectionString = new MySqlConnectionStringBuilder(_appConnectionString) { ConnectionTimeout = 2 }.ToString();
+        var holder = new EngagementRepository(
+            baseConnectionString, NullLogger<EngagementRepository>.Instance,
+            tenantLoginKey: StarRocksSplitLogins.TenantLoginKey,
+            provisionedTenants: _directory);
+        var repo = new EngagementRepository(
+            baseConnectionString,
+            NullLogger<EngagementRepository>.Instance,
+            new EngagementResilienceOptions
+            {
+                CircuitBreaker = new EngagementCircuitBreakerOptions
+                {
+                    FailureRatio      = 0.5,
+                    MinimumThroughput = 2,
+                    SamplingDuration  = TimeSpan.FromMinutes(1),
+                    BreakDuration     = TimeSpan.FromMinutes(1),
+                },
+            },
+            provisionerConnectionString: _provisionerConnectionString,
+            tenantLoginKey: StarRocksSplitLogins.TenantLoginKey,
+            provisionedTenants: _directory);
+        var (tenantA, tableA) = await ProvisionWithRowAsync("A");
+        var (tenantB, tableB) = await ProvisionWithRowAsync("B");
+        var oneRow = new MatchRowsRequest(
+            [], SearchLogic.And, [], [new SearchSort { Property = "Name" }], [], [], true, [], 100);
+
+        var held = new List<IAsyncEnumerator<IDictionary<string, object?>>>();
+        try
+        {
+            for (var i = 0; i < EngagementRepository.TenantPoolSize; i++)
+            {
+                var stream = holder.MatchRowsAsync(ProbeQuerySchema(tableA), oneRow, AuthzFor(tenantA)).GetAsyncEnumerator();
+                held.Add(stream);
+                (await stream.MoveNextAsync()).Should().BeTrue();
+            }
+
+            for (var i = 0; i < 3; i++)
+            {
+                var act = () => repo.SearchAsync(ProbeQuerySchema(tableA), null, 0, 50, authz: AuthzFor(tenantA));
+                await act.Should().ThrowAsync<MySqlException>().WithMessage("*All pooled connections are in use*");
+            }
+
+            (await repo.SearchAsync(ProbeQuerySchema(tableB), null, 0, 50, authz: AuthzFor(tenantB)))
+                .Should().ContainSingle();
+        }
+        finally
+        {
+            foreach (var stream in held)
+                await stream.DisposeAsync();
+        }
+    }
 }

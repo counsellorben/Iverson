@@ -739,14 +739,32 @@ public sealed partial class ObjectSearchGrpcService(
 
         var having = request.Having;
 
-        var aggTasks = request.Aggregations
-            .Select(spec => RunAggregationAsync(
-                schema,
-                request.Query,
-                ProtoToEngagementSpec(spec),
-                having,
-                request.Joins,
-                auth.Constraints))
+        // CSR round 12 §7.2: at most four specs run at once. Every spec of a request runs as the same tenant,
+        // whose pool holds ten connections per process, so an unbounded fan-out could take the whole pool. The
+        // specs are converted up front, as before, so a bad one fails before any runs; Task.WhenAll keeps the
+        // results in request order.
+        const int maxConcurrentAggregations = 4;
+        var specs = request.Aggregations.Select(ProtoToEngagementSpec).ToList();
+        using var aggregationSlots = new SemaphoreSlim(maxConcurrentAggregations);
+        var aggTasks = specs
+            .Select(async spec =>
+            {
+                await aggregationSlots.WaitAsync();
+                try
+                {
+                    return await RunAggregationAsync(
+                        schema,
+                        request.Query,
+                        spec,
+                        having,
+                        request.Joins,
+                        auth.Constraints);
+                }
+                finally
+                {
+                    aggregationSlots.Release();
+                }
+            })
             .ToList();
 
         var aggResults = await Task.WhenAll(aggTasks);

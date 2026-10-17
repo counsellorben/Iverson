@@ -793,6 +793,43 @@ public class ObjectSearchGrpcServiceTests
         response.Results.Should().HaveCount(3);
     }
 
+    // CSR round 12 §7.2: every spec of one request runs as the same tenant, whose pool holds ten connections
+    // per process, so at most four run at once. Each stub call holds its slot for 50 ms, so with no cap all
+    // ten would overlap.
+    [Fact]
+    public async Task Aggregate_WithMoreSpecsThanTheCap_RunsAtMostFourAtOnce_AndKeepsTheirOrder()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var running = 0;
+        var peak = 0;
+        var peakLock = new object();
+
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(call => RunOneAsync(call.ArgAt<AggregationDescriptor>(2)));
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        for (var i = 0; i < 10; i++)
+            request.Aggregations.Add(new AggregationSpec { Name = $"a{i}", Field = "Name", Type = AggregationType.Terms });
+
+        var response = await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        peak.Should().Be(4);
+        response.Results.Select(r => r.Name).Should().Equal(Enumerable.Range(0, 10).Select(i => $"a{i}"));
+
+        async Task<SrAggResult?> RunOneAsync(AggregationDescriptor spec)
+        {
+            var now = System.Threading.Interlocked.Increment(ref running);
+            lock (peakLock) peak = Math.Max(peak, now);
+            await Task.Delay(50);
+            System.Threading.Interlocked.Decrement(ref running);
+            return new SrAggResult(spec.Name, AggregationKind.Terms);
+        }
+    }
+
     // ── Aggregate — authorization ───────────────────────────────────────────────
     //
     // Reject-on-reference for spec.Field/GroupByFields/Expression is StarRocksQueryBuilder's

@@ -160,4 +160,58 @@ public class StarRocksResiliencePipelineFactoryTests
 
         attempts.Should().Be(2, "exceptions that aren't MySqlException must never be retried or trip the breaker");
     }
+
+    // CSR round 12 §7.2: MySqlConnector 2.6.2 reports a full pool as UnableToConnectToHost (1042, which it marks
+    // transient) with this message (MySqlConnection.CreateSessionAsync). One tenant's pool filling up says
+    // nothing about StarRocks, so the process's one breaker must not count it, and a retry would only wait out
+    // the connect timeout again.
+    private static MySqlException PoolExhaustedException() =>
+        CreateMySqlException(MySqlErrorCode.UnableToConnectToHost, "Connect Timeout expired. All pooled connections are in use.");
+
+    [Fact]
+    public async Task Build_DoesNotRetryOrTripBreaker_OnPoolExhaustion()
+    {
+        var pipeline = StarRocksResiliencePipelineFactory.Build(FastTestOptions(), NullLogger.Instance);
+        var attempts = 0;
+
+        Func<Task> call = () => pipeline.ExecuteAsync<int>(async _ =>
+        {
+            attempts++;
+            throw PoolExhaustedException();
+        }).AsTask();
+
+        await Assert.ThrowsAsync<MySqlException>(call);
+        await Assert.ThrowsAsync<MySqlException>(call);
+        await Assert.ThrowsAsync<MySqlException>(call);
+
+        attempts.Should().Be(3, "a full pool must never be retried");
+
+        await Assert.ThrowsAsync<MySqlException>(call);
+        attempts.Should().Be(4, "the circuit must never open on a full pool");
+    }
+
+    [Fact]
+    public async Task Build_StillTripsBreaker_OnAConnectTimeoutWithAFreePool()
+    {
+        // Long durations, as in Build_OpensCircuit_AfterFailureThreshold_AndFailsFastWithoutInvokingOperation:
+        // this test never waits for the break to elapse.
+        var pipeline = StarRocksResiliencePipelineFactory.Build(
+            new EngagementCircuitBreakerOptions
+            {
+                FailureRatio      = 1.0,
+                MinimumThroughput = 2,
+                SamplingDuration  = TimeSpan.FromMinutes(1),
+                BreakDuration     = TimeSpan.FromMinutes(1),
+            },
+            NullLogger.Instance);
+
+        Func<Task> call = () => pipeline.ExecuteAsync<int>(async _ =>
+        {
+            throw CreateMySqlException(MySqlErrorCode.UnableToConnectToHost, "Connect Timeout expired.");
+        }).AsTask();
+
+        await Assert.ThrowsAsync<MySqlException>(call);
+        await Assert.ThrowsAsync<MySqlException>(call);
+        await Assert.ThrowsAsync<BrokenCircuitException>(call);
+    }
 }
