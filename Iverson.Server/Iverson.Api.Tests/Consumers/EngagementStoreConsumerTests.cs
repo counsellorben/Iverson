@@ -509,6 +509,88 @@ public class EngagementStoreConsumerTests
             Arg.Any<string>());
     }
 
+    // ── Re-cased owner keys (CSR round 12 §2.3) ───────────────────────────────
+    // StarRocks resolves column names case-insensitively, so every key naming the owner column in
+    // any letter case is the owner column. An event replayed from before payload keys were
+    // canonical can carry one.
+
+    [Fact]
+    public async Task HandleUpsert_WithReCasedOwnerKeysInPayload_UpsertsOnlyTheAuthoritativeOwner()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new AuthorizationRules(
+                "Name",
+                new List<RowPermission> { new("test-bypass", true, true, true) },
+                new List<FieldPermission>())
+        };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
+                 .Returns("""{"Name":"RealOwner","TenantId":"tenant-a"}""");
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Author",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   """{"Name":"Forged","NAME":"AlsoForged","name":"Forged too"}""",
+            TraceId:       "trace-recased-owner",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Engagement);
+
+        string? capturedJson = null;
+        _sr.UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Do<string>(j => capturedJson = j), Arg.Any<string>())
+           .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedJson.Should().NotBeNull();
+        using var doc = JsonDocument.Parse(capturedJson!);
+        var ownerKeys = doc.RootElement.EnumerateObject()
+            .Where(p => string.Equals(p.Name, "Name", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        ownerKeys.Select(p => p.Name).Should().Equal("Name");
+        ownerKeys.Single().Value.GetString().Should().Be("RealOwner");
+    }
+
+    [Fact]
+    public async Task HandleUpsert_WithReCasedOwnerKeysAndNoAuthoritativeOwner_UpsertsNoOwnerKeyAtAll()
+    {
+        // Fail closed: with no authoritative owner, no spelling of the owner key may reach StarRocks.
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new AuthorizationRules(
+                "Name",
+                new List<RowPermission> { new("test-bypass", true, true, true) },
+                new List<FieldPermission>())
+        };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
+                 .Returns("""{"TenantId":"tenant-a"}""");
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Author",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   """{"NAME":"victim","name":"victim"}""",
+            TraceId:       "trace-recased-owner-null",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Engagement);
+
+        string? capturedJson = null;
+        _sr.UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Do<string>(j => capturedJson = j), Arg.Any<string>())
+           .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedJson.Should().NotBeNull();
+        using var doc = JsonDocument.Parse(capturedJson!);
+        doc.RootElement.EnumerateObject()
+            .Where(p => string.Equals(p.Name, "Name", StringComparison.OrdinalIgnoreCase))
+            .Should().BeEmpty();
+    }
+
     // ── Registration gate ─────────────────────────────────────────────────────
 
     [Theory]

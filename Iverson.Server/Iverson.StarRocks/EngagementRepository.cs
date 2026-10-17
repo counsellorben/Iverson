@@ -445,19 +445,7 @@ public sealed class EngagementRepository(
 
         if (!TenantIdentifier.IsValid(tenantId)) return;
 
-        var row = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(payloadJson)
-            ?? new Dictionary<string, JsonElement>();
-
-        var knownCols = schema.Columns
-            .Select(c => c.Name)
-            .Append(schema.KeyColumn.Name)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var entries = row
-            .Where(kv => knownCols.Contains(kv.Key)
-                      && kv.Value.ValueKind != JsonValueKind.Object
-                      && kv.Value.ValueKind != JsonValueKind.Undefined)
-            .ToList();
+        var entries = UpsertEntries(schema, payloadJson);
 
         if (entries.Count == 0) return;
 
@@ -477,6 +465,34 @@ public sealed class EngagementRepository(
         StarRocksParameterGuard.EnsureAllPlaceholdersBound(sql, param);
         await RunTenantScopedAsync("sr.execute", tenantId, sql, conn => conn.ExecuteAsync(sql, param));
         activity?.SetStatus(ActivityStatusCode.Ok);
+    }
+
+    /// <summary>
+    /// The payload entries <see cref="UpsertAsync"/> writes. An entry is written when its key is
+    /// exactly a column name, compared ordinally, and its value is not a JSON object.
+    /// <para>
+    /// Ordinal, because StarRocks resolves column names case-insensitively. A re-cased key such as
+    /// <c>OWNERID</c> would otherwise go into the <c>OwnerId</c> column, past the owner value the
+    /// consumer re-derived from Postgres (CSR round 12 §2.3). Every producer emits exact column
+    /// names: the write RPCs canonicalise keys at entry, and enrichment and reconciliation
+    /// republish <c>row_to_json</c>. A key that is not exact therefore names no column.
+    /// </para>
+    /// </summary>
+    internal static List<KeyValuePair<string, JsonElement>> UpsertEntries(EngagementTableSchema schema, string payloadJson)
+    {
+        var row = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(payloadJson)
+            ?? new Dictionary<string, JsonElement>();
+
+        var knownCols = schema.Columns
+            .Select(c => c.Name)
+            .Append(schema.KeyColumn.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        return row
+            .Where(kv => knownCols.Contains(kv.Key)
+                      && kv.Value.ValueKind != JsonValueKind.Object
+                      && kv.Value.ValueKind != JsonValueKind.Undefined)
+            .ToList();
     }
 
     public async Task DeleteAsync(string tableName, string keyColumn, string keyValue, string tenantId)

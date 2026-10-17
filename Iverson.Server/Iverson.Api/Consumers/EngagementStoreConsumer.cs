@@ -115,18 +115,28 @@ public sealed class EngagementStoreConsumer(
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    // Overrides the owner-column key in a raw event payload JSON document with the authoritative
-    // value, or removes the key entirely when the authoritative value is null (fail closed —
-    // never fall back to the payload's own, unvalidated value). StarRocks's UpsertAsync takes a
-    // whole JSON document rather than per-field values, so unlike the Qdrant/Intelligence sibling
-    // fix, the corrected value has to be spliced back into the document rather than assembled
-    // into a fresh payload dictionary.
+    // Overrides the owner column in a raw event payload JSON document with the authoritative value,
+    // or leaves it out entirely when the authoritative value is null (fail closed — never fall back
+    // to the payload's own, unvalidated value). StarRocks's UpsertAsync takes a whole JSON document
+    // rather than per-field values, so unlike the Qdrant/Intelligence sibling fix, the corrected
+    // value has to be spliced back into the document rather than assembled into a fresh payload
+    // dictionary.
+    //
+    // Every key naming the owner column in any letter case is removed first, as
+    // OutboxWriter.WithTenantColumn does for the tenant column. StarRocks resolves column names
+    // case-insensitively, so a surviving re-cased key would still be written into the owner column
+    // (CSR round 12 §2.3). The value is set under ownerField, which SchemaBuilder.NormalizeDeclaredNames
+    // makes the column's own spelling.
     private static string WithOwnerValue(string payloadJson, string ownerField, string? authoritativeOwnerValue)
     {
         var node = JsonNode.Parse(payloadJson)!.AsObject();
-        if (authoritativeOwnerValue is null)
-            node.Remove(ownerField);
-        else
+        foreach (var key in node
+                     .Select(kv => kv.Key)
+                     .Where(k => string.Equals(k, ownerField, StringComparison.OrdinalIgnoreCase))
+                     .ToList())
+            node.Remove(key);
+
+        if (authoritativeOwnerValue is not null)
             node[ownerField] = JsonValue.Create(authoritativeOwnerValue);
 
         return node.ToJsonString();
