@@ -330,7 +330,7 @@ Newly introduced by this plan and verified at plan-write time (drafting reads; t
 | 111 | 2 | `KeyedTenantRow(Key, TenantId)` and `EntityAccess` are the types of `FetchKeysAndTenantsPagedAsync` | `KeyedRow.cs:5`; `IRecordStoreRoles.cs:171` |
 | 112 | 3 | Every bash block either `cd`s to the worktree or its `Iverson.Server`; heavy runs are under `systemd-run --user --scope -q -p MemoryMax=6G` with `MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false` exported (a `--scope` run inherits the caller's environment) | Brief "Session conventions"; template plan `:954,968` |
 | 113 | 3 | `dotnet test … --filter "Category!=Integration"` excludes the container classes, which carry `[Trait("Category", "Integration")]` | Template plan `:1074`; every container class in `Iverson.Api.Tests` carries the trait (e.g. `RegisterSchemaAuthorizationIntegrationTests.cs:198`) |
-| 114 | 3 | The expected counts: Task 6 1; Task 7 unit 26 (11 + 6 + 5 + 4), container 20, plus 2 for the round-trip and authorization integration classes; Task 8 executor 10, endpoints 7 | Counted `[Fact]`s in `D3.md` per class |
+| 114 | 3 | The expected counts: Task 6 1; Task 7 unit 27 (11 + 6 + 5 + 5), container 22, plus 2 for the round-trip and authorization integration classes; Task 8 executor 10, endpoints 7 | Counted `[Fact]`s per class in the replayed tree (CIR-1 §2.7): `SchemaRegistrationApplierTests` 11, `QueuedSchemaRegistrationExecutorTests` 6, `PrivilegedRequestWorkerTests` 5, `PrivilegedRequestExecutorTests` 5 at Task 7 and 10 after Task 8, `PrivilegedRequestPostgresIntegrationTests` 22 (21 plus row 304's fact; the class ran 22/22), `PrivilegedAdminEndpointTests` 7 |
 | 115 | 4 | Task 6 runs before Task 7, which reuses the registry's JSON options for its payload (spec §9 "before the worker work") | Spec `:277` |
 | 116 | 4 | Tasks 1 and 5 do not change Task 6's fixture: its declared names equal their columns and its one enrichment target is `TEXT` (Task 5's predicate) | Task 6 fixture type; spec §2.2, §4 |
 | 117 | 4 | Task 7 edits orchestrator regions Tasks 1 and 5 do not: the constructor, the 4-line owner pre-check, two phase-2 comment lines and phase 3 | Brief's file table (T1: refusals, T5: `ValidateEnrichmentTargets`); spec §2.2, §2.4, §4 |
@@ -480,7 +480,7 @@ Newly introduced by this plan and verified at plan-write time (drafting reads; t
 | 261 | 2 | The conformance harness environment | `Iverson.ClientConformance/Program.cs:313` (gRPC URL default), `:336-347` (the five variables, and the loopback rule) |
 | 262 | 3 | Local tool versions | `helm version` v3.16.4, `kube-score version` 1.19.0, `kubeconform -v` v0.8.0, `tfsec --version` v1.28.6; `tfsec --help` lists `--no-colour` |
 | 263 | 3 | CI's chart commands, which `t12_ci.sh` mirrors | `.github/workflows/deploy-validate.yml:40` (helm lint per overlay, with `ci-override`), `:76-77` (template, kubeconform 1.30.0 `-ignore-missing-schemas`), `:121-125` (kube-score with three `--ignore-test` flags), `:143` (tfsec) |
-| 264 | 3 | Task 12 Steps 2, 4 and 5 print what their Expected blocks say | Plan-time replay. **Step 2:** five `FAIL`s with the listed messages; `criticals: 0` everywhere; Valid 92/68/99/99/99; `[job:*] FAIL exit=0 revokes=[]`; `[compose] FAIL` with all but the two holding checks. **Step 4:** five `PASS`es; Valid 94/69/101/101/101; `criticals changed: 0`; `[job:roles] PASS` (two revokes), `[job:none] PASS`, `[job:badname] PASS exit=1`; `[compose] PASS`. **Step 5:** M1–M10 each print the named failure |
+| 264 | 3 | Task 12 Steps 2, 4 and 5 print what their Expected blocks say | Plan-time replay. **Step 2:** five `FAIL`s with the listed messages; `criticals: 0` everywhere; Valid 92/68/99/99/99; `[job:*] FAIL exit=0 revokes=[]`; `[compose] FAIL` with all but the two holding checks. **Step 4:** five `PASS`es; Valid 94/69/101/101/101; `criticals changed: 0`; `[job:roles] PASS` (two revokes), `[job:none] PASS`, `[job:badname] PASS exit=1`; `[compose] PASS`. **Step 5:** M1–M11 each print the named failure |
 | 265 | 3 | No Task 12 or Task 13 bash block executes during the dafny-plan-verification replay | `replay.classify` on every block. Task 12 Steps 1 and 5 are `local-env` (writes only under `$SCR`); Steps 2 and 4 are `check`; Step 6 is `commit`. Task 13's blocks are `live`, `check` or `local-env`. The mutation proof edits copies under `$SCR/t12-mut`, never the worktree |
 | 266 | 3 | The rendered job script, compose's `starrocks-init` command (with `$$` → `$`) and the worker healthcheck string are valid shell, and compose's command has no unescaped `$` | `sh -n` on both scripts, and `bash -n -c` on the healthcheck: OK; a regex scan of the parsed command found no single `$`, and the healthcheck has none |
 | 267 | 3 | `docker compose -p csr12 … config --quiet` parses the file | Not run at plan time: docker is a live command and the replay forbids it outside Task 13. PyYAML loads it (`check_t12_compose.py`), and Task 13 Step 5 runs `config` |
@@ -495,7 +495,7 @@ Newly introduced by this plan and verified at plan-write time (drafting reads; t
 | 276 | 5 | The revoke parser handles hashed, legacy and `public` roles, ignores privilege rows, and refuses a non-identifier name before splicing it | `t12_job.sh` against the rendered script under dash with a stub `mysql`: `roles`, `none` and `badname` all PASS; mutations M1–M3 each fail one case |
 | 277 | 5 | StarRocks accepts `REVOKE <role> FROM '<user>'@'%'` | `job-create-user.yaml:107` already runs `REVOKE user_admin FROM 'iverson_app'@'%'` against 4.1.x (round 11, live) |
 | 278 | 5 | **The `SHOW GRANTS` row format.** A role grant is one row, `GRANT 'r1', 'r2' TO 'iverson_app'@'%'`, with no ` ON `. Every privilege row contains ` ON ` | **Not verified live at plan time.** The `Grants` format comes from the StarRocks documentation, and a repo-wide grep finds no recorded probe output. The privilege form (`GRANT <priv> ON <object> TO …`) is the grammar the job itself uses (`:101-103`). Task 13 Step 4 checks the role row first, on a throwaway 4.1.6, and stops if its shape differs |
-| 279 | 5 | **`SHOW USERS`** lists `'iverson_t_…'@'%'` rows on StarRocks 4.1.6, and `SHOW PROPERTY FOR '<name>' LIKE 'session.%'` shows the caps | **`SHOW USERS` is not verified** (Task 13 Step 7 runs it first). `SHOW PROPERTY` is spec VA24 (probed) |
+| 279 | 5 | **`SHOW USERS`** lists `'iverson_t_…'@'%'` rows on StarRocks 4.1.6, and `SHOW PROPERTY FOR '<name>' LIKE 'session%'` shows the caps | Probed on a throwaway `starrocks/allin1-ubuntu:4.1.6` (CIR-1 P10, P11): with `iverson_t_0123456789abcdefghijklmno` created, `SHOW USERS` lists `'root'@'%'` and that login; Step 7's count pipeline gives 1 and its name extraction a 35-character name. With `SET PROPERTIES ('session.query_timeout'='180','session.exec_mem_limit'='4294967296')`, `LIKE 'session%'` returns exactly `session.exec_mem_limit 4294967296` and `session.query_timeout 180`; `LIKE 'session.%'` returns no rows, so the plan does not use it |
 | 280 | 5 | Compose YAML: `$$` escapes `$` in `command:`, and the healthcheck's `\\r\\n` in a double-quoted flow string reaches bash as `\r\n` for `printf` | The parsed healthcheck string printed `printf 'GET /health HTTP/1.1\r\nHost: localhost\r\n…'`; `bash -n` OK |
 | 281 | 5 | JSON and the secrets script stay valid | Task 12 Step 4's `json.load` and `bash -n` both pass on the replayed files |
 | 282 | 6 | Dropping `POSTGRES_APP_PASSWORD` and `<release>-postgres-app` from the api breaks no other reader | Row 4. The worker and the Authentik hook keep both, and CNPG owns the Secret |
@@ -519,7 +519,13 @@ Newly introduced by this plan and verified at plan-write time (drafting reads; t
 | 300 | 5 | `ALTER USER '<login>'@'%' IDENTIFIED BY '<pw>'` re-keys a tenant login when run as root or as `iverson_provisioner` (which holds `user_admin`) | spec VA24: `ALTER USER IDENTIFIED BY` works from the provisioner with `user_admin` (probed on 4.1.1 and 4.1.6); root holds every right |
 | 301 | 4 | At Task 12 Step 2, `appsettings.Development.json` already holds `StarRocks:TenantKey`, so that compose check passes before Task 12's edits | Task 10's Development hunk adds `"StarRocks": { "TenantKey": "dev-only-not-for-production-starrocks-tenant-key-0123456789" }`, and Task 12 (j) was rebased onto it to drop only `Database=iverson;` |
 | 302 | 3 | Every task's edits apply in order on `6b942e1c`, and after each of Tasks 1–12 the solution builds and its unit tests pass | Plan-time replay of this text (`replay.py apply --through-task N`, N = 1…12) on a scratch worktree, then `dotnet build Iverson.slnx` and `dotnet test --filter "Category!=Integration"` after each: replay exit 0, 0 build errors and 0 failed tests at every N, across 11 test projects; 3775 passed after Task 1, 3916 after Task 12 |
-| 303 | 3 | The integration suites pass on the state Task 12 leaves | Same replay through Task 12, `dotnet test --filter "Category=Integration"` per project: `Iverson.Sql.Tests` 63/63, `Iverson.StarRocks.Tests` 76/76 (including both tests that read the tenant login's caps, after the `ConnectionReset=false` fix in row 221), `Iverson.Api.Tests` 85/85 |
+| 303 | 3 | The integration suites pass on the state Task 12 leaves | Same replay through Task 12, `dotnet test --filter "Category=Integration"` per project: `Iverson.Sql.Tests` 63/63, `Iverson.StarRocks.Tests` 76/76 (including both tests that read the tenant login's caps, after the `ConnectionReset=false` fix in row 221), `Iverson.Api.Tests` 85/85. Re-run after UIP-1 on a fresh replay of the updated plan through Task 12: build 0 errors; `Category!=Integration` 0 failed, 3916 passed (11 projects); integration Sql 63/63, StarRocks 76/76, Api 86/86 (row 304's fact added one) |
+| 304 | 5 | A `pg_advisory_lock` wait with `commandTimeout: 0` waits until the holder releases, whatever the connection's command timeout; without it the wait faults at the timeout (Npgsql's default is 30 s) | CIR-1 P1: Npgsql 10.0.3 + Dapper 2.1.89 on `postgres:18-alpine`, the plan's call shape, no Command Timeout set: the waiter faulted at 30.1 s (`NpgsqlException` / `TimeoutException`); with `commandTimeout: 0` it was still waiting at 40 s and acquired after release. UIP-1 replay: `ALockWaiter_OutlastsTheConnectionsCommandTimeout` fails without the fix (`second.IsCompleted` True), and `PrivilegedRequestPostgresIntegrationTests` runs 22/22 with it |
+| 305 | 3 | On a fresh FE the create-user Job's post-batch `fe` calls need `ROOT_HAS_PW=1`, and the added check and M11 catch its removal | CIR-1 P5, live on `starrocks/allin1-ubuntu:4.1.6` with Task 13 Step 4's sequence: without the line, fresh exit=1 (`Access denied for user 'root' (using password: NO)`); with it, fresh exit=0, two revokes on the rerun, none on the second rerun. UIP-1 replay: `check_t12.py` PASS on all five overlays, `check_t12_compose.py` PASS, `t12_job.sh` PASS, M1–M10 unchanged, M11 prints `create-user Job does not switch fe() to root's new password before the revoke`; on the unmodified tree the new check is skipped (no `SHOW GRANTS`) |
+| 306 | 3 | Task 11's live pool-exhaustion test fails under M2 and passes on the real code once the parked streams open through `holder` | CIR-1 P3/P4: with the streams opened through `repo`, the test passes under M2 (its successes keep the breaker's ratio below 0.5); through `holder`, it fails under M2 with "Expected a <MySqlConnector.MySqlException> to be thrown, but found <Iverson.StarRocks.EngagementNotReadyException>" and passes on the real code |
+| 307 | 5 | `has_column_privilege` takes the column name literally (no identifier quoting), while the table argument is parsed as an identifier | CIR-1 P6: on `postgres:18-alpine`, `'"Payload"'` errors (`column ""Payload"" … does not exist`) and `'Payload'` returns `t`. UIP-1: with `iverson_api`'s grants from `ApiLoginGrants.cs` mirrored on Postgres 18, the fixed C3 and K2 queries print `t\|t\|f\|f\|t\|f` and the runbook query `t\|t\|f\|f\|f`; C3 as previously written errored |
+| 308 | 5 | `Get` answers a key the acting user cannot see with `Success = false` and no `Data`, and an unset `Data` reads as null | CIR-1 P7: `new MappingResponse { Success = false }.Data is null` → True, and dereferencing it throws `NullReferenceException`. `ObjectMappingGrpcServiceTests.Get_WithNonMatchingTenant_ReturnsNotFound` and `Get_WithBypassRoleAndNonMatchingTenant_ReturnsNotFound` assert `Success` false (row 302's run). UIP-1: Task 13 Step 7's probe project builds with the guarded `get` case |
+| 309 | 3 | Every condition of a multi-class `--filter` names its property | CIR-1 P2: `FullyQualifiedName~.A.\|~.B.` is rejected ("Invalid Condition") and runs nothing; the fixed M2 form ran 18/18. UIP-1: the fixed M6 HEAVY filter with M6 applied ran 35 tests, and both named tests failed reading 300 |
 
 ## Tasks
 
@@ -5342,6 +5348,21 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
     }
 
     [Fact]
+    public async Task ALockWaiter_OutlastsTheConnectionsCommandTimeout()
+    {
+        // A one-second command timeout stands in for Npgsql's 30 s default.
+        var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString + ";Command Timeout=1");
+
+        var first = await locks.AcquireRegistrationAsync(CancellationToken.None);
+        var second = locks.AcquireRegistrationAsync(CancellationToken.None);
+        await Task.Delay(3000);
+        second.IsCompleted.Should().BeFalse("the waiter must still be waiting, not timed out");
+
+        await first.DisposeAsync();
+        await using var secondLease = await second.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
     public async Task ATypeLock_SerialisesOneTypeIgnoringCase_AndBlocksNeitherAnotherTypeNorRegistration()
     {
         var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
@@ -5834,7 +5855,11 @@ public sealed class PostgresPrivilegedRequestLocks(string connectionString) : IP
         try
         {
             await conn.OpenAsync(ct);
-            await conn.ExecuteAsync(new CommandDefinition($"SELECT pg_advisory_lock({keySql})", param, cancellationToken: ct));
+            // No command timeout: a waiter waits as long as the holder runs (a reconcile can take
+            // minutes), which is what serialises requests. Only the worker's stopping token ends
+            // the wait. Npgsql's default would cancel the wait after 30 s.
+            await conn.ExecuteAsync(new CommandDefinition(
+                $"SELECT pg_advisory_lock({keySql})", param, commandTimeout: 0, cancellationToken: ct));
             return new Lease(conn, keySql, param);
         }
         catch
@@ -6671,13 +6696,13 @@ Container tests (**heavy: each command starts containers. Run each alone, one af
 ```bash
 cd /home/ben/repositories/Iverson/.worktrees/csr12-server/Iverson.Server && export MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false && systemd-run --user --scope -q -p MemoryMax=6G dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~.PrivilegedRequestPostgresIntegrationTests."
 ```
-Expected: 21 passed, 0 failed.
+Expected: 22 passed, 0 failed.
 ```bash
 cd /home/ben/repositories/Iverson/.worktrees/csr12-server/Iverson.Server && export MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false && systemd-run --user --scope -q -p MemoryMax=6G dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~.RegisterSchemaAuthorizationIntegrationTests.|FullyQualifiedName~.SchemaRegistryPostgresRoundTripTests."
 ```
 Expected: 2 passed, 0 failed (this starts Postgres, StarRocks and Qdrant for the first class).
 
-- [ ] **Step 5: Mutation proof** (make each mutation by hand, undo it by hand; M1, M2 and M6 run the unit command from Step 4, M3, M4 and M5 the `PrivilegedRequestPostgresIntegrationTests` command, alone)
+- [ ] **Step 5: Mutation proof** (make each mutation by hand, undo it by hand; M1, M2 and M6 run the unit command from Step 4, M3, M4, M5 and M7 the `PrivilegedRequestPostgresIntegrationTests` command, alone)
 
 | # | Guard | One-line mutation | Must fail |
 |---|---|---|---|
@@ -6687,6 +6712,7 @@ Expected: 2 passed, 0 failed (this starts Postgres, StarRocks and Qdrant for the
 | M4 | The claim is conditional on 'pending' | In `PrivilegedRequestRepository.TryClaimAsync`, change `WHERE "Id" = @Id AND "Status" = '{PrivilegedRequestStatus.Pending}'` to `WHERE "Id" = @Id` | `TryClaim_TheSameRequestTwice_SucceedsOnce`, `ARequestTheApiExpired_CannotBeClaimed` |
 | M5 | Only claims older than the cutoff are failed | In `PrivilegedRequestRepository.FailAbandonedAsync`, change `AND "ClaimedAt" < now() - @AgeSeconds * interval '1 second'` to `AND "ClaimedAt" IS NOT NULL` | `FailAbandoned_FailsOnlyRequestsClaimedLongerAgoThanTheCutoff` |
 | M6 | Cleanup ends abandoned claims | In `PrivilegedRequestWorker.PollOnceAsync`, delete the line `await requests.FailAbandonedAsync(AbandonedAfter, Abandoned.ToJson());` | `PollOnce_FailsRequestsClaimedOverAnHourAgo_AsUnavailable_AtMostOncePerInterval` |
+| M7 | A lock wait has no command timeout | In `PostgresPrivilegedRequestLocks.AcquireAsync`, delete `commandTimeout: 0, ` | `ALockWaiter_OutlastsTheConnectionsCommandTimeout` |
 
 Record the failing test names under each mutation, revert it, and re-run the same command: all green.
 
@@ -7519,7 +7545,7 @@ Container suite (**heavy, alone**): `NewExecutor` changed, so re-run Task 7's in
 ```bash
 cd /home/ben/repositories/Iverson/.worktrees/csr12-server/Iverson.Server && export MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false && systemd-run --user --scope -q -p MemoryMax=6G dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~.PrivilegedRequestPostgresIntegrationTests."
 ```
-Expected: 21 passed, 0 failed.
+Expected: 22 passed, 0 failed.
 
 - [ ] **Step 5: Mutation proof** (unit and pipeline only, with the first command of Step 4; make each mutation by hand and undo it by hand)
 
@@ -11458,11 +11484,11 @@ Before the first mutation, run Step 6's `git add …` command now (not the `git 
 | # | File | Mutation | Run (filter) | Must fail |
 |---|---|---|---|---|
 | M1 | `EngagementRepository.cs` | inside `SearchAsync`'s body, delete its two lines `if (!await IsRecordedAsync(tenantId))` and `return [];` | `~.EngagementRepositoryTenantLoginTests.` (light) | `UnrecordedTenant_EveryReaderAnswersEmpty_WithoutConnecting` (gets `EngagementNotReadyException` after ~2 s) |
-| M2 | `EngagementRepository.cs` | in `OpenOrSurfaceRefusalAsync`, `when (ex.ErrorCode == MySqlErrorCode.AccessDenied)` → `when (false)` | `~.EngagementRepositoryTenantLoginTests.\|~.EngagementRepositoryProvisioningTests.` (light) | `AccessDenied_OnOpeningATenantConnection_SurfacesAsNotReady`, `AccessDenied_OnOpen_SurfacesAsNotReady` |
+| M2 | `EngagementRepository.cs` | in `OpenOrSurfaceRefusalAsync`, `when (ex.ErrorCode == MySqlErrorCode.AccessDenied)` → `when (false)` | `~.EngagementRepositoryTenantLoginTests.\|FullyQualifiedName~.EngagementRepositoryProvisioningTests.` (light) | `AccessDenied_OnOpeningATenantConnection_SurfacesAsNotReady`, `AccessDenied_OnOpen_SurfacesAsNotReady` |
 | M3 | `EngagementRepository.cs` | move `await directory.RecordProvisionedAsync(tenantId);` to just above `await RunAsync(async () =>` in `EnsureTenantProvisionedAsync` | `~.EngagementRepositoryTenantLoginTests.` (light) | `ProvisioningThatFails_DoesNotRecordTheTenant` |
 | M4 | `EngagementRepository.cs` | delete ` DEFAULT ROLE '{roleName}'` from the `CREATE USER` statement | `~.StarRocksTenantLoginIntegrationTests.` (HEAVY) | at least `TenantLogin_HasItsRoleActiveAtLogin_AndReadsItsOwnTable` and `WorkerWritesAndAggregates_RunUnderTheTenantLogin` (the tenant login has no role, so its reads and writes are denied) |
 | M5 | `ObjectSearchGrpcService.cs` | in `Search`, change the `EngagementNotReadyException` catch's status from `StatusCode.Unavailable` to `StatusCode.Internal` (test-validity proof for the three characterisation facts) | `~.ObjectSearchGrpcServiceTests.` (light) | `Search_TenantLoginRefused_ThrowsUnavailable` |
-| M6 | `EngagementRepository.cs` | in `TenantConnectionString`, delete the line `ConnectionReset       = false,` | `~.EngagementRepositoryTenantLoginTests.` (light), then `~.StarRocksTenantLoginIntegrationTests.\|~.MatchRowsIntegrationTests.` (HEAVY) | `TenantConnectionString_LogsInAsTheTenantsOwnUser_WithItsOwnPoolBounds`; then `TenantLogin_CarriesTheSessionCapsTheAppLoginCarries` and `Session_state_a_read_leaves_behind_stays_inside_that_tenants_own_pool` (both read 300) |
+| M6 | `EngagementRepository.cs` | in `TenantConnectionString`, delete the line `ConnectionReset       = false,` | `~.EngagementRepositoryTenantLoginTests.` (light), then `~.StarRocksTenantLoginIntegrationTests.\|FullyQualifiedName~.MatchRowsIntegrationTests.` (HEAVY) | `TenantConnectionString_LogsInAsTheTenantsOwnUser_WithItsOwnPoolBounds`; then `TenantLogin_CarriesTheSessionCapsTheAppLoginCarries` and `Session_state_a_read_leaves_behind_stays_inside_that_tenants_own_pool` (both read 300) |
 
 Command shape, with `<project>` and `<filter>` from the table (the `\|` in the table is `|`):
 
@@ -11685,8 +11711,17 @@ with:
     [Fact]
     public async Task OneTenantsFullPool_FailsOnlyThatTenant_AndNeverOpensTheBreaker()
     {
+        // The streams that fill tenant A's pool are opened through `holder`, built on the identical base string:
+        // the same tenant connection string is the same MySqlConnector pool, so they fill the pool `repo` reads
+        // from, while their ten successful opens land in holder's breaker, not repo's. repo's breaker then sees
+        // only the reads below, and a predicate that counted a full pool would open it after two of them.
+        var baseConnectionString = new MySqlConnectionStringBuilder(_appConnectionString) { ConnectionTimeout = 2 }.ToString();
+        var holder = new EngagementRepository(
+            baseConnectionString, NullLogger<EngagementRepository>.Instance,
+            tenantLoginKey: StarRocksSplitLogins.TenantLoginKey,
+            provisionedTenants: _directory);
         var repo = new EngagementRepository(
-            new MySqlConnectionStringBuilder(_appConnectionString) { ConnectionTimeout = 2 }.ToString(),
+            baseConnectionString,
             NullLogger<EngagementRepository>.Instance,
             new EngagementResilienceOptions
             {
@@ -11711,7 +11746,7 @@ with:
         {
             for (var i = 0; i < EngagementRepository.TenantPoolSize; i++)
             {
-                var stream = repo.MatchRowsAsync(ProbeQuerySchema(tableA), oneRow, AuthzFor(tenantA)).GetAsyncEnumerator();
+                var stream = holder.MatchRowsAsync(ProbeQuerySchema(tableA), oneRow, AuthzFor(tenantA)).GetAsyncEnumerator();
                 held.Add(stream);
                 (await stream.MoveNextAsync()).Should().BeTrue();
             }
@@ -12078,6 +12113,9 @@ else:
         check("fe -e \"REVOKE $ROLE FROM 'iverson_app'@'%';\"" in s, "create-user Job does not revoke the roles it reads")
         check("SHOW GRANTS" not in s or s.index("SHOW GRANTS") > s.index("ALTER USER 'iverson_app' SET PROPERTIES"),
               "the role revoke runs before the login batch")
+        if "SHOW GRANTS" in s:
+            check("ROOT_HAS_PW=1" in s[s.index("ALTER USER 'iverson_app' SET PROPERTIES"):s.index("SHOW GRANTS")],
+                  "create-user Job does not switch fe() to root's new password before the revoke")
 
 print(f"[{name}] {'PASS' if not fails else 'FAIL'}", *fails, sep="\n  ")
 sys.exit(bool(fails))
@@ -12259,6 +12297,10 @@ run M9 $C "      iverson-worker:
 " compose_check
 run M10 $C "            public) ;;
 " "" compose_check
+run M11 $J "              # must send it: on a fresh FE, ROOT_HAS_PW was 0 until now.
+              ROOT_HAS_PW=1
+" "              # must send it: on a fresh FE, ROOT_HAS_PW was 0 until now.
+" render_local
 T12MUT
 ls $SCR/check_t12.py $SCR/check_t12_compose.py $SCR/t12_job.sh $SCR/t12_render.sh $SCR/t12_ci.sh $SCR/t12_mutate.sh | wc -l
 ```
@@ -12448,6 +12490,9 @@ with:
               # are per-connection session defaults for this user, not global settings — every
               # other tenant/service is unaffected. Idempotent like the GRANTs above: reapplied
               # on every post-install/post-upgrade run of this job.
+              # The batch above has just set root's password to ROOT_PW, so every fe call after it
+              # must send it: on a fresh FE, ROOT_HAS_PW was 0 until now.
+              ROOT_HAS_PW=1
               # CSR round 12 §7.5: iverson_app holds no tenant role any more. Every data
               # connection logs in as its tenant's own login (iverson_t_<suffix>), and
               # provisioning no longer grants the tenant role to iverson_app. This revokes every
@@ -12996,8 +13041,8 @@ kubectl cnpg psql <release>-postgres -n <ns> -- -d iverson -c '\du iverson_api' 
 kubectl cnpg psql <release>-postgres -n <ns> -- -d iverson -tA -c "SELECT
   has_database_privilege('iverson_api', 'iverson', 'CONNECT'),
   has_table_privilege('iverson_api', '\"IversonReconciliationQueue\"', 'INSERT'),
-  has_column_privilege('iverson_api', '\"IversonReconciliationQueue\"', '\"Payload\"', 'SELECT'),
-  has_column_privilege('iverson_api', '\"IversonDlqMessages\"', '\"MessageValue\"', 'SELECT'),
+  has_column_privilege('iverson_api', '\"IversonReconciliationQueue\"', 'Payload', 'SELECT'),
+  has_column_privilege('iverson_api', '\"IversonDlqMessages\"', 'MessageValue', 'SELECT'),
   pg_has_role('iverson_api', 'iverson_maintenance', 'MEMBER')"
 ```
 
@@ -13107,6 +13152,7 @@ git -C $WT status --short
 | M8 | worker `deployment.yaml`: rename the `Tenancy__SeedLegacyTenants` env | `[values-local] FAIL`: `worker Tenancy__SeedLegacyTenants != true` |
 | M9 | `docker-compose.yml`: the api's `iverson-worker` condition becomes `service_started` | `[compose] FAIL`: `api does not wait for a healthy worker` |
 | M10 | `docker-compose.yml`: delete `starrocks-init`'s `public) ;;` arm | `[compose] FAIL`: `revoke differs` |
+| M11 | `job-create-user.yaml`: delete the `ROOT_HAS_PW=1` line after the login batch | `[values-local] FAIL`: `create-user Job does not switch fe() to root's new password before the revoke` |
 
 Expected:
 - Each `M<n>` line is followed by the failure named in the table. No line reads `mutation not applied`.
@@ -13288,7 +13334,7 @@ PSQL="docker exec csr12-postgres-1 psql -U iverson -d iverson -tA"
 echo "C2 role: $($PSQL -c "SELECT rolcanlogin, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb FROM pg_roles WHERE rolname = 'iverson_api'")"
 echo "C2 member: $($PSQL -c "SELECT pg_has_role('iverson_api', 'iverson_runtime', 'MEMBER'), pg_has_role('iverson_api', 'iverson_maintenance', 'MEMBER')")"
 echo "C2 owns: $($PSQL -c "SELECT count(*) FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner WHERE r.rolname = 'iverson_api'")"
-echo "C3 grants: $($PSQL -c "SELECT has_database_privilege('iverson_api', 'iverson', 'CONNECT'), has_table_privilege('iverson_api', '\"IversonReconciliationQueue\"', 'INSERT'), has_column_privilege('iverson_api', '\"IversonReconciliationQueue\"', '\"Payload\"', 'SELECT'), has_column_privilege('iverson_api', '\"IversonDlqMessages\"', '\"MessageValue\"', 'SELECT'), has_table_privilege('iverson_api', '_iverson_schema', 'SELECT'), has_table_privilege('iverson_api', '_iverson_schema', 'INSERT')")"
+echo "C3 grants: $($PSQL -c "SELECT has_database_privilege('iverson_api', 'iverson', 'CONNECT'), has_table_privilege('iverson_api', '\"IversonReconciliationQueue\"', 'INSERT'), has_column_privilege('iverson_api', '\"IversonReconciliationQueue\"', 'Payload', 'SELECT'), has_column_privilege('iverson_api', '\"IversonDlqMessages\"', 'MessageValue', 'SELECT'), has_table_privilege('iverson_api', '_iverson_schema', 'SELECT'), has_table_privilege('iverson_api', '_iverson_schema', 'INSERT')")"
 echo "C4 sessions: $($PSQL -c "SELECT string_agg(DISTINCT usename, ',' ORDER BY usename) FROM pg_stat_activity WHERE datname = 'iverson' AND usename IN ('iverson', 'iverson_api')")"
 echo "C5 seed: $($PSQL -c "SELECT count(*) FROM \"IversonTenants\" WHERE \"Id\" IN ('tenant_loadtest', 'tenant_webtest', 'tenant_admin', 'tenant_smoke_test', 'tenant_bypass')")"
 docker logs csr12-iverson-api-1 2>&1 | command grep -c -E '42501|permission denied' | sed 's/^/C6 api permission errors: /'
@@ -13347,7 +13393,7 @@ switch (args[1])
         try
         {
             var got = await mapping.GetAsync(new MappingGetRequest { TypeName = "Csr12Note", Key = args[2] }, acting);
-            Console.WriteLine($"get title={got.Data.Fields["Title"].StringValue}");
+            Console.WriteLine(got.Success ? $"get title={got.Data.Fields["Title"].StringValue}" : "get not-found");
         }
         catch (RpcException ex) { Console.WriteLine($"get status={ex.StatusCode}"); }
         break;
@@ -13384,7 +13430,7 @@ echo "L5 bypass search: $b"
 docker exec csr12-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot --batch --skip-column-names -e "SHOW USERS;" | command grep -c "^'iverson_t_" | sed 's/^/L6 tenant logins: /'
 U="$(docker exec csr12-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot --batch --skip-column-names -e "SHOW USERS;" | command grep "^'iverson_t_" | head -1)"
 N="$(echo "$U" | sed "s/^'\([^']*\)'.*/\1/")"; echo "L6 $N is ${#N} characters"
-docker exec csr12-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot --batch -e "SHOW GRANTS FOR $U; SHOW PROPERTY FOR '$N' LIKE 'session.%'; SHOW GRANTS FOR 'iverson_app'@'%';"
+docker exec csr12-starrocks-1 mysql -h127.0.0.1 -P9030 -uroot --batch -e "SHOW GRANTS FOR $U; SHOW PROPERTY FOR '$N' LIKE 'session%'; SHOW GRANTS FOR 'iverson_app'@'%';"
 echo "L7 recorded: $(docker exec csr12-postgres-1 psql -U iverson -d iverson -tA -c "SELECT string_agg(\"TenantId\", ',' ORDER BY \"TenantId\") FROM \"IversonStarRocksTenants\"")"
 ```
 
@@ -13393,8 +13439,8 @@ Expected:
 - `registered in N ms`, with N well under 25000 (about 1000 on a healthy worker).
 - `smoke id=<uuid>` and `bypass id=<uuid>`.
 - `L1 smoke reads own:     get title=csr12-smoke`.
-- `L2 bypass reads smoke:  get status=NotFound`. The bypass user's group has `CanReadAll`, so this is the tenant boundary under `iverson_api` and RLS.
-- `L3 smoke reads bypass:  get status=NotFound`.
+- `L2 bypass reads smoke:  get not-found`. The bypass user's group has `CanReadAll`, so this is the tenant boundary under `iverson_api` and RLS.
+- `L3 smoke reads bypass:  get not-found`.
 - Within three minutes, `L4 smoke search:  search rows=1 titles=csr12-smoke` and `L5 bypass search: search rows=1 titles=csr12-bypass`. Each tenant's StarRocks read, through its own login, sees only its own row.
 - `L6 tenant logins: 2`, and the login name is `35 characters`.
 - That login's `SHOW GRANTS` shows its tenant role (`role_tenant_tenant_…`) and nothing else, and `SHOW PROPERTY` shows `session.query_timeout` `180` and `session.exec_mem_limit` `4294967296`. `iverson_app` still holds `OPERATE ON SYSTEM` only.
@@ -13484,7 +13530,7 @@ PSQL="kubectl -n iverson exec iverson-postgres-1 -c postgres -- psql -d iverson 
 echo "$L K1 role: $($PSQL -c "SELECT rolcanlogin, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb FROM pg_roles WHERE rolname = 'iverson_api'")"
 echo "$L K1 member: $($PSQL -c "SELECT pg_has_role('iverson_api', 'iverson_runtime', 'MEMBER'), pg_has_role('iverson_api', 'iverson_maintenance', 'MEMBER')")"
 echo "$L K1 owns: $($PSQL -c "SELECT count(*) FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner WHERE r.rolname = 'iverson_api'")"
-echo "$L K2 grants: $($PSQL -c "SELECT has_database_privilege('iverson_api', 'iverson', 'CONNECT'), has_table_privilege('iverson_api', '\"IversonReconciliationQueue\"', 'INSERT'), has_column_privilege('iverson_api', '\"IversonReconciliationQueue\"', '\"Payload\"', 'SELECT'), has_column_privilege('iverson_api', '\"IversonDlqMessages\"', '\"MessageValue\"', 'SELECT'), has_table_privilege('iverson_api', '_iverson_schema', 'SELECT'), has_table_privilege('iverson_api', '_iverson_schema', 'INSERT')")"
+echo "$L K2 grants: $($PSQL -c "SELECT has_database_privilege('iverson_api', 'iverson', 'CONNECT'), has_table_privilege('iverson_api', '\"IversonReconciliationQueue\"', 'INSERT'), has_column_privilege('iverson_api', '\"IversonReconciliationQueue\"', 'Payload', 'SELECT'), has_column_privilege('iverson_api', '\"IversonDlqMessages\"', 'MessageValue', 'SELECT'), has_table_privilege('iverson_api', '_iverson_schema', 'SELECT'), has_table_privilege('iverson_api', '_iverson_schema', 'INSERT')")"
 echo "$L K3 sessions: $($PSQL -c "SELECT string_agg(DISTINCT usename, ',' ORDER BY usename) FROM pg_stat_activity WHERE datname = 'iverson' AND usename IN ('iverson', 'iverson_api')")"
 echo "$L K3 seed: $($PSQL -c "SELECT count(*) FROM \"IversonTenants\" WHERE \"Id\" IN ('tenant_loadtest', 'tenant_webtest', 'tenant_admin', 'tenant_smoke_test', 'tenant_bypass')")"
 echo "$L K4 hook: $(kubectl -n iverson get job iverson-authentik-revoke-cross-db -o jsonpath='{.status.succeeded}')"
