@@ -61,11 +61,20 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
         fixture.SchemaManager,
         Substitute.For<IDocumentRerenderQueueRepository>());
 
-    private PrivilegedRequestExecutor NewExecutor() => new(
-        NewRegistry(),
-        Applier(),
-        new PostgresPrivilegedRequestLocks(fixture.ConnectionString),
-        NullLogger<PrivilegedRequestExecutor>.Instance);
+    private PrivilegedRequestExecutor NewExecutor()
+    {
+        var registry = NewRegistry();
+        return new PrivilegedRequestExecutor(
+            registry,
+            Applier(),
+            new Iverson.Api.Reconciliation.ReconciliationService(
+                registry, Substitute.For<IEntityRepository>(), Substitute.For<IReconciliationQueueRepository>(),
+                Substitute.For<Iverson.Events.IEventProducer>(), NullLogger<Iverson.Api.Reconciliation.ReconciliationService>.Instance),
+            Substitute.For<IDlqRepository>(),
+            Substitute.For<Iverson.Events.IEventProducer>(),
+            new PostgresPrivilegedRequestLocks(fixture.ConnectionString),
+            NullLogger<PrivilegedRequestExecutor>.Instance);
+    }
 
     private Task<string?> StatusAsync(Guid id) =>
         fixture.Repository.QuerySingleOrDefaultAsync<string>(

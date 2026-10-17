@@ -14,5 +14,14 @@ internal sealed record PrivilegedRequestWaits
     /// <summary>How much longer RegisterSchema waits once the worker has claimed it.</summary>
     public TimeSpan RegisterRun { get; init; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// How long <c>/admin/reconcile</c> waits before answering 202. The route is reached only
+    /// through port-forward, so no edge timeout applies.
+    /// </summary>
+    public TimeSpan Reconcile { get; init; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>How long <c>/admin/dlq/{id}/replay</c> waits before answering 202.</summary>
+    public TimeSpan Replay { get; init; } = TimeSpan.FromSeconds(30);
+
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(250);
 }

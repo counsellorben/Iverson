@@ -141,7 +141,20 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         // fix added the isOperator check on the ActingUser principal, mirroring /admin/dlq). A
         // 404 for the unregistered "SomeType" schema is the expected outcome past that gate —
         // asserting it (rather than 200) is enough to prove the gate let the request through
-        // without exercising the full reconciliation pipeline.
+        // without exercising the full reconciliation pipeline. The reconcile runs in the worker
+        // (CSR round 12 §5.2), which this host does not run, so the request queue is faked to
+        // answer as the worker does for a type it does not know.
+        var requests = Substitute.For<IPrivilegedRequestRepository>();
+        requests.GetAsync(Arg.Any<Guid>()).Returns(new PrivilegedRequestRow(
+            Guid.Empty, "ReconcileType", "{}", PrivilegedRequestStatus.Failed,
+            new Iverson.Api.PrivilegedRequests.PrivilegedRequestResult(
+                global::Grpc.Core.StatusCode.NotFound, "No schema registered for 'SomeType'").ToJson()));
+        var client = _factory.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<IPrivilegedRequestRepository>();
+            services.AddSingleton(requests);
+        })).CreateClient();
+
         var serviceToken = TestJwtFactory.CreateToken(
             "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
         var actingUserToken = TestJwtFactory.CreateToken(
@@ -152,7 +165,7 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", serviceToken);
         request.Headers.Add("x-acting-user-authorization", $"Bearer {actingUserToken}");
 
-        var response = await _client.SendAsync(request);
+        var response = await client.SendAsync(request);
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }

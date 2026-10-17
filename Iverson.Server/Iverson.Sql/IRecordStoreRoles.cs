@@ -291,6 +291,7 @@ public interface IDlqRepository
     Task InsertAsync(DlqMessage message);
     Task<IEnumerable<DlqRow>> ListUnreplayedAsync(int limit);
     Task<DlqReplayRow?> GetUnreplayedByIdAsync(Guid id);
+    Task<DlqReplayCheckRow?> GetUnreplayedSummaryAsync(Guid id);
     Task MarkReplayedAsync(Guid id);
     Task<int> CountUnreplayedAsync();
 }

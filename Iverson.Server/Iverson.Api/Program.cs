@@ -611,7 +611,7 @@ app.MapGet("/health", async (
 
 app.MapPost("/admin/reconcile/{typeName}", async (
     string typeName,
-    Iverson.Api.Reconciliation.ReconciliationService reconciliation,
+    Iverson.Api.PrivilegedRequests.PrivilegedRequestClient privileged,
     AuditLog audit,
     HttpContext httpContext) =>
 {
@@ -625,12 +625,34 @@ app.MapPost("/admin/reconcile/{typeName}", async (
     if (!isOperator)
         return Results.Forbid();
 
-    var count = await reconciliation.ReconcileTypeAsync(typeName, httpContext.RequestAborted);
-    if (count is null)
-        return Results.NotFound(new { error = $"No schema registered for '{typeName}'" });
+    // CSR round 12 §5.2: the reconcile reads every tenant's rows under the maintenance role, so it
+    // runs in the worker. It is idempotent, so the request never expires: past the wait the worker
+    // still completes it, and the caller gets 202 with the request id. The request's abort ends
+    // only this wait, never the reconcile.
+    var requestId = await privileged.SubmitAsync(
+        Iverson.Api.PrivilegedRequests.PrivilegedRequestKinds.ReconcileType,
+        JsonSerializer.Serialize(new Iverson.Api.PrivilegedRequests.ReconcileTypePayload(typeName), SchemaRegistry.JsonOptions),
+        actingUserResult.Principal.FindFirst("tenant_id")?.Value,
+        expiresAfter: null);
+    var reconcileRequest = await privileged.WaitWhileAsync(
+        requestId,
+        status => status is PrivilegedRequestStatus.Pending or PrivilegedRequestStatus.Running,
+        privileged.Waits.Reconcile,
+        httpContext.RequestAborted);
+    var reconcileResult = Iverson.Api.PrivilegedRequests.PrivilegedRequestResult.From(reconcileRequest);
+
+    if (reconcileResult is null)
+    {
+        audit.AdminOperation(httpContext.User, "Reconcile", typeName);
+        return Results.Json(new { requestId }, statusCode: StatusCodes.Status202Accepted);
+    }
+    if (reconcileResult.Code == global::Grpc.Core.StatusCode.NotFound)
+        return Results.NotFound(new { error = reconcileResult.Message });
+    if (reconcileResult.Code != global::Grpc.Core.StatusCode.OK)
+        return Results.Json(new { error = reconcileResult.Message }, statusCode: StatusCodes.Status500InternalServerError);
 
     audit.AdminOperation(httpContext.User, "Reconcile", typeName);
-    return Results.Ok(new { reconciledCount = count, typeName });
+    return Results.Ok(new { reconciledCount = reconcileResult.Count, typeName });
 }).WithName("Reconcile").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
@@ -669,7 +691,7 @@ app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantS
     return Results.Ok(visible);
 }).WithName("ListDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
-app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEventProducer events, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
+app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, Iverson.Api.PrivilegedRequests.PrivilegedRequestClient privileged, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
 {
     var actingUserResult = await httpContext.AuthenticateAsync("ActingUser");
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
@@ -695,14 +717,38 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
     if (string.IsNullOrEmpty(actingTenantId) && !isOperator)
         return Results.Forbid();
 
-    var row = await dlq.GetUnreplayedByIdAsync(id);
+    // The api's checks read the row's tenant and topic only, never MessageValue.
+    var row = await dlq.GetUnreplayedSummaryAsync(id);
     if (row is null) return Results.NotFound(new { error = $"No unreplayed DLQ row with id '{id}'" });
 
     if (row.TenantId != actingTenantId && !(row.TenantId is null && isOperator))
         return Results.Forbid();
 
-    await events.ProduceAsync(row.SourceTopic, row.MessageKey, row.MessageValue);
-    await dlq.MarkReplayedAsync(id);
+    // CSR round 12 §5.2: the worker produces the message and marks the row replayed, checking
+    // Replayed=false again. The request never expires: a late replay of an unreplayed row is
+    // still the replay that was asked for.
+    var requestId = await privileged.SubmitAsync(
+        Iverson.Api.PrivilegedRequests.PrivilegedRequestKinds.ReplayDlq,
+        JsonSerializer.Serialize(new Iverson.Api.PrivilegedRequests.ReplayDlqPayload(id), SchemaRegistry.JsonOptions),
+        actingTenantId,
+        expiresAfter: null);
+    var replayRequest = await privileged.WaitWhileAsync(
+        requestId,
+        status => status is PrivilegedRequestStatus.Pending or PrivilegedRequestStatus.Running,
+        privileged.Waits.Replay,
+        httpContext.RequestAborted);
+    var replayResult = Iverson.Api.PrivilegedRequests.PrivilegedRequestResult.From(replayRequest);
+
+    if (replayResult is null)
+    {
+        audit.AdminOperation(httpContext.User, "ReplayDlq", id.ToString());
+        return Results.Json(new { requestId }, statusCode: StatusCodes.Status202Accepted);
+    }
+    if (replayResult.Code == global::Grpc.Core.StatusCode.NotFound)
+        return Results.NotFound(new { error = replayResult.Message });
+    if (replayResult.Code != global::Grpc.Core.StatusCode.OK)
+        return Results.Json(new { error = replayResult.Message }, statusCode: StatusCodes.Status500InternalServerError);
+
     audit.AdminOperation(httpContext.User, "ReplayDlq", id.ToString());
 
     return Results.Ok(new { replayed = true, id, topic = row.SourceTopic });

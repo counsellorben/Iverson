@@ -105,6 +105,7 @@ internal sealed class NoOpDlqRepository : IDlqRepository
     public Task InsertAsync(DlqMessage message) => Task.CompletedTask;
     public Task<IEnumerable<DlqRow>> ListUnreplayedAsync(int limit) => Task.FromResult(Enumerable.Empty<DlqRow>());
     public Task<DlqReplayRow?> GetUnreplayedByIdAsync(Guid id) => Task.FromResult<DlqReplayRow?>(null);
+    public Task<DlqReplayCheckRow?> GetUnreplayedSummaryAsync(Guid id) => Task.FromResult<DlqReplayCheckRow?>(null);
     public Task MarkReplayedAsync(Guid id) => Task.CompletedTask;
     public Task<int> CountUnreplayedAsync() => Task.FromResult(0);
 }

@@ -8,7 +8,15 @@ namespace Iverson.Api.PrivilegedRequests;
 internal static class PrivilegedRequestKinds
 {
     public const string RegisterSchema = "RegisterSchema";
+    public const string ReconcileType  = "ReconcileType";
+    public const string ReplayDlq      = "ReplayDlq";
 }
+
+/// <summary><c>/admin/reconcile/{typeName}</c>'s request.</summary>
+internal sealed record ReconcileTypePayload(string TypeName);
+
+/// <summary><c>/admin/dlq/{id}/replay</c>'s request: the DLQ row's id.</summary>
+internal sealed record ReplayDlqPayload(Guid Id);
 
 /// <summary>
 /// One RegisterSchema call's privileged half: the owner-stamped descriptors in request order and
