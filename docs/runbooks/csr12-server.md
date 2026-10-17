@@ -4,12 +4,13 @@
 - **Postgres.** The api logs in as `iverson_api`: a member of `iverson_runtime`, not the owner, with no BYPASSRLS, no `iverson_maintenance` and no DDL.
 - **StarRocks.** Every data connection logs in as its tenant's own login, `iverson_t_<suffix>`, which holds only that tenant's role. `iverson_app` keeps only `OPERATE ON SYSTEM`, for `/health` and the readiness probes.
 - **The worker.** The owner, maintenance and provisioning credentials stay with the worker and the deploy hooks. The worker also runs the privileged request-driven work: RegisterSchema's DDL and registry write, `/admin/reconcile/{type}` and DLQ replay.
-- **What does not change (spec §10, accepted).** The api mounts the StarRocks tenant key, from which every tenant's StarRocks password can be derived, and the worker keeps the owner, BYPASSRLS and provisioning rights. A compromised api or worker process can therefore still reach every tenant. This is inherent to a single multi-tenant service.
+- **What does not change (spec §10, accepted).** The api mounts the StarRocks tenant key, from which every tenant's StarRocks password can be derived. Its Postgres login sets `app.tenant_id` itself, and row-level security keys on that setting, so it too reaches every tenant's Postgres rows. The worker keeps the owner, BYPASSRLS and provisioning rights. A compromised api or worker process can therefore still reach every tenant. This is inherent to a single multi-tenant service.
 
 ## 1. Before the upgrade
 
 - **StarRocks must hold no tenant data written before this release.** There is no backfill. A tenant's login is created by its first write after the upgrade, and a tenant with no login reads as empty. On compose, run `docker compose down -v` before the first `up` of this release. On kind, create a new cluster.
 - **Run `helm dependency build`** in the chart directory. A stale `charts/*.tgz` renders the old subcharts.
+- **Upgrade with `helm upgrade --wait`.** The StarRocks role revoke (§2, step 5) relies on every pod of the previous release being gone when the post-upgrade hooks run, and Helm waits for the rollout before the hooks only under `--wait`. Without it the hooks run as soon as the manifests are applied, and a previous-release worker still running can grant a newly provisioned tenant's role to `iverson_app` after the revoke, which nothing reports. Re-running the upgrade re-runs the revoke.
 - **Compose:** run `scripts/generate-compose-secrets.sh` once. It adds `IVERSON_STARROCKS_TENANT_KEY` to `.env` and leaves the existing values alone.
 - **The `stack.py query` benchmark tier** (`Iverson.Server/Iverson.LoadTest/scripts/stack.py`) starts `iverson-api` with `--no-deps`, so the worker does not run. The api's login `iverson_api` and its grants exist only once the worker has started on that Postgres volume. On a fresh volume, run the full stack once (`docker compose up -d`, until `iverson-api` is healthy) before the first `stack.py query`. Registering a type also needs the worker (§2, release notes).
 
@@ -36,13 +37,13 @@
    | `IversonPrivilegedRequests` | `INSERT`, `SELECT`, `UPDATE ("Status")` |
    | `IversonStarRocksTenants` | `SELECT` |
 
-   A worker that starts before CNPG has created `iverson_api` fails its first grant and is restarted. It succeeds once the role exists.
+   A worker that starts before CNPG has created `iverson_api` waits up to a minute for the role, then fails its startup and is restarted. It succeeds once the role exists.
 4. **The api connects as `iverson_api` and runs no DDL.**
    - A new api pod stays not-ready until the worker's grants are in place and the pod's schema registry has loaded, so the order in which pods restart does not matter.
    - The api no longer mounts `<release>-postgres-app` (the owner's Secret).
 5. **The hooks, after the rollout:**
    - `<release>-authentik-revoke-cross-db` also waits for `iverson_api` and grants it `CONNECT`. This repeats the worker's grant, which is the one the api relies on.
-   - `<release>-starrocks-create-user` (profiles with StarRocks) revokes every role still granted to `iverson_app`, as read from `SHOW GRANTS`. That covers the hashed `role_tenant_<readable>_<hash>` names and the legacy `role_tenant_<tenantId>` ones. Every pod of the previous release is gone by then, so nothing re-grants them.
+   - `<release>-starrocks-create-user` (profiles with StarRocks) revokes every role still granted to `iverson_app`, as read from `SHOW GRANTS`. That covers the hashed `role_tenant_<readable>_<hash>` names and the legacy `role_tenant_<tenantId>` ones. Under `helm upgrade --wait` (§1), every pod of the previous release is gone by then, so nothing re-grants them.
    - If this hook fails with `unexpected role name granted to iverson_app`, a role whose name is not `[A-Za-z0-9_]` is granted to `iverson_app`. Iverson never creates one. Revoke it by hand, quoting the name with backticks, then re-run the upgrade.
 
 **Release notes (behaviour changes for operators and callers):**
@@ -126,3 +127,7 @@ On compose, iverson-worker starts first, and iverson-api waits until the worker'
 3. **Run `rekey.sql` against the FE** as root, as in §3. Then delete `tenants.txt` and `rekey.sql`: the statements carry the passwords.
 
 The derivation matches the server's (`TenantIdentifier.LoginName` and `LoginPassword`). For the tenant id `acme` and the key `test-tenant-login-key`, it gives `iverson_t_7pfddyte668561tz83en42m5m` and a password starting `401cfbf7`, the vector the unit tests pin.
+
+## 5. Rolling back
+
+The previous release reads StarRocks as `iverson_app` through `SET ROLE` on the tenant's role, and this release's hook revoked those roles from `iverson_app`. After `helm rollback` to it, the previous release treats a tenant whose role is not granted as having no data, so every tenant's StarRocks-backed reads return empty, with no error, until that tenant's next write, when the previous release's worker grants the role again. Re-granting each `role_tenant_*` role to `iverson_app` as root restores the reads at once.

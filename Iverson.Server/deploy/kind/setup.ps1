@@ -123,5 +123,5 @@ helm upgrade --install metrics-server metrics-server `
   --wait
 
 Write-Host "All operators installed."
-Write-Host "Next: deploy/kind/build-and-load-image.ps1 to build+load the app image, then helm upgrade --install iverson . -f values-local.yaml -n iverson"
+Write-Host "Next: deploy/kind/build-and-load-image.ps1 to build+load the app image, then helm upgrade --install --wait iverson . -f values-local.yaml -n iverson (--wait: the post-upgrade StarRocks role revoke relies on the previous release's pods being gone)"
 Write-Host "Note: TEI and Ollama run model images with their weights baked in. Before installing the chart, build and load them: deploy/kind/build-and-load-image.ps1 -ModelImages (optionally -Values <overlay>; -ClusterName applies)."
