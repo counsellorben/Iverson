@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T11 S3
 // Source: Iverson.Server/Iverson.StarRocks/StarRocksResiliencePipelineFactory.cs `IsBackendTransient`, `IsPoolExhausted`, and the two `ShouldHandle` predicates in `Build`
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/StarRocksResiliencePipelineFactory.IsBackendTransient.dfy
 
 // C# `string` (UTF-16 code units under --unicode-char false); Length is an int.
@@ -21,8 +21,8 @@ predicate ContainsOrdinal(s: seq<char>, sub: seq<char>)
   exists i {:trigger s[i..i + |sub|]} :: 0 <= i <= |s| - |sub| && s[i..i + |sub|] == sub
 }
 
-// StarRocksResiliencePipelineFactory.cs:52-54
-//   private static bool IsPoolExhausted(MySqlException ex) =>
+// StarRocksResiliencePipelineFactory.cs:56-58 (as built: public; logic unchanged)
+//   public static bool IsPoolExhausted(MySqlException ex) =>
 //       ex.ErrorCode == MySqlErrorCode.UnableToConnectToHost &&
 //       ex.Message.Contains("All pooled connections are in use", StringComparison.Ordinal);
 predicate IsPoolExhausted(e: MySqlEx)

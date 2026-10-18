@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T4 S6
 // Source: Iverson.Server/Iverson.Api/Grpc/PopularitySignalOptions.cs `PopularitySignalValidator.ValidateAtStartup`: the per-signal loop as T4 leaves it; the new collision check is the logic under test
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/PopularitySignalValidator.SignalKeyCollision.dfy
 
 // ---------------------------------------------------------------------------

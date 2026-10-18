@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T1 S3
 // Source: Iverson.Server/Iverson.Api/Schema/SchemaBuilder.cs `NormalizeDeclaredNames`
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/SchemaBuilder.NormalizeDeclaredNames.dfy
 
 // ---------------------------------------------------------------------------------------------
@@ -59,30 +59,12 @@ predicate Renamed(d: Desc, from: seq<char>, to: seq<char>) { if |Spellings(d, fr
 // LINQ / BCL models used by NormalizeDeclaredNames
 // ---------------------------------------------------------------------------------------------
 
-// .Where(name => !SchemaDescriptor.IsTenantColumn(name))
-function WhereNotTenant(xs: seq<CsString>): seq<CsString>
-  ensures forall x :: x in WhereNotTenant(xs) <==> x in xs && !IsTenantColumn(x)
-{
-  if xs == [] then []
-  else
-    assert forall x :: x in xs <==> x == xs[0] || x in xs[1..];
-    (if !IsTenantColumn(xs[0]) then [xs[0]] else []) + WhereNotTenant(xs[1..])
-}
-
-// .Distinct(StringComparer.Ordinal): the first occurrence of each ordinal spelling, in order.
-function DistinctOrdinal(xs: seq<CsString>): seq<CsString> { DistinctFrom([], xs) }
-
-function DistinctFrom(seen: seq<CsString>, xs: seq<CsString>): seq<CsString>
-  decreases |xs|
-{
-  if xs == [] then seen
-  else DistinctFrom(if xs[0] in seen then seen else seen + [xs[0]], xs[1..])
-}
-
-// A Lookup grouping: Key is the key of its first element; Elements in arrival order.
+// A Dictionary<string, List<string>> with StringComparer.OrdinalIgnoreCase, as its entries in
+// insertion order (enumeration order of a Dictionary with no removals): Key is the key the entry
+// was created under; Elements is the List<string> value.
 datatype Grouping = Grouping(Key: CsString, Elements: seq<CsString>)
 
-// Lookup.GetGrouping: comparer.Equals(g.Key, key) over the groupings in creation order.
+// Dictionary.TryGetValue under OrdinalIgnoreCase over the entries.
 function FindGrouping(gs: seq<Grouping>, x: CsString, i: nat): Option<nat>
   requires i <= |gs|
   decreases |gs| - i
@@ -95,23 +77,7 @@ function FindGrouping(gs: seq<Grouping>, x: CsString, i: nat): Option<nat>
   else FindGrouping(gs, x, i + 1)
 }
 
-function AddToGrouping(gs: seq<Grouping>, x: CsString): seq<Grouping>
-{
-  match FindGrouping(gs, x, 0)
-  case Some(i) => gs[i := gs[i].(Elements := gs[i].Elements + [x])]
-  case None => gs + [Grouping(x, [x])]
-}
-
-function GroupFrom(gs: seq<Grouping>, xs: seq<CsString>): seq<Grouping>
-  decreases |xs|
-{
-  if xs == [] then gs else GroupFrom(AddToGrouping(gs, xs[0]), xs[1..])
-}
-
-// .GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
-function GroupByIgnoreCase(xs: seq<CsString>): seq<Grouping> { GroupFrom([], xs) }
-
-// .Where(spellings => spellings.Count() == 1)
+// .Where(kv => kv.Value.Count == 1)
 function WhereCountIsOne(gs: seq<Grouping>): seq<Grouping>
   ensures forall g :: g in WhereCountIsOne(gs) <==> g in gs && |g.Elements| == 1
 {
@@ -121,10 +87,10 @@ function WhereCountIsOne(gs: seq<Grouping>): seq<Grouping>
     (if |gs[0].Elements| == 1 then [gs[0]] else []) + WhereCountIsOne(gs[1..])
 }
 
-// Enumerable.Single: InvalidOperationException on zero or several elements.
-function Single(es: seq<CsString>): Result<CsString>
+// List<string> indexer kv.Value[0]: ArgumentOutOfRangeException on an empty list.
+function Index0(es: seq<CsString>): Result<CsString>
 {
-  if |es| == 1 then Ok(es[0]) else Threw
+  if |es| > 0 then Ok(es[0]) else Threw
 }
 
 // A Dictionary<string, string> with StringComparer.OrdinalIgnoreCase, as its entries.
@@ -135,7 +101,7 @@ predicate ContainsKeyIC(dict: seq<Entry>, k: CsString)
   exists j :: 0 <= j < |dict| && EqIC(dict[j].Key, k)
 }
 
-// .ToDictionary(spellings => spellings.Key, spellings => spellings.Single(), StringComparer.OrdinalIgnoreCase):
+// .ToDictionary(kv => kv.Key, kv => kv.Value[0], StringComparer.OrdinalIgnoreCase):
 // key selector, element selector, then Dictionary.Add (ArgumentException on a duplicate key).
 function ToDictionaryFrom(dict: seq<Entry>, gs: seq<Grouping>): Result<seq<Entry>>
   decreases |gs|
@@ -143,7 +109,7 @@ function ToDictionaryFrom(dict: seq<Entry>, gs: seq<Grouping>): Result<seq<Entry
   if gs == [] then Ok(dict)
   else
     var key := gs[0].Key;
-    var element := Single(gs[0].Elements);
+    var element := Index0(gs[0].Elements);
     if element.Threw? then Threw
     else if ContainsKeyIC(dict, key) then Threw
     else ToDictionaryFrom(dict + [Entry(key, element.value)], gs[1..])
@@ -163,7 +129,51 @@ function FindEntry(dict: seq<Entry>, name: CsString, j: nat): Option<nat>
 }
 
 // ---------------------------------------------------------------------------------------------
-// Transliteration: SchemaBuilder.NormalizeDeclaredNames (SchemaBuilder.cs:279-308)
+// Transliteration: SchemaBuilder.ColumnSpellingsByName (SchemaBuilder.cs:311-323)
+// ---------------------------------------------------------------------------------------------
+
+// if (!columns.TryGetValue(name, out var spellings))
+//     columns[name] = spellings = [];
+// Returns the dictionary and the index of the entry `spellings` refers to.
+function TryGetOrAddEmpty(columns: seq<Grouping>, name: CsString): (r: (seq<Grouping>, nat))
+  ensures r.1 < |r.0|
+{
+  match FindGrouping(columns, name, 0)
+  case Some(i) => (columns, i)
+  case None => (columns + [Grouping(name, [])], |columns|)
+}
+
+// Loop body after the tenant check:
+// if (!columns.TryGetValue(name, out var spellings)) columns[name] = spellings = [];
+// if (!spellings.Contains(name, StringComparer.Ordinal)) spellings.Add(name);
+function AddSpelling(columns: seq<Grouping>, name: CsString): seq<Grouping>
+{
+  var r := TryGetOrAddEmpty(columns, name);
+  var cols := r.0;
+  var i := r.1;
+  if name in cols[i].Elements then cols
+  else cols[i := cols[i].(Elements := cols[i].Elements + [name])]
+}
+
+// foreach (var name in xs) { if (SchemaDescriptor.IsTenantColumn(name)) continue; ... }
+function ByNameFrom(columns: seq<Grouping>, xs: seq<CsString>): seq<Grouping>
+  decreases |xs|
+{
+  if xs == [] then columns
+  else if IsTenantColumn(xs[0]) then ByNameFrom(columns, xs[1..])
+  else ByNameFrom(AddSpelling(columns, xs[0]), xs[1..])
+}
+
+// var columns = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+// foreach (var name in descriptor.ScalarColumns.Select(c => c.Name).Prepend(descriptor.KeyColumn.Name)) ...
+// return columns;
+function ColumnSpellingsByName(d: Desc): seq<Grouping>
+{
+  ByNameFrom([], Prepend(SelectName(d.ScalarColumns), d.KeyColumn.Name))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Transliteration: SchemaBuilder.NormalizeDeclaredNames (SchemaBuilder.cs:279-302)
 // ---------------------------------------------------------------------------------------------
 
 // string ColumnSpelling(string name) => columnSpelling.TryGetValue(name, out var column) ? column : name;
@@ -199,10 +209,7 @@ function NormalizeDeclaredNames(d: Desc): Result<Desc>
   var columnSpellingR :=
     ToDictionaryFrom([],
       WhereCountIsOne(
-        GroupByIgnoreCase(
-          DistinctOrdinal(
-            WhereNotTenant(
-              Prepend(SelectName(d.ScalarColumns), d.KeyColumn.Name))))));
+        ColumnSpellingsByName(d)));
   if columnSpellingR.Threw? then Threw
   else
     var columnSpelling := columnSpellingR.value;
@@ -225,30 +232,19 @@ function NormalizeDeclaredNames(d: Desc): Result<Desc>
 
 predicate NoDups<T(==)>(xs: seq<T>) { forall i, j :: 0 <= i < j < |xs| ==> xs[i] != xs[j] }
 
-lemma DistinctFromProps(seen: seq<CsString>, xs: seq<CsString>)
-  requires NoDups(seen)
-  ensures NoDups(DistinctFrom(seen, xs))
-  ensures forall x :: x in DistinctFrom(seen, xs) <==> x in seen || x in xs
-  decreases |xs|
+// The non-tenant names, in order, with duplicates: the names the loop does not `continue` past.
+function WhereNotTenant(xs: seq<CsString>): seq<CsString>
+  ensures forall x :: x in WhereNotTenant(xs) <==> x in xs && !IsTenantColumn(x)
 {
-  if xs != [] {
-    var seen' := if xs[0] in seen then seen else seen + [xs[0]];
-    assert NoDups(seen');
-    DistinctFromProps(seen', xs[1..]);
+  if xs == [] then []
+  else
     assert forall x :: x in xs <==> x == xs[0] || x in xs[1..];
-  }
+    (if !IsTenantColumn(xs[0]) then [xs[0]] else []) + WhereNotTenant(xs[1..])
 }
 
-function Distinct(d: Desc): seq<CsString> { DistinctOrdinal(WhereNotTenant(ColumnNames(d))) }
-function Groups(d: Desc): seq<Grouping> { GroupByIgnoreCase(Distinct(d)) }
+function W(d: Desc): seq<CsString> { WhereNotTenant(ColumnNames(d)) }
+function Groups(d: Desc): seq<Grouping> { ColumnSpellingsByName(d) }
 function DictR(d: Desc): Result<seq<Entry>> { ToDictionaryFrom([], WhereCountIsOne(Groups(d))) }
-
-lemma DistinctMembers(d: Desc)
-  ensures NoDups(Distinct(d))
-  ensures forall x :: x in Distinct(d) <==> x in ColumnNames(d) && !IsTenantColumn(x)
-{
-  DistinctFromProps([], WhereNotTenant(ColumnNames(d)));
-}
 
 predicate KeysPairwise(gs: seq<Grouping>)
 {
@@ -268,6 +264,14 @@ lemma InvElem(gs: seq<Grouping>, P: seq<CsString>, i: int, x: CsString)
   requires 0 <= i < |gs| && x in gs[i].Elements
   ensures EqIC(x, gs[i].Key) && x in P
 {
+}
+
+// Proof-only: appending a spelling not yet present.
+function AddToGrouping(gs: seq<Grouping>, x: CsString): seq<Grouping>
+{
+  match FindGrouping(gs, x, 0)
+  case Some(i) => gs[i := gs[i].(Elements := gs[i].Elements + [x])]
+  case None => gs + [Grouping(x, [x])]
 }
 
 lemma AddInv(gs: seq<Grouping>, P: seq<CsString>, x: CsString)
@@ -349,33 +353,79 @@ lemma AddInv(gs: seq<Grouping>, P: seq<CsString>, x: CsString)
     }
 }
 
-lemma GroupFromInv(gs: seq<Grouping>, P: seq<CsString>, xs: seq<CsString>)
+// The built loop body is a no-op on a spelling already seen, and AddToGrouping otherwise.
+lemma AddSpellingEq(gs: seq<Grouping>, P: seq<CsString>, x: CsString)
   requires GroupInv(gs, P)
-  requires NoDups(P + xs)
-  ensures GroupInv(GroupFrom(gs, xs), P + xs)
+  ensures x in P ==> AddSpelling(gs, x) == gs
+  ensures x !in P ==> AddSpelling(gs, x) == AddToGrouping(gs, x)
+{
+  match FindGrouping(gs, x, 0)
+  case Some(i) =>
+    assert TryGetOrAddEmpty(gs, x) == (gs, i);
+    if x in P {
+      var k :| 0 <= k < |gs| && x in gs[k].Elements;
+      InvElem(gs, P, k, x);
+      assert EqIC(gs[k].Key, gs[i].Key);
+      KeysUnique(gs, k, i);
+    } else {
+      if x in gs[i].Elements {
+        InvElem(gs, P, i, x);
+      }
+      assert x !in gs[i].Elements;
+      assert AddSpelling(gs, x) == gs[i := gs[i].(Elements := gs[i].Elements + [x])];
+      assert AddToGrouping(gs, x) == gs[i := gs[i].(Elements := gs[i].Elements + [x])];
+    }
+  case None =>
+    assert TryGetOrAddEmpty(gs, x) == (gs + [Grouping(x, [])], |gs|);
+    forall k | 0 <= k < |gs| && x in gs[k].Elements ensures EqIC(gs[k].Key, x) {
+      InvElem(gs, P, k, x);
+    }
+    // No key matches x, so no entry holds x, so x was never seen.
+    assert x !in P;
+    {
+      var cols := gs + [Grouping(x, [])];
+      assert cols[|gs|] == Grouping(x, []);
+      assert x !in cols[|gs|].Elements;
+      assert cols[|gs|].(Elements := cols[|gs|].Elements + [x]) == Grouping(x, [x]);
+      assert AddSpelling(gs, x) == cols[|gs| := Grouping(x, [x])];
+      assert cols[|gs| := Grouping(x, [x])] == gs + [Grouping(x, [x])];
+      assert AddToGrouping(gs, x) == gs + [Grouping(x, [x])];
+    }
+}
+
+lemma ByNameFromInv(gs: seq<Grouping>, P: seq<CsString>, xs: seq<CsString>)
+  requires GroupInv(gs, P)
+  ensures GroupInv(ByNameFrom(gs, xs), P + WhereNotTenant(xs))
   decreases |xs|
 {
   if xs == [] {
-    assert P + xs == P;
+    assert P + WhereNotTenant(xs) == P;
   } else {
     var x := xs[0];
-    forall k | 0 <= k < |P| ensures P[k] != x {
-      assert (P + xs)[k] == P[k];
-      assert (P + xs)[|P|] == x;
+    if IsTenantColumn(x) {
+      assert WhereNotTenant(xs) == WhereNotTenant(xs[1..]);
+      ByNameFromInv(gs, P, xs[1..]);
+    } else {
+      assert WhereNotTenant(xs) == [x] + WhereNotTenant(xs[1..]);
+      assert P + WhereNotTenant(xs) == (P + [x]) + WhereNotTenant(xs[1..]);
+      AddSpellingEq(gs, P, x);
+      if x in P {
+        assert forall y :: y in P + [x] <==> y in P;
+        assert GroupInv(gs, P + [x]);
+      } else {
+        AddInv(gs, P, x);
+      }
+      ByNameFromInv(AddSpelling(gs, x), P + [x], xs[1..]);
     }
-    assert x !in P;
-    AddInv(gs, P, x);
-    assert P + xs == (P + [x]) + xs[1..];
-    GroupFromInv(AddToGrouping(gs, x), P + [x], xs[1..]);
   }
 }
 
 lemma GroupsInv(d: Desc)
-  ensures GroupInv(Groups(d), Distinct(d))
+  ensures GroupInv(Groups(d), W(d))
 {
-  DistinctMembers(d);
-  assert [] + Distinct(d) == Distinct(d);
-  GroupFromInv([], [], Distinct(d));
+  assert GroupInv([], []);
+  ByNameFromInv([], [], ColumnNames(d));
+  assert [] + WhereNotTenant(ColumnNames(d)) == W(d);
 }
 
 lemma WhereKeepsPairwise(gs: seq<Grouping>)
@@ -426,7 +476,7 @@ lemma ToDictionaryOk(dict: seq<Entry>, gs: seq<Grouping>)
 }
 
 lemma DictFacts(d: Desc)
-  ensures GroupInv(Groups(d), Distinct(d))
+  ensures GroupInv(Groups(d), W(d))
   ensures DictR(d).Ok?
   ensures forall e :: e in DictR(d).value <==>
     exists g :: g in Groups(d) && |g.Elements| == 1 && e == Entry(g.Key, g.Elements[0])
@@ -494,8 +544,7 @@ lemma ColumnSpellingRenames(d: Desc, name: CsString)
   ensures Renamed(d, name, ColumnSpelling(DictR(d).value, name))
 {
   DictFacts(d);
-  DistinctMembers(d);
-  var D := Distinct(d);
+  var D := W(d);
   var gs := Groups(d);
   var dict := DictR(d).value;
   match FindEntry(dict, name, 0)

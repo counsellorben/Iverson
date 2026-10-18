@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T5 S3
 // Source: Iverson.Server/Iverson.Api/Schema/EnrichmentTargetRules.cs `Violation`
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/EnrichmentTargetRules.Violation.dfy
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@ function FirstMatchingColumn(cols: seq<Column>, name: seq<char>): Option<Column>
   else FirstMatchingColumn(cols[1..], name)
 }
 
-// lines 47-51: scalar lookup ?? (key matches ? KeyColumn : null)
+// lines 49-53: scalar lookup ?? (key matches ? KeyColumn : null)
 function ColumnOf(d: Desc, t: Target): Option<Column>
 {
   match FirstMatchingColumn(d.ScalarColumns, t.ColumnName)
@@ -118,7 +118,7 @@ function OwnerFieldOf(d: Desc): Option<CsString>
   if d.Authorization.Some? then d.Authorization.value.OwnerField else None
 }
 
-// lines 47-93: the body of the first foreach, for one target.
+// lines 49-95: the body of the first foreach, for one target.
 function TargetCheck(d: Desc, ownerField: Option<CsString>, sourceNames: seq<CsString>, t: Target): Option<seq<char>>
 {
   var column := ColumnOf(d, t);
@@ -154,13 +154,13 @@ function TargetLoop(d: Desc, ownerField: Option<CsString>, sourceNames: seq<CsSt
     if r.Some? then r else TargetLoop(d, ownerField, sourceNames, ts[1..])
 }
 
-// lines 104-106: EnrichmentTargets.Select(t => t.ColumnName).ToHashSet(OrdinalIgnoreCase)
+// lines 106-108: EnrichmentTargets.Select(t => t.ColumnName).ToHashSet(OrdinalIgnoreCase)
 function TargetNames(ts: seq<Target>): seq<CsString>
 {
   if |ts| == 0 then [] else [ts[0].ColumnName] + TargetNames(ts[1..])
 }
 
-// lines 116-117: fieldPermissions.FirstOrDefault(fp => fp.WritableRoles.Count > 0 &&
+// lines 118-119: fieldPermissions.FirstOrDefault(fp => fp.WritableRoles.Count > 0 &&
 //                                                       targetNames.Contains(fp.FieldName))
 function FirstWriteRestricted(fps: seq<FieldPermission>, targetNames: seq<CsString>): Option<FieldPermission>
 {
@@ -169,7 +169,7 @@ function FirstWriteRestricted(fps: seq<FieldPermission>, targetNames: seq<CsStri
   else FirstWriteRestricted(fps[1..], targetNames)
 }
 
-// lines 134-137: fieldPermissions.Any(fp => fp.ReadableRoles.Count > 0 &&
+// lines 136-139: fieldPermissions.Any(fp => fp.ReadableRoles.Count > 0 &&
 //     string.Equals(fp.FieldName, target.ColumnName, OrdinalIgnoreCase) &&
 //     fp.ReadableRoles.All(role => source.ReadableRoles.Contains(role, StringComparer.Ordinal)))
 predicate Covered(fps: seq<FieldPermission>, source: FieldPermission, t: Target)
@@ -179,7 +179,7 @@ predicate Covered(fps: seq<FieldPermission>, source: FieldPermission, t: Target)
     (forall role :: role in fp.ReadableRoles ==> role in source.ReadableRoles)
 }
 
-// lines 132-147: inner foreach over the targets for one restricted source permission.
+// lines 134-149: inner foreach over the targets for one restricted source permission.
 function InnerLoop(d: Desc, fps: seq<FieldPermission>, source: FieldPermission, ts: seq<Target>): Option<seq<char>>
 {
   if |ts| == 0 then None
@@ -192,7 +192,7 @@ function InnerLoop(d: Desc, fps: seq<FieldPermission>, source: FieldPermission, 
   else InnerLoop(d, fps, source, ts[1..])
 }
 
-// lines 129-148: foreach (var source in fieldPermissions.Where(fp =>
+// lines 131-150: foreach (var source in fieldPermissions.Where(fp =>
 //     fp.ReadableRoles.Count > 0 && sourceNames.Contains(fp.FieldName)))
 function ReadLoop(d: Desc, sourceNames: seq<CsString>, fps: seq<FieldPermission>, rest: seq<FieldPermission>): Option<seq<char>>
 {
@@ -204,7 +204,7 @@ function ReadLoop(d: Desc, sourceNames: seq<CsString>, fps: seq<FieldPermission>
     if r.Some? then r else ReadLoop(d, sourceNames, fps, rest[1..])
 }
 
-// EnrichmentTargetRules.Violation (lines 25-151).
+// EnrichmentTargetRules.Violation (lines 25-153).
 function Violation(d: Desc): Option<seq<char>>
 {
   if |d.EnrichmentTargets| == 0 then None

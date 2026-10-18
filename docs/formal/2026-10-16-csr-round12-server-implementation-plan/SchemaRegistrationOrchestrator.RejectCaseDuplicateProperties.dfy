@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T1 S3
 // Source: Iverson.Server/Iverson.Api/Grpc/SchemaRegistrationOrchestrator.cs `RejectCaseDuplicateProperties`
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/SchemaRegistrationOrchestrator.RejectCaseDuplicateProperties.dfy
 
 // ---------------------------------------------------------------------------
@@ -69,13 +69,12 @@ function GroupByName(ps: seq<Prop>): seq<Group>
   if |ps| == 0 then [] else AddTo(GroupByName(ps[..|ps| - 1]), ps[|ps| - 1])
 }
 
-// .FirstOrDefault(g => g.Count() > 1)
-function FirstOrDefaultDup(gs: seq<Group>): Option<Group>
+// .Where(g => g.Count() > 1).ToList()
+function WhereDup(gs: seq<Group>): seq<Group>
   decreases |gs|
 {
-  if |gs| == 0 then None
-  else if |gs[0].Elems| > 1 then Some(gs[0])
-  else FirstOrDefaultDup(gs[1..])
+  if |gs| == 0 then []
+  else (if |gs[0].Elems| > 1 then [gs[0]] else []) + WhereDup(gs[1..])
 }
 
 // string.Join(", ", xs)
@@ -85,20 +84,28 @@ function Join(sep: seq<char>, xs: seq<seq<char>>): seq<char>
   if |xs| == 0 then [] else if |xs| == 1 then xs[0] else xs[0] + sep + Join(sep, xs[1..])
 }
 
-// duplicate.Select(p => $"'{p.Name}'")
+// g.Select(p => $"'{p.Name}'")
 function QuotedNames(ps: seq<Prop>): seq<seq<char>>
   decreases |ps|
 {
   if |ps| == 0 then [] else ["'" + ps[0].Name + "'"] + QuotedNames(ps[1..])
 }
 
+// duplicates.Select(g => string.Join(", ", g.Select(p => $"'{p.Name}'")))
+function GroupTexts(gs: seq<Group>): seq<seq<char>>
+  decreases |gs|
+{
+  if |gs| == 0 then [] else [Join(", ", QuotedNames(gs[0].Elems))] + GroupTexts(gs[1..])
+}
+
 function RejectCaseDuplicateProperties(td: TypeDesc): Check
 {
-  var duplicate := FirstOrDefaultDup(GroupByName(td.Properties));
-  if duplicate.None? then Pass
+  var duplicates := WhereDup(GroupByName(td.Properties));
+  if |duplicates| == 0 then Pass
   else
+    var groups := Join("; ", GroupTexts(duplicates));
     Refused(InvalidArgument,
-      "'" + td.TypeName + "' declares properties " + Join(", ", QuotedNames(duplicate.value.Elems)) + " " +
+      "'" + td.TypeName + "' declares properties " + groups + " " +
       "whose names are equal ignoring letter case. Property names must be distinct ignoring case; " +
       "rename one of them.")
 }
@@ -258,17 +265,17 @@ lemma GroupByInv(ps: seq<Prop>)
   assert init + [ps[|ps| - 1]] == ps;
 }
 
-lemma FirstOrDefaultDupSome(gs: seq<Group>)
-  ensures FirstOrDefaultDup(gs).Some? <==> exists k :: 0 <= k < |gs| && |gs[k].Elems| > 1
+lemma WhereDupNonEmpty(gs: seq<Group>)
+  ensures |WhereDup(gs)| > 0 <==> exists k :: 0 <= k < |gs| && |gs[k].Elems| > 1
   decreases |gs|
 {
   if |gs| == 0 { return; }
-  FirstOrDefaultDupSome(gs[1..]);
+  WhereDupNonEmpty(gs[1..]);
   if exists k :: 0 <= k < |gs| && |gs[k].Elems| > 1 {
     var k :| 0 <= k < |gs| && |gs[k].Elems| > 1;
     if k > 0 { assert gs[1..][k - 1] == gs[k]; }
   }
-  if FirstOrDefaultDup(gs).Some? && |gs[0].Elems| <= 1 {
+  if |WhereDup(gs)| > 0 && |gs[0].Elems| <= 1 {
     var k :| 0 <= k < |gs[1..]| && |gs[1..][k].Elems| > 1;
     assert gs[k + 1] == gs[1..][k];
   }
@@ -287,7 +294,7 @@ lemma P1_PropertiesEqualIgnoringCaseAreRefused(td: TypeDesc)
   var ps := td.Properties;
   var gs := GroupByName(ps);
   GroupByInv(ps);
-  FirstOrDefaultDupSome(gs);
+  WhereDupNonEmpty(gs);
   if RejectCaseDuplicateProperties(td).Refused? {
     var k :| 0 <= k < |gs| && |gs[k].Elems| > 1;
     FilterTwoIff(ps, gs[k].Key);

@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T10 S3
 // Source: Iverson.Server/Iverson.StarRocks/EngagementRepository.cs `TenantConnectionStringFor`, `IsRecordedAsync`, `RunTenantScopedAsync`, `StreamTenantScopedAsync`, and the tenant-scoped paths of `SearchAsync`, `AggregateAsync`, `GroupByAsync`, `PipelineAsync`, `MatchRowsAsync`, `UpsertAsync`, `DeleteAsync`
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/EngagementRepository.TenantScopedAccess.dfy
 
 // ---------------------------------------------------------------------------------------------

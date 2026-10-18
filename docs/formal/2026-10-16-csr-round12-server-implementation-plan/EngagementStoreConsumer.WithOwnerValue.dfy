@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T3 S3
 // Source: Iverson.Server/Iverson.Api/Consumers/EngagementStoreConsumer.cs `WithOwnerValue`
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/EngagementStoreConsumer.WithOwnerValue.dfy
 
 // ── Shared vocabulary ────────────────────────────────────────────────────────
@@ -65,6 +65,17 @@ function RemoveAll(o: JsonObj, ks: seq<CsString>): JsonObj
   if |ks| == 0 then o else RemoveAll(RemoveKey(o, ks[0]), ks[1..])
 }
 
+// Iverson.Server/Iverson.Sql/JsonObjectKeys.cs:14-21
+// public static void RemoveIgnoringCase(JsonObject obj, string name)
+//   foreach (var key in obj.Select(kv => kv.Key)
+//            .Where(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)).ToList())
+//       obj.Remove(key);
+// Mutation of obj is modelled as returning the mutated object.
+function RemoveIgnoringCase(obj: JsonObj, name: CsString): JsonObj
+{
+  RemoveAll(obj, FilterEqIC(Keys(obj), name))
+}
+
 // node[k] = v: replaces the value in place when the key is present (ordinally),
 // otherwise appends a new entry.
 function SetKey(o: JsonObj, k: CsString, v: JNode): JsonObj
@@ -79,7 +90,7 @@ function SetKey(o: JsonObj, k: CsString, v: JNode): JsonObj
 // Body between JsonNode.Parse(payloadJson)!.AsObject() and ToJsonString().
 function WithOwnerValueObj(o: JsonObj, ownerField: CsString, value: Option<CsString>): JsonObj
 {
-  var node := RemoveAll(o, FilterEqIC(Keys(o), ownerField));
+  var node := RemoveIgnoringCase(o, ownerField);
   if value.Some? then SetKey(node, ownerField, JStr(value.value))
   else node
 }

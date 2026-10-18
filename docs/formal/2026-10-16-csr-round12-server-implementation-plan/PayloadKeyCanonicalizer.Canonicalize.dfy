@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T2 S3
 // Source: Iverson.Server/Iverson.Api/Grpc/PayloadKeyCanonicalizer.cs `Canonicalize`
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/PayloadKeyCanonicalizer.Canonicalize.dfy
 
 // ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ function IcTryGet(m: ColumnDict, k: seq<char>): (r: Option<nat>)
 // Transliteration
 // ---------------------------------------------------------------------------
 
-// Lines 32-40: build `columns`.
+// SchemaBuilder.cs:311-323 (ColumnSpellingsByName): build `columns`.
 function BuildColumns(names: seq<CsString>, columns: ColumnDict): ColumnDict
   decreases |names|
 {
@@ -126,6 +126,11 @@ function BuildColumns(names: seq<CsString>, columns: ColumnDict): ColumnDict
         BuildColumns(names[1..], columns[idx := (columns[idx].0, spellings1)])
 }
 
+// SchemaBuilder.cs:311-323: ColumnSpellingsByName(descriptor).
+function ColumnSpellingsByName(d: Desc): ColumnDict {
+  BuildColumns(ColumnNames(d), [])
+}
+
 function QuoteJoin(ss: seq<CsString>): seq<char> {
   if ss == [] then []
   else if |ss| == 1 then "'" + ss[0] + "'"
@@ -134,7 +139,7 @@ function QuoteJoin(ss: seq<CsString>): seq<char> {
 
 datatype ScanResult = ScanOk(renames: seq<(CsString, CsString)>) | ScanRefused(code: StatusCode, detail: seq<char>) | ScanFaulted
 
-// Lines 42-67: the loop over payload.Fields.Keys, from index n.
+// PayloadKeyCanonicalizer.cs:40-65: the loop over payload.Fields.Keys, from index n.
 function Scan(d: Desc, columns: ColumnDict, p: Payload, n: nat, keyFor: map<CsString, CsString>, renames: seq<(CsString, CsString)>): ScanResult
   requires n <= |p|
   decreases |p| - n
@@ -164,7 +169,7 @@ function Scan(d: Desc, columns: ColumnDict, p: Payload, n: nat, keyFor: map<CsSt
           Scan(d, columns, p, n + 1, keyFor1, renames1)
 }
 
-// Lines 69-74: apply the renames.
+// PayloadKeyCanonicalizer.cs:67-72: apply the renames.
 function ApplyRenames(q: Payload, renames: seq<(CsString, CsString)>): Option<Payload>
   decreases |renames|
 {
@@ -179,8 +184,11 @@ function ApplyRenames(q: Payload, renames: seq<(CsString, CsString)>): Option<Pa
       ApplyRenames(PSet(PRemove(q, from), to, value), renames[1..])
 }
 
+// PayloadKeyCanonicalizer.cs:36-73. Line 38: ColumnSpellings.GetValue(schema, ColumnSpellingsByName)
+// returns the map the factory builds for this descriptor instance; the cache is modelled as that
+// factory call (the descriptor is an immutable record with an IReadOnlyList of columns).
 function Canonicalize(d: Desc, p: Payload): CanonResult {
-  var columns := BuildColumns(ColumnNames(d), []);
+  var columns := ColumnSpellingsByName(d);
   match Scan(d, columns, p, 0, map[], [])
   case ScanRefused(code, detail) => Refused(code, detail)
   case ScanFaulted => Faulted

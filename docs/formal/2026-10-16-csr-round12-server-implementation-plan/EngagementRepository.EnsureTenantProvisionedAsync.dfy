@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T10 S3
 // Source: Iverson.Server/Iverson.StarRocks/EngagementRepository.cs `EnsureTenantProvisionedAsync` (as T10 leaves it)
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/EngagementRepository.EnsureTenantProvisionedAsync.dfy
 
 // ---------------------------------------------------------------------------------------------
@@ -52,14 +52,14 @@ predicate IsValidTenant(tenantId: CsString)
 // Transliteration
 // ---------------------------------------------------------------------------------------------
 
-// TenantIdentifier.cs:138-139 (pre-plan).
+// TenantIdentifier.cs:138-139 (pre-plan, unchanged as built).
 function Qualify(tenantDatabase: Option<CsString>, tableName: CsString): seq<char>
 {
   if tenantDatabase.None? then "`" + tableName + "`"
   else "`" + tenantDatabase.value + "`.`" + tableName + "`"
 }
 
-// EngagementRepository.cs:53-54.
+// EngagementRepository.cs:57-58 (T10 S3).
 const TenantSessionProperties: seq<char> :=
   "'session.query_timeout' = '180', 'session.exec_mem_limit' = '4294967296'"
 
@@ -71,14 +71,14 @@ function RunStatements(stmts: seq<ProvEffect>, first: nat, failAt: Option<nat>):
   else (true, stmts)
 }
 
-// EngagementRepository.cs:581-583: the open and the first SET ROLE, before the try (indices 0, 1).
+// EngagementRepository.cs:582-584: the open and the first SET ROLE, before the try (indices 0, 1).
 function BeforeTry(): seq<ProvEffect>
 {
   [ OpenedProvisioner,
     Ran("SET ROLE user_admin") ]
 }
 
-// EngagementRepository.cs:586-620: the try block (indices 2 .. 12).
+// EngagementRepository.cs:585-622: the try block (indices 2 .. 12).
 function TryBlock(dbName: CsString, roleName: CsString, loginName: CsString, loginPassword: CsString): seq<ProvEffect>
 {
   [ Ran("CREATE DATABASE IF NOT EXISTS `" + dbName + "`"),
@@ -94,10 +94,10 @@ function TryBlock(dbName: CsString, roleName: CsString, loginName: CsString, log
     Widened ]
 }
 
-// EngagementRepository.cs:622-632: the finally block; a throw from SET ROLE NONE is caught and logged.
+// EngagementRepository.cs:623-633: the finally block; a throw from SET ROLE NONE is caught and logged.
 const FinallyBlock: seq<ProvEffect> := [Ran("SET ROLE NONE")]
 
-// EngagementRepository.cs:579-633: the lambda RunAsync runs, modelled as running once.
+// EngagementRepository.cs:580-634: the lambda RunAsync runs, modelled as running once.
 function ProvisionBody(dbName: CsString, roleName: CsString, loginName: CsString, loginPassword: CsString,
                        failAt: Option<nat>): (Result<bool>, seq<ProvEffect>)
 {
@@ -110,7 +110,7 @@ function ProvisionBody(dbName: CsString, roleName: CsString, loginName: CsString
     else (Ok(true), effects)
 }
 
-// EngagementRepository.cs:552-638. failAt indexes the statements 0 .. 12 above; RecordProvisionedAsync (636) is
+// EngagementRepository.cs:553-639. failAt indexes the statements 0 .. 12 above; RecordProvisionedAsync (637) is
 // index 13, and every failAt past the body (13 or more) means the record throws.
 function Provision(repo: ProvRepo, tenantId: CsString, table: EngTable, failAt: Option<nat>): (ProvOutcome, seq<ProvEffect>)
 {

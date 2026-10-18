@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T9 S5
 // Source: Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs `Delete`, lines from the new `if (decision.TenantColumn is null)` guard through the `ExecuteInTransactionAsync` block (5f)
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/ObjectMappingGrpcService.DeleteTenantGuard.dfy
 
 // ── Shared vocabulary ──────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T7 S3
 // Source: Iverson.Server/Iverson.Api/PrivilegedRequests/SchemaRegistrationApplier.cs `ExecuteAsync`, `RequireAdoptableAsync`, `NotAdoptable`, `OwnedByAnotherTenant`
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/SchemaRegistrationApplier.ExecuteAsync.dfy
 
 // ---------------------------------------------------------------------------
@@ -46,13 +46,14 @@ function SerializeDescriptor(d: Desc): CsString
 // Transliteration
 // ---------------------------------------------------------------------------
 
-// SchemaRegistrationApplier.cs:20-22
+// PrivilegedRequestContracts.cs:21-23 (SchemaRegistrationRefusals.OwnedByAnotherTenant; moved out of
+// SchemaRegistrationApplier.cs as built, body unchanged)
 function OwnedByAnotherTenant(typeName: CsString): Outcome
 {
   Rpc(PermissionDenied, "Type '" + typeName + "' is registered to another tenant and cannot be re-registered here.")
 }
 
-// SchemaRegistrationApplier.cs:85-88
+// SchemaRegistrationApplier.cs:81-84
 function NotAdoptable(descriptor: Desc, reason: seq<char>): Outcome
 {
   Rpc(AlreadyExists,
@@ -60,7 +61,7 @@ function NotAdoptable(descriptor: Desc, reason: seq<char>): Outcome
     "exists and " + reason + ", so the registration cannot take it over. Register the type under another name.")
 }
 
-// SchemaRegistrationApplier.cs:34  storedOwners.Any(owner => owner != descriptor.OwnerTenantId)
+// SchemaRegistrationApplier.cs:30  storedOwners.Any(owner => owner != descriptor.OwnerTenantId)
 // (string? != string? is ordinal equality, null-aware: Option equality.)
 function AnyOwnerDiffers(storedOwners: seq<Option<CsString>>, owner: Option<CsString>): bool
   decreases |storedOwners|
@@ -69,7 +70,7 @@ function AnyOwnerDiffers(storedOwners: seq<Option<CsString>>, owner: Option<CsSt
   else storedOwners[0] != owner || AnyOwnerDiffers(storedOwners[1..], owner)
 }
 
-// SchemaRegistrationApplier.cs:70-83. None = returned normally; Some(o) = threw o.
+// SchemaRegistrationApplier.cs:66-79. None = returned normally; Some(o) = threw o.
 function RequireAdoptableAsync(descriptor: Desc, db: Db): Option<Outcome>
 {
   var existing := db.describe(descriptor.TableName);
@@ -82,31 +83,31 @@ function RequireAdoptableAsync(descriptor: Desc, db: Db): Option<Outcome>
   else None
 }
 
-// SchemaRegistrationApplier.cs:31-57, the body of the first foreach for one descriptor.
+// SchemaRegistrationApplier.cs:27-53, the body of the first foreach for one descriptor.
 // Done = the iteration completed; any other outcome = the exception it threw.
 function ApplyDescriptor(descriptor: Desc, db: Db): (Outcome, seq<Effect>)
 {
-  // 1. (lines 33-35)
+  // 1. (lines 29-31)
   var storedOwners := db.owners(descriptor.TypeName);
   if AnyOwnerDiffers(storedOwners, descriptor.OwnerTenantId) then (OwnedByAnotherTenant(descriptor.TypeName), [])
   else
-    // 2. (lines 41-42)
+    // 2. (lines 37-38)
     var adopt := if !db.exists_(descriptor.TypeName) then RequireAdoptableAsync(descriptor, db) else None;
     if adopt.Some? then (adopt.value, [])
     else
-      // 3. (lines 45-52)
+      // 3. (lines 41-48)
       match db.ddl(descriptor.TableName)
       case Drift(m) => (Rpc(FailedPrecondition, m), [])
       case DdlFault => (Fault, [])
       case Applied =>
-        // 4. (lines 55-57)
+        // 4. (lines 51-53)
         var json := SerializeDescriptor(descriptor);
         if !db.upsert(descriptor.TypeName, descriptor.OwnerTenantId)
           then (OwnedByAnotherTenant(descriptor.TypeName), [Ddl(descriptor.TableName)])
         else (Done, [Ddl(descriptor.TableName), Write(descriptor.TypeName, descriptor.OwnerTenantId)])
 }
 
-// SchemaRegistrationApplier.cs:29-58, the first foreach; stops at the first failure.
+// SchemaRegistrationApplier.cs:25-54, the first foreach; stops at the first failure.
 function ExecuteDescriptors(descriptors: seq<Desc>, db: Db): (Outcome, seq<Effect>)
   decreases |descriptors|
 {
@@ -119,7 +120,7 @@ function ExecuteDescriptors(descriptors: seq<Desc>, db: Db): (Outcome, seq<Effec
       (t.0, h.1 + t.1)
 }
 
-// SchemaRegistrationApplier.cs:63-64
+// SchemaRegistrationApplier.cs:59-60
 function EnqueueAll(changedTemplateTypes: seq<CsString>): seq<Effect>
   decreases |changedTemplateTypes|
 {
@@ -127,7 +128,7 @@ function EnqueueAll(changedTemplateTypes: seq<CsString>): seq<Effect>
   else [Enqueue(changedTemplateTypes[0])] + EnqueueAll(changedTemplateTypes[1..])
 }
 
-// SchemaRegistrationApplier.cs:24-65
+// SchemaRegistrationApplier.cs:20-61
 function ExecuteAsync(ds: seq<Desc>, changed: seq<CsString>, db: Db): (Outcome, seq<Effect>)
 {
   var r := ExecuteDescriptors(ds, db);

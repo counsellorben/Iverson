@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T9 S5
 // Source: Iverson.Server/Iverson.Sql/OutboxWriter.cs `UpsertAndEnqueueOutboxAsync` (5e)
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/OutboxWriter.UpsertAndEnqueueOutboxAsync.dfy
 
 // ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ datatype TxStep = EnterTenantScope(tenant: CsString) | UpsertRow | ExitRoleScope
 // ArgumentNull: ArgumentNullException.ThrowIfNull(tenantId) threw.
 datatype WriteOutcome = Written(steps: seq<TxStep>) | ArgumentNull
 
-// Approved axiom: OutboxWriter.WithTenantColumn (OutboxWriter.cs:89-103), as a total function.
+// Approved axiom: OutboxWriter.WithTenantColumn (OutboxWriter.cs:90-100), as a total function.
 function WithTenantColumnJson(payload: CsString, tenantColumn: Option<CsString>, tenant: CsString): CsString
 
 // The lambda passed to txRunner.ExecuteInTransactionAsync (OutboxWriter.cs:57-69).

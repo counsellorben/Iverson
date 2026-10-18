@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T4 S6
 // Source: Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs `EligiblePopularitySignal`
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/ObjectSearchGrpcService.EligiblePopularitySignal.dfy
 
 // ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ datatype AuthRules = AuthRules(OwnerField: Option<CsString>, RowPermissions: seq
 // Only the SchemaDescriptor members this candidate (and IsEligible, which it calls) reads.
 datatype Desc = Desc(TypeName: CsString, Relations: seq<Relation>, Authorization: Option<AuthRules>, PopularitySignalColumn: Option<CsString>)
 
-// PopularitySignalOptions.cs:10 `record PopularitySignalEntry(string ParentType, string Relation)`.
+// PopularitySignalOptions.cs:10 `public sealed record PopularitySignalEntry(string ParentType, string Relation)`.
 datatype Signal = Signal(ParentType: CsString, Relation: CsString)
 
 // SchemaRegistry: a ConcurrentDictionary keyed by StringComparer.OrdinalIgnoreCase.
@@ -107,7 +107,7 @@ function IsEligible(parent: Desc, relation: Relation, child: Option<Desc>): bool
 // Transliteration: ObjectSearchGrpcService.EligiblePopularitySignal
 // ---------------------------------------------------------------------------
 
-// ObjectSearchGrpcService.cs:1094-1095
+// ObjectSearchGrpcService.cs:1120-1121
 // `_popularitySignal.Signals.FirstOrDefault(s => string.Equals(s.ParentType, schema.TypeName, OrdinalIgnoreCase))`
 function FirstSignalFor(signals: seq<Signal>, typeName: CsString): Option<Signal>
 {
@@ -116,7 +116,7 @@ function FirstSignalFor(signals: seq<Signal>, typeName: CsString): Option<Signal
   else FirstSignalFor(signals[1..], typeName)
 }
 
-// ObjectSearchGrpcService.cs:1098-1099
+// ObjectSearchGrpcService.cs:1124-1125
 // `schema.Relations.FirstOrDefault(r => string.Equals(r.PropertyName, signal.Relation, OrdinalIgnoreCase))`
 function FirstRelationNamed(relations: seq<Relation>, name: CsString): Option<Relation>
 {
@@ -125,16 +125,16 @@ function FirstRelationNamed(relations: seq<Relation>, name: CsString): Option<Re
   else FirstRelationNamed(relations[1..], name)
 }
 
-// ObjectSearchGrpcService.cs:1092-1103
+// ObjectSearchGrpcService.cs:1118-1129
 function EligiblePopularitySignal(signals: seq<Signal>, schema: Desc, registry: Registry): Option<Signal>
 {
-  var signal := FirstSignalFor(signals, schema.TypeName);                      // :1094-1095
-  if signal.None? then None                                                    // :1096
+  var signal := FirstSignalFor(signals, schema.TypeName);                      // :1120-1121
+  if signal.None? then None                                                    // :1122
   else
-    var relation := FirstRelationNamed(schema.Relations, signal.value.Relation); // :1098-1099
-    if relation.Some? && IsEligibleIn(schema, relation.value, registry)          // :1100
-    then signal                                                                  // :1101
-    else None                                                                    // :1102
+    var relation := FirstRelationNamed(schema.Relations, signal.value.Relation); // :1124-1125
+    if relation.Some? && IsEligibleIn(schema, relation.value, registry)          // :1126
+    then signal                                                                  // :1127
+    else None                                                                    // :1128
 }
 
 // ---------------------------------------------------------------------------

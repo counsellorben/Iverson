@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T4 S6
 // Source: Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs `WriteSimilarResponsesAsync`, lines from `var columnLookup = …` through the per-row `foreach (var kvp in payload)` loop, before `MaskDisallowedFields`
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/ObjectSearchGrpcService.SimilarResponseAllowList.dfy
 
 // ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ function ToCamelCase(name: CsString): CsString
   if |name| == 0 then name else [CharToLowerInvariant(name[0])] + name[1..]
 }
 
-// ObjectSearchGrpcService.cs:469-470
+// ObjectSearchGrpcService.cs:483-484
 //   foreach (var col in schema.ScalarColumns) columnLookup[col.Name.ToCamelCase()] = col;
 // In code order, later assignments overwriting earlier ones.
 function AddScalarColumns(m: map<CsString, Column>, cols: seq<Column>): map<CsString, Column>
@@ -50,16 +50,16 @@ function AddScalarColumns(m: map<CsString, Column>, cols: seq<Column>): map<CsSt
   else AddScalarColumns(m[ToCamelCase(cols[0].Name) := cols[0]], cols[1..])
 }
 
-// ObjectSearchGrpcService.cs:468-472
+// ObjectSearchGrpcService.cs:482-486
 function BuildColumnLookup(schema: Desc): map<CsString, Column>
 {
-  var columnLookup0: map<CsString, Column> := map[];                          // :468
-  var columnLookup1 := AddScalarColumns(columnLookup0, schema.ScalarColumns);  // :469-470
-  var columnLookup2 := columnLookup1[ToCamelCase(schema.KeyColumn.Name) := schema.KeyColumn]; // :471
-  columnLookup2["key" := schema.KeyColumn]                                     // :472
+  var columnLookup0: map<CsString, Column> := map[];                          // :482
+  var columnLookup1 := AddScalarColumns(columnLookup0, schema.ScalarColumns);  // :483-484
+  var columnLookup2 := columnLookup1[ToCamelCase(schema.KeyColumn.Name) := schema.KeyColumn]; // :485
+  columnLookup2["key" := schema.KeyColumn]                                     // :486
 }
 
-// ObjectSearchGrpcService.cs:477-481
+// ObjectSearchGrpcService.cs:491-495
 //   foreach (var kvp in payload)
 //     if (columnLookup.TryGetValue(kvp.Key, out var col))
 //       protoStruct.Fields[col.Name] = ConvertPayloadValue(kvp.Value, col.SqlType);
@@ -77,7 +77,7 @@ function FillRow(columnLookup: map<CsString, Column>, fields: map<CsString, PVal
     FillRow(columnLookup, fields', payload[1..])
 }
 
-// The Struct one row builds (ObjectSearchGrpcService.cs:468-481; :476 `new Struct()` is map[]).
+// The Struct one row builds (ObjectSearchGrpcService.cs:482-495; :490 `new Struct()` is map[]).
 function ResponseFields(schema: Desc, payload: seq<(CsString, CsString)>): map<CsString, PValue>
 {
   FillRow(BuildColumnLookup(schema), map[], payload)

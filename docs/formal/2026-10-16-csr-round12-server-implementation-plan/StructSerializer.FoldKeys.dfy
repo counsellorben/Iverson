@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T2 S3
 // Source: Iverson.Server/Iverson.Api/Grpc/ProtoPayloadHelper.cs `FoldKeys`, `ProtoValueToObject`, and `SerializePayload`'s column set
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/StructSerializer.FoldKeys.dfy
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ datatype ObjResult = Converted(obj: Obj) | Raised(code: StatusCode, detail: seq<
 
 predicate KeyIn(es: seq<(seq<char>, Obj)>, k: seq<char>) { exists j :: 0 <= j < |es| && es[j].0 == k }
 
-// ProtoPayloadHelper.cs:27-28
+// ProtoPayloadHelper.cs:33-34
 function UpperFirst(s: CsString): CsString
 {
   if |s| == 0 then s else [CharToUpperInvariant(s[0])] + s[1..]
@@ -64,27 +64,30 @@ function DictSet(es: seq<(seq<char>, Obj)>, k: seq<char>, v: Obj): seq<(seq<char
   else [es[0]] + DictSet(es[1..], k, v)
 }
 
-// ProtoPayloadHelper.cs:23-25: the column set SerializePayload builds (ordinal HashSet).
+// ProtoPayloadHelper.cs:28-31: the column set SerializePayload builds (ordinal HashSet).
+// As built, the set is cached per descriptor instance (s_columnNames, ConditionalWeakTable, line 17;
+// reference identity). SchemaDescriptor's KeyColumn and ScalarColumns are init-only and ColumnDescriptor
+// is a positional record, so the cached set equals the set this function computes from the value d.
 function ColumnSet(schema: Option<Desc>): set<seq<char>>
 {
   if schema.None? then {}   // s_noColumns
   else (set c | c in schema.value.ScalarColumns :: c.Name) + {schema.value.KeyColumn.Name}
 }
 
-// ProtoPayloadHelper.cs:22-25: SerializePayload up to (excluding) JsonSerializer.Serialize.
+// ProtoPayloadHelper.cs:27-31: SerializePayload up to (excluding) JsonSerializer.Serialize.
 function SerializeFold(d: Option<Desc>, fields: seq<(CsString, Val)>): FoldResult
 {
   FoldKeys(fields, ColumnSet(d))
 }
 
-// ProtoPayloadHelper.cs:30-47
+// ProtoPayloadHelper.cs:36-53
 function FoldKeys(fields: seq<(CsString, Val)>, columnNames: set<seq<char>>): FoldResult
   decreases VStruct(fields), 1
 {
   FoldLoop(fields, columnNames, 0, map[], [])
 }
 
-// ProtoPayloadHelper.cs:34-45: the foreach, one iteration per call.
+// ProtoPayloadHelper.cs:40-51: the foreach, one iteration per call.
 function FoldLoop(fields: seq<(CsString, Val)>, columnNames: set<seq<char>>, idx: nat,
                   originalNameOf: map<seq<char>, seq<char>>, folded: seq<(seq<char>, Obj)>): FoldResult
   requires idx <= |fields|
@@ -107,7 +110,7 @@ function FoldLoop(fields: seq<(CsString, Val)>, columnNames: set<seq<char>>, idx
       case Converted(o) => FoldLoop(fields, columnNames, idx + 1, originalNameOf', DictSet(folded, upper, o))
 }
 
-// ProtoPayloadHelper.cs:49-58
+// ProtoPayloadHelper.cs:55-64
 function ProtoValueToObject(v: Val): ObjResult
   decreases v, 2
 {
@@ -123,7 +126,7 @@ function ProtoValueToObject(v: Val): ObjResult
     case Refused(c, m) => Raised(c, m)
 }
 
-// ProtoPayloadHelper.cs:55: Values.Select(ProtoValueToObject).ToList(), in order, first throw propagates.
+// ProtoPayloadHelper.cs:61: Values.Select(ProtoValueToObject).ToList(), in order, first throw propagates.
 function ConvertList(items: seq<Val>, idx: nat, acc: seq<Obj>): ObjResult
   requires idx <= |items|
   decreases VList(items), 0, |items| - idx

@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-16-csr-round12-server-implementation-plan.md, T8 S3
 // Source: Iverson.Server/Iverson.Api/Program.cs the `/admin/reconcile/{typeName}` handler from `privileged.SubmitAsync` to its return (3e), and the `/admin/dlq/{id}/replay` handler from `dlq.GetUnreplayedSummaryAsync` to its return (3f)
-// Replay base: c79d7de067519edb3b325fbc0aa53332944c6d1c
+// Code ref: f7a0842fc0e707359e777ddf44f7c2e23050c968
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-16-csr-round12-server-implementation-plan/Program.PrivilegedAdminRoutes.dfy
 
 // ---------------------------------------------------------------------------
@@ -59,24 +59,38 @@ ghost function GuidToString(id: Guid): CsString
 // Transliteration
 // ---------------------------------------------------------------------------
 
-// Program.cs:664-688 (3e). `requestId` is SubmitAsync's id; `waited` is
+// Program.cs:943-975 (RunPrivilegedAdminRequestAsync, the shared helper both routes now call).
+// `requestId` is SubmitAsync's id; `waited` is PrivilegedRequestResult.From(the row
+// WaitWhileAsync returned); `ok` is the route's success callback. writeAuditEntry and the
+// cancellation token have no effect on the answer or the client calls, so they are not modelled.
+ghost function RunPrivilegedAdminRequest(kind: CsString, payloadJson: CsString, wait: int, requestId: Guid, waited: Option<PResult>, ok: PResult -> Http): (Http, seq<RouteCall>)
+{
+  var calls := [Submitted(kind, None), Waited(wait)];
+  var result := waited;
+  if result.None? then
+    (Accepted202(requestId), calls)
+  else if result.value.Code == NotFound then
+    (NotFound404(result.value.Message), calls)
+  else if result.value.Code != OK then
+    (Error500(result.value.Message), calls)
+  else
+    (ok(result.value), calls)
+}
+
+// Program.cs:664-672 (3e). `requestId` is SubmitAsync's id; `waited` is
 // PrivilegedRequestResult.From(the row WaitWhileAsync returned).
 ghost function ReconcileRoute(typeName: CsString, requestId: Guid, waited: Option<PResult>, w: Waits): (Http, seq<RouteCall>)
 {
-  var payload := SerializeReconcilePayload(typeName);
-  var calls := [Submitted(ReconcileTypeKind, None), Waited(w.Reconcile)];
-  var reconcileResult := waited;
-  if reconcileResult.None? then
-    (Accepted202(requestId), calls)
-  else if reconcileResult.value.Code == NotFound then
-    (NotFound404(reconcileResult.value.Message), calls)
-  else if reconcileResult.value.Code != OK then
-    (Error500(reconcileResult.value.Message), calls)
-  else
-    (Ok200(ReconciledBody(reconcileResult.value.Count, typeName)), calls)
+  RunPrivilegedAdminRequest(
+    ReconcileTypeKind,
+    SerializeReconcilePayload(typeName),
+    w.Reconcile,
+    requestId,
+    waited,
+    (result: PResult) => Ok200(ReconciledBody(result.Count, typeName)))
 }
 
-// Program.cs:753-785 (3f). `summary` is GetUnreplayedSummaryAsync's row; `actingTenant` is the
+// Program.cs:738-755 (3f). `summary` is GetUnreplayedSummaryAsync's row; `actingTenant` is the
 // acting principal's tenant_id claim; `requestId` is SubmitAsync's id; `waited` is
 // PrivilegedRequestResult.From(the row WaitWhileAsync returned).
 ghost function ReplayRoute(id: Guid, summary: Option<Summary>, actingTenant: Option<CsString>, isOperator: bool, requestId: Guid, waited: Option<PResult>, w: Waits): (Http, seq<RouteCall>)
@@ -87,17 +101,13 @@ ghost function ReplayRoute(id: Guid, summary: Option<Summary>, actingTenant: Opt
   else if row.value.TenantId != actingTenant && !(row.value.TenantId.None? && isOperator) then
     (Forbidden403, [])
   else
-    var payload := SerializeReplayPayload(id);
-    var calls := [Submitted(ReplayDlqKind, None), Waited(w.Replay)];
-    var replayResult := waited;
-    if replayResult.None? then
-      (Accepted202(requestId), calls)
-    else if replayResult.value.Code == NotFound then
-      (NotFound404(replayResult.value.Message), calls)
-    else if replayResult.value.Code != OK then
-      (Error500(replayResult.value.Message), calls)
-    else
-      (Ok200(ReplayedBody(id, row.value.SourceTopic)), calls)
+    RunPrivilegedAdminRequest(
+      ReplayDlqKind,
+      SerializeReplayPayload(id),
+      w.Replay,
+      requestId,
+      waited,
+      (_: PResult) => Ok200(ReplayedBody(id, row.value.SourceTopic)))
 }
 
 // ---------------------------------------------------------------------------
