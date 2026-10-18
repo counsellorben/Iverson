@@ -1795,6 +1795,7 @@ public class SchemaRegistrationOrchestratorTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.Unavailable);
+        ex.Which.Status.Detail.Should().Be("The worker did not pick the registration up; retry.");
     }
 
     [Fact]
