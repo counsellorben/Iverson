@@ -17,10 +17,6 @@ internal sealed class SchemaRegistrationApplier(
     IRecordStoreSchemaManager schemaManager,
     IDocumentRerenderQueueRepository rerenderQueue) : ISchemaRegistrationExecutor
 {
-    internal static RpcException OwnedByAnotherTenant(string typeName) =>
-        new(new Status(StatusCode.PermissionDenied,
-            $"Type '{typeName}' is registered to another tenant and cannot be re-registered here."));
-
     public async Task ExecuteAsync(
         IReadOnlyList<SchemaDescriptor> descriptors,
         IReadOnlyList<string> changedTemplateTypes,
@@ -32,7 +28,7 @@ internal sealed class SchemaRegistrationApplier(
             // variant of the name counts, because the registry folds them into one type.
             var storedOwners = await registryRepository.GetOwnersAsync(descriptor.TypeName);
             if (storedOwners.Any(owner => owner != descriptor.OwnerTenantId))
-                throw OwnedByAnotherTenant(descriptor.TypeName);
+                throw SchemaRegistrationRefusals.OwnedByAnotherTenant(descriptor.TypeName);
 
             // 2. A type with no registry row whose table already exists would adopt that table. The
             // row must derive this table: ToTableName puts '_' before every capital after the first
@@ -54,7 +50,7 @@ internal sealed class SchemaRegistrationApplier(
             // 4. The registry write, which replaces a row only of the same owner.
             var json = JsonSerializer.Serialize(descriptor, SchemaRegistry.JsonOptions);
             if (!await registryRepository.UpsertIfOwnerAsync(descriptor.TypeName, json, descriptor.OwnerTenantId))
-                throw OwnedByAnotherTenant(descriptor.TypeName);
+                throw SchemaRegistrationRefusals.OwnedByAnotherTenant(descriptor.TypeName);
         }
 
         // 5. A changed template invalidates every document of that type, because the rendered

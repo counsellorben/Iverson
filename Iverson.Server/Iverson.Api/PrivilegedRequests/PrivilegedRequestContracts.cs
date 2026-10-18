@@ -12,6 +12,17 @@ internal static class PrivilegedRequestKinds
     public const string ReplayDlq      = "ReplayDlq";
 }
 
+/// <summary>
+/// A refusal both halves of RegisterSchema raise, with one message: the api's pre-check against its
+/// cache, and the worker's checks against the stored row.
+/// </summary>
+internal static class SchemaRegistrationRefusals
+{
+    public static RpcException OwnedByAnotherTenant(string typeName) =>
+        new(new Status(StatusCode.PermissionDenied,
+            $"Type '{typeName}' is registered to another tenant and cannot be re-registered here."));
+}
+
 /// <summary><c>/admin/reconcile/{typeName}</c>'s request.</summary>
 internal sealed record ReconcileTypePayload(string TypeName);
 

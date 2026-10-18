@@ -661,30 +661,15 @@ app.MapPost("/admin/reconcile/{typeName}", async (
     // runs in the worker. It is idempotent, so the request never expires: past the wait the worker
     // still completes it, and the caller gets 202 with the request id. The request's abort ends
     // only this wait, never the reconcile.
-    var requestId = await privileged.SubmitAsync(
+    return await RunPrivilegedAdminRequestAsync(
+        privileged,
         Iverson.Api.PrivilegedRequests.PrivilegedRequestKinds.ReconcileType,
         JsonSerializer.Serialize(new Iverson.Api.PrivilegedRequests.ReconcileTypePayload(typeName), SchemaRegistry.JsonOptions),
         actingUserResult.Principal.FindFirst("tenant_id")?.Value,
-        expiresAfter: null);
-    var reconcileRequest = await privileged.WaitWhileAsync(
-        requestId,
-        status => status is PrivilegedRequestStatus.Pending or PrivilegedRequestStatus.Running,
         privileged.Waits.Reconcile,
+        () => audit.AdminOperation(httpContext.User, "Reconcile", typeName),
+        result => Results.Ok(new { reconciledCount = result.Count, typeName }),
         httpContext.RequestAborted);
-    var reconcileResult = Iverson.Api.PrivilegedRequests.PrivilegedRequestResult.From(reconcileRequest);
-
-    if (reconcileResult is null)
-    {
-        audit.AdminOperation(httpContext.User, "Reconcile", typeName);
-        return Results.Json(new { requestId }, statusCode: StatusCodes.Status202Accepted);
-    }
-    if (reconcileResult.Code == global::Grpc.Core.StatusCode.NotFound)
-        return Results.NotFound(new { error = reconcileResult.Message });
-    if (reconcileResult.Code != global::Grpc.Core.StatusCode.OK)
-        return Results.Json(new { error = reconcileResult.Message }, statusCode: StatusCodes.Status500InternalServerError);
-
-    audit.AdminOperation(httpContext.User, "Reconcile", typeName);
-    return Results.Ok(new { reconciledCount = reconcileResult.Count, typeName });
 }).WithName("Reconcile").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
@@ -759,31 +744,15 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, Iverso
     // CSR round 12 §5.2: the worker produces the message and marks the row replayed, checking
     // Replayed=false again. The request never expires: a late replay of an unreplayed row is
     // still the replay that was asked for.
-    var requestId = await privileged.SubmitAsync(
+    return await RunPrivilegedAdminRequestAsync(
+        privileged,
         Iverson.Api.PrivilegedRequests.PrivilegedRequestKinds.ReplayDlq,
         JsonSerializer.Serialize(new Iverson.Api.PrivilegedRequests.ReplayDlqPayload(id), SchemaRegistry.JsonOptions),
         actingTenantId,
-        expiresAfter: null);
-    var replayRequest = await privileged.WaitWhileAsync(
-        requestId,
-        status => status is PrivilegedRequestStatus.Pending or PrivilegedRequestStatus.Running,
         privileged.Waits.Replay,
+        () => audit.AdminOperation(httpContext.User, "ReplayDlq", id.ToString()),
+        _ => Results.Ok(new { replayed = true, id, topic = row.SourceTopic }),
         httpContext.RequestAborted);
-    var replayResult = Iverson.Api.PrivilegedRequests.PrivilegedRequestResult.From(replayRequest);
-
-    if (replayResult is null)
-    {
-        audit.AdminOperation(httpContext.User, "ReplayDlq", id.ToString());
-        return Results.Json(new { requestId }, statusCode: StatusCodes.Status202Accepted);
-    }
-    if (replayResult.Code == global::Grpc.Core.StatusCode.NotFound)
-        return Results.NotFound(new { error = replayResult.Message });
-    if (replayResult.Code != global::Grpc.Core.StatusCode.OK)
-        return Results.Json(new { error = replayResult.Message }, statusCode: StatusCodes.Status500InternalServerError);
-
-    audit.AdminOperation(httpContext.User, "ReplayDlq", id.ToString());
-
-    return Results.Ok(new { replayed = true, id, topic = row.SourceTopic });
 }).WithName("ReplayDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 // The admin console's four read-only JSON endpoints, under the same /admin prefix and — for
@@ -964,6 +933,47 @@ app.Run();
 // fails accessibility consistency checking (verified empirically) unless Program is public.
 public partial class Program
 {
+    /// <summary>
+    /// The privileged half of <c>/admin/reconcile</c> and <c>/admin/dlq/{id}/replay</c> (CSR round 12
+    /// §5.2): queue the request with no expiry, wait up to <paramref name="wait"/> while it is pending
+    /// or running, and answer what the worker recorded. 202 with the request id when it has recorded
+    /// nothing yet, 404 or 500 with the worker's message when it failed, and <paramref name="ok"/>'s
+    /// answer when it succeeded. The 202 and the success both write the audit entry.
+    /// </summary>
+    internal static async Task<IResult> RunPrivilegedAdminRequestAsync(
+        Iverson.Api.PrivilegedRequests.PrivilegedRequestClient privileged,
+        string kind,
+        string payloadJson,
+        string? requestedBy,
+        TimeSpan wait,
+        Action writeAuditEntry,
+        Func<Iverson.Api.PrivilegedRequests.PrivilegedRequestResult, IResult> ok,
+        CancellationToken ct)
+    {
+        var requestId = await privileged.SubmitAsync(kind, payloadJson, requestedBy, expiresAfter: null);
+        var request = await privileged.WaitWhileAsync(
+            requestId,
+            status => status is PrivilegedRequestStatus.Pending or PrivilegedRequestStatus.Running,
+            wait,
+            ct);
+        var result = Iverson.Api.PrivilegedRequests.PrivilegedRequestResult.From(request);
+
+        if (result is null)
+        {
+            // The entry records the operator's request, not its outcome: the worker records that
+            // later, in the privileged-request row.
+            writeAuditEntry();
+            return Results.Json(new { requestId }, statusCode: StatusCodes.Status202Accepted);
+        }
+        if (result.Code == global::Grpc.Core.StatusCode.NotFound)
+            return Results.NotFound(new { error = result.Message });
+        if (result.Code != global::Grpc.Core.StatusCode.OK)
+            return Results.Json(new { error = result.Message }, statusCode: StatusCodes.Status500InternalServerError);
+
+        writeAuditEntry();
+        return ok(result);
+    }
+
     /// <summary>The post-auth global limiter's partition (CSR round-7 #7, round-10 #3).</summary>
     internal static RateLimitPartition<string> PostAuthPartition(HttpContext ctx, TrustedProxyOptions trustedProxies)
     {

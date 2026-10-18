@@ -89,7 +89,7 @@ public sealed class SchemaRegistrationOrchestrator(
             // that holds when two registrations race.
             var priorRegistered = registry.Get(typeDesc.TypeName);
             if (priorRegistered is not null && priorRegistered.OwnerTenantId != ownerTenantId)
-                throw PrivilegedRequests.SchemaRegistrationApplier.OwnedByAnotherTenant(typeDesc.TypeName);
+                throw PrivilegedRequests.SchemaRegistrationRefusals.OwnedByAnotherTenant(typeDesc.TypeName);
 
             var declared = DeclaredModel(typeDesc);
 
