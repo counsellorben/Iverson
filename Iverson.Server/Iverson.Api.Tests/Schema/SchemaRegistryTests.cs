@@ -775,7 +775,7 @@ public class SchemaRegistryTests
         {
             "target-not-a-column" => EnrichedArticle(new EnrichmentTarget("Missing", EnrichmentKind.Summary, null)),
             "target-not-text"     => EnrichedArticle(new EnrichmentTarget("AuthorId", EnrichmentKind.Summary, null)),
-            "target-is-the-key"   => EnrichedArticle(new EnrichmentTarget("Id", EnrichmentKind.Summary, null)),
+            "target-is-the-key-refused-by-the-type-rule" => EnrichedArticle(new EnrichmentTarget("Id", EnrichmentKind.Summary, null)),
             "target-is-a-source"  => EnrichedArticle(new EnrichmentTarget("Body", EnrichmentKind.Summary, null)),
             "extracted-no-hint"   => EnrichedArticle(new EnrichmentTarget("Summary", EnrichmentKind.Extracted, " ")),
             "target-is-the-tenant-column" => article with
@@ -806,16 +806,18 @@ public class SchemaRegistryTests
     }
 
     [Theory]
-    [InlineData("target-not-a-column")]
-    [InlineData("target-not-text")]
-    [InlineData("target-is-the-key")]
-    [InlineData("target-is-a-source")]
-    [InlineData("extracted-no-hint")]
-    [InlineData("target-is-the-tenant-column")]
-    [InlineData("only-source-is-the-synthetic-document")]
-    [InlineData("target-write-restricted")]
-    [InlineData("target-more-readable-than-its-source")]
-    public async Task LoadAsync_DescriptorBreakingAnEnrichmentRule_LoadsWithNoTargetsAndLogsError(string rule)
+    [InlineData("target-not-a-column", "is not a column of the type")]
+    [InlineData("target-not-text", "must be a string property")]
+    // "Id" is a UUID, so the type rule refuses it before the key clause is reached; that clause is
+    // unreachable defence in depth (EnrichmentTargetRules.Violation says why).
+    [InlineData("target-is-the-key-refused-by-the-type-rule", "must be a string property")]
+    [InlineData("target-is-a-source", "cannot also carry")]
+    [InlineData("extracted-no-hint", "with an empty hint")]
+    [InlineData("target-is-the-tenant-column", "cannot be the key or owner_field")]
+    [InlineData("only-source-is-the-synthetic-document", "has no source text property")]
+    [InlineData("target-write-restricted", "FieldPermission with writable_roles")]
+    [InlineData("target-more-readable-than-its-source", "whose readable_roles are restricted")]
+    public async Task LoadAsync_DescriptorBreakingAnEnrichmentRule_LoadsWithNoTargetsAndLogsError(string rule, string violation)
     {
         var stored = EnrichedArticleBreaking(rule);
         _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
@@ -832,7 +834,8 @@ public class SchemaRegistryTests
         _logs.Entries.Should().ContainSingle(e =>
             e.Level == LogLevel.Error &&
             e.Message.Contains("'Article'") &&
-            e.Message.Contains("enrichment disabled"));
+            e.Message.Contains("enrichment disabled") &&
+            e.Message.Contains(violation));
     }
 
     // The positive controls: without them, a LoadAsync that stripped every type's targets would

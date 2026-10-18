@@ -171,6 +171,8 @@ public class PrivilegedAdminEndpointTests : IClassFixture<AuthTestWebApplication
         var response = await CreateClient().SendAsync(OperatorPost($"/admin/dlq/{id}/replay"));
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await BodyAsync(response)).GetProperty("error").GetString()
+            .Should().Be($"No unreplayed DLQ row with id '{id}'");
     }
 
     [Fact]

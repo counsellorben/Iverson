@@ -105,7 +105,7 @@ public sealed class SchemaRegistryPostgresRoundTripTests(SchemaRegistryRoundTrip
 
         loaded.Should().NotBeNull();
         loaded!.OwnerTenantId.Should().Be("tenant-roundtrip");
-        loaded.Should().BeEquivalentTo(original);
+        loaded.Should().BeEquivalentTo(original, options => options.WithStrictOrdering());
         SchemaBuilder.ToTableSchema(loaded).Should().BeEquivalentTo(
             SchemaBuilder.ToTableSchema(original), options => options.WithStrictOrdering());
     }
