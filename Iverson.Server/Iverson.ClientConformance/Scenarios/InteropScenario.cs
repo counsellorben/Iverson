@@ -7,7 +7,7 @@ namespace Iverson.ClientConformance.Scenarios;
 /// S4 <c>interop</c>: proves the five client libraries can read each other's rows.
 ///
 /// Only the .NET driver ever runs this scenario's <c>register</c> phase, regardless of which
-/// languages were requested — <c>SchemaRegistry.RegisterAsync</c> replaces the stored descriptor
+/// languages were requested — the worker's registration write replaces the stored descriptor
 /// wholesale, so five registrations of <c>SharedAuthor</c>/<c>SharedArticle</c> would leave four
 /// silent overwrites of the descriptor under test (the same register-once rule S1 applies per
 /// type, here applied to the whole scenario). The orchestrator then re-registers both reported

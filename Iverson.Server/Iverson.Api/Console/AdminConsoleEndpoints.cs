@@ -226,12 +226,12 @@ public static class AdminConsoleEndpoints
                 }
             }
         }
-        // AggregateReader deliberately does not translate these two: it has no transport to
+        // AggregateReader deliberately does not translate the first two catches: it has no transport to
         // translate them into. THIS is that transport, so the translation happens here.
         // Both are whole-store conditions rather than per-type ones — StarRocks is unreachable,
         // or was never deployed — so one failed type means every remaining type would fail the
         // same way, and a partial body with the rest silently missing would read as real data.
-        // Both answer 503: the store cannot serve this widget. `reason` separates the transient
+        // Those two answer 503: the store cannot serve this widget. `reason` separates the transient
         // case from the permanent one so the console can word it correctly.
         catch (EngagementNotReadyException ex)
         {

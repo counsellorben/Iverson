@@ -25,7 +25,7 @@ namespace Iverson.ClientConformance.Scenarios;
 ///
 /// <para><b>The shape follows S8 identity's</b>, for the same reasons: one shared type
 /// (<see cref="TypeName"/>) that every language writes into and reads back, registered once by the
-/// .NET driver (<c>SchemaRegistry.RegisterAsync</c> replaces a stored descriptor wholesale, so five
+/// .NET driver (the worker's registration write replaces a stored descriptor wholesale, so five
 /// registrations of one type name would leave four silent overwrites) and re-registered once by the
 /// orchestrator with an authorization block, without which every seeded write is denied for a reason
 /// that has nothing to do with the error contract.</para>

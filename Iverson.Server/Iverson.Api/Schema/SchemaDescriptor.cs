@@ -60,7 +60,7 @@ public sealed record SchemaDescriptor
     // runtime check in SchemaRegistry.LoadAsync, which refuses to admit any descriptor whose
     // TenantColumn is null or empty and logs it. `required` is here for the OTHER mutation point:
     // it makes a hand-constructed descriptor that forgets the column a compile error, so
-    // RegisterAsync cannot be the hole instead.
+    // the registration write cannot be the hole instead.
     //
     // Downstream consumers may therefore rely on this being a real column name. Every legacy
     // pre-cutover schema fails closed by never entering the registry at all.

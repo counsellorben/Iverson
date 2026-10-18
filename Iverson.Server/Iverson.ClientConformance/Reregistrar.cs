@@ -27,8 +27,9 @@ public interface IReregistrar
 /// S1 registers a schema through a driver with no authorization block, then this class
 /// re-registers it with one added, so scenarios can exercise the same type both unauthorized and
 /// authorized. It takes the driver's reported <see cref="TypeDescriptor"/> verbatim and changes
-/// only <see cref="TypeDescriptor.Authorization"/>: <c>SchemaRegistry.RegisterAsync</c> replaces
-/// the stored descriptor wholesale (see <c>SchemaRegistry.cs:47-56</c>), so reconstructing the
+/// only <see cref="TypeDescriptor.Authorization"/>: the worker's registration write (<c>SchemaRegistrationApplier</c>, run as a
+/// privileged request, after which the api reloads its registry) replaces the stored descriptor
+/// wholesale, so reconstructing the
 /// descriptor from scratch here — rather than round-tripping the driver's own JSON — would
 /// overwrite the very relation shape S1's depth-1 check exists to inspect.
 /// </summary>
