@@ -459,7 +459,7 @@ public sealed class SchemaRegistrationOrchestrator(
             .ToList();
         if (duplicates.Count == 0) return;
 
-        var groups = string.Join(" and ", duplicates.Select(g => string.Join(", ", g.Select(p => $"'{p.Name}'"))));
+        var groups = string.Join("; ", duplicates.Select(g => string.Join(", ", g.Select(p => $"'{p.Name}'"))));
         throw new RpcException(new Status(StatusCode.InvalidArgument,
             $"'{typeDesc.TypeName}' declares properties {groups} " +
             "whose names are equal ignoring letter case. Property names must be distinct ignoring case; " +

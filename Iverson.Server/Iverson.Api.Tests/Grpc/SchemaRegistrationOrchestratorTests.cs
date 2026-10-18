@@ -1713,7 +1713,7 @@ public class SchemaRegistrationOrchestratorTests
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
         ex.Which.Status.Detail.Should()
-            .Contain("'Url'").And.Contain("'URL'").And.Contain("'Title'").And.Contain("'TITLE'");
+            .Contain("'Url', 'URL'; 'Title', 'TITLE' whose names");
         _registry.Get("Widget").Should().BeNull();
     }
 
