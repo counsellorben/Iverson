@@ -794,15 +794,19 @@ public class ObjectSearchGrpcServiceTests
     }
 
     // CSR round 12 §7.2: every spec of one request runs as the same tenant, whose pool holds ten connections
-    // per process, so at most four run at once. Each stub call holds its slot for 50 ms, so with no cap all
-    // ten would overlap.
+    // per process, so at most four run at once. Every stub call parks on one gate, so no slot frees while it is
+    // shut: four calls start and then nothing more, however slow the machine. With no cap all ten would start,
+    // and with a cap of five a fifth would.
     [Fact]
     public async Task Aggregate_WithMoreSpecsThanTheCap_RunsAtMostFourAtOnce_AndKeepsTheirOrder()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var started = 0;
         var running = 0;
         var peak = 0;
         var peakLock = new object();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fourStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         _search.AggregateAsync(
                 Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
@@ -815,16 +819,25 @@ public class ObjectSearchGrpcServiceTests
         for (var i = 0; i < 10; i++)
             request.Aggregations.Add(new AggregationSpec { Name = $"a{i}", Field = "Name", Type = AggregationType.Terms });
 
-        var response = await _sut.Aggregate(request, TestServerCallContext.Create());
+        var aggregate = _sut.Aggregate(request, TestServerCallContext.Create());
 
+        await fourStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        System.Threading.Volatile.Read(ref started).Should().Be(4);
+        aggregate.IsCompleted.Should().BeFalse();
+
+        gate.SetResult();
+        var response = await aggregate.WaitAsync(TimeSpan.FromSeconds(10));
+
+        started.Should().Be(10);
         peak.Should().Be(4);
         response.Results.Select(r => r.Name).Should().Equal(Enumerable.Range(0, 10).Select(i => $"a{i}"));
 
         async Task<SrAggResult?> RunOneAsync(AggregationDescriptor spec)
         {
+            if (System.Threading.Interlocked.Increment(ref started) == 4) fourStarted.SetResult();
             var now = System.Threading.Interlocked.Increment(ref running);
             lock (peakLock) peak = Math.Max(peak, now);
-            await Task.Delay(50);
+            await gate.Task;
             System.Threading.Interlocked.Decrement(ref running);
             return new SrAggResult(spec.Name, AggregationKind.Terms);
         }
