@@ -48,7 +48,7 @@ export const fetchSchema: ApiFetcher<SchemaCatalogResponse> = (token, signal) =>
  * AND with the number of open browser tabs. Fetch on mount and on manual refresh; do not put
  * it on a short poll.
  *
- * Answers 503 with `reason` `"notReady"` or `"disabled"`, which arrive as `kind: "problem"`.
+ * Answers 503 with `reason` `"notReady"`, `"busy"` or `"disabled"`, which arrive as `kind: "problem"`.
  */
 export const fetchDataVolume: ApiFetcher<DataVolumeResponse> = (token, signal) =>
   getJson<DataVolumeResponse>(`${CONSOLE_ROUTE_PREFIX}/data-volume`, token, signal);

@@ -39,9 +39,10 @@ beforeEach(() => {
 });
 
 describe("describeDataVolumeReason", () => {
-  it("renders a switched-off engagement store calmly and a not-ready one as transient", () => {
+  it("renders a switched-off engagement store calmly and a not-ready or busy one as transient", () => {
     expect(describeDataVolumeReason("disabled")).toContain("disabled in this deployment");
     expect(describeDataVolumeReason("notReady")).toContain("not ready yet");
+    expect(describeDataVolumeReason("busy")).toContain("connections are all in use");
     expect(describeDataVolumeReason("somethingElse")).toContain("somethingElse");
     expect(describeDataVolumeReason(null)).toBe("Currently unavailable.");
   });

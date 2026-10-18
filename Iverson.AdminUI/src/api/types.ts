@@ -186,12 +186,13 @@ export interface HealthResponse {
  * The body both `/admin/console/data-volume` and `/admin/console/metrics` return with a 503.
  * `reason` is machine-readable and is the whole point of the status code carrying a body:
  *
- *  - data-volume: `"notReady"` (StarRocks is not ready yet) | `"disabled"` (engagement store off)
+ *  - data-volume: `"notReady"` (StarRocks is not ready yet) | `"busy"` (this tenant's StarRocks
+ *                 connections are all in use) | `"disabled"` (engagement store off)
  *  - metrics:     `"notDeployed"` (Prometheus is not installed — a supported profile, not a
  *                 failure) | `"unreachable"` (installed but not answering)
  *
- * `"disabled"` and `"notDeployed"` are configuration statements to render calmly. `"notReady"`
- * and `"unreachable"` are faults.
+ * `"disabled"` and `"notDeployed"` are configuration statements to render calmly. `"notReady"`,
+ * `"busy"` and `"unreachable"` are faults; `"busy"` and `"notReady"` are transient.
  */
 export interface UnavailableResponse {
   reason: string;
