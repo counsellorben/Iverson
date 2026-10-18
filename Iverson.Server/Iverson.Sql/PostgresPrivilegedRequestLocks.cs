@@ -1,3 +1,4 @@
+using System.Data;
 using Dapper;
 using Npgsql;
 
@@ -56,15 +57,20 @@ public sealed class PostgresPrivilegedRequestLocks(string connectionString)
             {
                 await conn.OpenAsync(ct);
 
-                // Not cancellable: a cancel landing after the server took the lock would throw
-                // here, and the lock would be lost on a connection about to go back to the pool.
+                // Not cancellable: the try returns at once, and a cancel landing after the server
+                // granted the lock would only throw that lock away, clearing the pool with it.
                 if (await conn.ExecuteScalarAsync<bool>($"SELECT pg_try_advisory_lock({keySql})", param))
                     return new Lease(this, conn, keySql, param);
             }
             catch
             {
-                // The try may have taken the lock before it failed.
-                await DiscardAsync(conn);
+                // A try that ran may have taken the lock before it failed. A failed open (the
+                // stopping token, a pool-wait timeout, a refused connection) holds nothing, so it
+                // leaves the pool alone; a connection that broke is closed by Npgsql, not pooled.
+                if (conn.State == ConnectionState.Open)
+                    await DiscardAsync(conn);
+                else
+                    await conn.DisposeAsync();
                 throw;
             }
 

@@ -392,15 +392,22 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
     private static async Task ReleaseAsync(
         IAsyncDisposable? lease, CancellationTokenSource waiterCts, Task<IAsyncDisposable>? waiter)
     {
-        await waiterCts.CancelAsync();
-        if (waiter is not null)
+        try
         {
-            try { await (await waiter).DisposeAsync(); }
-            catch (OperationCanceledException) { }
+            if (lease is not null)
+                await lease.DisposeAsync();
         }
-
-        if (lease is not null)
-            await lease.DisposeAsync();
+        finally
+        {
+            await waiterCts.CancelAsync();
+            if (waiter is not null)
+            {
+                // A waiter that was cancelled or failed holds nothing; one that won is released.
+                // Its own exception would only hide the failure that brought the test here.
+                try { await (await waiter).DisposeAsync(); }
+                catch (Exception) { }
+            }
+        }
     }
 
     [Fact]
@@ -416,8 +423,9 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
             await Task.Delay(500);
             second.IsCompleted.Should().BeFalse("the first holder still has the lock");
 
-            await first.DisposeAsync();
+            var releasing = first;
             first = null;
+            await releasing.DisposeAsync();
             await using var secondLease = await second.WaitAsync(TimeSpan.FromSeconds(10));
             second = null;
         }
@@ -441,8 +449,9 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
             await Task.Delay(3000);
             second.IsCompleted.Should().BeFalse("the waiter must still be waiting, not timed out");
 
-            await first.DisposeAsync();
+            var releasing = first;
             first = null;
+            await releasing.DisposeAsync();
             await using var secondLease = await second.WaitAsync(TimeSpan.FromSeconds(10));
             second = null;
         }
@@ -468,8 +477,9 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
             await Task.Delay(500);
             sameTypeOtherCase.IsCompleted.Should().BeFalse("a type lock folds the name's case");
 
-            await article.DisposeAsync();
+            var releasing = article;
             article = null;
+            await releasing.DisposeAsync();
             await using var sameTypeLease = await sameTypeOtherCase.WaitAsync(TimeSpan.FromSeconds(10));
             sameTypeOtherCase = null;
         }
@@ -479,10 +489,22 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
         }
     }
 
+    // The lock pool's backends, told apart by the Application Name its connection string sets.
+    private Task<long> BackendsNamedAsync(string applicationName) =>
+        fixture.Repository.QuerySingleOrDefaultAsync<long>(
+            "SELECT count(*) FROM pg_stat_activity WHERE application_name = @Name", new { Name = applicationName });
+
+    private static string LockPoolName(string purpose) => $"{purpose}-{Guid.NewGuid():N}"[..40];
+
     [Fact]
     public async Task ALockWaiter_HoldsNoConnectionWhileItWaits()
     {
-        await using var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
+        // Unpooled, so a connection the waiter is not using is closed rather than parked idle in
+        // the pool, and the backends counted below are exactly the connections in use.
+        var applicationName = LockPoolName("lock-waiter");
+        await using var locks = new PostgresPrivilegedRequestLocks(
+            new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Pooling = false, ApplicationName = applicationName }
+                .ConnectionString);
         using var waiterCts = new CancellationTokenSource();
         IAsyncDisposable? first = await locks.AcquireRegistrationAsync(CancellationToken.None);
         Task<IAsyncDisposable>? second = null;
@@ -491,20 +513,60 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
             second = locks.AcquireRegistrationAsync(waiterCts.Token);
             await Task.Delay(1000);
 
-            // A waiter blocked inside pg_advisory_lock shows as an ungranted advisory lock, on a
-            // connection it keeps checked out of the pool for the whole wait.
+            // A waiter blocked inside pg_advisory_lock shows as an ungranted advisory lock.
             second.IsCompleted.Should().BeFalse("the first holder still has the lock");
             (await fixture.Repository.QuerySingleOrDefaultAsync<long>(
                 "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")).Should().Be(0);
 
-            await first.DisposeAsync();
+            // Between tries the waiter has no connection, so only the holder's backend is left. A
+            // sample can land on a try in flight, so the fewest seen is what counts.
+            var backends = new List<long>();
+            for (var i = 0; i < 10; i++)
+            {
+                backends.Add(await BackendsNamedAsync(applicationName));
+                await Task.Delay(100);
+            }
+            backends.Min().Should().Be(1, "between tries the waiter must hold no connection");
+
+            var releasing = first;
             first = null;
+            await releasing.DisposeAsync();
             await using var secondLease = await second.WaitAsync(TimeSpan.FromSeconds(10));
             second = null;
         }
         finally
         {
             await ReleaseAsync(first, waiterCts, second);
+        }
+    }
+
+    [Fact]
+    public async Task AnAcquireWhoseOpenFails_LeavesTheLockPoolAlone()
+    {
+        // A pool of one connection, which the holder has: the next open waits a second for it
+        // and fails. Clearing the pool then would close the holder's connection on its return.
+        var applicationName = LockPoolName("lock-open-fails");
+        await using var locks = new PostgresPrivilegedRequestLocks(
+            new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { MaxPoolSize = 1, Timeout = 1, ApplicationName = applicationName }
+                .ConnectionString);
+        IAsyncDisposable? held = await locks.AcquireRegistrationAsync(CancellationToken.None);
+        try
+        {
+            await locks.Invoking(l => l.AcquireTypeAsync("OpenFailsProbe", CancellationToken.None))
+                .Should().ThrowAsync<NpgsqlException>();
+
+            var releasing = held;
+            held = null;
+            await releasing.DisposeAsync();
+            await Task.Delay(500);
+
+            (await BackendsNamedAsync(applicationName)).Should().Be(1,
+                "a failed open holds no lock, so the holder's connection goes back to the pool");
+        }
+        finally
+        {
+            if (held is not null)
+                await held.DisposeAsync();
         }
     }
 

@@ -12,6 +12,12 @@ public sealed class ApiLoginGrantsTests
     [Fact]
     public void Tables_NamesExactlyTheTablesTheStatementsGrantOn()
     {
+        // Every statement is either a table grant this parses or the database's CONNECT grant, so
+        // a table grant written in a shape the pattern misses fails here instead of going unchecked.
+        var unparsed = ApiLoginGrants.Statements
+            .Where(statement => !GrantedTable.IsMatch(statement) && !statement.Contains(" ON DATABASE ", StringComparison.Ordinal));
+        unparsed.Should().BeEmpty();
+
         var granted = ApiLoginGrants.Statements
             .Select(statement => GrantedTable.Match(statement))
             .Where(match => match.Success)

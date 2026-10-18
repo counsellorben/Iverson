@@ -357,19 +357,28 @@ public sealed class ApiLoginGrantsPostgresIntegrationTests(ApiLoginGrantsPostgre
     [Fact]
     public async Task EnsureApiLogin_WaitsForTheSchemaApplyLockOfEveryTableItGrantsOn()
     {
+        // Unpooled, so the holder's session, and any lock a failed assertion leaves on it, ends
+        // when it is disposed instead of going back to the pool.
+        var unpooled = new NpgsqlConnectionStringBuilder(fixture.OwnerConnectionString) { Pooling = false }.ConnectionString;
+
         foreach (var table in ApiLoginGrants.Tables)
         {
-            await using var holder = new NpgsqlConnection(fixture.OwnerConnectionString);
+            await using var holder = new NpgsqlConnection(unpooled);
             await holder.OpenAsync();
             // ApplySchemaAsync's lock statement, verbatim: a replica applying this table's schema.
             await holder.ExecuteAsync("SELECT pg_advisory_lock(hashtext(@TableName)::bigint)", new { TableName = table });
 
             var ensure = fixture.RestoreApiLoginAsync();
-            await Task.Delay(500);
-            ensure.IsCompleted.Should().BeFalse($"the grants on {table} must wait for its schema apply");
-
-            await holder.ExecuteAsync("SELECT pg_advisory_unlock(hashtext(@TableName)::bigint)", new { TableName = table });
-            await ensure.WaitAsync(TimeSpan.FromSeconds(10));
+            try
+            {
+                await Task.Delay(500);
+                ensure.IsCompleted.Should().BeFalse($"the grants on {table} must wait for its schema apply");
+            }
+            finally
+            {
+                await holder.ExecuteAsync("SELECT pg_advisory_unlock(hashtext(@TableName)::bigint)", new { TableName = table });
+                await ensure.WaitAsync(TimeSpan.FromSeconds(10));
+            }
         }
     }
 

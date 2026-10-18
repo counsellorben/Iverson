@@ -29,6 +29,9 @@ public sealed class ExistingTableInspector(IRecordStoreQueryExecutor sql) : IExi
     // cannot use an index, so it read the whole table.
     public Task<bool> HasRowsOfAnotherTenantAsync(string tableName, string tenantColumn, string ownerTenantId)
     {
+        // A NULL owner would make every comparison below NULL, and so match only NULL rows: the
+        // opposite of IS DISTINCT FROM's answer.
+        ArgumentNullException.ThrowIfNull(ownerTenantId);
         var column = PostgresIdentifier.Quote(tenantColumn);
         return sql.QuerySingleOrDefaultAsync<bool>(
             $"""
