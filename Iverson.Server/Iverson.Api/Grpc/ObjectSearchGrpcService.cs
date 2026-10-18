@@ -59,10 +59,8 @@ public sealed partial class ObjectSearchGrpcService(
     /// StarRocks read path answers it with this retryable status. The message names no login, password or
     /// connection string. The admin console's data-volume endpoint answers the same condition with the same text.
     /// </summary>
-    private static RpcException TenantPoolFull() => new(new Status(StatusCode.Unavailable, TenantPoolFullMessage));
-
-    internal const string TenantPoolFullMessage =
-        "StarRocks is busy: every connection this tenant may hold in this process is in use. Retry shortly.";
+    private static RpcException TenantPoolFull() => new(new Status(StatusCode.Unavailable,
+        StarRocksResiliencePipelineFactory.TenantPoolFullMessage));
 
     /// <summary>
     /// CSR finding #6: bounds a vector RPC's requested top_k before it drives any Qdrant fetch

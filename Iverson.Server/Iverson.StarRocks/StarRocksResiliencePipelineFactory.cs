@@ -56,4 +56,11 @@ public static class StarRocksResiliencePipelineFactory
     public static bool IsPoolExhausted(MySqlException ex) =>
         ex.ErrorCode == MySqlErrorCode.UnableToConnectToHost &&
         ex.Message.Contains("All pooled connections are in use", StringComparison.Ordinal);
+
+    /// <summary>
+    /// What a caller is told when <see cref="IsPoolExhausted"/> holds: the gRPC read paths' <c>Unavailable</c>
+    /// detail and the admin console's data-volume 503. It names no login, password or connection string.
+    /// </summary>
+    public const string TenantPoolFullMessage =
+        "StarRocks is busy: every connection this tenant may hold in this process is in use. Retry shortly.";
 }

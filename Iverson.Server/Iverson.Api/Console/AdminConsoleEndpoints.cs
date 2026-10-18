@@ -1,4 +1,3 @@
-using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Api.Search;
 using Iverson.Sql;
@@ -253,7 +252,7 @@ public static class AdminConsoleEndpoints
         catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
         {
             return Results.Json(
-                new EngagementUnavailableResponse("busy", ObjectSearchGrpcService.TenantPoolFullMessage),
+                new EngagementUnavailableResponse("busy", StarRocksResiliencePipelineFactory.TenantPoolFullMessage),
                 statusCode: StatusCodes.Status503ServiceUnavailable);
         }
 
