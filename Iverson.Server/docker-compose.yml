@@ -568,9 +568,12 @@ services:
     # for it below. A bash /dev/tcp redirect rather than curl/wget: the aspnet:10.0 runtime image
     # ships neither (verified), but does ship bash.
     healthcheck:
-      # `bash -c`, not CMD-SHELL: CMD-SHELL runs /bin/sh, which on this image is dash, and dash
-      # has no /dev/tcp support at all ("cannot create /dev/tcp/...: Directory nonexistent").
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      # CMD-SHELL wrapping `bash -c '...'`, as iverson-worker's and qdrant's do. The redirect needs
+      # bash: CMD-SHELL alone runs /bin/sh, which on this image is dash, and dash has no /dev/tcp
+      # ("cannot create /dev/tcp/...: Directory nonexistent"). And not ["CMD", "bash", "-c", "..."]:
+      # podman's Docker API splits every CMD argument on whitespace, which turns that form into
+      # `bash -c exec`, a check that always passes.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'"]
       interval: 5s
       timeout: 3s
       retries: 30
