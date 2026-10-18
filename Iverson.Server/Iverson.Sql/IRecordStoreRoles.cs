@@ -11,7 +11,9 @@ namespace Iverson.Sql;
 public enum RecordStoreRole
 {
     /// <summary>
-    /// The connection's own role — the table owner. Correct only for the plumbing tables, which
+    /// The connection's own role: the table owner in the worker, and in the api its own login,
+    /// <c>iverson_api</c>, which owns nothing and holds direct grants on the plumbing tables it uses
+    /// (CSR round 12 §6.2). Correct only for the plumbing tables, which
     /// carry no RLS policy: the outbox / reconciliation queue, the DLQ, the tenant registry, the
     /// schema registry and the enrichment state table. Never correct for an entity table: see
     /// <see cref="EntityAccess"/>, which is what <see cref="IEntityRepository"/> takes instead of
@@ -74,6 +76,27 @@ public interface IRecordStoreSchemaManager
     /// <see cref="ApplySchemaAsync"/> call, since that DDL GRANTs to both.
     /// </summary>
     Task EnsureRolesAsync();
+
+    /// <summary>
+    /// The api's role check (CSR round 12 §6.3), run at startup and by /health's readiness. It
+    /// proves this connection can enter <c>iverson_runtime</c>, the only role the api's login belongs
+    /// to, in a transaction it rolls back, so it writes nothing. It never creates a role, and never
+    /// probes <c>iverson_maintenance</c>, which the api may not enter.
+    /// </summary>
+    Task EnsureCanEnterRuntimeRoleAsync();
+
+    /// <summary>
+    /// The worker's part of the api's login (CSR round 12 §6.1–6.2). It makes sure the login exists,
+    /// either by waiting up to <paramref name="roleWait"/> for a managed one or, when
+    /// <paramref name="password"/> is given, by creating it. It then makes the login a member of
+    /// <c>iverson_runtime</c> and grants it every statement in <paramref name="grantStatements"/>,
+    /// all in one transaction. <paramref name="grantedTables"/> names every table those statements
+    /// grant on: the transaction holds each one's schema-apply lock, so its GRANTs never run
+    /// concurrently with another process's <see cref="IRecordStoreSchemaManager.ApplySchemaAsync"/>
+    /// of that table. Idempotent. Run it after the plumbing DDL, since the statements name those tables.
+    /// </summary>
+    Task EnsureApiLoginAsync(
+        string? password, IReadOnlyList<string> grantStatements, IReadOnlyList<string> grantedTables, TimeSpan roleWait);
 }
 
 public interface IRecordStoreTransactionRunner
@@ -194,6 +217,73 @@ public interface ISchemaRegistryRepository
     Task<IEnumerable<(string TypeName, string SchemaJson)>> LoadAllAsync();
     Task UpsertAsync(string typeName, string schemaJson);
     Task DeleteAsync(string typeName);
+
+    /// <summary>
+    /// The stored owner of every row whose type name equals <paramref name="typeName"/> ignoring
+    /// case: null for an ownerless row or a legacy row with no owner key. Empty when the type has
+    /// no row.
+    /// </summary>
+    Task<IReadOnlyList<string?>> GetOwnersAsync(string typeName);
+
+    /// <summary>
+    /// Inserts the row, or replaces it only when its stored owner is
+    /// <paramref name="ownerTenantId"/> (null matching null). False when a row of another owner
+    /// kept its place.
+    /// </summary>
+    Task<bool> UpsertIfOwnerAsync(string typeName, string schemaJson, string? ownerTenantId);
+
+    /// <summary>
+    /// Whether a stored row derives this type name's table: the same name, except that the first
+    /// letter's case may differ (SchemaBuilder.ToTableName lower-cases it without a separator).
+    /// </summary>
+    Task<bool> ExistsAsync(string typeName);
+}
+
+public interface IExistingTableInspector
+{
+    /// <summary>The relation named <paramref name="tableName"/> in <c>public</c>, or null when there is none.</summary>
+    Task<ExistingTable?> DescribeAsync(string tableName, string tenantColumn);
+
+    /// <summary>
+    /// Whether any row of the table has a tenant other than <paramref name="ownerTenantId"/>, read
+    /// across every tenant under <c>iverson_maintenance</c>.
+    /// </summary>
+    Task<bool> HasRowsOfAnotherTenantAsync(string tableName, string tenantColumn, string ownerTenantId);
+}
+
+public interface IPrivilegedRequestRepository
+{
+    /// <summary>A null <paramref name="expiresAfter"/> means the request never expires.</summary>
+    Task InsertAsync(Guid id, string kind, string payloadJson, string? requestedBy, TimeSpan? expiresAfter);
+    Task<PrivilegedRequestRow?> GetAsync(Guid id);
+
+    /// <summary>pending → expired. False when the request was no longer pending.</summary>
+    Task<bool> ExpireIfPendingAsync(Guid id);
+
+    /// <summary>Pending, unexpired requests, oldest first.</summary>
+    Task<IEnumerable<PrivilegedRequestRow>> ListClaimableAsync(int limit);
+
+    /// <summary>pending and unexpired → running. False when another claim or the expiry won.</summary>
+    Task<bool> TryClaimAsync(Guid id);
+
+    Task CompleteAsync(Guid id, string status, string resultJson);
+
+    /// <summary>
+    /// running → failed, recording <paramref name="resultJson"/>, for every request claimed longer
+    /// ago than <paramref name="claimedBefore"/>: its worker stopped without recording an outcome.
+    /// </summary>
+    Task<int> FailAbandonedAsync(TimeSpan claimedBefore, string resultJson);
+
+    Task<int> DeleteFinishedOlderThanAsync(TimeSpan age);
+}
+
+public interface IPrivilegedRequestLocks
+{
+    /// <summary>The one registration lock, held while a RegisterSchema request runs.</summary>
+    Task<IAsyncDisposable> AcquireRegistrationAsync(CancellationToken ct);
+
+    /// <summary>A lock per type name, case-insensitive, held while a reconcile of that type runs.</summary>
+    Task<IAsyncDisposable> AcquireTypeAsync(string typeName, CancellationToken ct);
 }
 
 public interface IReconciliationQueueRepository
@@ -224,6 +314,7 @@ public interface IDlqRepository
     Task InsertAsync(DlqMessage message);
     Task<IEnumerable<DlqRow>> ListUnreplayedAsync(int limit);
     Task<DlqReplayRow?> GetUnreplayedByIdAsync(Guid id);
+    Task<DlqReplayCheckRow?> GetUnreplayedSummaryAsync(Guid id);
     Task MarkReplayedAsync(Guid id);
     Task<int> CountUnreplayedAsync();
 }

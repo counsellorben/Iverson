@@ -103,6 +103,21 @@ internal static class PopularitySignalValidator
                     $"{PopularitySignalOptions.Section}: ParentType '{signal.ParentType}' has no " +
                     "vector or chunk fields, so it has no Qdrant point to ever patch.");
 
+            // CSR round 12 #8: the count is written onto the parent's own point under these two keys,
+            // and SearchSimilar maps a payload key onto the column whose camelCase name it equals. A
+            // parent column with either name would be overwritten by the count and would return it
+            // to every reader of that column.
+            var countKey = signal.Relation.ToCamelCase() + "Count";
+            var collidingColumn = parentSchema.ScalarColumns.Append(parentSchema.KeyColumn).FirstOrDefault(c =>
+                string.Equals(c.Name, countKey, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(c.Name, countKey + "Buckets", StringComparison.OrdinalIgnoreCase));
+            if (collidingColumn is not null)
+                throw new InvalidOperationException(
+                    $"{PopularitySignalOptions.Section}: column '{collidingColumn.Name}' on " +
+                    $"'{signal.ParentType}' has the name of a payload key the signal for relation " +
+                    $"'{signal.Relation}' writes ('{countKey}' or '{countKey}Buckets'). Rename the " +
+                    "column or remove the signal.");
+
             var relation = parentSchema.Relations.FirstOrDefault(r =>
                 string.Equals(r.PropertyName, signal.Relation, StringComparison.OrdinalIgnoreCase))
                 ?? throw new InvalidOperationException(
@@ -125,6 +140,18 @@ internal static class PopularitySignalValidator
                     $"{PopularitySignalOptions.Section}: child type '{relation.RelatedTypeName}' is " +
                     "not StarRocks-eligible (it declares a OneToMany relation of its own), so its " +
                     "count can never be computed.");
+
+            // CSR round 12 #8. Not fatal: an ineligible signal is skipped at runtime by the writer and
+            // the ranker alike, and re-registering either type can make it eligible.
+            if (!PopularitySignalEligibility.IsEligible(parentSchema, relation, childSchema))
+                logger.LogWarning(
+                    "{Section}: the signal for relation '{Relation}' on '{ParentType}' is not eligible, " +
+                    "so it is neither computed nor ranked on. A caller who can read that parent could not " +
+                    "read every '{ChildType}' row it counts: the parent is owner-scoped, or one of its " +
+                    "reading roles cannot read the child's rows, foreign key or [IversonPopularitySignal] " +
+                    "column.",
+                    PopularitySignalOptions.Section, signal.Relation, signal.ParentType,
+                    relation.RelatedTypeName);
 
             if (options.RecencyBoost > 0 && childSchema.PopularitySignalColumn is null)
                 logger.LogWarning(

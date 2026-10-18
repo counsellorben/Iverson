@@ -65,6 +65,11 @@ spec:
               until psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='authentik';" 2>/dev/null | grep -q 1; do
                 echo "waiting for authentik role to exist..."; sleep 5
               done
+              # CSR round 12 §6.1: iverson_api, the api's login, is another CNPG managed role, so
+              # the GRANT below waits for it the same way.
+              until psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='iverson_api';" 2>/dev/null | grep -q 1; do
+                echo "waiting for iverson_api role to exist..."; sleep 5
+              done
               # Connecting to the `iverson` database as the `iverson` role (its owner) is
               # required here: enableSuperuserAccess is false on this cluster, so there is no
               # accessible Postgres superuser, and only a database's owner can REVOKE
@@ -78,8 +83,10 @@ spec:
               # it by name — confirmed empirically against this cluster (the negative-connect
               # test below still succeeded after a REVOKE ... FROM authentik alone). The only
               # correct fix is to revoke CONNECT from PUBLIC itself, then explicitly re-grant it
-              # to the one role that legitimately needs it (`iverson`, used by both the api and
-              # worker Deployments — see charts/api and charts/worker's ConnectionStrings__Postgres).
+              # to the two logins that legitimately need it: `iverson`, the owner, used by the
+              # worker Deployment, and `iverson_api`, the api Deployment's login (CSR round 12; see
+              # charts/api and charts/worker's ConnectionStrings__Postgres). The worker grants
+              # iverson_api CONNECT at startup too, and that is the grant the api depends on.
               # This also closes the door for any future role, not just `authentik`.
               # -v ON_ERROR_STOP=1: without it, a server-side SQL error inside a `psql -c`
               # batch is printed to stderr but the process still exits 0 as long as the
@@ -87,7 +94,8 @@ spec:
               # code, so a failed REVOKE/GRANT would otherwise leave this Job reporting
               # "Completed" while silently never enforcing the isolation this fix exists for.
               psql -v ON_ERROR_STOP=1 -c "REVOKE CONNECT ON DATABASE iverson FROM PUBLIC;" \
-                   -c "GRANT CONNECT ON DATABASE iverson TO iverson;"
+                   -c "GRANT CONNECT ON DATABASE iverson TO iverson;" \
+                   -c "GRANT CONNECT ON DATABASE iverson TO iverson_api;"
       volumes:
         - name: tmp
           emptyDir: {}

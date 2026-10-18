@@ -47,12 +47,12 @@ public sealed record AuthorizationDecision(
     /// gRPC Unknown, in place of the clean "not found" they return today.
     /// </para>
     /// <para>
-    /// There are NINE such guards in total: the three above, which are reached with a null on
-    /// every denied read, plus six (<c>ObjectRetrievalGrpcService</c> x2,
-    /// <c>ObjectMappingGrpcService</c> x1, <c>EntityRelationResolver</c> x1,
-    /// <c>AuthorizationFieldMasking</c> x2) that sit after a <c>Denied</c> return or behind
-    /// <c>decision.Denied ||</c> and so are non-null by flow. The declaration is shared, so all
-    /// nine stay.
+    /// The other guards sit after a <c>Denied</c> return or behind <c>decision.Denied ||</c>, and so
+    /// are non-null by flow. The declaration is shared, so they stay. Two such sites used to choose
+    /// <c>iverson_maintenance</c> for a null column: the entity read in
+    /// <c>ObjectRetrievalGrpcService.GetMany</c> and the entity delete in
+    /// <c>ObjectMappingGrpcService.Delete</c>. Since CSR round 12 §6.4 they refuse a null with
+    /// Internal instead, because the api never enters BYPASSRLS.
     /// </para>
     /// </summary>
     string? TenantColumn,

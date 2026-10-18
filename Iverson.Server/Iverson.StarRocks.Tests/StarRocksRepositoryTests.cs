@@ -122,9 +122,11 @@ public class EngagementRepositoryTests
     public async Task A_streaming_reads_token_cuts_only_its_own_wait_at_the_cold_start_gate_short()
     {
         // Port 1 refuses at once, so the gate keeps polling until BackendReadyTimeout; no StarRocks is needed.
+        // A tenant login key, so the read gets past the tenant-login refusal (CSR round 12 §7.2) to the gate.
         var repo = new EngagementRepository("Server=127.0.0.1;Port=1;User ID=x;Password=x;Connection Timeout=1",
             NullLogger<EngagementRepository>.Instance,
-            new EngagementResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(3) });
+            new EngagementResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(3) },
+            tenantLoginKey: "k");
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
 
         // The cancelled read starts first, so it is the one that starts the gate's shared wait.

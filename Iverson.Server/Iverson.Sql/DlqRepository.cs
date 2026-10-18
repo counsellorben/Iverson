@@ -49,6 +49,17 @@ public sealed class DlqRepository(
             """,
             new { Id = id });
 
+    // The api's replay checks (CSR round 12 §5.2): the row's tenant and topic only. The worker
+    // reads the whole row when it replays.
+    public Task<DlqReplayCheckRow?> GetUnreplayedSummaryAsync(Guid id) =>
+        sql.QuerySingleOrDefaultAsync<DlqReplayCheckRow>(
+            $"""
+            SELECT "SourceTopic", "TenantId"
+            FROM "{tableName}"
+            WHERE "Id" = @Id AND "Replayed" = false
+            """,
+            new { Id = id });
+
     public Task MarkReplayedAsync(Guid id) =>
         sql.ExecuteAsync(
             $"""UPDATE "{tableName}" SET "Replayed" = true WHERE "Id" = @Id""",

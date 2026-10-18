@@ -34,10 +34,10 @@ public class SchemaRegistrationOrchestratorTests
             new SchemaRegistryRepository(_sql),
             NullLogger<SchemaRegistry>.Instance);
         _sut = new SchemaRegistrationOrchestrator(
-            _schemaManager,
             _resolver,
             _registry,
-            Substitute.For<IDocumentRerenderQueueRepository>(),
+            new Helpers.InProcessSchemaRegistrationExecutor(
+                _schemaManager, _registry, Substitute.For<IDocumentRerenderQueueRepository>()),
             NullLogger<SchemaRegistrationOrchestrator>.Instance);
     }
 
@@ -1223,6 +1223,42 @@ public class SchemaRegistrationOrchestratorTests
             .Where(e => e.StatusCode == StatusCode.InvalidArgument);
     }
 
+    [Fact]
+    public async Task RegisterAsync_WithEnrichmentTargetWhoseOnlySourceIsTheDocumentTemplate_ThrowsInvalidArgument()
+    {
+        // A document template adds a synthetic "Document" chunk field to the descriptor, but its
+        // text is rendered from the template, not read as source text, so it is no source property.
+        var td = new TypeDescriptor { TypeName = "Widget", DocumentTemplate = "{Body}" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ObjectType = ObjectType.String });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Summary", ObjectType = ObjectType.String, IsSummaryTarget = true });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("no source text property");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithStringArrayEnrichmentTarget_Registers()
+    {
+        // A string array maps to TEXT[], which the target rule has always admitted.
+        var td = new TypeDescriptor { TypeName = "Widget" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ObjectType = ObjectType.Guid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Body", ObjectType = ObjectType.String, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Tags", ObjectType = ObjectType.String, IsArray = true, IsKeywordsTarget = true });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        _registry.Get("Widget")!.EnrichmentTargets.Should().ContainSingle(t => t.ColumnName == "Tags");
+    }
+
     // ── Enrichment targets and FieldPermissions ────────────────────────────────
     // Body is the chunk source and Summary the enrichment target in every case below; only the
     // FieldPermissions vary.
@@ -1648,6 +1684,118 @@ public class SchemaRegistrationOrchestratorTests
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
         ex.Which.Status.Detail.Should().Contain("WidgetId").And.Contain("identical to its foreign key");
+    }
+
+    // ── CSR round 12 §2.4: names a write payload could not tell apart ─────────
+    // The write RPCs map each payload key to the column it names ignoring case, so two columns
+    // that differ only by case, or a navigation property named like a column, cannot be told apart.
+
+    [Fact]
+    public async Task RegisterAsync_TwoPropertiesWhoseNamesDifferOnlyByCase_ThrowsInvalidArgument()
+    {
+        var td = SimpleType("Widget", "Url", "URL");
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("'Url'").And.Contain("'URL'");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_TwoGroupsOfPropertiesWhoseNamesDifferOnlyByCase_NamesBothGroups()
+    {
+        var td = SimpleType("Widget", "Url", "URL", "Title", "TITLE");
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should()
+            .Contain("'Url', 'URL'; 'Title', 'TITLE' whose names");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_TheKeyAndAPropertyWhoseNamesDifferOnlyByCase_ThrowsInvalidArgument()
+    {
+        var td = SimpleType("Widget", "ID");
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("'Id'").And.Contain("'ID'");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(Client.Contracts.RelationKind.ManyToOne, "Name")]
+    [InlineData(Client.Contracts.RelationKind.ManyToOne, "name")]
+    [InlineData(Client.Contracts.RelationKind.ManyToOne, "id")]
+    [InlineData(Client.Contracts.RelationKind.OneToMany, "NAME")]
+    public async Task RegisterAsync_ANavigationPropertyNamedLikeAColumnInAnyCase_ThrowsInvalidArgument(
+        Client.Contracts.RelationKind kind, string navigationProperty)
+    {
+        var td = SimpleType("Widget", "Name");
+        td.Properties.Add(new PropertyDescriptor { Name = "AuthorId", ObjectType = ObjectType.Guid });
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = navigationProperty,
+            Kind         = kind,
+            RelatedType  = "Author",
+            ForeignKey   = kind == Client.Contracts.RelationKind.OneToMany ? "WidgetId" : "AuthorId"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain($"'{navigationProperty}'").And.Contain("matches column");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_HandsTheOwnerStampedDescriptorsToTheExecutor_AndDoesNotWriteItself()
+    {
+        var executor = Substitute.For<ISchemaRegistrationExecutor>();
+        var sut = new SchemaRegistrationOrchestrator(
+            _resolver, _registry, executor, NullLogger<SchemaRegistrationOrchestrator>.Instance);
+        var request = new SchemaRequest
+        {
+            RootType   = SimpleType("Widget", "Name"),
+            Dependents = { SimpleType("Gadget", "Name") }
+        };
+
+        var registered = await sut.RegisterAsync(request, "tenant-a", CancellationToken.None);
+
+        registered.Should().Equal("Widget", "Gadget");
+        await executor.Received(1).ExecuteAsync(
+            Arg.Is<IReadOnlyList<SchemaDescriptor>>(d =>
+                d.Select(x => x.TypeName).SequenceEqual(new[] { "Widget", "Gadget" }) &&
+                d.All(x => x.OwnerTenantId == "tenant-a")),
+            Arg.Any<IReadOnlyList<string>>(),
+            Arg.Any<CancellationToken>());
+        // Spec §5.2: the api's registry changes only when the queued request succeeds and the api
+        // reloads it, which the executor does.
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_TheExecutorsRefusal_ReachesTheCallerUnchanged()
+    {
+        var executor = Substitute.For<ISchemaRegistrationExecutor>();
+        executor.ExecuteAsync(Arg.Any<IReadOnlyList<SchemaDescriptor>>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new RpcException(new Status(StatusCode.Unavailable, "The worker did not pick the registration up; retry.")));
+        var sut = new SchemaRegistrationOrchestrator(
+            _resolver, _registry, executor, NullLogger<SchemaRegistrationOrchestrator>.Instance);
+
+        var act = () => sut.RegisterAsync(new SchemaRequest { RootType = SimpleType("Widget", "Name") }, "tenant-a", CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.Unavailable);
+        ex.Which.Status.Detail.Should().Be("The worker did not pick the registration up; retry.");
     }
 
     [Fact]

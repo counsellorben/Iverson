@@ -97,6 +97,43 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             Options.Create(popularity ?? new PopularitySignalOptions()),
             EngagementQueryLimitOptions.Default);
 
+    // A popularity signal is ranked on only when it counts a registered OneToMany child that every
+    // reader of the parent can read (PopularitySignalEligibility). ArticleSchema has no such
+    // relation, so the popularity tests register Article with a "Comments" OneToMany relation, and
+    // a Comment child carrying Article's own bypass role.
+    private async Task RegisterArticleWithCommentsAsync(string collection)
+    {
+        var article = SchemaFixtures.ArticleSchema();
+        await _registry.RegisterAsync(article with
+        {
+            CollectionName = collection,
+            Relations =
+            [
+                .. article.Relations,
+                new Iverson.Api.Schema.RelationDescriptor(
+                    "Comments", Iverson.Api.Schema.RelationKind.OneToMany, "Comment", "ArticleId")
+            ]
+        });
+        await _registry.RegisterAsync(new SchemaDescriptor
+        {
+            TypeName       = "Comment",
+            TableName      = "comments",
+            CollectionName = null,
+            KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+            ScalarColumns  = [new ColumnDescriptor("Body", "text", false), new ColumnDescriptor("ArticleId", "uuid", false)],
+            FkColumns      = [new ForeignKeyDescriptor("ArticleId", "Article")],
+            VectorFields   = [],
+            ChunkFields    = [],
+            Relations      =
+            [
+                new Iverson.Api.Schema.RelationDescriptor(
+                    "Article", Iverson.Api.Schema.RelationKind.ManyToOne, "Article", "ArticleId")
+            ],
+            Authorization  = article.Authorization,
+            TenantColumn   = "TenantId"
+        });
+    }
+
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
     {
         var written = new List<T>();
@@ -374,8 +411,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
     public async Task SearchSimilar_PromotesLowerCosineButMorePopularCandidate_WhenWPopularityRaised()
     {
         var collection = UniqueName();
-        var schema = SchemaFixtures.ArticleSchema() with { CollectionName = collection };
-        await _registry.RegisterAsync(schema);
+        await RegisterArticleWithCommentsAsync(collection);
         var physicalCollection = _tenantScope.ResolveCollectionName(collection, TestTenant, isChunks: false);
         await _mgr.ApplyCollectionAsync(new CollectionSchema(
             physicalCollection, [new NamedVector("title_vector", 4)], []));
@@ -425,8 +461,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
         // Closes finding 2.2: SearchChunks must apply the same batched-by-parent popularity
         // lookup SearchSimilar's object-vector path applies directly.
         var collection = UniqueName();
-        var schema = SchemaFixtures.ArticleSchema() with { CollectionName = collection };
-        await _registry.RegisterAsync(schema);
+        await RegisterArticleWithCommentsAsync(collection);
 
         var objectCollection = _tenantScope.ResolveCollectionName(collection, TestTenant, isChunks: false);
         var chunksCollection = _tenantScope.ResolveCollectionName(collection, TestTenant, isChunks: true);

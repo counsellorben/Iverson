@@ -165,6 +165,14 @@ internal sealed class AdminConsoleSchemaRegistryRepository : ISchemaRegistryRepo
 
     public Task UpsertAsync(string typeName, string schemaJson) => Task.CompletedTask;
     public Task DeleteAsync(string typeName) => Task.CompletedTask;
+
+    public Task<IReadOnlyList<string?>> GetOwnersAsync(string typeName) =>
+        Task.FromResult<IReadOnlyList<string?>>([]);
+
+    public Task<bool> UpsertIfOwnerAsync(string typeName, string schemaJson, string? ownerTenantId) =>
+        Task.FromResult(true);
+
+    public Task<bool> ExistsAsync(string typeName) => Task.FromResult(false);
 }
 
 internal sealed class AdminConsoleTenantRepository : ITenantRepository

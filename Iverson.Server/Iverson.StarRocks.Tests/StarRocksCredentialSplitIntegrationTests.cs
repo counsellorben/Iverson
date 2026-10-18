@@ -41,7 +41,9 @@ public sealed class StarRocksCredentialSplitIntegrationTests
             StarRocksSplitLogins.EnsureAsync(fx).GetAwaiter().GetResult();
 
         _repo = new EngagementRepository(_appConnectionString, NullLogger<EngagementRepository>.Instance,
-            provisionerConnectionString: provisionerConnectionString);
+            provisionerConnectionString: provisionerConnectionString,
+            tenantLoginKey: StarRocksSplitLogins.TenantLoginKey,
+            provisionedTenants: new InMemoryProvisionedTenantDirectory());
     }
 
     private static string UniqueTenantId() => "t" + Guid.NewGuid().ToString("N")[..16];

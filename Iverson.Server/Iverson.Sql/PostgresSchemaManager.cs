@@ -9,7 +9,17 @@ public sealed class PostgresSchemaManager(
     string connectionString,
     ILogger<PostgresSchemaManager> logger) : IRecordStoreSchemaManager
 {
+    /// <summary>
+    /// The api's own login (CSR round 12 §6.1). A constant, like every other role name here. The
+    /// chart's CNPG managed role and compose's worker both create exactly this name.
+    /// </summary>
+    public const string ApiLoginName = "iverson_api";
+
     private NpgsqlConnection CreateConnection() => new(connectionString);
+
+    // The per-table schema-apply lock's key, bound to @TableName: ApplySchemaAsync holds it for the
+    // whole apply, and EnsureApiLoginAsync's grant transaction for each table it grants on.
+    private const string TableLockKeySql = "hashtext(@TableName)::bigint";
 
     public async Task ApplySchemaAsync(TableSchema schema, SchemaDriftPolicy driftPolicy = SchemaDriftPolicy.Warn)
     {
@@ -57,7 +67,7 @@ public sealed class PostgresSchemaManager(
         // finally rather than left to connection close: Npgsql pools connections, and a pooled
         // connection handed back while still holding a session advisory lock keeps holding it.
         await conn.ExecuteAsync(
-            "SELECT pg_advisory_lock(hashtext(@TableName)::bigint)", new { schema.TableName });
+            $"SELECT pg_advisory_lock({TableLockKeySql})", new { schema.TableName });
 
         try
         {
@@ -218,7 +228,7 @@ public sealed class PostgresSchemaManager(
         finally
         {
             await conn.ExecuteAsync(
-                "SELECT pg_advisory_unlock(hashtext(@TableName)::bigint)", new { schema.TableName });
+                $"SELECT pg_advisory_unlock({TableLockKeySql})", new { schema.TableName });
         }
     }
 
@@ -269,6 +279,93 @@ public sealed class PostgresSchemaManager(
         await EnsureCanEnterRoleAsync(conn, "iverson_maintenance");
     }
 
+    public async Task EnsureCanEnterRuntimeRoleAsync()
+    {
+        await using var conn = CreateConnection();
+        await conn.OpenAsync();
+
+        await EnsureCanEnterRoleAsync(conn, "iverson_runtime");
+    }
+
+    public async Task EnsureApiLoginAsync(
+        string? password, IReadOnlyList<string> grantStatements, IReadOnlyList<string> grantedTables, TimeSpan roleWait)
+    {
+        await using var conn = CreateConnection();
+        await conn.OpenAsync();
+
+        // On Helm the login is a CNPG managed role, which CNPG creates asynchronously (as
+        // job-revoke-cross-db.yaml's wait for authentik shows), so a worker that starts first waits
+        // for it instead of crash-looping. Compose has no CNPG: there the worker is the superuser
+        // and creates the login itself, from the password it is given.
+        if (string.IsNullOrEmpty(password))
+            await WaitForRoleAsync(conn, ApiLoginName, roleWait);
+
+        await using var tx = await conn.BeginTransactionAsync();
+
+        // Serialises worker replicas: two could both try CREATE ROLE, or GRANT on one table at once.
+        // Transaction-scoped, like the table locks below, so no lock is left on a pooled connection.
+        await conn.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtext('iverson_api_login')::bigint)", null, tx);
+
+        // Then each granted table's schema-apply lock, so these GRANTs never run concurrently with
+        // another process's ApplySchemaAsync of the table: both rewrite its pg_class row, and
+        // Postgres fails the loser with XX000 "tuple concurrently updated". All of them before any
+        // grant, in one fixed order. ApplySchemaAsync holds one table's lock at a time and waits for
+        // no other advisory lock while it holds it, so no cycle can form.
+        foreach (var table in grantedTables.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+            await conn.ExecuteAsync($"SELECT pg_advisory_xact_lock({TableLockKeySql})", new { TableName = table }, tx);
+
+        try
+        {
+            if (!await RoleExistsAsync(conn, ApiLoginName, tx))
+            {
+                // Reached only with a password, since the wait above throws otherwise. CREATE ROLE
+                // takes no bind parameters, so format's %L quotes the password as a literal.
+                var createRole = await conn.QuerySingleAsync<string>(
+                    $"SELECT format('CREATE ROLE {ApiLoginName} LOGIN PASSWORD %L', @Password::text)",
+                    new { Password = password }, tx);
+                await conn.ExecuteAsync(createRole, null, tx);
+            }
+
+            var isRuntimeMember = await conn.QuerySingleAsync<bool>(
+                $"SELECT pg_has_role('{ApiLoginName}', 'iverson_runtime', 'MEMBER')", null, tx);
+            if (!isRuntimeMember)
+                await conn.ExecuteAsync($"GRANT iverson_runtime TO {ApiLoginName}", null, tx);
+
+            foreach (var statement in grantStatements)
+                await conn.ExecuteAsync(statement, null, tx);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42501")
+        {
+            throw new InvalidOperationException(
+                $"This connection ({conn.UserName}) cannot set up the api's login {ApiLoginName}: "
+                + $"{ex.MessageText}. On Helm the login and its iverson_runtime membership come from the "
+                + "CNPG managed role in charts/postgres/templates/cluster.yaml, and the worker, as the "
+                + "database owner, only grants table privileges: check the Cluster's status. On compose "
+                + "the worker must connect as the superuser.", ex);
+        }
+
+        await tx.CommitAsync();
+    }
+
+    private static async Task WaitForRoleAsync(NpgsqlConnection conn, string roleName, TimeSpan wait)
+    {
+        var deadline = DateTimeOffset.UtcNow + wait;
+        while (!await RoleExistsAsync(conn, roleName))
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+                throw new InvalidOperationException(
+                    $"Login {roleName} does not exist, and this worker has no Postgres:ApiLoginPassword "
+                    + "(env Postgres__ApiLoginPassword) to create it with. On Helm it is a CNPG managed role "
+                    + "(charts/postgres/templates/cluster.yaml): check the Cluster's status for a role "
+                    + "reconciliation error. On compose, set Postgres__ApiLoginPassword on the worker.");
+            await Task.Delay(TimeSpan.FromSeconds(2));
+        }
+    }
+
+    private static Task<bool> RoleExistsAsync(NpgsqlConnection conn, string roleName, NpgsqlTransaction? tx = null) =>
+        conn.QuerySingleAsync<bool>(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = @Role)", new { Role = roleName }, tx);
+
     /// <summary>
     /// Asserts this connection can enter <paramref name="roleName"/> by issuing the very statement
     /// the runtime issues, inside a transaction that is then rolled back.
@@ -307,9 +404,7 @@ public sealed class PostgresSchemaManager(
 
     private static async Task EnsureRoleAsync(NpgsqlConnection conn, string roleName, string createSql)
     {
-        var exists = await conn.QuerySingleOrDefaultAsync<bool>(
-            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = @Role)", new { Role = roleName });
-        if (exists) return;
+        if (await RoleExistsAsync(conn, roleName)) return;
 
         try
         {

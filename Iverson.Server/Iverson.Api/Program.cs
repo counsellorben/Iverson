@@ -280,6 +280,17 @@ if (string.IsNullOrWhiteSpace(starRocksProvisionerConnectionString))
     starRocksProvisionerConnectionString = null;
 }
 
+// CSR round 12 §7.1: every StarRocks data connection logs in as the tenant's own user, whose password is
+// derived from this key. Both roles derive it: the api to read, the worker to provision, write and aggregate.
+var starRocksTenantLoginKey = cfg["StarRocks:TenantKey"];
+if (string.IsNullOrWhiteSpace(starRocksTenantLoginKey))
+{
+    if (engagementStoreEnabledAtStartup)
+        throw new InvalidOperationException(
+            "StarRocks:TenantKey is required when Engagement:Enabled is true and was not configured.");
+    starRocksTenantLoginKey = null;
+}
+
 builder.Services.AddStarRocks(
     string.IsNullOrWhiteSpace(starRocksConnectionString)
         ? (engagementStoreEnabledAtStartup
@@ -319,7 +330,8 @@ builder.Services.AddStarRocks(
         MaxTopK            = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxTopK", EngagementQueryLimitOptions.Default.MaxTopK),
         MaxRelationDepth   = cfg.GetValue($"{EngagementQueryLimitOptions.Section}:MaxRelationDepth", EngagementQueryLimitOptions.Default.MaxRelationDepth)
     },
-    provisionerConnectionString: starRocksProvisionerConnectionString);
+    provisionerConnectionString: starRocksProvisionerConnectionString,
+    tenantLoginKey: starRocksTenantLoginKey);
 
 builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",
@@ -375,6 +387,14 @@ builder.Services.AddSingleton<IEntityRelationResolver, EntityRelationResolver>()
 builder.Services.AddSingleton<Iverson.Api.Schema.SchemaCatalogReader>();
 builder.Services.AddSingleton<Iverson.Api.Search.AggregateReader>();
 builder.Services.AddSingleton<ISchemaRegistrationOrchestrator, SchemaRegistrationOrchestrator>();
+// CSR round 12 §5: RegisterSchema's DDL and registry write run in the worker. The api queues them
+// in IversonPrivilegedRequests and waits; the worker-only services below run them.
+builder.Services.AddSingleton<IPrivilegedRequestRepository>(sp => new PrivilegedRequestRepository(
+    Iverson.Api.PrivilegedRequests.PrivilegedRequestSchema.TableName,
+    sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+builder.Services.AddSingleton(new Iverson.Api.PrivilegedRequests.PrivilegedRequestWaits());
+builder.Services.AddSingleton<Iverson.Api.PrivilegedRequests.PrivilegedRequestClient>();
+builder.Services.AddSingleton<ISchemaRegistrationExecutor, Iverson.Api.PrivilegedRequests.QueuedSchemaRegistrationExecutor>();
 builder.Services.AddSingleton<IReconciliationQueueRepository>(sp => new ReconciliationQueueRepository(
     Iverson.Api.Reconciliation.ReconciliationSchema.TableName,
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
@@ -386,6 +406,10 @@ builder.Services.AddSingleton<IDlqRepository>(sp => new DlqRepository(
 builder.Services.AddSingleton<ITenantRepository>(sp => new TenantRepository(
     Iverson.Api.Tenancy.TenantSchema.TableName,
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+// CSR round 12 §7.3: which tenants have a StarRocks login. AddStarRocks hands it to EngagementRepository, whose
+// readers consult it before connecting and whose provisioning (worker only) records into it.
+builder.Services.AddSingleton<IProvisionedTenantDirectory>(sp =>
+    new Iverson.Api.Tenancy.PostgresProvisionedTenantDirectory(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITenantStatusCache, Iverson.Api.Tenancy.TenantStatusCache>();
 // CSR round-10 #11: the subs of removed and demoted users, and the 30 s snapshot of them that
@@ -476,6 +500,11 @@ if (workloadRole == "worker")
     builder.Services.Configure<Iverson.Api.Reconciliation.DocumentRerenderOptions>(
         cfg.GetSection(Iverson.Api.Reconciliation.DocumentRerenderOptions.Section));
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.DocumentRerenderQueueWorker>();
+
+    // CSR round 12 §5.1: the worker runs the privileged requests the api queues.
+    builder.Services.AddSingleton<Iverson.Api.PrivilegedRequests.SchemaRegistrationApplier>();
+    builder.Services.AddSingleton<Iverson.Api.PrivilegedRequests.IPrivilegedRequestExecutor, Iverson.Api.PrivilegedRequests.PrivilegedRequestExecutor>();
+    builder.Services.AddHostedService<Iverson.Api.PrivilegedRequests.PrivilegedRequestWorker>();
 }
 
 // Registered for both roles (not gated on workloadRole): api itself runs multiple replicas
@@ -555,6 +584,8 @@ app.MapGet("/health", async (
     IVectorSchemaManager vector,
     IEventBrokerHealthCheck kafka,
     IOptions<EngagementStoreOptions> engagementOptions,
+    SchemaRegistry registry,
+    IRecordStoreSchemaManager storeRoles,
     IMemoryCache cache) =>
 {
     if (cache.TryGetValue("health-composite", out IResult? cached))
@@ -566,24 +597,38 @@ app.MapGet("/health", async (
     // (never creates one), and Kafka's PingAsync reads broker metadata (never produces). None of
     // the four performs a write; do not reintroduce one here.
     var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
+    // CSR round 12 §6.3. The worker grants the api's login its privileges at startup, so an api can
+    // be up before they exist. Readiness waits for them; for the login's iverson_runtime membership,
+    // probed with the same SET LOCAL ROLE the api's startup runs, in a transaction that is rolled
+    // back; and for the registry's first load, which the api retries in the background instead of
+    // crash-looping. A read, a rolled-back role switch and a flag, so the endpoint stays passive,
+    // and all three sit behind the 2 s cache below. For the worker all three hold once its own
+    // startup has run: it owns the tables and is a member of iverson_runtime.
+    var grantsTask = db.QuerySingleOrDefaultAsync<bool>(ApiLoginGrants.ReadinessProbeSql).ContinueWith(t => t.IsCompletedSuccessfully && t.Result);
+    var roleTask   = storeRoles.EnsureCanEnterRuntimeRoleAsync().ContinueWith(t => t.IsCompletedSuccessfully);
     var srTask     = sr.CheckHealthAsync();
     var vectorTask = vector.PingAsync();
     var kafkaTask  = kafka.PingAsync();
 
-    await Task.WhenAll(pgTask, srTask, vectorTask, kafkaTask);
+    await Task.WhenAll(pgTask, grantsTask, roleTask, srTask, vectorTask, kafkaTask);
 
     var srStatus = await srTask;
     var engagementEnabled = engagementOptions.Value.Enabled;
+    var registryLoaded = registry.HasLoaded;
     var checks = new
     {
-        postgres  = pgTask.Result,
-        starrocks = engagementEnabled ? (object)(srStatus == EngagementHealthStatus.Healthy) : "disabled",
-        qdrant    = vectorTask.Result,
-        kafka     = kafkaTask.Result
+        postgres    = pgTask.Result,
+        apiGrants   = grantsTask.Result,
+        runtimeRole = roleTask.Result,
+        registry    = registryLoaded,
+        starrocks   = engagementEnabled ? (object)(srStatus == EngagementHealthStatus.Healthy) : "disabled",
+        qdrant      = vectorTask.Result,
+        kafka       = kafkaTask.Result
     };
 
     var readiness = ReadinessPolicy.Evaluate(
-        pgTask.Result, srStatus, vectorTask.Result, kafkaTask.Result, engagementEnabled);
+        pgTask.Result && grantsTask.Result && roleTask.Result && registryLoaded,
+        srStatus, vectorTask.Result, kafkaTask.Result, engagementEnabled);
 
     var result = readiness.Ready
         ? Results.Ok(new { status = readiness.FullyHealthy ? "healthy" : "degraded", checks })
@@ -598,7 +643,7 @@ app.MapGet("/health", async (
 
 app.MapPost("/admin/reconcile/{typeName}", async (
     string typeName,
-    Iverson.Api.Reconciliation.ReconciliationService reconciliation,
+    Iverson.Api.PrivilegedRequests.PrivilegedRequestClient privileged,
     AuditLog audit,
     HttpContext httpContext) =>
 {
@@ -612,12 +657,19 @@ app.MapPost("/admin/reconcile/{typeName}", async (
     if (!isOperator)
         return Results.Forbid();
 
-    var count = await reconciliation.ReconcileTypeAsync(typeName, httpContext.RequestAborted);
-    if (count is null)
-        return Results.NotFound(new { error = $"No schema registered for '{typeName}'" });
-
-    audit.AdminOperation(httpContext.User, "Reconcile", typeName);
-    return Results.Ok(new { reconciledCount = count, typeName });
+    // CSR round 12 §5.2: the reconcile reads every tenant's rows under the maintenance role, so it
+    // runs in the worker. It is idempotent, so the request never expires: past the wait the worker
+    // still completes it, and the caller gets 202 with the request id. The request's abort ends
+    // only this wait, never the reconcile.
+    return await RunPrivilegedAdminRequestAsync(
+        privileged,
+        Iverson.Api.PrivilegedRequests.PrivilegedRequestKinds.ReconcileType,
+        JsonSerializer.Serialize(new Iverson.Api.PrivilegedRequests.ReconcileTypePayload(typeName), SchemaRegistry.JsonOptions),
+        actingUserResult.Principal.FindFirst("tenant_id")?.Value,
+        privileged.Waits.Reconcile,
+        () => audit.AdminOperation(httpContext.User, "Reconcile", typeName),
+        result => Results.Ok(new { reconciledCount = result.Count, typeName }),
+        httpContext.RequestAborted);
 }).WithName("Reconcile").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
@@ -656,7 +708,7 @@ app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantS
     return Results.Ok(visible);
 }).WithName("ListDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
-app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEventProducer events, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
+app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, Iverson.Api.PrivilegedRequests.PrivilegedRequestClient privileged, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
 {
     var actingUserResult = await httpContext.AuthenticateAsync("ActingUser");
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
@@ -682,17 +734,25 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
     if (string.IsNullOrEmpty(actingTenantId) && !isOperator)
         return Results.Forbid();
 
-    var row = await dlq.GetUnreplayedByIdAsync(id);
+    // The api's checks read the row's tenant and topic only, never MessageValue.
+    var row = await dlq.GetUnreplayedSummaryAsync(id);
     if (row is null) return Results.NotFound(new { error = $"No unreplayed DLQ row with id '{id}'" });
 
     if (row.TenantId != actingTenantId && !(row.TenantId is null && isOperator))
         return Results.Forbid();
 
-    await events.ProduceAsync(row.SourceTopic, row.MessageKey, row.MessageValue);
-    await dlq.MarkReplayedAsync(id);
-    audit.AdminOperation(httpContext.User, "ReplayDlq", id.ToString());
-
-    return Results.Ok(new { replayed = true, id, topic = row.SourceTopic });
+    // CSR round 12 §5.2: the worker produces the message and marks the row replayed, checking
+    // Replayed=false again. The request never expires: a late replay of an unreplayed row is
+    // still the replay that was asked for.
+    return await RunPrivilegedAdminRequestAsync(
+        privileged,
+        Iverson.Api.PrivilegedRequests.PrivilegedRequestKinds.ReplayDlq,
+        JsonSerializer.Serialize(new Iverson.Api.PrivilegedRequests.ReplayDlqPayload(id), SchemaRegistry.JsonOptions),
+        actingTenantId,
+        privileged.Waits.Replay,
+        () => audit.AdminOperation(httpContext.User, "ReplayDlq", id.ToString()),
+        _ => Results.Ok(new { replayed = true, id, topic = row.SourceTopic }),
+        httpContext.RequestAborted);
 }).WithName("ReplayDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 // The admin console's four read-only JSON endpoints, under the same /admin prefix and — for
@@ -721,47 +781,65 @@ catch (Exception ex)
         "Embedding service not initialized at startup; will initialize on first schema registration.");
 }
 var schemaRegistry = app.Services.GetRequiredService<SchemaRegistry>();
-await schemaRegistry.LoadAsync();
+var schemaManager  = app.Services.GetRequiredService<IRecordStoreSchemaManager>();
+
+if (workloadRole == "worker")
+{
+    // CSR round 12 §6.3. All startup DDL and the owner's startup writes run here, in the worker,
+    // which connects as the database owner. WorkerStoreBootstrap creates the plumbing tables,
+    // ensures the entity roles, and grants the api's login what it may do. On Helm that login is a
+    // CNPG managed role that can appear shortly after the worker starts, so the worker waits up to
+    // a minute for it. Compose has no CNPG, and its superuser worker creates the login from
+    // Postgres:ApiLoginPassword.
+    await WorkerStoreBootstrap.RunAsync(
+        schemaManager,
+        app.Services.GetRequiredService<ISchemaRegistryRepository>(),
+        app.Services.GetRequiredService<IEnrichmentStateRepository>(),
+        app.Services.GetRequiredService<IDocumentRerenderQueueRepository>(),
+        app.Services.GetRequiredService<ITokenRevocationRepository>(),
+        cfg["Postgres:ApiLoginPassword"],
+        TimeSpan.FromMinutes(1));
+
+    if (cfg.GetValue("Tenancy:SeedLegacyTenants", false))
+    {
+        var tenantRepository = app.Services.GetRequiredService<ITenantRepository>();
+        foreach (var legacyTenantId in new[] { "tenant_loadtest", "tenant_webtest", "tenant_admin", "tenant_smoke_test", "tenant_bypass" })
+            await tenantRepository.SeedIfMissingAsync(legacyTenantId, legacyTenantId, "active");
+    }
+
+    await schemaRegistry.LoadAsync();
+
+    // Self-heal RLS state for tables whose descriptor was registered before this change shipped —
+    // their physical DDL predates the tenant policy/RLS/grant this schema manager now applies.
+    foreach (var descriptor in schemaRegistry.All.Values)
+        await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
+}
+else
+{
+    // CSR round 12 §6.3. The api runs no DDL, and its role check is only the iverson_runtime probe.
+    // On a fresh install it can start before the worker has created the tables or granted its
+    // login, so a failure here is logged, not thrown. SchemaRefreshWorker retries the load every
+    // 30 s, and /health reports not-ready until the registry has loaded and the login holds its
+    // grants and can enter iverson_runtime (/health repeats this probe).
+    try
+    {
+        await schemaManager.EnsureCanEnterRuntimeRoleAsync();
+        await schemaRegistry.LoadAsync();
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex,
+            "The api's Postgres access is not ready yet, most likely because the worker has not "
+            + "finished its startup. The schema registry load retries in the background, and /health "
+            + "reports not-ready until it succeeds.");
+    }
+}
 
 PopularitySignalValidator.ValidateAtStartup(
     app.Services.GetRequiredService<IOptions<PopularitySignalOptions>>().Value,
     schemaRegistry,
     cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true),
     app.Logger);
-
-// Plumbing table for the enrichment loop breaker — created the same way SchemaRegistry creates
-// its own backing table (SchemaRegistry.LoadAsync → repository.EnsureTableAsync).
-await app.Services.GetRequiredService<IEnrichmentStateRepository>().EnsureTableAsync();
-
-// Plumbing table for the document re-render queue — same bootstrap shape as the enrichment
-// loop breaker above; raw DDL because it needs the two partial unique indexes ApplySchemaAsync
-// cannot express.
-await app.Services.GetRequiredService<IDocumentRerenderQueueRepository>().EnsureTableAsync();
-
-// Token revocations (CSR round-10 #11) — same bootstrap shape: raw DDL, run as the owner role
-// through the plain executor, so no grants are needed.
-await app.Services.GetRequiredService<ITokenRevocationRepository>().EnsureTableAsync();
-
-// EnsureRolesAsync must run before ANY ApplySchemaAsync call, since that DDL now GRANTs to
-// iverson_maintenance on every table (and to iverson_runtime on the tenant-scoped ones) — both
-// roles have to exist first.
-var schemaManager = app.Services.GetRequiredService<IRecordStoreSchemaManager>();
-await schemaManager.EnsureRolesAsync();
-await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
-await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
-await schemaManager.ApplySchemaAsync(Iverson.Api.Tenancy.TenantSchema.Table);
-
-if (cfg.GetValue("Tenancy:SeedLegacyTenants", false))
-{
-    var tenantRepository = app.Services.GetRequiredService<ITenantRepository>();
-    foreach (var legacyTenantId in new[] { "tenant_loadtest", "tenant_webtest", "tenant_admin", "tenant_smoke_test", "tenant_bypass" })
-        await tenantRepository.SeedIfMissingAsync(legacyTenantId, legacyTenantId, "active");
-}
-
-// Self-heal RLS state for tables whose descriptor was registered before this change shipped —
-// their physical DDL predates the tenant policy/RLS/grant this schema manager now applies.
-foreach (var descriptor in schemaRegistry.All.Values)
-    await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
 
 // ── gRPC endpoints ─────────────────────────────────────────────────────────────
 if (workloadRole == "api")
@@ -855,6 +933,47 @@ app.Run();
 // fails accessibility consistency checking (verified empirically) unless Program is public.
 public partial class Program
 {
+    /// <summary>
+    /// The privileged half of <c>/admin/reconcile</c> and <c>/admin/dlq/{id}/replay</c> (CSR round 12
+    /// §5.2): queue the request with no expiry, wait up to <paramref name="wait"/> while it is pending
+    /// or running, and answer what the worker recorded. 202 with the request id when it has recorded
+    /// nothing yet, 404 or 500 with the worker's message when it failed, and <paramref name="ok"/>'s
+    /// answer when it succeeded. The 202 and the success both write the audit entry.
+    /// </summary>
+    internal static async Task<IResult> RunPrivilegedAdminRequestAsync(
+        Iverson.Api.PrivilegedRequests.PrivilegedRequestClient privileged,
+        string kind,
+        string payloadJson,
+        string? requestedBy,
+        TimeSpan wait,
+        Action writeAuditEntry,
+        Func<Iverson.Api.PrivilegedRequests.PrivilegedRequestResult, IResult> ok,
+        CancellationToken ct)
+    {
+        var requestId = await privileged.SubmitAsync(kind, payloadJson, requestedBy, expiresAfter: null);
+        var request = await privileged.WaitWhileAsync(
+            requestId,
+            status => status is PrivilegedRequestStatus.Pending or PrivilegedRequestStatus.Running,
+            wait,
+            ct);
+        var result = Iverson.Api.PrivilegedRequests.PrivilegedRequestResult.From(request);
+
+        if (result is null)
+        {
+            // The entry records the operator's request, not its outcome: the worker records that
+            // later, in the privileged-request row.
+            writeAuditEntry();
+            return Results.Json(new { requestId }, statusCode: StatusCodes.Status202Accepted);
+        }
+        if (result.Code == global::Grpc.Core.StatusCode.NotFound)
+            return Results.NotFound(new { error = result.Message });
+        if (result.Code != global::Grpc.Core.StatusCode.OK)
+            return Results.Json(new { error = result.Message }, statusCode: StatusCodes.Status500InternalServerError);
+
+        writeAuditEntry();
+        return ok(result);
+    }
+
     /// <summary>The post-auth global limiter's partition (CSR round-7 #7, round-10 #3).</summary>
     internal static RateLimitPartition<string> PostAuthPartition(HttpContext ctx, TrustedProxyOptions trustedProxies)
     {

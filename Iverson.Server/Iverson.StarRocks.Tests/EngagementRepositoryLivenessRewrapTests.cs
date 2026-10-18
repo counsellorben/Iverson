@@ -163,8 +163,6 @@ public class EngagementRepositoryLivenessRewrapTests
 
     private static readonly Dictionary<string, Func<Exception>> Exempt = new()
     {
-        ["missing resource: cannot find role"]  = () => CreateMySqlException(MySqlErrorCode.ParseError, "cannot find role role_tenant_x"),
-        ["missing resource: is not granted to"] = () => CreateMySqlException(MySqlErrorCode.ParseError, "Role role_tenant_x is not granted to 'iverson_app'@'%'"),
         ["missing resource: unknown table"]     = () => CreateMySqlException((MySqlErrorCode)5502, "Unknown table 'iverson.articles'"),
         ["library-transient MySqlException"]    = () => CreateMySqlException(MySqlErrorCode.UnableToConnectToHost, "Unable to connect to any of the specified MySQL hosts."),
         ["not a MySqlException"]                = () => new InvalidOperationException("boom"),
@@ -180,6 +178,29 @@ public class EngagementRepositoryLivenessRewrapTests
 
         result.Should().BeNull(name);
         check.Calls.Should().Be(0, name);
+    }
+
+    // CSR round 12 §7.3: no data connection runs SET ROLE any more, so the role errors SET ROLE raised are no
+    // longer the expected empty-tenant shape (an unrecorded tenant is answered before connecting). Should one
+    // occur, it is a real fault and pays the liveness check like any other non-transient failure.
+    public static TheoryData<string> FormerRoleArmCases() => new(FormerRoleArm.Keys);
+
+    private static readonly Dictionary<string, Func<Exception>> FormerRoleArm = new()
+    {
+        ["cannot find role"]  = () => CreateMySqlException(MySqlErrorCode.ParseError, "cannot find role role_tenant_x"),
+        ["is not granted to"] = () => CreateMySqlException(MySqlErrorCode.ParseError, "Role role_tenant_x is not granted to 'iverson_app'@'%'"),
+    };
+
+    [Theory]
+    [MemberData(nameof(FormerRoleArmCases))]
+    public async Task FormerRoleArm_IsNoLongerExempt_AndPaysTheLivenessCheck(string name)
+    {
+        var check = new FakeCheck(_ => Task.FromResult(true));
+
+        var result = await EngagementRepository.RewrapIfBackendUnavailableAsync(FormerRoleArm[name](), check.Invoke, Bound);
+
+        result.Should().BeNull(name);
+        check.Calls.Should().Be(1, name);
     }
 
     private sealed class ProbeFailedException() : Exception("connection refused");

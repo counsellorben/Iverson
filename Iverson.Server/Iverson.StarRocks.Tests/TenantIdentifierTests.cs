@@ -267,4 +267,50 @@ public class TenantIdentifierTests
         // Empty string is not null, so it should be treated as a database name
         TenantIdentifier.Qualify("", "articles").Should().Be("``.`articles`");
     }
+
+    // ── LoginName / LoginPassword (CSR round 12 §7.1) ──────────────────────────────────────────
+
+    [Fact]
+    public void LoginName_IsThePrefixPlusTheRoleNamesFingerprint()
+    {
+        // The fingerprint of "acme" was computed outside .NET (SHA-256, low 128 bits, 25 base-36 digits).
+        TenantIdentifier.LoginName("acme").Should().Be("iverson_t_7pfddyte668561tz83en42m5m");
+        TenantIdentifier.RoleName("acme").Should().EndWith("_7pfddyte668561tz83en42m5m");
+    }
+
+    [Theory]
+    [InlineData("a")]
+    [InlineData("tenant-bypass")]
+    [InlineData("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")]   // 52 characters, the maximum
+    public void LoginName_Is35Characters_WithNoHyphen(string tenantId)
+    {
+        var login = TenantIdentifier.LoginName(tenantId);
+
+        login.Should().HaveLength(35);
+        login.Should().MatchRegex("^iverson_t_[0-9a-z]{25}$");
+    }
+
+    [Fact]
+    public void LoginName_KeepsApartTenantsTheReadableRolePartCollapses()
+    {
+        TenantIdentifier.LoginName("a-b").Should().NotBe(TenantIdentifier.LoginName("a_b"));
+    }
+
+    [Fact]
+    public void LoginPassword_IsTheHexHmacOfTheTenantIdUnderTheKey()
+    {
+        // HMAC-SHA256 under the UTF-8 key "test-tenant-login-key" of "starrocks-tenant:acme", computed outside .NET.
+        TenantIdentifier.LoginPassword("acme", "test-tenant-login-key")
+            .Should().Be("401cfbf7dd97a41c7b4d514d4c625ddb59f3789a8c91cec743ac4451c30c1aa3");
+    }
+
+    [Fact]
+    public void LoginPassword_Is64LowerCaseHexCharacters_AndDependsOnTheKeyAndTheTenant()
+    {
+        var password = TenantIdentifier.LoginPassword("acme", "k1");
+
+        password.Should().MatchRegex("^[0-9a-f]{64}$");
+        password.Should().NotBe(TenantIdentifier.LoginPassword("acme", "k2"));
+        password.Should().NotBe(TenantIdentifier.LoginPassword("acme-2", "k1"));
+    }
 }

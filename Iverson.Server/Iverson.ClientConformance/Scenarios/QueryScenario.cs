@@ -12,7 +12,7 @@ namespace Iverson.ClientConformance.Scenarios;
 /// The shape follows S4 interop's, for the same reason: the subject is one shared type
 /// (<c>QueryDoc</c>) that every language writes into and every language then queries, so
 /// disagreement between two client libraries is observable. Only the .NET driver ever runs the
-/// register phase — <c>SchemaRegistry.RegisterAsync</c> replaces the stored descriptor wholesale,
+/// register phase — the worker's registration write replaces the stored descriptor wholesale,
 /// so five registrations of the same type name would leave four silent overwrites — and the
 /// orchestrator re-registers the reported descriptor once with an authorization block before any
 /// write, without which every seeded write is denied

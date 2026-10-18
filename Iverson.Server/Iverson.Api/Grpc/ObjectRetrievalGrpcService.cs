@@ -109,15 +109,16 @@ public sealed class ObjectRetrievalGrpcService(
                 throw new RpcException(new Status(StatusCode.InvalidArgument, $"Key '{key}' is not a valid GUID."));
         }
 
+        // CSR round 12 §6.4. Every loaded descriptor has a tenant column, and every non-denied
+        // decision carries it, so this never fires. If it ever did, the read is refused rather than
+        // run across tenants: the api never enters BYPASSRLS.
+        if (decision.TenantColumn is null)
+            throw new RpcException(new Status(StatusCode.Internal, "The type declares no tenant boundary."));
+
         var rows = await _entities.FetchManyByKeysAsync(
             SchemaBuilder.ToTableSchema(schema),
             keys,
-            // A type that declares no tenant column carries no RLS policy and no iverson_runtime
-            // grant, so a tenant-scoped read of it would be 42501, not a filtered read — and an
-            // unfiltered read of a type with no tenant column IS cross-tenant. Say so explicitly.
-            decision.TenantColumn is not null
-                ? EntityAccess.ForTenant(decision.TenantValue)
-                : EntityAccess.CrossTenantMaintenance);
+            EntityAccess.ForTenant(decision.TenantValue));
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
 
         foreach (var key in keys)

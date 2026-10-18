@@ -250,7 +250,7 @@ It keeps only `OPERATE ON SYSTEM`, for `/health`, the readiness gate and the pos
 
 ### 7.5 Revoke
 
-**Revoke:** `job-create-user.yaml` (post-install and post-upgrade, as root, after the rollout) revokes every role still granted to `iverson_app`, which after this change should hold none. It parses `SHOW GRANTS FOR 'iverson_app'@'%'`, which covers the hashed and the legacy verbatim role names. Old pods are gone by then, so there's no window of empty results, dead-lettered writes or re-grants. Compose has no hooks: its `starrocks-init` runs the same revoke, and the compose worker starts before the api.
+**Revoke:** `job-create-user.yaml` (post-install and post-upgrade, as root, after the rollout) revokes every role still granted to `iverson_app`, which after this change should hold none. It parses `SHOW GRANTS FOR 'iverson_app'@'%'`, which covers the hashed and the legacy verbatim role names. Under `helm upgrade --wait`, a pod of the previous release may still be running or terminating when the hook runs, because Helm counts the new ReplicaSet's readiness against the rollout's allowed unavailability (the default rolling update allows 25%). An old worker that provisions a brand-new tenant in that window re-grants that tenant's role to `iverson_app`; re-running the upgrade or the hook revokes it (§10). Compose has no hooks: its `starrocks-init` runs the same revoke, and the compose worker starts before the api.
 
 There is no backfill. No stack holds StarRocks tenant data from before round 12 (user decision, CDR-1 §3.1), so every tenant's login is created by its first provisioning; an existing dev stack starts StarRocks fresh.
 
@@ -309,6 +309,7 @@ There is no backfill. No stack holds StarRocks tenant data from before round 12 
 - **FE connections** grow with concurrently active tenants: at most 10 per tenant per pod, against 4,096 per FE and a per-user default of 1,024.
 - **The StarRocks tenant key must not change** on a stack with tenant logins: provisioning only creates missing logins, so a rotated key locks out every existing tenant until each login is re-keyed by hand (runbook).
 - **Chunk points written before this change** for a type whose owner field was spelled unlike its column keep the old owner key, so owner-scoped SearchChunks finds nothing for them until they are re-ingested. No stack holds such data.
+- **The revoke hook's remaining `--wait` window.** Under `helm upgrade --wait` the hook can run while a pod of the previous release is still running or terminating. An old worker that provisions a brand-new tenant then re-grants that tenant's role to `iverson_app`, and nothing reports it. Re-running the upgrade or the hook revokes the role.
 - **The `stack.py query` benchmark tier** starts the api without the worker, so it needs a volume where a full stack has run once (runbook).
 - **Release notes** (the size guard, registration needing a worker, the tenant key) live in the runbook; the repository has no changelog.
 

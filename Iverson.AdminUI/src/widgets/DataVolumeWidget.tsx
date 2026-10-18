@@ -39,6 +39,8 @@ export function describeDataVolumeReason(reason: string | null): string {
       return "The engagement store is disabled in this deployment, so there are no row counts to report.";
     case "notReady":
       return "The engagement store is not ready yet. Try refreshing shortly.";
+    case "busy":
+      return "This tenant's StarRocks connections are all in use. Try refreshing shortly.";
     default:
       return reason === null ? "Currently unavailable." : `Currently unavailable: ${reason}.`;
   }

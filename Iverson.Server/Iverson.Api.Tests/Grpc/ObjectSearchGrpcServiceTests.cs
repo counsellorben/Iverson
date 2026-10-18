@@ -793,6 +793,64 @@ public class ObjectSearchGrpcServiceTests
         response.Results.Should().HaveCount(3);
     }
 
+    // CSR round 12 §7.2: every spec of one request runs as the same tenant, whose pool holds ten connections
+    // per process, so at most four run at once. Every stub call parks on one gate, so no slot frees while it is
+    // shut: four calls start and then nothing more, however slow the machine. With no cap all ten would start,
+    // and with a cap of five a fifth would.
+    [Fact]
+    public async Task Aggregate_WithMoreSpecsThanTheCap_RunsAtMostFourAtOnce_AndKeepsTheirOrder()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var started = 0;
+        var running = 0;
+        var peak = 0;
+        var peakLock = new object();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fourStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(call => RunOneAsync(call.ArgAt<AggregationDescriptor>(2)));
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        for (var i = 0; i < 10; i++)
+            request.Aggregations.Add(new AggregationSpec { Name = $"a{i}", Field = "Name", Type = AggregationType.Terms });
+
+        var aggregate = _sut.Aggregate(request, TestServerCallContext.Create());
+
+        // A failed assertion opens the gate on its way out, so no call stays parked behind it.
+        try
+        {
+            await fourStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            System.Threading.Volatile.Read(ref started).Should().Be(4);
+            aggregate.IsCompleted.Should().BeFalse();
+
+            gate.SetResult();
+            var response = await aggregate.WaitAsync(TimeSpan.FromSeconds(10));
+
+            started.Should().Be(10);
+            peak.Should().Be(4);
+            response.Results.Select(r => r.Name).Should().Equal(Enumerable.Range(0, 10).Select(i => $"a{i}"));
+        }
+        finally
+        {
+            gate.TrySetResult();
+        }
+
+        async Task<SrAggResult?> RunOneAsync(AggregationDescriptor spec)
+        {
+            if (System.Threading.Interlocked.Increment(ref started) == 4) fourStarted.SetResult();
+            var now = System.Threading.Interlocked.Increment(ref running);
+            lock (peakLock) peak = Math.Max(peak, now);
+            await gate.Task;
+            System.Threading.Interlocked.Decrement(ref running);
+            return new SrAggResult(spec.Name, AggregationKind.Terms);
+        }
+    }
+
     // ── Aggregate — authorization ───────────────────────────────────────────────
     //
     // Reject-on-reference for spec.Field/GroupByFields/Expression is StarRocksQueryBuilder's
@@ -2385,6 +2443,231 @@ public class ObjectSearchGrpcServiceTests
             .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
     }
 
+    // CSR round 12 §7.3: a recorded tenant whose StarRocks login is refused surfaces from EngagementRepository
+    // as EngagementNotReadyException (StarRocksTenantLoginIntegrationTests). Every read RPC must answer it with
+    // Unavailable, not Unknown; Pipeline and MatchPattern are pinned above and in MatchPatternGrpcServiceTests.
+    private const string TenantLoginRefused = "StarRocks refused the tenant's login.";
+
+    [Fact]
+    public async Task Search_TenantLoginRefused_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.SearchAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementNotReadyException(TenantLoginRefused));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+    }
+
+    [Fact]
+    public async Task Aggregate_TenantLoginRefused_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<SrAggResult?>>(_ => throw new EngagementNotReadyException(TenantLoginRefused));
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Aggregations.Add(new AggregationSpec { Name = "name_terms", Type = AggregationType.Terms, Field = "Name" });
+        var act = async () => await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+    }
+
+    [Fact]
+    public async Task GroupBy_TenantLoginRefused_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+        _search.GroupByAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementNotReadyException(TenantLoginRefused));
+
+        var request = new GroupByRequest { TypeName = "Owned", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+    }
+
+    // CSR round 12 §7.2: each tenant's StarRocks pool holds at most 10 connections per process, and a full one is
+    // kept out of the breaker and the retry, so it reaches the read RPCs as MySqlConnector's raw exception. It must
+    // answer as a retryable Unavailable with a fixed message, not Unknown.
+    internal const string TenantPoolFull =
+        "StarRocks is busy: every connection this tenant may hold in this process is in use. Retry shortly.";
+
+    [Fact]
+    public async Task Search_TenantPoolFull_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.SearchAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw MySqlExceptions.PoolExhausted());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
+    [Fact]
+    public async Task Aggregate_TenantPoolFull_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.AggregateAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<SrAggResult?>>(_ => throw MySqlExceptions.PoolExhausted());
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Aggregations.Add(new AggregationSpec { Name = "name_terms", Type = AggregationType.Terms, Field = "Name" });
+        var act = async () => await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
+    [Fact]
+    public async Task GroupBy_TenantPoolFull_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+        _search.GroupByAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw MySqlExceptions.PoolExhausted());
+
+        var request = new GroupByRequest { TypeName = "Owned", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
+    [Fact]
+    public async Task Pipeline_TenantPoolFull_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
+        _search.PipelineAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw MySqlExceptions.PoolExhausted());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Pipeline(new PipelineRequest { TypeName = "Article" }, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
+    // The store's rows are buffered today, but the mappings cover their enumeration too: a result the store
+    // enumerated lazily, failing on its first row, must answer exactly as a failure of the call itself.
+    private static IEnumerable<dynamic> RowsThatFailOnEnumeration(Exception failure)
+    {
+        if (failure is not null) throw failure;
+        yield break;
+    }
+
+    [Fact]
+    public async Task Search_TenantPoolFullWhileItsRowsAreEnumerated_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.SearchAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(_ => Task.FromResult(RowsThatFailOnEnumeration(MySqlExceptions.PoolExhausted())));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
+    [Fact]
+    public async Task GroupBy_NotReadyWhileItsRowsAreEnumerated_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+        _search.GroupByAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(_ => Task.FromResult(RowsThatFailOnEnumeration(new EngagementNotReadyException("backends still starting"))));
+
+        var request = new GroupByRequest { TypeName = "Owned", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be("StarRocks is not ready: backends still starting");
+    }
+
+    [Fact]
+    public async Task Pipeline_TenantPoolFullWhileItsRowsAreEnumerated_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
+        _search.PipelineAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(_ => Task.FromResult(RowsThatFailOnEnumeration(MySqlExceptions.PoolExhausted())));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Pipeline(new PipelineRequest { TypeName = "Article" }, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
+    [Fact]
+    public async Task Search_ConnectTimeoutThatIsNotAFullPool_StillPropagates()
+    {
+        // The mapping is for a full pool only: a real connect timeout carries the same error code without the
+        // pool suffix, and keeps its existing path (it is the breaker's business, not a busy tenant's).
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var connectTimeout = MySqlExceptions.Create(
+            MySqlConnector.MySqlErrorCode.UnableToConnectToHost, "Unable to connect to any of the specified MySQL hosts.");
+        _search.SearchAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw connectTimeout);
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<MySqlConnector.MySqlException>()).Which.Should().BeSameAs(connectTimeout);
+    }
+
     [Fact]
     public async Task Pipeline_EngagementStoreDisabled_ThrowsFailedPrecondition()
     {
@@ -2730,13 +3013,14 @@ public class ObjectSearchGrpcServiceTests
     }
 
     // FIX 3 regression: neither centroid nor decay can be present (ArticleSchema, Title is
-    // embedding-only and the schema has no timestamp metadata column) but a PopularitySignalEntry
-    // IS configured for the type — popularityPossible must alone keep rerankIsIdentity false and
-    // preserve the 4x over-fetch, exactly like the decay-only case above does for decayField.
+    // embedding-only and the schema has no timestamp metadata column) but an eligible
+    // PopularitySignalEntry IS configured for the type — the popularity signal must alone keep
+    // rerankIsIdentity false and preserve the 4x over-fetch, exactly like the decay-only case above
+    // does for decayField.
     [Fact]
     public async Task SearchSimilar_NoCentroidOrDecayButPopularityConfigured_StillOverFetchesFourTimesTopK()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         var sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _resolver,
@@ -2832,7 +3116,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task SearchSimilar_PopularityRecencyBoostZero_IgnoresBucketSeriesEntirely()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
         var sut = new ObjectSearchGrpcService(
@@ -2889,7 +3173,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task SearchSimilar_PopularityRecencyBoostPositive_RanksRecentSeriesAboveEqualCountAncientSeries()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         var sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _resolver,
@@ -2949,7 +3233,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task SearchSimilar_PopularityMissingBucketsKeyWithRecencyBoostEnabled_UsesPlainCountFormula()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
         var sut = new ObjectSearchGrpcService(
@@ -3008,7 +3292,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task SearchChunks_PopularityRecencyBoostZero_IgnoresBucketSeriesEntirely()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
         var sut = new ObjectSearchGrpcService(
@@ -3073,7 +3357,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task SearchChunks_PopularityMissingBucketsKeyWithRecencyBoostEnabled_UsesPlainCountFormula()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
 
         const double wBase = 0.45, wPopularity = 5.0, saturationPoint = 100.0;
         var sut = new ObjectSearchGrpcService(
@@ -4729,7 +5013,7 @@ public class ObjectSearchGrpcServiceTests
 
         popularity!.Signals = [new PopularitySignalEntry("Article", "Author")];
         popularity.SaturationPoint = 100.0;
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
         var sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _resolver,
             NullLogger<ObjectSearchGrpcService>.Instance,
@@ -4785,7 +5069,7 @@ public class ObjectSearchGrpcServiceTests
 
         popularity!.Signals = [new PopularitySignalEntry("Article", "Author")];
         popularity.SaturationPoint = 100.0;
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await RegisterArticleCountingAuthorsAsync();
         var sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _resolver,
             NullLogger<ObjectSearchGrpcService>.Instance,
@@ -4829,5 +5113,298 @@ public class ObjectSearchGrpcServiceTests
         // The recency term was actually computed: popularity ≈ 1 lifts the fused score far above what
         // the parent's lifetime count of 5 alone would give.
         written[0].Score.Should().BeGreaterThan(0.9f);
+    }
+
+    // ── CSR round 12 #8: popularity is ranked on only when eligible ──────────────
+
+    // SchemaFixtures.ArticleSchema declares "Author" as ManyToOne, and a signal over a relation that
+    // is not OneToMany, or whose child is not registered, is never eligible. The popularity tests in
+    // this class configure ("Article", "Author") and plant "authorCount"/"authorCountBuckets" payload
+    // keys, so this re-declares that relation as OneToMany and registers its Author child. The
+    // default child carries the same bypass role as Article, so every Article reader can read every
+    // counted row and the signal is eligible. Pass a child with other read rules to make it
+    // ineligible.
+    private async Task RegisterArticleCountingAuthorsAsync(SchemaDescriptor? author = null)
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with
+        {
+            Relations =
+            [
+                new Iverson.Api.Schema.RelationDescriptor(
+                    "Author", Iverson.Api.Schema.RelationKind.OneToMany, "Author", "ArticleId")
+            ]
+        });
+        await _registry.RegisterAsync(author ?? SchemaFixtures.AuthorSchema());
+    }
+
+    // Every Article reader holds "test-bypass"; this child's rows are readable only by "editors".
+    private static SchemaDescriptor AuthorReadableOnlyByEditors() => SchemaFixtures.AuthorSchema() with
+    {
+        Authorization = new Iverson.Api.Schema.AuthorizationRules(
+            null, new List<Iverson.Api.Schema.RowPermission> { new("editors", true, true, true) }, [])
+    };
+
+    // The signal is configured but not eligible: a caller who can read an Article could not read
+    // every Author row it counts. It is not ranked on (the score is the base score), and it does
+    // not keep the over-fetch alive either (exactly top_k is fetched).
+    [Fact]
+    public async Task SearchSimilar_PopularitySignalNotEligible_IsNotRankedOn()
+    {
+        await RegisterArticleCountingAuthorsAsync(AuthorReadableOnlyByEditors());
+
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WBase = 0.45, WPopularity = 5.0 })),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions
+            {
+                Signals         = [new PopularitySignalEntry("Article", "Author")],
+                SaturationPoint = 100.0
+            }),
+            EngagementQueryLimitOptions.Default);
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.80, new Dictionary<string, string> { ["title"] = "a1", ["authorCount"] = "7" })
+        };
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        CapturedLimit(_vector).Should().Be(1);
+        written.Should().HaveCount(1);
+        written[0].Score.Should().Be(0.80f);
+    }
+
+    // The chunk path's batched popularity lookup follows the same predicate: an ineligible signal
+    // never even reads the parents' payloads.
+    [Fact]
+    public async Task SearchChunks_PopularitySignalNotEligible_IsNotRankedOn()
+    {
+        await RegisterArticleCountingAuthorsAsync(AuthorReadableOnlyByEditors());
+
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _resolver,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions { WBase = 0.45, WPopularity = 5.0 })),
+            new ResultDiversifier(),
+            Options.Create(new VectorRankingOptions { LambdaSimilar = 0.70, LambdaChunks = 0.70 }),
+            Options.Create(new DecayOptions()),
+            Options.Create(new PopularitySignalOptions
+            {
+                Signals         = [new PopularitySignalEntry("Article", "Author")],
+                SaturationPoint = 100.0
+            }),
+            EngagementQueryLimitOptions.Default);
+
+        var queryVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
+        const string parent = "parent-1";
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   new(1, 0.70, new Dictionary<string, string> { ["text"] = "c1", ["parent_id"] = parent })
+               }.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
+        _vector.RetrievePayloadAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
+                   new Dictionary<ulong, IReadOnlyDictionary<string, string>>
+                   {
+                       [InvokeKeyToUlong(parent)] = new Dictionary<string, string> { ["authorCount"] = "9" }
+                   });
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Score.Should().Be(0.70f);
+        await _vector.DidNotReceiveWithAnyArgs().RetrievePayloadAsync(default!, default!);
+    }
+
+    // SearchSimilar builds each response object from an allow-list: the descriptor's columns plus the
+    // identity key. A count the worker wrote onto the point, its bucket series, and a key left over
+    // from a since-removed column or signal are all dropped, never passed through.
+    [Fact]
+    public async Task SearchSimilar_StreamsOnlyDescriptorColumnsAndTheKey()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.80, new Dictionary<string, string>
+            {
+                ["key"]                  = "article-1",
+                ["title"]                = "a1",
+                ["authorCount"]          = "7",
+                ["authorCountBuckets"]   = "2026-01:7",
+                ["retiredColumn"]        = "left over"
+            })
+        };
+        _vector.SearchNamedAsync("articles_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Keys.Should().BeEquivalentTo(["Id", "Title"]);
+    }
+
+    // ── CSR round 12 #9: decay only from a readable decay column ─────────────────
+
+    // Rows of every caller in this class are readable through "test-bypass", but PublishedAt is
+    // readable only by "editors", so the caller's AllowedFields excludes the decay column.
+    private static Iverson.Api.Schema.AuthorizationRules DecayColumnReadableOnlyByEditors() => new(
+        null,
+        new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+        new List<Iverson.Api.Schema.FieldPermission> { new("PublishedAt", ["editors"], []) });
+
+    private static VectorSearchResult DatedChunk(ulong id, double score, string parentKey, DateTimeOffset publishedAt) =>
+        new(id, score, new Dictionary<string, string>
+        {
+            ["text"]        = $"chunk-of-{parentKey}",
+            ["parent_id"]   = parentKey,
+            ["publishedAt"] = publishedAt.ToString("O")
+        });
+
+    // Two candidates with the same base score whose timestamps are a year apart. Decay would separate
+    // them and so reveal the order of a column the caller cannot read. With decay disabled, and no
+    // centroid or popularity signal, the fused score is exactly the base score (ResultReranker's
+    // no-other-signal short circuit), so both score 0.80.
+    [Fact]
+    public async Task SearchSimilar_CallerDeniedTheDecayColumn_ScoresAsWithDecayDisabled()
+    {
+        await _registry.RegisterAsync(EmbeddingOnlyWithDecaySchema() with { Authorization = DecayColumnReadableOnlyByEditors() });
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        var now = DateTimeOffset.UtcNow;
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.80, new Dictionary<string, string> { ["title"] = "fresh", ["publishedAt"] = now.ToString("O") }),
+            new(2, 0.80, new Dictionary<string, string> { ["title"] = "old", ["publishedAt"] = now.AddDays(-365).ToString("O") })
+        };
+        _vector.SearchNamedAsync("dated_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Dated", Property = "Title", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written.Select(w => w.Score).Should().Equal(0.80f, 0.80f);
+    }
+
+    [Fact]
+    public async Task SearchChunks_CallerDeniedTheDecayColumn_ScoresAsWithDecayDisabled()
+    {
+        await _registry.RegisterAsync(DualAnnotatedWithDecaySchema() with { Authorization = DecayColumnReadableOnlyByEditors() });
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubNoCentroids();
+        var now = DateTimeOffset.UtcNow;
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   DatedChunk(1, 0.70, "parent-fresh", now),
+                   DatedChunk(2, 0.70, "parent-old", now.AddDays(-365))
+               }.AsReadOnly());
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written.Select(w => w.Score).Should().Equal(0.70f, 0.70f);
+    }
+
+    // SearchSimilar routed via chunks shares SearchChunksFusedAsync with SearchChunks; pinned through
+    // its own entry point all the same.
+    [Fact]
+    public async Task SearchSimilar_RoutedViaChunks_CallerDeniedTheDecayColumn_ScoresAsWithDecayDisabled()
+    {
+        await _registry.RegisterAsync(DualAnnotatedWithDecaySchema() with { Authorization = DecayColumnReadableOnlyByEditors() });
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        StubChunkDensity(objectCount: 10, chunkCount: 13);
+        StubNoCentroids();
+        var now = DateTimeOffset.UtcNow;
+        _vector.SearchNamedAsync("docs_chunks_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   DatedChunk(1, 0.90, "parent-fresh", now),
+                   DatedChunk(2, 0.90, "parent-old", now.AddDays(-365))
+               }.AsReadOnly());
+        _vector.RetrievePayloadAsync("docs_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", Arg.Any<IReadOnlyList<ulong>>())
+               .Returns((IReadOnlyDictionary<ulong, IReadOnlyDictionary<string, string>>)
+                   ParentPayloads(["parent-fresh", "parent-old"]));
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await RoutedSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written.Select(w => w.Score).Should().Equal(0.90f, 0.90f);
+    }
+
+    // Controller-requested addition (pre-flight coverage gap). The caller's field permissions DO
+    // restrict a field ("Secret"), but the decay column is not among the restricted ones, so
+    // AllowedFields is non-null and still contains it: decay must still apply. The same two
+    // candidates as the denied-column test now separate, fresh above old.
+    [Fact]
+    public async Task SearchSimilar_CallerWithRestrictedFieldsWhoCanReadTheDecayColumn_StillAppliesDecay()
+    {
+        var dated = EmbeddingOnlyWithDecaySchema();
+        await _registry.RegisterAsync(dated with
+        {
+            ScalarColumns = [.. dated.ScalarColumns, new ColumnDescriptor("Secret", "text", true)],
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission> { new("Secret", ["editors"], []) })
+        });
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        var now = DateTimeOffset.UtcNow;
+        var results = new List<VectorSearchResult>
+        {
+            new(2, 0.80, new Dictionary<string, string> { ["title"] = "old", ["publishedAt"] = now.AddDays(-365).ToString("O") }),
+            new(1, 0.80, new Dictionary<string, string> { ["title"] = "fresh", ["publishedAt"] = now.ToString("O") })
+        };
+        _vector.SearchNamedAsync("dated_test_tenant_dwsdnzpm8ad7tqdkswqfpfec1", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Dated", Property = "Title", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written[0].Data.Fields["Title"].StringValue.Should().Be("fresh");
+        written[0].Score.Should().BeGreaterThan(written[1].Score);
     }
 }

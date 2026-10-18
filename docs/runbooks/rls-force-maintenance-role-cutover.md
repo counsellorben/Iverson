@@ -2,14 +2,14 @@
 
 **Why:** CSR round-3 finding #5 made two changes that a **populated kubernetes deployment** cannot
 absorb on its own. Entity tables now get `ALTER TABLE … FORCE ROW LEVEL SECURITY`, so the tables'
-owner — which is what the api connects as — is no longer exempt from its own tenant-isolation
-policy; and every entity-table access now runs under one of two explicit non-login roles,
+owner — which the worker connects as (and the api did, until CSR round 12) — is no longer exempt
+from its own tenant-isolation policy; and every entity-table access now runs under one of two explicit non-login roles,
 `iverson_runtime` (RLS-enforced) or the new `iverson_maintenance` (`BYPASSRLS`, for the
 deliberately cross-tenant reconciliation and tenant/owner re-derivation paths).
 
 `iverson_maintenance` is created by the CNPG cluster's `bootstrap.initdb.postInitApplicationSQL`
 (`charts/postgres/templates/cluster.yaml`) — **which runs once, at initdb, and never again.** On an
-already-initialised cluster the role simply will not exist, and the api cannot create it itself:
+already-initialised cluster the role simply will not exist, and the worker cannot create it itself:
 `enableSuperuserAccess: false` means the app user has neither `CREATEROLE` nor the right to grant
 `BYPASSRLS`.
 

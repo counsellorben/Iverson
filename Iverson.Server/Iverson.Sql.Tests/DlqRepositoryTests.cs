@@ -54,6 +54,22 @@ public class DlqRepositoryTests
     }
 
     [Fact]
+    public async Task GetUnreplayedSummaryAsync_ReadsTopicAndTenantOnly_NeverTheMessage()
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        sql.QuerySingleOrDefaultAsync<DlqReplayCheckRow>(Arg.Any<string>(), Arg.Any<object?>())
+           .Returns(new DlqReplayCheckRow("t", "tenant-a"));
+        var repo = new DlqRepository(TableName, sql);
+
+        var result = await repo.GetUnreplayedSummaryAsync(Guid.NewGuid());
+
+        result.Should().Be(new DlqReplayCheckRow("t", "tenant-a"));
+        await sql.Received(1).QuerySingleOrDefaultAsync<DlqReplayCheckRow>(
+            Arg.Is<string>(s => s.Contains("\"Id\" = @Id AND \"Replayed\" = false") && !s.Contains("MessageValue")),
+            Arg.Any<object?>());
+    }
+
+    [Fact]
     public async Task MarkReplayedAsync_SetsReplayedTrueById()
     {
         var sql = Substitute.For<IRecordStoreQueryExecutor>();

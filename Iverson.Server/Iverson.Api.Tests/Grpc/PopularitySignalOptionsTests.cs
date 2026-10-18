@@ -442,4 +442,63 @@ public class PopularitySignalOptionsTests
 
         act.Should().NotThrow();
     }
+
+    // CSR round 12 #8: the worker writes the count onto the parent's own point under
+    // "{relation camelCase}Count" and "…CountBuckets", and SearchSimilar maps a payload key onto
+    // the column whose camelCase name it equals. A parent column with either name would be
+    // overwritten by the count, and would return it to every reader of that column. Matched
+    // case-insensitively.
+    [Theory]
+    [InlineData("CommentsCount")]
+    [InlineData("commentscountbuckets")]
+    public async Task ValidateAtStartup_SignalKeyMatchingAParentColumn_Throws(string columnName)
+    {
+        var article = MinimalSchema(
+            "Article",
+            vectorFields: [new VectorDescriptor("Title", 768, "nomic-embed-text")],
+            relations: [new RelationDescriptor("Comments", RelationKind.OneToMany, "Comment", "ArticleId")])
+            with { ScalarColumns = [new ColumnDescriptor(columnName, "BIGINT", true)] };
+        var comment = MinimalSchema(
+            "Comment",
+            relations: [new RelationDescriptor("Article", RelationKind.ManyToOne, "Article", "ArticleId")]);
+        var registry = await RegistryWith(article, comment);
+        var options = OptionsWith("Article", "Comments");
+
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, NullLogger.Instance);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage($"*'{columnName}'*'Comments'*");
+    }
+
+    // An ineligible signal (here an owner-scoped parent, read by any caller in the tenant) is not a
+    // misconfiguration that stops the process: it is skipped at runtime, and said so once here.
+    [Fact]
+    public async Task ValidateAtStartup_SignalNotEligible_WarnsAndDoesNotThrow()
+    {
+        var bypass = new AuthorizationRules(null, [new RowPermission("readers", true, false, false)], []);
+        var article = MinimalSchema(
+            "Article",
+            vectorFields: [new VectorDescriptor("Title", 768, "nomic-embed-text")],
+            relations: [new RelationDescriptor("Comments", RelationKind.OneToMany, "Comment", "ArticleId")])
+            with { Authorization = bypass with { OwnerField = "AuthorId" } };
+        var comment = MinimalSchema(
+            "Comment",
+            relations: [new RelationDescriptor("Article", RelationKind.ManyToOne, "Article", "ArticleId")])
+            with { Authorization = bypass };
+        var registry = await RegistryWith(article, comment);
+        var options = OptionsWith("Article", "Comments");
+        var logger = Substitute.For<ILogger>();
+
+        var act = () => PopularitySignalValidator.ValidateAtStartup(
+            options, registry, engagementEnabled: true, logger);
+
+        act.Should().NotThrow();
+        logger.Received(1).Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("'Comments'") && o.ToString()!.Contains("not eligible")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
+    }
 }

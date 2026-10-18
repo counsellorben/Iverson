@@ -301,13 +301,20 @@ public sealed class EnrichmentConsumer(
                     break;
                 case EnrichmentKind.Extracted:
                     // EnrichmentPrompts.Extraction carries two slots: {0} is the per-target hint
-                    // (mandatory for [IversonExtracted], enforced at registration), and {1} is the
-                    // source text. The hint is positioned ahead of the text so the model knows what
-                    // to pull out before reading the untrusted content.
+                    // (mandatory for [IversonExtracted], enforced at registration and on reload), and
+                    // {1} is the source text. The hint is positioned ahead of the text so the model
+                    // knows what to pull out before reading the untrusted content. The hint is
+                    // registrant-authored, so it is escaped like the text (CSR round 12 #18) and
+                    // cannot pass for one of the markers. Only here, where the prompt is built:
+                    // ComputeHash keeps hashing the raw hint, so stored hashes stay valid.
                     try
                     {
                         generated = await enrichment.GenerateJsonAsync(
-                            string.Format(EnrichmentPrompts.Extraction, target.Hint, EnrichmentPrompts.EscapeUntrustedText(sourceText)), ct);
+                            string.Format(
+                                EnrichmentPrompts.Extraction,
+                                EnrichmentPrompts.EscapeUntrustedText(target.Hint ?? string.Empty),
+                                EnrichmentPrompts.EscapeUntrustedText(sourceText)),
+                            ct);
                     }
                     catch (InvalidOperationException ex)
                     {

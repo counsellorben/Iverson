@@ -1,4 +1,3 @@
-using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -17,7 +16,9 @@ public sealed class EngagementRepository(
     ILogger<EngagementRepository> logger,
     EngagementResilienceOptions? resilienceOptions = null,
     EngagementQueryLimitOptions? queryLimitOptions = null,
-    string? provisionerConnectionString = null)
+    string? provisionerConnectionString = null,
+    string? tenantLoginKey = null,
+    IProvisionedTenantDirectory? provisionedTenants = null)
     : IEngagementStoreQueryExecutor, IEngagementStoreEntityStore, IEngagementStoreSearchService
 {
     private readonly EngagementResilienceOptions _resilience = resilienceOptions ?? EngagementResilienceOptions.Default;
@@ -34,8 +35,62 @@ public sealed class EngagementRepository(
     private MySqlConnection CreateConnection() => new(connectionString);
 
     // CSR round 11 §3: tenant provisioning's own login, which only the worker is given. Used by
-    // EnsureTenantProvisionedAsync and nothing else; every query runs on CreateConnection's login.
+    // EnsureTenantProvisionedAsync and nothing else. Tenant data queries run on the tenant's own login
+    // (below); CreateConnection's login runs none of them.
     private MySqlConnection CreateProvisionerConnection() => new(provisionerConnectionString);
+
+    // ── Per-tenant logins (CSR round 12 §7.2) ───────────────────────────────────
+    // Every tenant-scoped data connection logs in as the tenant's own StarRocks user, whose default role is
+    // the tenant's role, so it reaches that tenant's database and nothing else. The base login
+    // (connectionString, iverson_app) keeps only the readiness gate, the liveness probe and the authz-null
+    // executor paths, and holds no data grant.
+
+    /// <summary>The most connections one tenant's pool may hold in this process (spec §7.2).</summary>
+    internal const uint TenantPoolSize = 10;
+
+    /// <summary>Seconds an idle pooled tenant connection lives before it is reaped (spec §7.2), so an idle
+    /// tenant's pool drains to zero connections.</summary>
+    internal const uint TenantPoolIdleSeconds = 60;
+
+    /// <summary>The per-session caps every tenant login carries: the pair job-create-user.yaml sets on
+    /// iverson_app (spec §7.1). Keep the two equal.</summary>
+    internal const string TenantSessionProperties =
+        "'session.query_timeout' = '180', 'session.exec_mem_limit' = '4294967296'";
+
+    private const string NoTenantLoginsMessage =
+        "Tenant-scoped StarRocks access needs the tenant login key (StarRocks:TenantKey) and the " +
+        "provisioned-tenant directory, and this repository was not given both.";
+
+    /// <summary>
+    /// One tenant's connection string: <paramref name="baseConnectionString"/> with the tenant's own user and
+    /// derived password, no default database (every statement is qualified, and a default database the user
+    /// cannot use fails the handshake), and the per-tenant pool bounds. MySqlConnector's pooled reset is off:
+    /// StarRocks' reset puts system session variables back to their global defaults, which would drop the caps
+    /// the login carries (spec Verified assumption 26). Deterministic, so every call for one tenant yields the
+    /// identical string and therefore MySqlConnector's one pool for it. Another tenant gets another string and
+    /// a pool of its own, so session state a pooled connection keeps across checkouts never reaches another
+    /// tenant.
+    /// </summary>
+    internal static string TenantConnectionString(string baseConnectionString, string tenantId, string tenantLoginKey) =>
+        new MySqlConnectionStringBuilder(baseConnectionString)
+        {
+            UserID                = TenantIdentifier.LoginName(tenantId),
+            Password              = TenantIdentifier.LoginPassword(tenantId, tenantLoginKey),
+            Database              = "",
+            MaximumPoolSize       = TenantPoolSize,
+            ConnectionIdleTimeout = TenantPoolIdleSeconds,
+            ConnectionReset       = false,
+        }.ToString();
+
+    private string TenantConnectionStringFor(string tenantId) =>
+        TenantConnectionString(connectionString, tenantId,
+            tenantLoginKey ?? throw new InvalidOperationException(NoTenantLoginsMessage));
+
+    // CSR round 12 §7.3: a tenant the worker has not recorded as provisioned has no login yet, so the readers
+    // answer it as empty, and DeleteAsync, which has nothing to remove, returns, all without connecting.
+    private Task<bool> IsRecordedAsync(string tenantId) =>
+        (provisionedTenants ?? throw new InvalidOperationException(NoTenantLoginsMessage))
+            .IsProvisionedAsync(tenantId);
 
     // ── Resilience chokepoint ───────────────────────────────────────────────────
     // Every real StarRocks operation routes through here: first the one-time cold-start
@@ -80,8 +135,8 @@ public sealed class EngagementRepository(
     /// <paramref name="bound"/>; a false result, a throw, or a timeout returns an
     /// <see cref="EngagementNotReadyException"/> wrapping <paramref name="ex"/>, which the projection consumers'
     /// classifier treats as transient and the gRPC read paths map to <c>Unavailable</c>. Null means rethrow the
-    /// original. Expected missing-resource errors are exempt so that a read of an unwritten type or an
-    /// unprovisioned tenant never pays a liveness round-trip.
+    /// original. Expected missing-resource errors are exempt so that a read of a type the tenant has never
+    /// written never pays a liveness round-trip. (An unrecorded tenant never connects at all, spec §7.3.)
     /// </summary>
     internal static async Task<EngagementNotReadyException?> RewrapIfBackendUnavailableAsync(
         Exception ex, Func<CancellationToken, Task<bool>> checkBackendAlive, TimeSpan bound,
@@ -122,7 +177,21 @@ public sealed class EngagementRepository(
     /// wire-level ambiguous, so a wrong password stalls the consumer the same way (spec, Known issues).
     /// Every other failure propagates unchanged.
     /// </summary>
-    internal static async Task OpenProvisionerConnectionAsync(Func<Task> open)
+    internal static Task OpenProvisionerConnectionAsync(Func<Task> open) =>
+        OpenOrSurfaceRefusalAsync(open, "StarRocks refused the provisioner login; it may not have been created yet.");
+
+    /// <summary>
+    /// Opens a tenant's own connection (CSR round 12 §7.3). Readers connect only for a tenant the worker has
+    /// recorded, and the worker records it only after creating its login, so a refusal here is a real fault (a
+    /// login removed by hand, or a tenant login key other than the one the login was created with), never an
+    /// empty tenant. It surfaces as <see cref="EngagementNotReadyException"/>: the gRPC read paths answer that
+    /// with <c>Unavailable</c> rather than <c>Unknown</c>, and the projection consumers redeliver instead of
+    /// dead-lettering. Every other failure propagates unchanged.
+    /// </summary>
+    internal static Task OpenTenantConnectionAsync(Func<Task> open) =>
+        OpenOrSurfaceRefusalAsync(open, "StarRocks refused the tenant's login.");
+
+    private static async Task OpenOrSurfaceRefusalAsync(Func<Task> open, string refusal)
     {
         try
         {
@@ -130,8 +199,7 @@ public sealed class EngagementRepository(
         }
         catch (MySqlException ex) when (ex.ErrorCode == MySqlErrorCode.AccessDenied)
         {
-            throw new EngagementNotReadyException(
-                "StarRocks refused the provisioner login; it may not have been created yet.", ex);
+            throw new EngagementNotReadyException(refusal, ex);
         }
     }
 
@@ -188,69 +256,61 @@ public sealed class EngagementRepository(
         }
     }
 
-    // Two distinct "no data yet" shapes on the read path, both treated as fail-closed-empty
-    // rather than propagated as exceptions:
+    // The one "no data yet" shape on the read path that is treated as fail-closed-empty rather
+    // than propagated as an exception: an unwritten type within a provisioned tenant.
+    // EnsureTenantProvisionedAsync creates exactly one table per call (on that type's own first
+    // write), not every table a tenant will ever use — so a tenant that has written type A but
+    // queries type B (never written) has a perfectly valid login, role and database, but the
+    // specific table doesn't exist. Verified empirically against a live container: querying a
+    // nonexistent table under a database the active role legitimately has grants on raises
+    // MySqlException with ErrorCode 5502 (SqlState 42602 — StarRocks-specific, no named
+    // MySqlErrorCode member) and a message containing "Unknown table". Deliberately distinct
+    // from — and must never accidentally match — two adjacent error shapes that must keep
+    // propagating as real failures: querying a wrong/nonexistent *database* name (a real bug,
+    // e.g. a tenant-ID-to-database-name mapping defect) raises a different message, "Unknown
+    // database" (ErrorCode 5501); and an actual permissions problem on a table that legitimately
+    // exists raises yet another message, "Access denied ... privilege(s) on TABLE ..." (ErrorCode
+    // 5203). Confirmed both do NOT contain "Unknown table" and so are correctly left unmatched.
     //
-    // 1. Unprovisioned tenant: a tenant that has never written ANY data was never lazily
-    //    provisioned by EnsureTenantProvisionedAsync, so its `role_tenant_{id}` either doesn't
-    //    exist yet or was never granted to `iverson_app`. `SET ROLE` inside RunTenantScopedAsync
-    //    then fails outright. Verified empirically against a live starrocks/allin1-ubuntu
-    //    container: both "role doesn't exist" and "role exists but isn't granted to this user"
-    //    raise MySqlConnector.MySqlException with ErrorCode == MySqlErrorCode.ParseError
-    //    (StarRocks reuses MySQL's generic 1064 syntax-error code for this) and a message
-    //    containing either "cannot find role" or "is not granted to".
+    // An unprovisioned tenant is no longer an error shape (CSR round 12 §7.3): every reader asks
+    // IProvisionedTenantDirectory first and answers a tenant the worker has not recorded as empty,
+    // without connecting. The role arm this predicate used to carry ("cannot find role" / "is not
+    // granted to", ParseError 1064 from SET ROLE) went with SET ROLE itself, so a recorded tenant
+    // whose login or role is missing now surfaces as the fault it is.
     //
-    // 2. Unwritten type within a provisioned tenant: EnsureTenantProvisionedAsync creates exactly
-    //    one table per call (on that type's own first write), not every table a tenant will ever
-    //    use — so a tenant that has written type A but queries type B (never written) has a
-    //    perfectly valid role/database, but the specific table doesn't exist. Verified
-    //    empirically against the same container: querying a nonexistent table under a database
-    //    the active role legitimately has grants on raises MySqlException with ErrorCode 5502
-    //    (SqlState 42602 — StarRocks-specific, no named MySqlErrorCode member) and a message
-    //    containing "Unknown table". Deliberately distinct from — and must never accidentally
-    //    match — two adjacent error shapes that must keep propagating as real failures: querying
-    //    a wrong/nonexistent *database* name (a real bug, e.g. a tenant-ID-to-database-name
-    //    mapping defect) raises a different message, "Unknown database" (ErrorCode 5501); and an
-    //    actual permissions problem on a table that legitimately exists raises yet another
-    //    message, "Access denied ... privilege(s) on TABLE ..." (ErrorCode 5203). Confirmed both
-    //    do NOT contain "Unknown table" and so are correctly left unmatched here.
-    //
-    // Both cases are matched here as specific, verified StarRocks/MySqlConnector error shapes
-    // (not a bare catch) so the 4 read paths can treat them the same as every other "no data"
-    // case in this repository (invalid tenant ID, missing tenant claim: both already return
-    // empty), while any other StarRocks failure (real outage, network issue, a genuinely
-    // different privilege or schema problem) still propagates as an exception. Deliberately
-    // scoped to the READ path only — UpsertAsync/DeleteAsync must keep throwing, since they're
-    // only ever called after EnsureTenantProvisionedAsync has already run for that exact type in
-    // the same code path (EngagementStoreConsumer), so hitting either shape there would mean a
-    // real invariant violation, not a legitimate empty tenant.
+    // Matched as a specific, verified StarRocks/MySqlConnector error shape (not a bare catch) so
+    // the read paths can treat it the same as every other "no data" case in this repository
+    // (invalid tenant ID, missing tenant claim, unrecorded tenant: all return empty), while any
+    // other StarRocks failure still propagates as an exception. Deliberately scoped to the READ
+    // path only — UpsertAsync/DeleteAsync must keep throwing, since UpsertAsync only ever runs
+    // after EnsureTenantProvisionedAsync has created that exact type's table in the same code path
+    // (EngagementStoreConsumer), so hitting it there would mean a real invariant violation.
     private static bool IsExpectedMissingResourceError(Exception ex) =>
         ex is MySqlException mex &&
-        ((mex.ErrorCode == MySqlErrorCode.ParseError &&
-          (mex.Message.Contains("cannot find role", StringComparison.OrdinalIgnoreCase) ||
-           mex.Message.Contains("is not granted to", StringComparison.OrdinalIgnoreCase))) ||
-         (mex.ErrorCode == (MySqlErrorCode)5502 &&
-          mex.Message.Contains("Unknown table", StringComparison.OrdinalIgnoreCase)));
+        mex.ErrorCode == (MySqlErrorCode)5502 &&
+        mex.Message.Contains("Unknown table", StringComparison.OrdinalIgnoreCase);
 
     // isExpectedException: lets a read-path caller (SearchAsync/AggregateAsync/GroupByAsync/
     // PipelineAsync) identify IsExpectedMissingResourceError as a non-exceptional, expected
-    // outcome (a brand-new tenant's first-ever read, or a provisioned tenant's first-ever read of
-    // a type it has never written) *before* this method's own Activity is stopped — the caller's
-    // own catch block runs after `using var activity` above has already disposed (and therefore
-    // exported) the Activity, so setting its status there is too late. Left null (the default)
-    // for UpsertAsync/DeleteAsync, which must keep marking Error: either shape on the write path
-    // is a real invariant violation, not an expected case, and must not be masked from
-    // error-rate telemetry.
+    // outcome (a recorded tenant's first-ever read of a type it has never written; an unrecorded
+    // tenant is answered empty before any connection) *before* this method's own Activity is
+    // stopped — the caller's own catch block runs after `using var activity` above has already
+    // disposed (and therefore exported) the Activity, so setting its status there is too late.
+    // Left null (the default) for UpsertAsync/DeleteAsync, which must keep marking Error: a
+    // missing table on the write path is a real invariant violation, not an expected case, and
+    // must not be masked from error-rate telemetry.
     private async Task<T> RunTenantScopedAsync<T>(
         string activityName, string tenantId, string sql, Func<MySqlConnection, Task<T>> operation,
         Func<Exception, bool>? isExpectedException = null)
     {
         // Defensive re-validation: every current caller already checks TenantIdentifier.IsValid
         // before calling in, so this never fires today. It exists purely so a future caller that
-        // forgets that check fails loudly and immediately, rather than splicing an unvalidated
-        // tenantId straight into the `SET ROLE` statement below.
+        // forgets that check fails loudly and immediately, rather than deriving a login for an
+        // unvalidated tenantId.
         if (!TenantIdentifier.IsValid(tenantId))
             throw new ArgumentException($"Invalid tenant ID: '{tenantId}'", nameof(tenantId));
+
+        var tenantConnectionString = TenantConnectionStringFor(tenantId);
 
         using var activity = Telemetry.Source.StartActivity(activityName, ActivityKind.Client);
         activity?.SetTag("db.system", "starrocks");
@@ -260,27 +320,12 @@ public sealed class EngagementRepository(
         {
             var result = await RunAsync(async () =>
             {
-                await using var conn = CreateConnection();
-                await conn.OpenAsync();
-                await conn.ExecuteAsync($"SET ROLE `{TenantIdentifier.RoleName(tenantId)}`");
-                try
-                {
-                    return await operation(conn);
-                }
-                finally
-                {
-                    try
-                    {
-                        await conn.ExecuteAsync("SET ROLE NONE");
-                    }
-                    catch (Exception ex)
-                    {
-                        // The connection is being disposed either way; a broken connection here must
-                        // never replace the operation's own result or exception — same discipline as
-                        // PostgresRepository.ExecuteInTransactionAsync's rollback-failure handling.
-                        logger.LogWarning(ex, "SET ROLE NONE failed while releasing a tenant-scoped StarRocks connection");
-                    }
-                }
+                // CSR round 12 §7.2: the tenant's own login, whose default role is already active.
+                // Nothing here changes the connection's role or session state, and the pool is this
+                // tenant's alone, so whatever a pooled connection keeps stays inside the tenant.
+                await using var conn = new MySqlConnection(tenantConnectionString);
+                await OpenTenantConnectionAsync(() => conn.OpenAsync());
+                return await operation(conn);
             });
             activity?.SetStatus(ActivityStatusCode.Ok);
             return result;
@@ -304,9 +349,9 @@ public sealed class EngagementRepository(
 
     /// <summary>
     /// Streams a tenant-scoped query row by row (spec §3.2). Unlike <see cref="RunTenantScopedAsync{T}"/>, the
-    /// resilience pipeline wraps only open, <c>SET ROLE</c> and query start; a failure after that propagates. The
-    /// connection is held until enumeration ends, then <c>SET ROLE NONE</c> runs with the same failure-swallowing
-    /// discipline. <paramref name="ct"/> reaches the query start and every read, and is checked before each row.
+    /// resilience pipeline wraps only open and query start; a failure after that propagates. The connection, on
+    /// the tenant's own login (CSR round 12 §7.2), is held until enumeration ends and then returned to that
+    /// tenant's pool. <paramref name="ct"/> reaches the query start and every read, and is checked before each row.
     /// </summary>
     internal async IAsyncEnumerable<IDictionary<string, object?>> StreamTenantScopedAsync(
         string activityName, string tenantId, string sql, object param,
@@ -314,6 +359,8 @@ public sealed class EngagementRepository(
     {
         if (!TenantIdentifier.IsValid(tenantId))
             throw new ArgumentException($"Invalid tenant ID: '{tenantId}'", nameof(tenantId));
+
+        var tenantConnectionString = TenantConnectionStringFor(tenantId);
 
         using var activity = Telemetry.Source.StartActivity(activityName, ActivityKind.Client);
         activity?.SetTag("db.system", "starrocks");
@@ -325,12 +372,10 @@ public sealed class EngagementRepository(
         {
             (conn, reader) = await RunAsync(async () =>
             {
-                var c = CreateConnection();
+                var c = new MySqlConnection(tenantConnectionString);
                 try
                 {
-                    await c.OpenAsync(ct);
-                    await c.ExecuteAsync(new CommandDefinition(
-                        $"SET ROLE `{TenantIdentifier.RoleName(tenantId)}`", cancellationToken: ct));
+                    await OpenTenantConnectionAsync(() => c.OpenAsync(ct));
                     var r = await c.ExecuteReaderAsync(new CommandDefinition(sql, param, cancellationToken: ct));
                     return (c, r);
                 }
@@ -343,7 +388,7 @@ public sealed class EngagementRepository(
         }
         catch (Exception ex) when (isExpectedMissingResource(ex))
         {
-            activity?.SetStatus(ActivityStatusCode.Ok);   // an unprovisioned tenant or missing table: empty, as SearchAsync
+            activity?.SetStatus(ActivityStatusCode.Ok);   // a missing table: empty, as SearchAsync
         }
         catch (Exception ex)
         {
@@ -402,18 +447,11 @@ public sealed class EngagementRepository(
         try
         {
             if (reader is not null) await reader.DisposeAsync();
-            // A connection that never reached Open (e.g. OpenAsync itself timed out or threw) must not be
-            // reopened here: Dapper's ExecuteAsync opens a closed connection by itself, which against a
-            // frozen/unreachable server makes a second, uncancellable connection attempt on top of the
-            // one that already failed or was cancelled — CIR-1 Finding 1. Only a connection that is
-            // actually Open can have an active role to clear.
-            if (conn.State == ConnectionState.Open)
-                await conn.ExecuteAsync("SET ROLE NONE");
         }
         catch (Exception ex)
         {
-            // Same discipline as RunTenantScopedAsync: releasing must never replace the read's own outcome.
-            logger.LogWarning(ex, "Releasing a tenant-scoped StarRocks reader failed (SET ROLE NONE or reader disposal)");
+            // Releasing must never replace the read's own outcome.
+            logger.LogWarning(ex, "Releasing a tenant-scoped StarRocks reader failed (reader disposal)");
         }
         finally
         {
@@ -433,6 +471,9 @@ public sealed class EngagementRepository(
 
         var (sql, param) = MatchRowsQueryBuilder.Build(schema, request, authz, TenantIdentifier.DatabaseName(tenantId));
 
+        if (!await IsRecordedAsync(tenantId))
+            yield break;
+
         await foreach (var row in StreamTenantScopedAsync("sr.match_rows", tenantId, sql, param, IsExpectedMissingResourceError, ct))
             yield return row;
     }
@@ -445,19 +486,7 @@ public sealed class EngagementRepository(
 
         if (!TenantIdentifier.IsValid(tenantId)) return;
 
-        var row = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(payloadJson)
-            ?? new Dictionary<string, JsonElement>();
-
-        var knownCols = schema.Columns
-            .Select(c => c.Name)
-            .Append(schema.KeyColumn.Name)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var entries = row
-            .Where(kv => knownCols.Contains(kv.Key)
-                      && kv.Value.ValueKind != JsonValueKind.Object
-                      && kv.Value.ValueKind != JsonValueKind.Undefined)
-            .ToList();
+        var entries = UpsertEntries(schema, payloadJson);
 
         if (entries.Count == 0) return;
 
@@ -479,9 +508,41 @@ public sealed class EngagementRepository(
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
+    /// <summary>
+    /// The payload entries <see cref="UpsertAsync"/> writes. An entry is written when its key is
+    /// exactly a column name, compared ordinally, and its value is not a JSON object.
+    /// <para>
+    /// Ordinal, because StarRocks resolves column names case-insensitively. A re-cased key such as
+    /// <c>OWNERID</c> would otherwise go into the <c>OwnerId</c> column, past the owner value the
+    /// consumer re-derived from Postgres (CSR round 12 §2.3). Every producer emits exact column
+    /// names: the write RPCs canonicalise keys at entry, and enrichment and reconciliation
+    /// republish <c>row_to_json</c>. A key that is not exact therefore names no column.
+    /// </para>
+    /// </summary>
+    internal static List<KeyValuePair<string, JsonElement>> UpsertEntries(EngagementTableSchema schema, string payloadJson)
+    {
+        var row = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(payloadJson)
+            ?? new Dictionary<string, JsonElement>();
+
+        var knownCols = schema.Columns
+            .Select(c => c.Name)
+            .Append(schema.KeyColumn.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        return row
+            .Where(kv => knownCols.Contains(kv.Key)
+                      && kv.Value.ValueKind != JsonValueKind.Object
+                      && kv.Value.ValueKind != JsonValueKind.Undefined)
+            .ToList();
+    }
+
     public async Task DeleteAsync(string tableName, string keyColumn, string keyValue, string tenantId)
     {
         if (!TenantIdentifier.IsValid(tenantId)) return;
+
+        // CSR round 12 §7.3: a tenant never recorded as provisioned has no login and no rows to remove. A
+        // delete for it (one whose create was dropped before projection) is a no-op, not a refused login.
+        if (!await IsRecordedAsync(tenantId)) return;
 
         var qualifiedTable = TenantIdentifier.Qualify(TenantIdentifier.DatabaseName(tenantId), tableName);
         var sql = $"DELETE FROM {qualifiedTable} WHERE `{keyColumn}` = @key";
@@ -499,6 +560,13 @@ public sealed class EngagementRepository(
         if (provisionerConnectionString is null)
             throw new InvalidOperationException(
                 "Tenant provisioning needs the StarRocks provisioner connection string, and none was configured.");
+
+        // CSR round 12 §7.1/§7.3: provisioning creates the tenant's own login and then records the tenant, so
+        // it needs both halves of what a reader needs. Both are checked before connecting.
+        var directory = provisionedTenants ?? throw new InvalidOperationException(NoTenantLoginsMessage);
+        var loginPassword = TenantIdentifier.LoginPassword(
+            tenantId, tenantLoginKey ?? throw new InvalidOperationException(NoTenantLoginsMessage));
+        var loginName = TenantIdentifier.LoginName(tenantId);
 
         var dbName   = TenantIdentifier.DatabaseName(tenantId);
         var roleName = TenantIdentifier.RoleName(tenantId);
@@ -520,7 +588,13 @@ public sealed class EngagementRepository(
                 await conn.ExecuteAsync($"CREATE ROLE IF NOT EXISTS `{roleName}`");
                 await conn.ExecuteAsync($"GRANT SELECT, INSERT, UPDATE, DELETE ON `{dbName}`.* TO ROLE `{roleName}`");
                 await conn.ExecuteAsync($"GRANT CREATE TABLE ON DATABASE `{dbName}` TO ROLE `{roleName}`");
-                await conn.ExecuteAsync($"GRANT `{roleName}` TO USER 'iverson_app'@'%'");
+                // CSR round 12 §7.1: the tenant's own login replaces the grant of the tenant role to
+                // iverson_app. DEFAULT ROLE assigns the role created above and activates it at every login,
+                // so no data connection runs SET ROLE. IF NOT EXISTS leaves an existing login as it is. The
+                // caps are re-applied on every call, which SET PROPERTIES allows.
+                await conn.ExecuteAsync(
+                    $"CREATE USER IF NOT EXISTS '{loginName}'@'%' IDENTIFIED BY '{loginPassword}' DEFAULT ROLE '{roleName}'");
+                await conn.ExecuteAsync($"ALTER USER '{loginName}'@'%' SET PROPERTIES ({TenantSessionProperties})");
 
                 // CSR round 11 §3: the provisioner grants itself what the next steps need. Re-granting either
                 // is a no-op.
@@ -558,6 +632,9 @@ public sealed class EngagementRepository(
                 }
             }
         });
+
+        // Only after the login exists: a recorded tenant is one readers connect for.
+        await directory.RecordProvisionedAsync(tenantId);
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
@@ -590,6 +667,9 @@ public sealed class EngagementRepository(
         var (sql, param) = StarRocksQueryBuilder.BuildSearch(
             schema.TableName, schema, query, page, pageSize, fields, joins, registry, authz,
             TenantIdentifier.DatabaseName(tenantId), _queryLimits);
+
+        if (!await IsRecordedAsync(tenantId))
+            return [];
 
         try
         {
@@ -632,6 +712,10 @@ public sealed class EngagementRepository(
             var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
                 schema.TableName, schema, query, spec, having, joins, registry, authz,
                 TenantIdentifier.DatabaseName(tenantId), _queryLimits);
+
+            if (!await IsRecordedAsync(tenantId))
+                return null;
+
             try
             {
                 rows = (await RunTenantScopedAsync(
@@ -692,6 +776,9 @@ public sealed class EngagementRepository(
         var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(
             schema.TableName, schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId), _queryLimits);
 
+        if (!await IsRecordedAsync(tenantId))
+            return [];
+
         try
         {
             return await RunTenantScopedAsync(
@@ -723,6 +810,10 @@ public sealed class EngagementRepository(
 
         var (sql, param, lastCols) = StarRocksPipelineBuilder.Build(
             schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId), _queryLimits);
+
+        if (!await IsRecordedAsync(tenantId))
+            return [];
+
         try
         {
             var rows = await RunTenantScopedAsync(

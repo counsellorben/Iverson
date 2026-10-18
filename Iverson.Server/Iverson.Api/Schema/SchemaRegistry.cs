@@ -18,6 +18,14 @@ public sealed class SchemaRegistry(
 
     public bool IsRegistered(string typeName) => _schemas.ContainsKey(typeName);
 
+    // CSR round 12 §6.3. The api can start before the worker has created or granted the registry
+    // table, so its first load may fail; SchemaRefreshWorker retries it every 30 s. /health reports
+    // not-ready until one load has succeeded.
+    private volatile bool _hasLoaded;
+
+    /// <summary>True once a <see cref="LoadAsync"/> has completed.</summary>
+    public bool HasLoaded => _hasLoaded;
+
     // Serialises the on-demand reloads below and throttles them. Without the throttle a backlog
     // of genuinely-unknown-type messages would issue one Postgres round trip per delivery
     // attempt; with it, a burst collapses to one reload per interval and every waiter re-reads
@@ -66,8 +74,9 @@ public sealed class SchemaRegistry(
 
     public async Task LoadAsync(CancellationToken ct = default)
     {
-        await repository.EnsureTableAsync();
-
+        // No EnsureTableAsync here (CSR round 12 §6.3). This runs in the api at startup and every
+        // 30 s, and the api's login may not run DDL. The worker creates the table once, at startup
+        // (WorkerStoreBootstrap).
         var rows = await repository.LoadAllAsync();
 
         var loadedTypeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -207,14 +216,35 @@ public sealed class SchemaRegistry(
                     continue;
                 }
 
+                // The enrichment-target rules (CSR round 12 #18). Registration refuses a type that
+                // breaks one, but rehydration never passes through registration, so a stored row that
+                // breaks one (written before the rule existed, or altered in storage) would otherwise
+                // drive the enrichment pipeline unchecked. The type still loads, so every other read,
+                // write and projection keeps working, but with no targets: EnrichmentConsumer returns
+                // early for a type with none. The check is independent of the name normalisation
+                // below (every comparison is case-insensitive) and runs before it.
+                if (EnrichmentTargetRules.Violation(descriptor) is { } enrichmentViolation)
+                {
+                    logger.LogError(
+                        "Schema '{TypeName}' loaded from storage breaks an enrichment-target rule and was " +
+                        "loaded with enrichment disabled: {Violation} Re-register the type to restore enrichment.",
+                        typeName, enrichmentViolation.SanitizeForLog());
+                    descriptor = descriptor with { EnrichmentTargets = [] };
+                }
+
+                // CSR round 12 §2.2: the rewrite registration applies. A descriptor stored before it
+                // reaches the write gate with its owner field, field permissions and foreign keys
+                // spelled as its columns are.
+                descriptor = SchemaBuilder.NormalizeDeclaredNames(descriptor);
+
                 _schemas[typeName] = descriptor;
             }
         }
 
         // Reconcile removals: a schema present in this instance's cache but no longer
-        // returned by Postgres was unregistered by a different process (e.g. a different
-        // api/worker replica calling UnregisterAsync) — without this, a periodic re-poll
-        // could never converge on that removal.
+        // returned by Postgres had its registry row deleted elsewhere (e.g. the documented
+        // model-change recovery) — without this, a periodic re-poll could never converge on
+        // that removal.
         // This loop is the reason `loadedTypeNames.Add` sits OUTSIDE the try above: "not in the
         // set" means EVICT, so a row that merely failed to deserialize must still count as
         // present, or a corruption appearing after boot would unregister a live type mid-flight.
@@ -222,10 +252,20 @@ public sealed class SchemaRegistry(
             if (!loadedTypeNames.Contains(typeName))
                 _schemas.TryRemove(typeName, out _);
 
+        _hasLoaded = true;
         logger.LogInformation("SchemaRegistry loaded {Count} schema(s)", _schemas.Count);
     }
 
-    public async Task RegisterAsync(SchemaDescriptor descriptor)
+    /// <summary>
+    /// Test-only: stores <paramref name="descriptor"/> in the registry table and in this process's
+    /// cache, with no owner check. Production writes the registry only in the worker, through
+    /// <see cref="PrivilegedRequests.SchemaRegistrationApplier"/>'s owner-conditional write (CSR
+    /// round 12 §5.3). A call from Iverson.Api fails the build: its project treats IVERSON0001 as an
+    /// error, and only the test project suppresses it.
+    /// </summary>
+    [Obsolete("Test-only: it skips the owner-conditional registry write. Register through the worker's SchemaRegistrationApplier.",
+        DiagnosticId = "IVERSON0001")]
+    internal async Task RegisterAsync(SchemaDescriptor descriptor)
     {
         await repository.EnsureTableAsync();
 
@@ -236,13 +276,12 @@ public sealed class SchemaRegistry(
         logger.LogInformation("Registered schema for {TypeName}", descriptor.TypeName);
     }
 
-    public async Task UnregisterAsync(string typeName)
-    {
-        await repository.DeleteAsync(typeName);
-
-        _schemas.TryRemove(typeName, out _);
-        logger.LogInformation("Unregistered schema for {TypeName}", typeName);
-    }
+    /// <summary>
+    /// The options every <c>_iverson_schema</c> row is written and read with. The privileged-request
+    /// payloads (CSR round 12 §5.2) carry descriptors with these same options, so the worker reads
+    /// exactly what <see cref="LoadAsync"/> would.
+    /// </summary>
+    internal static JsonSerializerOptions JsonOptions => s_jsonOptions;
 
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {

@@ -4,7 +4,11 @@
 #
 # This file defines a complete Iverson stack for local development, including
 # several services with intentionally static, hardcoded default credentials:
-#   - PostgreSQL: user/password = iverson/iverson
+#   - PostgreSQL: user/password = iverson/iverson (the owner, used by iverson-worker), and the api's
+#     own login iverson_api with password dev-only-not-for-production-postgres-api-pw-0123456789,
+#     which iverson-worker creates at startup (CSR round 12)
+#   - StarRocks tenant logins: their master key is generated per-checkout, required via
+#     ${IVERSON_STARROCKS_TENANT_KEY:?...} — run scripts/generate-compose-secrets.sh first
 #   - Authentik: admin password and bootstrap token are generated per-checkout, required via
 #     ${AUTHENTIK_BOOTSTRAP_PASSWORD:?...} / ${AUTHENTIK_BOOTSTRAP_TOKEN:?...} — run
 #     scripts/generate-compose-secrets.sh first
@@ -91,6 +95,10 @@ services:
   # passwords are dev-only literals: root is passwordless and published on loopback only.
   # The trailing ALTER USER ... SET PROPERTIES line (CSR finding #6, defense-in-depth) is
   # likewise carried over from the chart job — see its comment there for the rationale.
+  # So is the role revoke after the batch (CSR round 12 §7.5), word for word: it reads
+  # iverson_app's role grants back from SHOW GRANTS and revokes each one. Compose has no
+  # post-upgrade hook, so it runs on every `up`, before iverson-worker and iverson-api start, and
+  # nothing grants iverson_app a tenant role any more.
   starrocks-init:
     image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
     container_name: iverson-starrocks-init
@@ -114,6 +122,17 @@ services:
           REVOKE user_admin FROM 'iverson_app'@'%';
           ALTER USER 'iverson_app' SET PROPERTIES ('session.query_timeout' = '180', 'session.exec_mem_limit' = '4294967296');
         "
+        fe() { mysql -h starrocks -P 9030 -u root "$$@"; }
+        APP_GRANTS="$$(fe --batch --skip-column-names -e "SHOW GRANTS FOR 'iverson_app'@'%';")"
+        APP_ROLES="$$(printf '%s\n' "$$APP_GRANTS" | sed -n "/ ON /d; s/.*GRANT \(.*\) TO .*/\1/p" | tr -d "' \`" | tr ',' '\n')"
+        set -f
+        for ROLE in $$APP_ROLES; do
+          case "$$ROLE" in
+            public) ;;
+            *[!A-Za-z0-9_]*) echo "unexpected role name granted to iverson_app: $$ROLE" >&2; exit 1 ;;
+            *) echo "revoking role $$ROLE from iverson_app"; fe -e "REVOKE $$ROLE FROM 'iverson_app'@'%';" ;;
+          esac
+        done
     restart: "no"
 
   qdrant:
@@ -477,7 +496,10 @@ services:
       - "127.0.0.1:8081:8081"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
-      - ConnectionStrings__Postgres=Host=postgres;Port=5432;Database=iverson;Username=iverson;Password=iverson
+      # CSR round 12 §6.1: the api's own login, as on the chart's api Deployment: not the owner, no
+      # BYPASSRLS, no DDL. iverson-worker creates it with this password (Postgres__ApiLoginPassword)
+      # and grants it what the api uses, before its healthcheck passes.
+      - ConnectionStrings__Postgres=Host=postgres;Port=5432;Database=iverson;Username=iverson_api;Password=dev-only-not-for-production-postgres-api-pw-0123456789
       - Otel__Endpoint=http://jaeger:4317
       - Embeddings__BaseUrl=http://tei-embed:80
       # MMR lambda per endpoint; these match VectorRankingOptions' defaults, set by the Tier 1 gate
@@ -495,9 +517,13 @@ services:
       - Enrichment__ModelId=qwen2.5:3b
       - Kafka__BootstrapServers=kafka:29092
       # Matches the chart's api/worker deployments (deploy/helm/iverson/charts/api/templates/
-      # deployment.yaml): connect as iverson_app, the query login starrocks-init creates, not root,
-      # and with no default database (iverson_app holds no grant on `iverson`).
+      # deployment.yaml): iverson_app, the login starrocks-init creates, with no default database.
+      # It serves only /health and the readiness probes (CSR round 12 §7.4): every data connection
+      # logs in as its tenant's own login, whose password is derived from StarRocks__TenantKey.
       - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
+      # CSR round 12 §7.1: the master key, shared with iverson-worker. Per-checkout, from
+      # scripts/generate-compose-secrets.sh.
+      - StarRocks__TenantKey=${IVERSON_STARROCKS_TENANT_KEY:?run scripts/generate-compose-secrets.sh first}
       - Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ExternalIssuer=http://localhost:9000/
@@ -524,7 +550,6 @@ services:
       - Authentication__InternalIssuer=http://authentik-server:9000/
       - Authentik__CaCertificatePath=/etc/iverson/authentik-ca/ca.crt
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
-      - Tenancy__SeedLegacyTenants=true
       # Iverson.AdminUI's Vite dev server (npm run dev) runs at localhost:5173
       # (Iverson.AdminUI/README.md) and is not proxied -- every fetch to /admin,
       # /health, /v1/traces from it is cross-origin. Without this, CORS never
@@ -538,16 +563,17 @@ services:
       - Prometheus__BaseUrl=http://prometheus:9090
     volumes:
       - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/iverson/authentik-ca/ca.crt, read_only: true }
-    # Kestrel does not begin listening until Program.cs's startup block has finished — the
-    # bootstrap DDL (EnsureRolesAsync, the plumbing-table EnsureTableAsync calls, and every
-    # ApplySchemaAsync) is awaited BEFORE app.Run(). A successful TCP connect to 8080 is therefore
-    # a precise "this replica's bootstrap DDL is complete" signal, which is exactly what
-    # iverson-worker's depends_on needs. A bash /dev/tcp redirect rather than curl/wget: the
-    # aspnet:10.0 runtime image ships neither (verified), but does ship bash.
+    # A TCP connect to 8080 says Kestrel is listening, and that is all this healthcheck claims.
+    # The api runs no bootstrap DDL (CSR round 12 §6.3): iverson-worker does, and this service waits
+    # for it below. A bash /dev/tcp redirect rather than curl/wget: the aspnet:10.0 runtime image
+    # ships neither (verified), but does ship bash.
     healthcheck:
-      # `bash -c`, not CMD-SHELL: CMD-SHELL runs /bin/sh, which on this image is dash, and dash
-      # has no /dev/tcp support at all ("cannot create /dev/tcp/...: Directory nonexistent").
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      # CMD-SHELL wrapping `bash -c '...'`, as iverson-worker's and qdrant's do. The redirect needs
+      # bash: CMD-SHELL alone runs /bin/sh, which on this image is dash, and dash has no /dev/tcp
+      # ("cannot create /dev/tcp/...: Directory nonexistent"). And not ["CMD", "bash", "-c", "..."]:
+      # podman's Docker API splits every CMD argument on whitespace, which turns that form into
+      # `bash -c exec`, a check that always passes.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'"]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -579,6 +605,11 @@ services:
         condition: service_healthy
       tei-embed:
         condition: service_healthy
+      # CSR round 12 §6.3: the worker starts first. It runs the bootstrap DDL, creates iverson_api
+      # and issues its grants before it listens, so a passing worker healthcheck means this
+      # service's login can connect and read the schema registry.
+      iverson-worker:
+        condition: service_healthy
 
   # The worker role. Every Kafka consumer and background reconciliation worker in Iverson.Api is
   # gated on `workloadRole == "worker"` (Iverson.Api/Program.cs) — IntelligenceStoreConsumer,
@@ -606,18 +637,25 @@ services:
       - WORKLOAD_ROLE=worker
       - Otel__Endpoint=http://jaeger:4317
       - ConnectionStrings__Postgres=Host=postgres;Port=5432;Database=iverson;Username=iverson;Password=iverson
+      # CSR round 12 §6.1: compose has no CNPG to create iverson_api, so this worker, connected as
+      # the superuser above, creates it at startup with this password; iverson-api logs in with it.
+      - Postgres__ApiLoginPassword=dev-only-not-for-production-postgres-api-pw-0123456789
       - Embeddings__BaseUrl=http://tei-embed:80
       - Embeddings__ModelId=${BENCH_EMBED_MODEL:-BAAI/bge-base-en-v1.5}
       - Enrichment__BaseUrl=http://ollama:11434
       - Enrichment__ModelId=qwen2.5:3b
       - Kafka__BootstrapServers=kafka:29092
       # Matches the chart's api/worker deployments (deploy/helm/iverson/charts/api/templates/
-      # deployment.yaml): connect as iverson_app, the query login starrocks-init creates, not root,
-      # and with no default database (iverson_app holds no grant on `iverson`).
+      # deployment.yaml): iverson_app, the login starrocks-init creates, with no default database.
+      # It serves only /health and the readiness probes (CSR round 12 §7.4): every data connection
+      # logs in as its tenant's own login, whose password is derived from StarRocks__TenantKey.
       - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
       # CSR round 11 §3: tenant provisioning's own login, as on the chart's worker. Only the
       # worker provisions, so iverson-api has no provisioner connection string.
       - ConnectionStrings__StarRocksProvisioner=Server=starrocks;Port=9030;Uid=iverson_provisioner;Pwd=dev-only-not-for-production-starrocks-provisioner-pw-0123456789;
+      # CSR round 12 §7.1: iverson-api's master key. Provisioning creates each tenant's login with
+      # the password derived from it, and the worker's upserts and aggregates log in with it.
+      - StarRocks__TenantKey=${IVERSON_STARROCKS_TENANT_KEY:?run scripts/generate-compose-secrets.sh first}
       - Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ExternalIssuer=http://localhost:9000/
@@ -640,6 +678,20 @@ services:
       - Tenancy__SeedLegacyTenants=true
     volumes:
       - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/iverson/authentik-ca/ca.crt, read_only: true }
+    # CSR round 12 §6.3: iverson-api waits for this. The worker's startup block (the plumbing and
+    # entity-table DDL, the roles, iverson_api and its grants, the legacy-tenant seed) is awaited
+    # before Kestrel listens, so an HTTP 200 from /health on 8081 means it has finished and the
+    # stores answer. bash /dev/tcp again: the runtime image has no curl or wget. CMD-SHELL wrapping
+    # `bash -c '...'`, as qdrant's does, rather than ["CMD", "bash", "-c", "..."]: podman's Docker
+    # API splits every CMD argument on whitespace, which turns that form into `bash -c exec`, a
+    # check that always passes. The script holds no single quote (it sits inside one) and no `$`
+    # (compose would interpolate it).
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8081 && printf \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && head -n 1 <&3 | grep -q \" 200 \"'"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 30s
     depends_on:
       # The same backing-service conditions iverson-api uses...
       postgres:
@@ -665,22 +717,6 @@ services:
       ollama-init:
         condition: service_completed_successfully
       tei-embed:
-        condition: service_healthy
-      # ...plus one more: wait for iverson-api to finish its OWN bootstrap before starting this
-      # one. Both roles run the identical startup block (it sits outside Program.cs's
-      # `workloadRole == "api"` guard), and that block is genuinely concurrency-safe by design —
-      # every statement is CREATE/ALTER ... IF [NOT] EXISTS or ON CONFLICT DO NOTHING, and the two
-      # CREATE-then-catch paths (EnsureRolesAsync, the RLS policy) both swallow SQLSTATE
-      # 42710 with an explicit "another replica created it concurrently" comment. Helm already
-      # runs api x2 plus a worker against one database on that basis.
-      #
-      # It is sequenced anyway because "safe by design" is not the same as "raced on every single
-      # `docker compose up -d`". Bare CREATE TABLE/INDEX IF NOT EXISTS is still not atomic against
-      # an identical concurrent statement in Postgres — it can surface as 23505 on a pg_catalog
-      # unique index, and that SQLSTATE is not caught anywhere. Starting second closes the window
-      # completely rather than relying on losing a race that is cheap to avoid: by the time this
-      # container starts, every IF NOT EXISTS check it runs is a no-op.
-      iverson-api:
         condition: service_healthy
 
 volumes:

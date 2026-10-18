@@ -6,7 +6,8 @@ namespace Iverson.StarRocks.Tests;
 /// The two StarRocks logins production uses (CSR round 11 §3), set up through the fixture's root
 /// repository with the job-create-user.yaml grant set, excluding the job's root SET PASSWORD and the
 /// trailing ALTER USER 'iverson_app' SET PROPERTIES session caps (query timeout and memory limit).
-/// iverson_app runs queries and keeps OPERATE ON SYSTEM as its only direct grant;
+/// iverson_app keeps OPERATE ON SYSTEM as its only direct grant and runs no tenant query (since CSR round 12
+/// each tenant's queries run on that tenant's own login);
 /// iverson_provisioner provisions tenants and holds user_admin plus a direct CREATE DATABASE.
 ///
 /// <para><b>Why one helper.</b> The users live in the one container every class in
@@ -28,6 +29,9 @@ namespace Iverson.StarRocks.Tests;
 internal static class StarRocksSplitLogins
 {
     internal const string AppPassword = "test_pw";
+
+    /// <summary>The key every test repository derives tenant login passwords from (CSR round 12 §7.1).</summary>
+    internal const string TenantLoginKey = "test-tenant-login-key";
     private const string ProvisionerPassword = "test_provisioner_pw";
 
     public static async Task<(string App, string Provisioner)> EnsureAsync(StarRocksContainerFixture fx)

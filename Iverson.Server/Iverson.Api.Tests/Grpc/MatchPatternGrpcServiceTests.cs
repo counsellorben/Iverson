@@ -441,6 +441,38 @@ public sealed class MatchPatternGrpcServiceTests
     }
 
     [Fact]
+    public async Task A_full_tenant_pool_is_Unavailable_with_a_fixed_message()
+    {
+        // CSR round 12 §7.2: a full per-tenant StarRocks pool reaches the service as MySqlConnector's raw exception.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.MatchRowsAsync(default!, default!, default!, default).ThrowsForAnyArgs(MySqlExceptions.PoolExhausted());
+
+        var act = () => RunAsync(Req("A"));
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(ObjectSearchGrpcServiceTests.TenantPoolFull);
+    }
+
+    [Fact]
+    public async Task A_full_tenant_pool_mid_stream_is_Unavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.MatchRowsAsync(default!, default!, default!, default).ReturnsForAnyArgs(_ => FailOnFirstRead());
+
+        (await StatusOfAsync(Req("A"))).Should().Be(StatusCode.Unavailable);
+
+        static async IAsyncEnumerable<IDictionary<string, object?>> FailOnFirstRead()
+        {
+            await Task.Yield();
+            throw MySqlExceptions.PoolExhausted();
+#pragma warning disable CS0162 // an iterator needs a yield
+            yield break;
+#pragma warning restore CS0162
+        }
+    }
+
+    [Fact]
     public async Task Any_other_store_exception_propagates_unchanged()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());

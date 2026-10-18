@@ -78,10 +78,14 @@ public class ServiceCollectionExtensionsTests
         const string unreachable = "Server=127.0.0.1;Port=1;User ID=x;Password=x;Connection Timeout=1";
         var services = new ServiceCollection();
         services.AddSingleton<ILogger<EngagementRepository>>(NullLogger<EngagementRepository>.Instance);
+        // CSR round 12 §7.1: provisioning also needs the tenant login key and the directory, or it refuses
+        // before connecting.
+        services.AddSingleton<IProvisionedTenantDirectory>(new InMemoryProvisionedTenantDirectory());
         services.AddStarRocks(
             unreachable,
             new EngagementResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(2) },
-            provisionerConnectionString: unreachable);
+            provisionerConnectionString: unreachable,
+            tenantLoginKey: "k");
 
         using var provider = services.BuildServiceProvider();
         var store = provider.GetRequiredService<IEngagementStoreEntityStore>();
@@ -89,6 +93,35 @@ public class ServiceCollectionExtensionsTests
 
         var act = () => store.EnsureTenantProvisionedAsync("t1", schema);
 
+        await act.Should().ThrowAsync<EngagementNotReadyException>();
+    }
+
+    // CSR round 12 §7.2/§7.3: the tenant login key and the registered IProvisionedTenantDirectory reach the
+    // repository. Without the directory, every tenant-scoped read refuses with InvalidOperationException; with
+    // it, an unrecorded tenant reads as empty without connecting. Without the key, a recorded tenant's read
+    // refuses the same way; with it, the read gets as far as the readiness gate, which cannot reach port 1.
+    [Fact]
+    public async Task AddStarRocks_HandsTheTenantLoginKeyAndTheRegisteredDirectoryToTheRepository()
+    {
+        const string unreachable = "Server=127.0.0.1;Port=1;User ID=x;Password=x;Connection Timeout=1";
+        var directory = new InMemoryProvisionedTenantDirectory();
+        await directory.RecordProvisionedAsync("recorded");
+        var services = new ServiceCollection();
+        services.AddSingleton<ILogger<EngagementRepository>>(NullLogger<EngagementRepository>.Instance);
+        services.AddSingleton<IProvisionedTenantDirectory>(directory);
+        services.AddStarRocks(
+            unreachable,
+            new EngagementResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(2) },
+            tenantLoginKey: "k");
+
+        using var provider = services.BuildServiceProvider();
+        var search = provider.GetRequiredService<IEngagementStoreSearchService>();
+        var schema = new EngagementQuerySchema("Probe", "probe", "Id", ["Name"]);
+        static Dictionary<string, AuthorizationConstraint> AuthzFor(string tenantId) =>
+            new() { ["Probe"] = new AuthorizationConstraint(null, null, null, TenantValue: tenantId) };
+
+        (await search.SearchAsync(schema, null, 0, 10, authz: AuthzFor("unrecorded"))).Should().BeEmpty();
+        var act = () => search.SearchAsync(schema, null, 0, 10, authz: AuthzFor("recorded"));
         await act.Should().ThrowAsync<EngagementNotReadyException>();
     }
 }

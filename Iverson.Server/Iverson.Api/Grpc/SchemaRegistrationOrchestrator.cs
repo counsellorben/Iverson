@@ -12,10 +12,9 @@ public interface ISchemaRegistrationOrchestrator
 }
 
 public sealed class SchemaRegistrationOrchestrator(
-    IRecordStoreSchemaManager schemaManager,
     IEmbeddingServiceResolver resolver,
     SchemaRegistry registry,
-    IDocumentRerenderQueueRepository rerenderQueue,
+    ISchemaRegistrationExecutor executor,
     ILogger<SchemaRegistrationOrchestrator> logger)
     : ISchemaRegistrationOrchestrator
 {
@@ -83,10 +82,14 @@ public sealed class SchemaRegistrationOrchestrator(
                 ValidateIdentifier(relation.RelatedType, $"relation related type on type '{typeDesc.TypeName}'");
             }
 
+            RejectCaseDuplicateProperties(typeDesc);
+
+            // The fast pre-check, against this process's cache. The worker repeats it against the
+            // stored row under the registration lock (SchemaRegistrationApplier), which is the check
+            // that holds when two registrations race.
             var priorRegistered = registry.Get(typeDesc.TypeName);
             if (priorRegistered is not null && priorRegistered.OwnerTenantId != ownerTenantId)
-                throw new RpcException(new Status(StatusCode.PermissionDenied,
-                    $"Type '{typeDesc.TypeName}' is registered to another tenant and cannot be re-registered here."));
+                throw PrivilegedRequests.SchemaRegistrationRefusals.OwnedByAnotherTenant(typeDesc.TypeName);
 
             var declared = DeclaredModel(typeDesc);
 
@@ -101,14 +104,15 @@ public sealed class SchemaRegistrationOrchestrator(
             var hasEmbedded = typeDesc.Properties.Any(p => p.IsEmbedding || p.IsChunk);
             var nextModel   = hasEmbedded ? (declared ?? defaultService!.ModelId) : null;
 
-            // batchDescriptors, not registry.Get alone: registry.RegisterAsync does not run until
-            // phase 3, so if this SAME request names typeDesc.TypeName twice (a root colliding with a
-            // dependent, or two dependents sharing a name — nothing above rejects that), the registry
-            // is unchanged between the two occurrences and would report the SAME stale priorModel for
-            // both, letting two different resolved models both slip past a null-vs-null or
-            // null-vs-same comparison. batchDescriptors already holds the first occurrence's built
-            // descriptor by the time a second is reached (populated below, after BuildDescriptor), so
-            // it is checked first: the registry alone is stale during a batch.
+            // batchDescriptors, not registry.Get alone: this process's registry changes only by
+            // reloading after the worker has run phase 3, so if this SAME request names
+            // typeDesc.TypeName twice (a root colliding with a dependent, or two dependents sharing
+            // a name — nothing above rejects that), the registry is unchanged between the two
+            // occurrences and would report the SAME stale priorModel for both, letting two different
+            // resolved models both slip past a null-vs-null or null-vs-same comparison.
+            // batchDescriptors already holds the first occurrence's built descriptor by the time a
+            // second is reached (populated below, after BuildDescriptor), so it is checked first:
+            // the registry alone is stale during a batch.
             var priorDescriptor = batchDescriptors.TryGetValue(typeDesc.TypeName, out var inBatch)
                 ? inBatch
                 : registry.Get(typeDesc.TypeName);
@@ -173,7 +177,7 @@ public sealed class SchemaRegistrationOrchestrator(
                     $"Document template on '{typeDesc.TypeName}' is invalid: {ex.Message} (placeholder: '{ex.Placeholder}')"));
             }
 
-            ValidateEnrichmentTargets(typeDesc, descriptor);
+            ValidateEnrichmentTargets(descriptor);
 
             var ownerField = descriptor.Authorization?.OwnerField;
             if (!string.IsNullOrEmpty(ownerField))
@@ -267,6 +271,26 @@ public sealed class SchemaRegistrationOrchestrator(
                 }
             }
 
+            // CSR round 12 §2.4. A navigation property is a payload key, never a column. The write
+            // RPCs rename every payload key to the column it names ignoring case, so a navigation
+            // name that matches a column would be renamed onto that column. This runs after the
+            // collision check above, so a navigation property named exactly like its own foreign
+            // key keeps that message.
+            foreach (var relation in descriptor.Relations)
+            {
+                var column = descriptor.ScalarColumns
+                    .Select(c => c.Name)
+                    .Prepend(descriptor.KeyColumn.Name)
+                    .FirstOrDefault(name => string.Equals(name, relation.PropertyName, StringComparison.OrdinalIgnoreCase));
+                if (column is not null)
+                {
+                    throw new RpcException(new Status(StatusCode.InvalidArgument,
+                        $"Relation '{relation.PropertyName}' ({relation.Kind}) on '{descriptor.TypeName}' has a " +
+                        $"navigation-property name that matches column '{column}' ignoring case. A navigation " +
+                        "property must not share its name with any property, in any letter case."));
+                }
+            }
+
             descriptors.Add(descriptor);
             batchDescriptors[descriptor.TypeName] = descriptor;
         }
@@ -278,8 +302,8 @@ public sealed class SchemaRegistrationOrchestrator(
             ValidateDocumentTemplate(descriptor);
 
         // Capture which of this request's types have a changed document template, while
-        // registry.Get still returns the PRIOR descriptor (registry.RegisterAsync in phase 3
-        // below overwrites it). Compared on DocumentTemplateSource — the raw template string —
+        // registry.Get still returns the PRIOR descriptor (this process's registry changes only by
+        // reloading once phase 3 succeeds). Compared on DocumentTemplateSource — the raw template string —
         // not the parsed DocumentTemplate: record equality on the parsed model's segment list
         // uses EqualityComparer<T>.Default, which for a collection is reference equality, so two
         // structurally identical templates would never compare equal and every registration
@@ -321,33 +345,14 @@ public sealed class SchemaRegistrationOrchestrator(
             changedTemplateTypes.Add(descriptor.TypeName);
         }
 
-        // Phase 3: apply + register. Only reached once every type in the request has passed
-        // every validation above — an invalid template never applies DDL or persists.
-        var registered = new List<string>();
-        foreach (var descriptor in descriptors)
-        {
-            try
-            {
-                await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor), SchemaDriftPolicy.Throw);
-            }
-            catch (SchemaDriftException ex)
-            {
-                throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
-            }
+        // Phase 3: the privileged effects — the DDL, the registry write and the re-render
+        // enqueue — which the worker runs (CSR round 12 §5). Only reached once every type in the
+        // request has passed every validation above — an invalid template never applies DDL or
+        // persists. The descriptors are owner-stamped here and go in request order.
+        var stamped = descriptors.Select(d => d with { OwnerTenantId = ownerTenantId }).ToList();
+        await executor.ExecuteAsync(stamped, changedTemplateTypes, ct);
 
-            var stamped = descriptor with { OwnerTenantId = ownerTenantId };
-            await registry.RegisterAsync(stamped);
-            registered.Add(stamped.TypeName);
-        }
-
-        // A changed template invalidates every document of that type, because the rendered
-        // text is derived data with no stored copy — a type-level row is how "re-render
-        // everything of this type" is represented before the key set is known (T8 expands it
-        // by paging every entity of the type).
-        foreach (var typeName in changedTemplateTypes)
-            await rerenderQueue.EnqueueTypeAsync(typeName);
-
-        return registered;
+        return stamped.Select(d => d.TypeName).ToList();
     }
 
     // Sits beside ValidateFieldReference/ValidateEnrichmentTargets. The parser (T1) knows
@@ -438,6 +443,27 @@ public sealed class SchemaRegistrationOrchestrator(
                 $"Document template references property '{propertyName}' on '{context.TypeName}', which " +
                 "carries a FieldPermission; a document template cannot selectively exclude fields per caller."));
         }
+    }
+
+    // CSR round 12 §2.4 (user decision 7). This refuses two properties, or the key and a property,
+    // whose names are equal ignoring case. Postgres would create both quoted columns, but StarRocks
+    // resolves column names case-insensitively and cannot hold both. A write RPC also could not
+    // tell which column a payload key names. Runs on the inbound typeDesc, which holds the key and
+    // every property.
+    private static void RejectCaseDuplicateProperties(TypeDescriptor typeDesc)
+    {
+        // Every colliding group is named, so one refusal tells the caller everything to rename.
+        var duplicates = typeDesc.Properties
+            .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .ToList();
+        if (duplicates.Count == 0) return;
+
+        var groups = string.Join("; ", duplicates.Select(g => string.Join(", ", g.Select(p => $"'{p.Name}'"))));
+        throw new RpcException(new Status(StatusCode.InvalidArgument,
+            $"'{typeDesc.TypeName}' declares properties {groups} " +
+            "whose names are equal ignoring letter case. Property names must be distinct ignoring case; " +
+            "rename one of them."));
     }
 
     /// <summary>
@@ -624,132 +650,14 @@ public sealed class SchemaRegistrationOrchestrator(
     }
 
     // Enrichment targets (properties tagged [IversonSummary]/[IversonKeywords]/[IversonExtracted])
-    // are columns the enrichment pipeline writes to, not reads from. Five rules keep that
-    // invariant sound at registration time rather than failing obscurely at ingest, and two more
-    // keep a target's FieldPermissions consistent with that: the pipeline is its only writer, and
-    // its text is derived from the source properties.
-    private static void ValidateEnrichmentTargets(TypeDescriptor typeDesc, SchemaDescriptor descriptor)
+    // are columns the enrichment pipeline writes to, not reads from. The rules that keep that sound
+    // live in EnrichmentTargetRules, stated over the descriptor alone so that SchemaRegistry.LoadAsync
+    // applies the same ones to stored rows (CSR round 12 #18). Registration refuses the first one
+    // broken, rather than failing obscurely at ingest.
+    private static void ValidateEnrichmentTargets(SchemaDescriptor descriptor)
     {
-        var ownerField = descriptor.Authorization?.OwnerField;
-
-        foreach (var target in descriptor.EnrichmentTargets)
-        {
-            var property = typeDesc.Properties.First(p =>
-                string.Equals(p.Name, target.ColumnName, StringComparison.OrdinalIgnoreCase));
-
-            if (property.ObjectType != ObjectType.String)
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' must be a string " +
-                    $"property; it is '{property.ObjectType}'."));
-            }
-
-            // The TenantColumn clause is UNREACHABLE BY CONSTRUCTION, and is kept for the same
-            // reason as the __TenantId exclusion on the FK lookup above rather than deleted:
-            // target.ColumnName is always a DECLARED property name (the First() lookup directly
-            // above would throw otherwise), and RejectReservedTenantName rejects a declared
-            // property named __TenantId before BuildDescriptor ever runs. It is the standing
-            // statement that an enrichment target may never be the tenant column — the property
-            // that keeps this check correct if the reserved-name guard is ever reordered or the
-            // tenant column ever becomes client-addressable again. The user-facing message names
-            // only the two things a caller can still actually collide with: tenant_field is no
-            // longer accepted at all (RejectDeclaredTenantField), so naming it in the remedy would
-            // point the caller at a field that no longer exists.
-            if (property.IsKey ||
-                string.Equals(target.ColumnName, descriptor.TenantColumn, StringComparison.OrdinalIgnoreCase) ||
-                (!string.IsNullOrEmpty(ownerField) &&
-                 string.Equals(target.ColumnName, ownerField, StringComparison.OrdinalIgnoreCase)))
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' cannot be the key " +
-                    "or owner_field."));
-            }
-
-            if (property.IsEmbedding || property.IsChunk)
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' cannot also carry " +
-                    "[IversonEmbedding]/[IversonChunk]: if this property were also a source property, the " +
-                    "enrichment writeback would mutate the hashed text, causing the enricher to re-enrich its " +
-                    "own republished event without bound."));
-            }
-
-            if (target.Kind == EnrichmentKind.Extracted && string.IsNullOrWhiteSpace(target.Hint))
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' has [IversonExtracted] " +
-                    "with an empty hint."));
-            }
-        }
-
-        if (descriptor.EnrichmentTargets.Count > 0)
-        {
-            var targetNames = descriptor.EnrichmentTargets
-                .Select(t => t.ColumnName)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            // Source text is defined as the concatenation of the type's [IversonEmbedding]/
-            // [IversonChunk] properties — nothing else counts. A type with an enrichment target
-            // but no embedding/chunk property would hash an empty source text and call the
-            // enrichment model with an empty prompt.
-            var hasSourceProperty = typeDesc.Properties.Any(p => p.IsEmbedding || p.IsChunk);
-
-            if (!hasSourceProperty)
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"'{descriptor.TypeName}' declares enrichment targets but has no source text property " +
-                    "for the enrichment pipeline to read from."));
-            }
-
-            // The two rules below use RowFieldAuthorizationEvaluator's own comparisons: a
-            // FieldPermission names a property case-insensitively, role names compare ordinally
-            // (the way the caller's `groups` claim is matched), and an empty role list means
-            // unrestricted, so only non-empty lists are acted on.
-            var fieldPermissions = descriptor.Authorization?.FieldPermissions ?? [];
-
-            // Write: the enrichment pipeline is a target's only writer, so a write restriction on
-            // a target could never be enforced against anyone.
-            var writeRestricted = fieldPermissions.FirstOrDefault(fp =>
-                fp.WritableRoles.Count > 0 && targetNames.Contains(fp.FieldName));
-            if (writeRestricted is not null)
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Enrichment target '{writeRestricted.FieldName}' on '{descriptor.TypeName}' carries a " +
-                    "FieldPermission with writable_roles. The enrichment pipeline is the target's only writer, so " +
-                    "a write restriction on it cannot be enforced; remove writable_roles from that FieldPermission."));
-            }
-
-            // Read: a target's text is generated from the source text, so every caller who can read
-            // a target must be able to read every source. The evaluator excludes a field when ANY
-            // FieldPermission naming it excludes the caller, so each restricted source permission
-            // needs one target permission whose roles are a subset of its roles.
-            var sourceNames = typeDesc.Properties
-                .Where(p => p.IsEmbedding || p.IsChunk)
-                .Select(p => p.Name)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var source in fieldPermissions.Where(fp =>
-                         fp.ReadableRoles.Count > 0 && sourceNames.Contains(fp.FieldName)))
-            {
-                foreach (var target in descriptor.EnrichmentTargets)
-                {
-                    var covered = fieldPermissions.Any(fp =>
-                        fp.ReadableRoles.Count > 0 &&
-                        string.Equals(fp.FieldName, target.ColumnName, StringComparison.OrdinalIgnoreCase) &&
-                        fp.ReadableRoles.All(role => source.ReadableRoles.Contains(role, StringComparer.Ordinal)));
-
-                    if (!covered)
-                    {
-                        throw new RpcException(new Status(StatusCode.InvalidArgument,
-                            $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' is generated from " +
-                            $"source property '{source.FieldName}', whose readable_roles are restricted, but the " +
-                            "target carries no FieldPermission whose readable_roles are a subset of them. Every " +
-                            "caller who can read an enrichment target must be able to read every source it is " +
-                            "generated from."));
-                    }
-                }
-            }
-        }
+        if (EnrichmentTargetRules.Violation(descriptor) is { } violation)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, violation));
     }
 
     // The single definition of the client identifier shape lives in Iverson.Sql, which needs it

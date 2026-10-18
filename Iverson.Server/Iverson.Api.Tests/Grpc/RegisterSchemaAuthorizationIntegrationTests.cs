@@ -223,11 +223,19 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
         var embeddingResolver = Substitute.For<IEmbeddingServiceResolver>();
         embeddingResolver.Get(Arg.Any<string?>()).Returns(Substitute.For<IEmbeddingService>());
 
+        // The worker's half of the registration runs in-process here, against the same Postgres;
+        // the queue between api and worker is PrivilegedRequestPostgresIntegrationTests' subject.
+        // The registry table is the worker's startup DDL, so it is created here.
+        var registryRepository = new SchemaRegistryRepository(fixture.PostgresRepository);
+        await registryRepository.EnsureTableAsync();
         var schemaRegistration = new SchemaRegistrationOrchestrator(
-            fixture.PostgresSchemaManager,
             embeddingResolver,
             registry,
-            Substitute.For<IDocumentRerenderQueueRepository>(),
+            new Iverson.Api.PrivilegedRequests.SchemaRegistrationApplier(
+                registryRepository,
+                new ExistingTableInspector(fixture.PostgresRepository),
+                fixture.PostgresSchemaManager,
+                Substitute.For<IDocumentRerenderQueueRepository>()),
             NullLogger<SchemaRegistrationOrchestrator>.Instance);
 
         var sut = new ObjectMappingGrpcService(

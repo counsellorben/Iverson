@@ -3,6 +3,7 @@ using Iverson.Api.Search;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
+using MySqlConnector;
 using ContractsRelationKind = Iverson.Client.Contracts.RelationKind;
 
 // NAMESPACE NOTE: this namespace makes the simple name `Console` resolve to it, not to
@@ -225,12 +226,12 @@ public static class AdminConsoleEndpoints
                 }
             }
         }
-        // AggregateReader deliberately does not translate these two: it has no transport to
+        // AggregateReader deliberately does not translate the first two catches: it has no transport to
         // translate them into. THIS is that transport, so the translation happens here.
         // Both are whole-store conditions rather than per-type ones — StarRocks is unreachable,
         // or was never deployed — so one failed type means every remaining type would fail the
         // same way, and a partial body with the rest silently missing would read as real data.
-        // Both answer 503: the store cannot serve this widget. `reason` separates the transient
+        // Those two answer 503: the store cannot serve this widget. `reason` separates the transient
         // case from the permanent one so the console can word it correctly.
         catch (EngagementNotReadyException ex)
         {
@@ -242,6 +243,16 @@ public static class AdminConsoleEndpoints
         {
             return Results.Json(
                 new EngagementUnavailableResponse("disabled", ex.Message),
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+        // CSR round 12 §7.2: this tenant's StarRocks pool is full in this process. It reaches here as
+        // MySqlConnector's own exception, kept out of the breaker, and is the same whole-tenant
+        // condition for every remaining type. Transient like notReady, so it is a 503 of its own, with
+        // the gRPC read paths' text, which names no login.
+        catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
+        {
+            return Results.Json(
+                new EngagementUnavailableResponse("busy", StarRocksResiliencePipelineFactory.TenantPoolFullMessage),
                 statusCode: StatusCodes.Status503ServiceUnavailable);
         }
 
@@ -338,7 +349,8 @@ public sealed record TypeRowCountEntry(string TypeName, string Status, long RowC
 public sealed record DataVolumeResponse(
     IReadOnlyList<TypeRowCountEntry> Types, int DeniedTypeCount, int UnknownTypeCount);
 
-/// <summary>Why the engagement store could not answer. <c>Reason</c> is <c>notReady</c> or <c>disabled</c>.</summary>
+/// <summary>Why the engagement store could not answer. <c>Reason</c> is <c>notReady</c>, <c>busy</c> (this
+/// tenant's StarRocks connections are all in use) or <c>disabled</c>.</summary>
 public sealed record EngagementUnavailableResponse(string Reason, string Error);
 
 public sealed record QdrantCollectionSummary(string Name, ulong? PointsCount, ulong? IndexedVectorsCount);

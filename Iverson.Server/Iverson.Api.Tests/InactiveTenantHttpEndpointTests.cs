@@ -58,7 +58,7 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
         var jaeger = new FakeJaegerHandler();
         var dlq = Substitute.For<IDlqRepository>();
         dlq.ListUnreplayedAsync(Arg.Any<int>()).Returns(Enumerable.Empty<DlqRow>());
-        dlq.GetUnreplayedByIdAsync(Arg.Any<Guid>()).Returns((DlqReplayRow?)null);
+        dlq.GetUnreplayedSummaryAsync(Arg.Any<Guid>()).Returns((DlqReplayCheckRow?)null);
 
         var factory = _baseFactory.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
         {
@@ -190,7 +190,7 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
             DlqRequest(HttpMethod.Post, $"/admin/dlq/{Guid.NewGuid()}/replay", tenantId));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        await dlq.DidNotReceive().GetUnreplayedByIdAsync(Arg.Any<Guid>());
+        await dlq.DidNotReceive().GetUnreplayedSummaryAsync(Arg.Any<Guid>());
         AssertTenantNotActiveAudited(1, tenantId);
     }
 
@@ -205,7 +205,7 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
             DlqRequest(HttpMethod.Post, $"/admin/dlq/{Guid.NewGuid()}/replay", tenantId));
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound); // past the gate; the fake has no row
-        await dlq.Received(1).GetUnreplayedByIdAsync(Arg.Any<Guid>());
+        await dlq.Received(1).GetUnreplayedSummaryAsync(Arg.Any<Guid>());
         AssertTenantNotActiveAudited(0);
     }
 }

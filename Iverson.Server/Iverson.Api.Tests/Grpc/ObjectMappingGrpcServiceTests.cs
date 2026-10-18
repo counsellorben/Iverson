@@ -89,7 +89,8 @@ public class ObjectMappingGrpcServiceTests
             NullLogger<OutboxPublisher>.Instance);
         _relationResolver = new EntityRelationResolver(_registry, _entities, _authEvaluator);
         _schemaRegistration = new SchemaRegistrationOrchestrator(
-            _schemaManager, _resolver, _registry, Substitute.For<IDocumentRerenderQueueRepository>(),
+            _resolver, _registry,
+            new InProcessSchemaRegistrationExecutor(_schemaManager, _registry, Substitute.For<IDocumentRerenderQueueRepository>()),
             NullLogger<SchemaRegistrationOrchestrator>.Instance);
         _auditLog = new AuditLog(_auditLogger);
         _sut = new ObjectMappingGrpcService(

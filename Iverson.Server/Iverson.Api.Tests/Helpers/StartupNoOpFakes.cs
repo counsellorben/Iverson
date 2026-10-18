@@ -33,6 +33,14 @@ internal sealed class NoOpSchemaRegistryRepository : ISchemaRegistryRepository
 
     public Task UpsertAsync(string typeName, string schemaJson) => Task.CompletedTask;
     public Task DeleteAsync(string typeName) => Task.CompletedTask;
+
+    public Task<IReadOnlyList<string?>> GetOwnersAsync(string typeName) =>
+        Task.FromResult<IReadOnlyList<string?>>([]);
+
+    public Task<bool> UpsertIfOwnerAsync(string typeName, string schemaJson, string? ownerTenantId) =>
+        Task.FromResult(true);
+
+    public Task<bool> ExistsAsync(string typeName) => Task.FromResult(false);
 }
 
 // Program.cs also calls IEnrichmentStateRepository.EnsureTableAsync() during hydration.
@@ -66,6 +74,10 @@ internal sealed class NoOpRecordStoreSchemaManager : IRecordStoreSchemaManager
         TableSchema schema,
         SchemaDriftPolicy driftPolicy = SchemaDriftPolicy.Warn) => Task.CompletedTask;
     public Task EnsureRolesAsync() => Task.CompletedTask;
+    public Task EnsureCanEnterRuntimeRoleAsync() => Task.CompletedTask;
+    public Task EnsureApiLoginAsync(
+        string? password, IReadOnlyList<string> grantStatements, IReadOnlyList<string> grantedTables, TimeSpan roleWait) =>
+        Task.CompletedTask;
 }
 
 internal sealed class NoOpTenantRepository : ITenantRepository
@@ -97,6 +109,7 @@ internal sealed class NoOpDlqRepository : IDlqRepository
     public Task InsertAsync(DlqMessage message) => Task.CompletedTask;
     public Task<IEnumerable<DlqRow>> ListUnreplayedAsync(int limit) => Task.FromResult(Enumerable.Empty<DlqRow>());
     public Task<DlqReplayRow?> GetUnreplayedByIdAsync(Guid id) => Task.FromResult<DlqReplayRow?>(null);
+    public Task<DlqReplayCheckRow?> GetUnreplayedSummaryAsync(Guid id) => Task.FromResult<DlqReplayCheckRow?>(null);
     public Task MarkReplayedAsync(Guid id) => Task.CompletedTask;
     public Task<int> CountUnreplayedAsync() => Task.FromResult(0);
 }

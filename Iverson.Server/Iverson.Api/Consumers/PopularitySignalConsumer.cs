@@ -25,8 +25,9 @@ namespace Iverson.Api.Consumers;
 /// <summary>
 /// What <see cref="PopularitySignalUpdater.UpdateAsync"/> did, so the reconciliation sweep can
 /// distinguish a real engagement-store failure from a designed no-op. <c>Skipped</c> covers the
-/// documented degrade cases (unprovisioned tenant, Qdrant point not yet created) — folding them
-/// into <c>Failed</c> would make the sweep abandon itself during normal operation.
+/// documented degrade cases (unprovisioned tenant, Qdrant point not yet created) and an ineligible
+/// signal — folding them into <c>Failed</c> would make the sweep abandon itself during normal
+/// operation.
 /// </summary>
 internal enum PopularityUpdateOutcome { Updated, Skipped, Failed }
 
@@ -53,6 +54,12 @@ internal sealed class PopularitySignalUpdater(
         SchemaDescriptor parentSchema, PopularitySignalEntry signal, SchemaDescriptor childSchema,
         SchemaRelationDescriptor relation, string parentKey, string? tenantId)
     {
+        // CSR round 12 #8: a count that some reader of the parent could not see row by row is never
+        // computed. Silent here, because this runs per event and per swept parent;
+        // PopularitySignalValidator.ValidateAtStartup logs each such signal once.
+        if (!PopularitySignalEligibility.IsEligible(parentSchema, relation, childSchema))
+            return PopularityUpdateOutcome.Skipped;
+
         var query = new SearchQuery
         {
             Clauses =

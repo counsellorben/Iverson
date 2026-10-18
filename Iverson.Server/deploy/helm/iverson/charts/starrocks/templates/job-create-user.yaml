@@ -114,7 +114,7 @@ spec:
               # /health and every EngagementRepository's readiness gate run it as this user with
               # no role active, and without it they fail with "Access denied; you need (at least
               # one of) the OPERATE OR NODE privilege(s) on SYSTEM", confirmed empirically
-              # against a live FE (4.1.1). Its tenant roles are granted by the provisioner.
+              # against a live FE (4.1.1). It holds no tenant role (CSR round 12): see the revoke below.
               # iverson_provisioner holds user_admin and a direct CREATE DATABASE ON CATALOG
               # default_catalog. The catalog privilege must be direct: provisioning runs
               # `CREATE DATABASE IF NOT EXISTS` for each new tenant database, StarRocks checks the
@@ -136,3 +136,30 @@ spec:
               # are per-connection session defaults for this user, not global settings — every
               # other tenant/service is unaffected. Idempotent like the GRANTs above: reapplied
               # on every post-install/post-upgrade run of this job.
+              # The batch above has just set root's password to ROOT_PW, so every fe call after it
+              # must send it: on a fresh FE, ROOT_HAS_PW was 0 until now.
+              ROOT_HAS_PW=1
+              # CSR round 12 §7.5: iverson_app holds no tenant role any more. Every data
+              # connection logs in as its tenant's own login (iverson_t_<suffix>), and
+              # provisioning no longer grants the tenant role to iverson_app. This revokes every
+              # role an earlier version granted it, hashed and legacy verbatim names alike, by
+              # reading them back from SHOW GRANTS: a role grant is a row without " ON " (every
+              # privilege grant names its object with ON). `public` is every user's implicit
+              # role. It runs here, after the rollout. Under `helm upgrade --wait`, Helm waits for
+              # the new ReplicaSets' readiness (less the rollout's allowed unavailability), not for
+              # the old pods to exit, so a pod of the previous release may still be running or
+              # terminating: an old worker that provisions a brand-new tenant in that window
+              # re-grants that tenant's role to iverson_app.
+              # Without --wait, this hook runs as soon as the manifests are applied. Re-running the
+              # upgrade (or this hook) revokes any such role. A role name outside [A-Za-z0-9_]
+              # stops the job instead of being spliced into a statement.
+              APP_GRANTS="$(fe --batch --skip-column-names -e "SHOW GRANTS FOR 'iverson_app'@'%';")"
+              APP_ROLES="$(printf '%s\n' "$APP_GRANTS" | sed -n "/ ON /d; s/.*GRANT \(.*\) TO .*/\1/p" | tr -d "' \`" | tr ',' '\n')"
+              set -f
+              for ROLE in $APP_ROLES; do
+                case "$ROLE" in
+                  public) ;;
+                  *[!A-Za-z0-9_]*) echo "unexpected role name granted to iverson_app: $ROLE" >&2; exit 1 ;;
+                  *) echo "revoking role $ROLE from iverson_app"; fe -e "REVOKE $ROLE FROM 'iverson_app'@'%';" ;;
+                esac
+              done

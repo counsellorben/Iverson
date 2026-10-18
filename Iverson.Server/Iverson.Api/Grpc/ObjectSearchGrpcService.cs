@@ -10,6 +10,7 @@ using Iverson.Embeddings;
 using Iverson.StarRocks;
 using Iverson.Vector;
 using Microsoft.Extensions.Options;
+using MySqlConnector;
 using Qdrant.Client;
 
 using Filter = Qdrant.Client.Grpc.Filter;
@@ -53,6 +54,15 @@ public sealed partial class ObjectSearchGrpcService(
     private readonly PopularitySignalOptions _popularitySignal = popularitySignalOptions.Value;
 
     /// <summary>
+    /// CSR round 12 §7.2: each tenant's StarRocks pool holds at most 10 connections per process, and a full one is
+    /// kept out of the breaker and the retry, so it reaches the read RPCs as MySqlConnector's own exception. Every
+    /// StarRocks read path answers it with this retryable status. The message names no login, password or
+    /// connection string. The admin console's data-volume endpoint answers the same condition with the same text.
+    /// </summary>
+    private static RpcException TenantPoolFull() => new(new Status(StatusCode.Unavailable,
+        StarRocksResiliencePipelineFactory.TenantPoolFullMessage));
+
+    /// <summary>
     /// CSR finding #6: bounds a vector RPC's requested top_k before it drives any Qdrant fetch
     /// size (which is itself over-fetched by <see cref="OverFetchFactor"/>) or downstream
     /// re-ranking/diversification work. Rejects outright rather than clamping — the same
@@ -92,10 +102,9 @@ public sealed partial class ObjectSearchGrpcService(
                 request.Page,
                 request.PageSize);
 
-        IEnumerable<dynamic> rows;
         try
         {
-            rows = await search.SearchAsync(
+            var rows = await search.SearchAsync(
                 SchemaBuilder.ToEngagementQuerySchema(schema),
                 request.Query,
                 request.Page,
@@ -106,6 +115,35 @@ public sealed partial class ObjectSearchGrpcService(
                     ? SchemaBuilder.ToEngagementQuerySchema(d)
                     : null,
                 authz: auth.Constraints);
+
+            var primaryConstraint = auth.Constraints.TryGetValue(schema.TypeName, out var pc) ? pc : null;
+
+            // Inside the try: a failure while the rows are enumerated maps as the call's own would.
+            foreach (var row in rows)
+            {
+                var dict = ((IDictionary<string, object>)row)
+                    .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+                // Result-side strip for the server-owned tenant column. This path never reaches
+                // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+                // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+                // that single point is bypassable. Unconditional, and independent of the AllowedFields
+                // filtering below, which does nothing at all when AllowedFields is null.
+                AuthorizationFieldMasking.RemoveTenantColumn(dict);
+
+                if (primaryConstraint?.AllowedFields is not null)
+                    foreach (var key in dict.Keys.Where(k => !primaryConstraint.AllowedFields.Contains(k)).ToList())
+                        dict.Remove(key);
+
+                await responseStream.WriteAsync(
+                    new SearchResponse
+                    {
+                        Data    = DictToProtoStruct(dict),
+                        Score   = 1.0f,
+                        TraceId = request.TraceId
+                    },
+                    context.CancellationToken);
+            }
         }
         catch (EngagementQueryTranslationException ex)
         {
@@ -119,33 +157,9 @@ public sealed partial class ObjectSearchGrpcService(
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
         }
-
-        var primaryConstraint = auth.Constraints.TryGetValue(schema.TypeName, out var pc) ? pc : null;
-
-        foreach (var row in rows)
+        catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
         {
-            var dict = ((IDictionary<string, object>)row)
-                .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
-
-            // Result-side strip for the server-owned tenant column. This path never reaches
-            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
-            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
-            // that single point is bypassable. Unconditional, and independent of the AllowedFields
-            // filtering below, which does nothing at all when AllowedFields is null.
-            AuthorizationFieldMasking.RemoveTenantColumn(dict);
-
-            if (primaryConstraint?.AllowedFields is not null)
-                foreach (var key in dict.Keys.Where(k => !primaryConstraint.AllowedFields.Contains(k)).ToList())
-                    dict.Remove(key);
-
-            await responseStream.WriteAsync(
-                new SearchResponse
-                {
-                    Data    = DictToProtoStruct(dict),
-                    Score   = 1.0f,
-                    TraceId = request.TraceId
-                },
-                context.CancellationToken);
+            throw TenantPoolFull();
         }
     }
 
@@ -261,17 +275,16 @@ public sealed partial class ObjectSearchGrpcService(
         // embedding-only property there is no such named vector.
         var centroidPossible = chunkDesc is not null;
 
-        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
+        var decayField = ReadableDecayField(schema, decision);
 
-        var popularityPossible = _popularitySignal.Signals.Any(s =>
-            string.Equals(s.ParentType, schema.TypeName, StringComparison.OrdinalIgnoreCase));
+        var popularitySignal = EligiblePopularitySignal(schema);
 
         // When NEITHER signal can be present, the fused score provably equals the base score for
         // every candidate and the re-rank is a mathematical identity — Qdrant's own ordering is
         // already final. Over-fetching 4x then discarding 3/4 of the payloads (which carry the
         // full source text of every vector field) buys nothing, so fetch exactly topK. Whenever
         // either signal CAN be present the over-fetch stays exactly 4x with no ceiling.
-        var rerankIsIdentity = !centroidPossible && decayField is null && !popularityPossible;
+        var rerankIsIdentity = !centroidPossible && decayField is null && popularitySignal is null;
         var fetchLimit       = rerankIsIdentity ? topK : topK * OverFetchFactor;
 
         IReadOnlyList<VectorSearchResult> results;
@@ -310,7 +323,7 @@ public sealed partial class ObjectSearchGrpcService(
             BaseScore:  r.Score,
             Centroid:   centroids.TryGetValue(r.Id, out var centroid) ? centroid : null,
             Decay:      DecayFor(r, decayField, now, _decayOptions.HalfLifeDays),
-            Popularity: PopularityFor(schema, r, _popularitySignal, now))).ToList();
+            Popularity: PopularityFor(popularitySignal, r, _popularitySignal, now))).ToList();
 
         var byId = ResultsById(results);
 
@@ -460,9 +473,12 @@ public sealed partial class ObjectSearchGrpcService(
         // Covers ScalarColumns and KeyColumn, plus the explicit "key" special case:
         // IntelligenceStoreConsumer.cs:417 writes the identity value under the literal payload key
         // "key", which ToCamelCase("Id") would never produce, so it cannot be derived from the
-        // lookup and must be seeded directly. StructSerializer.UpperFirst below only fires for a
-        // payload key with no matching descriptor column at all — e.g. a stale key left behind by
-        // a since-removed column.
+        // lookup and must be seeded directly.
+        //
+        // The lookup is also the response's allow-list (CSR round 12 #8). Every other payload key is
+        // dropped: the popularity counts the worker writes onto the point, keys left over from a
+        // removed signal or a since-removed column, and any future server-side extra. No client
+        // reads them.
         var columnLookup = new Dictionary<string, ColumnDescriptor>(StringComparer.Ordinal);
         foreach (var col in schema.ScalarColumns)
             columnLookup[col.Name.ToCamelCase()] = col;
@@ -476,8 +492,6 @@ public sealed partial class ObjectSearchGrpcService(
             {
                 if (columnLookup.TryGetValue(kvp.Key, out var col))
                     protoStruct.Fields[col.Name] = ConvertPayloadValue(kvp.Value, col.SqlType);
-                else
-                    protoStruct.Fields[StructSerializer.UpperFirst(kvp.Key)] = Value.ForString(kvp.Value);
             }
 
             AuthorizationFieldMasking.MaskDisallowedFields(protoStruct, decision.AllowedFields, exemptField: "Key");
@@ -680,9 +694,9 @@ public sealed partial class ObjectSearchGrpcService(
         // same distinct parent ids the centroid fetch above already collected.
         var popularities = await RetrievePopularityOrDegradeAsync(
             tenantScope.ResolveCollectionName(schema.CollectionName!, decision.TenantValue, isChunks: false),
-            parentIds, schema, _popularitySignal, now, rpcName);
+            parentIds, EligiblePopularitySignal(schema), _popularitySignal, now, rpcName);
 
-        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
+        var decayField = ReadableDecayField(schema, decision);
 
         var candidates = results.Select(r =>
         {
@@ -739,14 +753,32 @@ public sealed partial class ObjectSearchGrpcService(
 
         var having = request.Having;
 
-        var aggTasks = request.Aggregations
-            .Select(spec => RunAggregationAsync(
-                schema,
-                request.Query,
-                ProtoToEngagementSpec(spec),
-                having,
-                request.Joins,
-                auth.Constraints))
+        // CSR round 12 §7.2: at most four specs run at once. Every spec of a request runs as the same tenant,
+        // whose pool holds ten connections per process, so an unbounded fan-out could take the whole pool. The
+        // specs are converted up front, as before, so a bad one fails before any runs; Task.WhenAll keeps the
+        // results in request order.
+        const int maxConcurrentAggregations = 4;
+        var specs = request.Aggregations.Select(ProtoToEngagementSpec).ToList();
+        using var aggregationSlots = new SemaphoreSlim(maxConcurrentAggregations);
+        var aggTasks = specs
+            .Select(async spec =>
+            {
+                await aggregationSlots.WaitAsync();
+                try
+                {
+                    return await RunAggregationAsync(
+                        schema,
+                        request.Query,
+                        spec,
+                        having,
+                        request.Joins,
+                        auth.Constraints);
+                }
+                finally
+                {
+                    aggregationSlots.Release();
+                }
+            })
             .ToList();
 
         var aggResults = await Task.WhenAll(aggTasks);
@@ -794,6 +826,10 @@ public sealed partial class ObjectSearchGrpcService(
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
         }
+        catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
+        {
+            throw TenantPoolFull();
+        }
     }
 
     // ── Compound GROUP BY ──────────────────────────────────────────────────────
@@ -819,16 +855,36 @@ public sealed partial class ObjectSearchGrpcService(
             logger.LogInformation("[GroupBy] type={Type} keys={Keys} metrics={Metrics}",
                 request.TypeName.SanitizeForLog(), request.Keys.Count, request.Metrics.Count);
 
-        IEnumerable<dynamic> rows;
         try
         {
-            rows = await search.GroupByAsync(
+            var rows = await search.GroupByAsync(
                 SchemaBuilder.ToEngagementQuerySchema(schema),
                 request,
                 t => registry.TryGetVisible(t, actingUserAccessor.ActingUser) is { } d
                     ? SchemaBuilder.ToEngagementQuerySchema(d)
                     : null,
                 authz: auth.Constraints);
+
+            // Inside the try: a failure while the rows are enumerated maps as the call's own would.
+            foreach (var row in rows)
+            {
+                var dict = ((IDictionary<string, object>)row)
+                    .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+                // Result-side strip for the server-owned tenant column. This path never reaches
+                // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+                // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+                // that single point is bypassable. Unconditional, and independent of the AllowedFields
+                // filtering below, which does nothing at all when AllowedFields is null.
+                AuthorizationFieldMasking.RemoveTenantColumn(dict);
+                await responseStream.WriteAsync(
+                    new SearchResponse
+                    {
+                        Data    = DictToProtoStruct(dict),
+                        TraceId = request.TraceId
+                    },
+                    context.CancellationToken);
+            }
         }
         catch (EngagementQueryTranslationException ex)
         {
@@ -842,25 +898,9 @@ public sealed partial class ObjectSearchGrpcService(
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
         }
-
-        foreach (var row in rows)
+        catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
         {
-            var dict = ((IDictionary<string, object>)row)
-                .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
-
-            // Result-side strip for the server-owned tenant column. This path never reaches
-            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
-            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
-            // that single point is bypassable. Unconditional, and independent of the AllowedFields
-            // filtering below, which does nothing at all when AllowedFields is null.
-            AuthorizationFieldMasking.RemoveTenantColumn(dict);
-            await responseStream.WriteAsync(
-                new SearchResponse
-                {
-                    Data    = DictToProtoStruct(dict),
-                    TraceId = request.TraceId
-                },
-                context.CancellationToken);
+            throw TenantPoolFull();
         }
     }
 
@@ -900,16 +940,36 @@ public sealed partial class ObjectSearchGrpcService(
                 request.TypeName.SanitizeForLog(),
                 request.Steps.Count);
 
-        IEnumerable<dynamic> rows;
         try
         {
-            rows = await search.PipelineAsync(
+            var rows = await search.PipelineAsync(
                 SchemaBuilder.ToEngagementQuerySchema(schema),
                 request,
                 t => registry.TryGetVisible(t, actingUserAccessor.ActingUser) is { } d
                     ? SchemaBuilder.ToEngagementQuerySchema(d)
                     : null,
                 authz: auth.Constraints);
+
+            // Inside the try: a failure while the rows are enumerated maps as the call's own would.
+            foreach (var row in rows)
+            {
+                var dict = ((IDictionary<string, object>)row)
+                    .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+                // Result-side strip for the server-owned tenant column. This path never reaches
+                // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+                // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+                // that single point is bypassable. Unconditional, and independent of the AllowedFields
+                // filtering below, which does nothing at all when AllowedFields is null.
+                AuthorizationFieldMasking.RemoveTenantColumn(dict);
+                await responseStream.WriteAsync(
+                    new SearchResponse
+                    {
+                        Data    = DictToProtoStruct(dict),
+                        TraceId = request.TraceId
+                    },
+                    context.CancellationToken);
+            }
         }
         catch (EngagementQueryTranslationException ex)
         {
@@ -923,25 +983,9 @@ public sealed partial class ObjectSearchGrpcService(
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
         }
-
-        foreach (var row in rows)
+        catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
         {
-            var dict = ((IDictionary<string, object>)row)
-                .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
-
-            // Result-side strip for the server-owned tenant column. This path never reaches
-            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
-            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
-            // that single point is bypassable. Unconditional, and independent of the AllowedFields
-            // filtering below, which does nothing at all when AllowedFields is null.
-            AuthorizationFieldMasking.RemoveTenantColumn(dict);
-            await responseStream.WriteAsync(
-                new SearchResponse
-                {
-                    Data    = DictToProtoStruct(dict),
-                    TraceId = request.TraceId
-                },
-                context.CancellationToken);
+            throw TenantPoolFull();
         }
     }
 
@@ -985,16 +1029,15 @@ public sealed partial class ObjectSearchGrpcService(
     /// <summary>
     /// Batched popularity lookup for a chunk search's distinct parent ids, against the object
     /// collection's own payload (the same "<relation>Count" field the object-vector path reads
-    /// via PopularityFor). A failure here degrades the ranking rather than failing the search:
-    /// every popularity becomes ABSENT (never a substituted neutral value), same contract as
-    /// RetrieveVectorsOrDegradeAsync.
+    /// via PopularityFor). <paramref name="signal"/> is the type's eligible signal
+    /// (EligiblePopularitySignal), or null, which reads nothing. A failure here degrades the
+    /// ranking rather than failing the search: every popularity becomes ABSENT (never a
+    /// substituted neutral value), same contract as RetrieveVectorsOrDegradeAsync.
     /// </summary>
     private async Task<IReadOnlyDictionary<ulong, double>> RetrievePopularityOrDegradeAsync(
-        string collection, IReadOnlyList<ulong> parentIds, SchemaDescriptor schema,
+        string collection, IReadOnlyList<ulong> parentIds, PopularitySignalEntry? signal,
         PopularitySignalOptions options, DateTimeOffset now, string rpcName)
     {
-        var signal = options.Signals.FirstOrDefault(s =>
-            string.Equals(s.ParentType, schema.TypeName, StringComparison.OrdinalIgnoreCase));
         if (signal is null || parentIds.Count == 0)
             return new Dictionary<ulong, double>();
 
@@ -1047,13 +1090,12 @@ public sealed partial class ObjectSearchGrpcService(
     /// Reads the raw relation count from the object point's own payload — written by
     /// PopularitySignalConsumer/PopularitySignalReconciliationWorker under "<relation>Count" —
     /// and squashes it into [0,1) via the standard saturating-count curve. Null when the type
-    /// has no configured signal or the field is absent/unparseable (degrade, never substitute).
+    /// has no eligible signal (<paramref name="signal"/> is null) or the field is
+    /// absent/unparseable (degrade, never substitute).
     /// </summary>
     private static double? PopularityFor(
-        SchemaDescriptor schema, VectorSearchResult result, PopularitySignalOptions options, DateTimeOffset now)
+        PopularitySignalEntry? signal, VectorSearchResult result, PopularitySignalOptions options, DateTimeOffset now)
     {
-        var signal = options.Signals.FirstOrDefault(s =>
-            string.Equals(s.ParentType, schema.TypeName, StringComparison.OrdinalIgnoreCase));
         if (signal is null) return null;
 
         var fieldName = signal.Relation.ToCamelCase() + "Count";
@@ -1064,6 +1106,41 @@ public sealed partial class ObjectSearchGrpcService(
         var d         = DecayFieldResolver.ComputeRecencySum(series, now, options.RecencyHalfLifeDays);
         var effective = count + options.RecencyBoost * d;
         return effective / (effective + options.SaturationPoint);
+    }
+
+    /// <summary>
+    /// The type's configured popularity signal when it is eligible (CSR round 12 #8), else null: a
+    /// count is ranked on only when every caller who can read this type could read the child rows
+    /// it counts (PopularitySignalEligibility). Checked here as well as where the count is written,
+    /// because counts written before a signal became ineligible stay on the Qdrant points until
+    /// each point is next re-upserted.
+    /// </summary>
+    private PopularitySignalEntry? EligiblePopularitySignal(SchemaDescriptor schema)
+    {
+        var signal = _popularitySignal.Signals.FirstOrDefault(s =>
+            string.Equals(s.ParentType, schema.TypeName, StringComparison.OrdinalIgnoreCase));
+        if (signal is null) return null;
+
+        var relation = schema.Relations.FirstOrDefault(r =>
+            string.Equals(r.PropertyName, signal.Relation, StringComparison.OrdinalIgnoreCase));
+        return relation is not null && PopularitySignalEligibility.IsEligible(schema, relation, registry)
+            ? signal
+            : null;
+    }
+
+    /// <summary>
+    /// The decay field, or null when the caller may not read it (CSR round 12 #9). Decay re-ranks
+    /// on the column's value, so a caller whose AllowedFields excludes that column could otherwise
+    /// read its order from the scores. AllowedFields compares case-insensitively, so the camelCase
+    /// payload key DecayFieldResolver returns matches the column name as it is. Decided per
+    /// caller, outside DecayFieldResolver's per-schema cache.
+    /// </summary>
+    private string? ReadableDecayField(SchemaDescriptor schema, AuthorizationDecision decision)
+    {
+        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
+        return decayField is not null && decision.AllowedFields is not null && !decision.AllowedFields.Contains(decayField)
+            ? null
+            : decayField;
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

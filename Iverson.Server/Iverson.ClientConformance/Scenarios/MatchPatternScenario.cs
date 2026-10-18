@@ -12,7 +12,7 @@ namespace Iverson.ClientConformance.Scenarios;
 /// The shape follows S7 vector-search's, for the same reasons: the subject is one shared type
 /// (<c>PatternDoc</c>) that every language writes into and every language then matches, so
 /// disagreement between two client libraries is observable. Only the .NET driver ever runs the
-/// register phase — <c>SchemaRegistry.RegisterAsync</c> replaces the stored descriptor wholesale —
+/// register phase — the worker's registration write replaces the stored descriptor wholesale —
 /// and the orchestrator re-registers the reported descriptor once with an authorization block
 /// before any write, without which every seeded write is denied.
 ///

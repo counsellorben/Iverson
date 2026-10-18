@@ -8,6 +8,7 @@ using Iverson.Embeddings;
 using Iverson.Patterns;
 using Iverson.StarRocks;
 using Iverson.Vector;
+using MySqlConnector;
 using Filter = Qdrant.Client.Grpc.Filter;
 using EngineRowsPerMatch = Iverson.Patterns.RowsPerMatch;
 using EngineSkipKind = Iverson.Patterns.AfterMatchSkipKind;
@@ -175,6 +176,10 @@ public sealed partial class ObjectSearchGrpcService
         catch (EngagementStoreDisabledException ex)
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
+        }
+        catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
+        {
+            throw TenantPoolFull();
         }
         finally
         {

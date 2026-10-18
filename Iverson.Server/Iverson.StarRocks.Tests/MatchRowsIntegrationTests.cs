@@ -24,11 +24,14 @@ public sealed class MatchRowsIntegrationTests
         _fx = fx;
         _rootRepo = fx.Repository;
         // The two production logins, set up by the same helper as TenantIsolationIntegrationTests (see
-        // StarRocksSplitLogins). The pooled repositories below reuse the query login only.
+        // StarRocksSplitLogins). iverson_app is the base login only: every tenant query below runs on that
+        // tenant's own login, derived from the tenant login key (CSR round 12 §7.2).
         (_appConnectionString, var provisionerConnectionString) =
             StarRocksSplitLogins.EnsureAsync(fx).GetAwaiter().GetResult();
         _appRepo = new EngagementRepository(_appConnectionString, NullLogger<EngagementRepository>.Instance,
-            provisionerConnectionString: provisionerConnectionString);
+            provisionerConnectionString: provisionerConnectionString,
+            tenantLoginKey: StarRocksSplitLogins.TenantLoginKey,
+            provisionedTenants: new InMemoryProvisionedTenantDirectory());
     }
 
     private static readonly (string Id, string UserId, string Kind, string At, double? Score, string OwnerId)[] Events =
@@ -317,55 +320,47 @@ public sealed class MatchRowsIntegrationTests
         }
     }
 
-    // CIR-1 Finding 2(a): StreamTenantScopedAsync's ReleaseAsync runs `SET ROLE NONE` before returning its
-    // connection to the pool. `MaximumPoolSize=1` forces the very next connection opened on this same
-    // connection string to be that exact physical connection; `ConnectionReset=false` stops MySqlConnector's
-    // own pool-return reset from clearing session state itself, so only our own `SET ROLE NONE` (or its
-    // absence, under the M4 mutant deleting it) decides what `CURRENT_ROLE()` reports next.
-    // `SELECT CURRENT_ROLE()` was verified live against this StarRocks 4.1.1 image before writing this
-    // assertion: it returns the bare role name string when a role is active, and the literal string
-    // "NONE" (not SQL NULL) once `SET ROLE NONE` has run.
+    // CSR round 12 §7.2, replacing CIR-1 Finding 2(a)'s SET ROLE NONE test: tenant connection strings turn off
+    // MySqlConnector's pooled reset, because StarRocks' reset would put the login's caps back to the global
+    // defaults (spec Verified assumption 26). So whatever one read leaves on a connection is seen by the next
+    // read from the same pool. Per-tenant logins give every tenant a pool of its
+    // own, so that state stays inside the tenant. The first assertion checks the premise: this test can see
+    // leftover state at all.
     [Fact]
-    public async Task Stopping_a_read_early_still_clears_the_tenant_role_before_the_connection_is_reused()
+    public async Task Session_state_a_read_leaves_behind_stays_inside_that_tenants_own_pool()
     {
-        var (tenant, schema) = await SeedAsync(Events);
-        var pooledConnectionString = new MySqlConnectionStringBuilder(_appConnectionString)
+        var (tenantA, _) = await SeedAsync(Events);
+        var (tenantB, _) = await SeedAsync(Events);
+
+        await ReadAllAsync(_appRepo.StreamTenantScopedAsync(
+            "sr.test", tenantA, "SET query_timeout = 7", new DynamicParameters(), _ => false, default));
+
+        (await QueryTimeoutAsync(tenantA)).Should().Be(7, "tenant pools do not reset session state");
+        (await QueryTimeoutAsync(tenantB)).Should().Be(180, "tenant B's pool is its own, and its login carries the cap");
+
+        async Task<long> QueryTimeoutAsync(string tenant)
         {
-            MaximumPoolSize = 1, ConnectionReset = false
-        }.ToString();
-        var pooledRepo = new EngagementRepository(pooledConnectionString, NullLogger<EngagementRepository>.Instance);
-
-        var reader = pooledRepo.MatchRowsAsync(schema, Req(oneRow: false), Authz(tenant)).GetAsyncEnumerator();
-        (await reader.MoveNextAsync()).Should().BeTrue();   // one row read, then stop early
-        await reader.DisposeAsync();
-
-        await using var conn = new MySqlConnection(pooledConnectionString);
-        await conn.OpenAsync();   // MaximumPoolSize=1: this is necessarily the same physical connection
-        var role = await conn.ExecuteScalarAsync<string>("SELECT CURRENT_ROLE()");
-        role.Should().Be("NONE");
+            var rows = await ReadAllAsync(_appRepo.StreamTenantScopedAsync(
+                "sr.test", tenant, "SELECT @@query_timeout AS t", new DynamicParameters(), _ => false, default));
+            return Convert.ToInt64(rows.Single()["t"]);
+        }
     }
 
-    // CIR-1 Finding 2(b): the open-phase catch in StreamTenantScopedAsync must release its connection even
-    // when `SET ROLE` itself fails (an unprovisioned tenant), or that connection is never returned to the
-    // pool. `MaximumPoolSize=1` makes a leak observable: under the M6 mutant (deleting the open-phase
-    // `ReleaseAsync(c, null)` call), the pool's one slot stays held forever and the second read below never
-    // gets a connection to open.
+    // CIR-1 Finding 2(b), re-pointed to per-tenant pools (CSR round 12 §7.2): the open-phase catch in
+    // StreamTenantScopedAsync must release its connection when the query fails to start, or that slot never
+    // returns to the pool. A tenant's pool holds EngagementRepository.TenantPoolSize connections, so that many
+    // failed starts would fill it under a leak, and the read after them could never open.
     [Fact]
-    public async Task A_failed_SET_ROLE_releases_its_connection_so_the_next_read_can_still_use_the_pool()
+    public async Task Failed_query_starts_release_their_connections_so_the_tenants_pool_never_fills()
     {
         var (tenant, schema) = await SeedAsync(Events);
-        var pooledConnectionString = new MySqlConnectionStringBuilder(_appConnectionString)
-        {
-            MaximumPoolSize = 1
-        }.ToString();
-        var pooledRepo = new EngagementRepository(pooledConnectionString, NullLogger<EngagementRepository>.Instance);
-        var neverProvisionedTenant = "m" + Guid.NewGuid().ToString("N")[..16];
 
-        (await ReadAllAsync(pooledRepo.MatchRowsAsync(schema, Req(), Authz(neverProvisionedTenant))))
-            .Should().BeEmpty();   // SET ROLE fails for a valid-but-never-provisioned tenant id
+        for (var i = 0; i < EngagementRepository.TenantPoolSize; i++)
+            (await ReadAllAsync(_appRepo.StreamTenantScopedAsync(
+                "sr.test", tenant, "SELEC 1", new DynamicParameters(), _ => true, default))).Should().BeEmpty();
 
-        var rows = await ReadAllAsync(pooledRepo.MatchRowsAsync(schema, Req(), Authz(tenant)))
-            .WaitAsync(TimeSpan.FromSeconds(30));   // a leaked connection would hold the only pool slot
+        var rows = await ReadAllAsync(_appRepo.MatchRowsAsync(schema, Req(), Authz(tenant)))
+            .WaitAsync(TimeSpan.FromSeconds(30));   // a leak would hold every slot: the open waits, then fails
         rows.Should().HaveCount(4);
     }
 
