@@ -10,6 +10,7 @@ using Iverson.StarRocks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.Extensions.Logging.Abstractions;
+using MySqlConnector;
 using Xunit;
 // Iverson.Client.Contracts declares its own AggregationResult (the proto message); this is
 // the StarRocks domain record IEngagementStoreSearchService actually returns.
@@ -85,6 +86,33 @@ public class AdminConsoleDataVolumeEndpointTests
         json.StatusCode.Should().Be(StatusCodes.Status503ServiceUnavailable);
         json.Value!.Reason.Should().Be("disabled");
         json.Value.Error.Should().Be("not deployed in this instance");
+    }
+
+    /// <summary>
+    /// CSR round 12 §7.2: a full per-tenant pool reaches this handler as MySqlConnector's own
+    /// exception, past the breaker. It is a transient whole-tenant condition like
+    /// <c>notReady</c>, so it answers 503 with its own reason, and the message names no login.
+    /// </summary>
+    [Fact]
+    public async Task TenantPoolFull_Returns503WithBusyReason()
+    {
+        var result = await InvokeAsync(new ThrowingSearchService(MySqlExceptions.PoolExhausted));
+
+        var json = result.Should().BeOfType<JsonHttpResult<EngagementUnavailableResponse>>().Subject;
+        json.StatusCode.Should().Be(StatusCodes.Status503ServiceUnavailable);
+        json.Value!.Reason.Should().Be("busy");
+        json.Value.Error.Should().Be(
+            "StarRocks is busy: every connection this tenant may hold in this process is in use. Retry shortly.");
+    }
+
+    /// <summary>The same error code without the full-pool text is a real connect failure, and still propagates.</summary>
+    [Fact]
+    public async Task ConnectTimeoutThatIsNotAFullPool_StillPropagates()
+    {
+        var act = () => InvokeAsync(new ThrowingSearchService(() =>
+            MySqlExceptions.Create(MySqlErrorCode.UnableToConnectToHost, "Unable to connect to any of the specified MySQL hosts.")));
+
+        await act.Should().ThrowAsync<MySqlException>();
     }
 
     /// <summary>

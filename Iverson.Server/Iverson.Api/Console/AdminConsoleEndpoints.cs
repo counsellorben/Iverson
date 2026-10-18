@@ -1,8 +1,10 @@
+using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Api.Search;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
+using MySqlConnector;
 using ContractsRelationKind = Iverson.Client.Contracts.RelationKind;
 
 // NAMESPACE NOTE: this namespace makes the simple name `Console` resolve to it, not to
@@ -244,6 +246,16 @@ public static class AdminConsoleEndpoints
                 new EngagementUnavailableResponse("disabled", ex.Message),
                 statusCode: StatusCodes.Status503ServiceUnavailable);
         }
+        // CSR round 12 §7.2: this tenant's StarRocks pool is full in this process. It reaches here as
+        // MySqlConnector's own exception, kept out of the breaker, and is the same whole-tenant
+        // condition for every remaining type. Transient like notReady, so it is a 503 of its own, with
+        // the gRPC read paths' text, which names no login.
+        catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
+        {
+            return Results.Json(
+                new EngagementUnavailableResponse("busy", ObjectSearchGrpcService.TenantPoolFullMessage),
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
 
         return Results.Ok(new DataVolumeResponse(counted, denied, unknown));
     }
@@ -338,7 +350,8 @@ public sealed record TypeRowCountEntry(string TypeName, string Status, long RowC
 public sealed record DataVolumeResponse(
     IReadOnlyList<TypeRowCountEntry> Types, int DeniedTypeCount, int UnknownTypeCount);
 
-/// <summary>Why the engagement store could not answer. <c>Reason</c> is <c>notReady</c> or <c>disabled</c>.</summary>
+/// <summary>Why the engagement store could not answer. <c>Reason</c> is <c>notReady</c>, <c>busy</c> (this
+/// tenant's StarRocks connections are all in use) or <c>disabled</c>.</summary>
 public sealed record EngagementUnavailableResponse(string Reason, string Error);
 
 public sealed record QdrantCollectionSummary(string Name, ulong? PointsCount, ulong? IndexedVectorsCount);

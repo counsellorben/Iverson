@@ -57,10 +57,12 @@ public sealed partial class ObjectSearchGrpcService(
     /// CSR round 12 §7.2: each tenant's StarRocks pool holds at most 10 connections per process, and a full one is
     /// kept out of the breaker and the retry, so it reaches the read RPCs as MySqlConnector's own exception. Every
     /// StarRocks read path answers it with this retryable status. The message names no login, password or
-    /// connection string.
+    /// connection string. The admin console's data-volume endpoint answers the same condition with the same text.
     /// </summary>
-    private static RpcException TenantPoolFull() => new(new Status(StatusCode.Unavailable,
-        "StarRocks is busy: every connection this tenant may hold in this process is in use. Retry shortly."));
+    private static RpcException TenantPoolFull() => new(new Status(StatusCode.Unavailable, TenantPoolFullMessage));
+
+    internal const string TenantPoolFullMessage =
+        "StarRocks is busy: every connection this tenant may hold in this process is in use. Retry shortly.";
 
     /// <summary>
     /// CSR finding #6: bounds a vector RPC's requested top_k before it drives any Qdrant fetch
