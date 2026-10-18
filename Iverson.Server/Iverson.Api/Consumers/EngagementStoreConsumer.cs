@@ -130,11 +130,7 @@ public sealed class EngagementStoreConsumer(
     private static string WithOwnerValue(string payloadJson, string ownerField, string? authoritativeOwnerValue)
     {
         var node = JsonNode.Parse(payloadJson)!.AsObject();
-        foreach (var key in node
-                     .Select(kv => kv.Key)
-                     .Where(k => string.Equals(k, ownerField, StringComparison.OrdinalIgnoreCase))
-                     .ToList())
-            node.Remove(key);
+        JsonObjectKeys.RemoveIgnoringCase(node, ownerField);
 
         if (authoritativeOwnerValue is not null)
             node[ownerField] = JsonValue.Create(authoritativeOwnerValue);

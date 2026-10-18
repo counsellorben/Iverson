@@ -278,14 +278,10 @@ internal static class SchemaBuilder
     /// </summary>
     internal static SchemaDescriptor NormalizeDeclaredNames(SchemaDescriptor descriptor)
     {
-        var columnSpelling = descriptor.ScalarColumns
-            .Select(c => c.Name)
-            .Prepend(descriptor.KeyColumn.Name)
-            .Where(name => !SchemaDescriptor.IsTenantColumn(name))
-            .Distinct(StringComparer.Ordinal)
-            .GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
-            .Where(spellings => spellings.Count() == 1)
-            .ToDictionary(spellings => spellings.Key, spellings => spellings.Single(), StringComparer.OrdinalIgnoreCase);
+        // Only a name that matches exactly one column is rewritten.
+        var columnSpelling = ColumnSpellingsByName(descriptor)
+            .Where(kv => kv.Value.Count == 1)
+            .ToDictionary(kv => kv.Key, kv => kv.Value[0], StringComparer.OrdinalIgnoreCase);
 
         string ColumnSpelling(string name) =>
             columnSpelling.TryGetValue(name, out var column) ? column : name;
@@ -303,6 +299,27 @@ internal static class SchemaBuilder
                     .ToList()
             }
         };
+    }
+
+    /// <summary>
+    /// Each column a declared name or payload key may refer to, ignoring letter case, with the
+    /// distinct spellings the descriptor registers for it: the key and every scalar column except the
+    /// server-owned tenant column. More than one spelling means a type stored before case-duplicate
+    /// columns were refused at registration. Shared by <see cref="NormalizeDeclaredNames"/> and
+    /// <c>PayloadKeyCanonicalizer</c>, which must agree on what a name resolves to.
+    /// </summary>
+    internal static Dictionary<string, List<string>> ColumnSpellingsByName(SchemaDescriptor descriptor)
+    {
+        var columns = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in descriptor.ScalarColumns.Select(c => c.Name).Prepend(descriptor.KeyColumn.Name))
+        {
+            if (SchemaDescriptor.IsTenantColumn(name)) continue;
+            if (!columns.TryGetValue(name, out var spellings))
+                columns[name] = spellings = [];
+            if (!spellings.Contains(name, StringComparer.Ordinal))
+                spellings.Add(name);
+        }
+        return columns;
     }
 
     // ScalarColumns position: INCLUDE __TenantId. The Postgres table must physically carry the

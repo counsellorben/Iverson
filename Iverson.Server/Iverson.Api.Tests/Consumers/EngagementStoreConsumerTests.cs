@@ -514,8 +514,10 @@ public class EngagementStoreConsumerTests
     // any letter case is the owner column. An event replayed from before payload keys were
     // canonical can carry one.
 
-    [Fact]
-    public async Task HandleUpsert_WithReCasedOwnerKeysInPayload_UpsertsOnlyTheAuthoritativeOwner()
+    // Registers Author as owner-scoped on "Name", points the authoritative row at
+    // authoritativeRowJson, upserts an event carrying payloadJson, and returns the JSON that reached
+    // StarRocks.
+    private async Task<JsonDocument> UpsertAnOwnerScopedAuthorAsync(string payloadJson, string authoritativeRowJson)
     {
         var schema = SchemaFixtures.AuthorSchema() with
         {
@@ -526,13 +528,13 @@ public class EngagementStoreConsumerTests
         };
         await _registry.RegisterAsync(schema);
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
-                 .Returns("""{"Name":"RealOwner","TenantId":"tenant-a"}""");
+                 .Returns(authoritativeRowJson);
 
         var ev = new EntityEvent(
             EventType:     EntityEventType.Created,
             TypeName:      "Author",
             Key:           Guid.NewGuid().ToString(),
-            PayloadJson:   """{"Name":"Forged","NAME":"AlsoForged","name":"Forged too"}""",
+            PayloadJson:   payloadJson,
             TraceId:       "trace-recased-owner",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
@@ -545,7 +547,16 @@ public class EngagementStoreConsumerTests
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         capturedJson.Should().NotBeNull();
-        using var doc = JsonDocument.Parse(capturedJson!);
+        return JsonDocument.Parse(capturedJson!);
+    }
+
+    [Fact]
+    public async Task HandleUpsert_WithReCasedOwnerKeysInPayload_UpsertsOnlyTheAuthoritativeOwner()
+    {
+        using var doc = await UpsertAnOwnerScopedAuthorAsync(
+            """{"Name":"Forged","NAME":"AlsoForged","name":"Forged too"}""",
+            """{"Name":"RealOwner","TenantId":"tenant-a"}""");
+
         var ownerKeys = doc.RootElement.EnumerateObject()
             .Where(p => string.Equals(p.Name, "Name", StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -557,35 +568,10 @@ public class EngagementStoreConsumerTests
     public async Task HandleUpsert_WithReCasedOwnerKeysAndNoAuthoritativeOwner_UpsertsNoOwnerKeyAtAll()
     {
         // Fail closed: with no authoritative owner, no spelling of the owner key may reach StarRocks.
-        var schema = SchemaFixtures.AuthorSchema() with
-        {
-            Authorization = new AuthorizationRules(
-                "Name",
-                new List<RowPermission> { new("test-bypass", true, true, true) },
-                new List<FieldPermission>())
-        };
-        await _registry.RegisterAsync(schema);
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<EntityAccess>())
-                 .Returns("""{"TenantId":"tenant-a"}""");
+        using var doc = await UpsertAnOwnerScopedAuthorAsync(
+            """{"NAME":"victim","name":"victim"}""",
+            """{"TenantId":"tenant-a"}""");
 
-        var ev = new EntityEvent(
-            EventType:     EntityEventType.Created,
-            TypeName:      "Author",
-            Key:           Guid.NewGuid().ToString(),
-            PayloadJson:   """{"NAME":"victim","name":"victim"}""",
-            TraceId:       "trace-recased-owner-null",
-            SchemaVersion: "1",
-            OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Engagement);
-
-        string? capturedJson = null;
-        _sr.UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Do<string>(j => capturedJson = j), Arg.Any<string>())
-           .Returns(Task.CompletedTask);
-
-        await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
-
-        capturedJson.Should().NotBeNull();
-        using var doc = JsonDocument.Parse(capturedJson!);
         doc.RootElement.EnumerateObject()
             .Where(p => string.Equals(p.Name, "Name", StringComparison.OrdinalIgnoreCase))
             .Should().BeEmpty();

@@ -93,11 +93,7 @@ public sealed class OutboxWriter(
 
         if (JsonNode.Parse(payloadJson) is not JsonObject obj) return payloadJson;
 
-        foreach (var key in obj
-                     .Select(kv => kv.Key)
-                     .Where(k => string.Equals(k, tenantColumn, StringComparison.OrdinalIgnoreCase))
-                     .ToList())
-            obj.Remove(key);
+        JsonObjectKeys.RemoveIgnoringCase(obj, tenantColumn);
 
         obj[tenantColumn] = tenantId;
         return obj.ToJsonString();
