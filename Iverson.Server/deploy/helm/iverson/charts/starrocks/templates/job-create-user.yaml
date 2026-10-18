@@ -145,11 +145,13 @@ spec:
               # role an earlier version granted it, hashed and legacy verbatim names alike, by
               # reading them back from SHOW GRANTS: a role grant is a row without " ON " (every
               # privilege grant names its object with ON). `public` is every user's implicit
-              # role. It runs here, after the rollout: under `helm upgrade --wait`, no pod of the
-              # previous release is left to re-grant a role or to read through one (without
-              # --wait, Helm runs this hook as soon as the manifests are applied). Re-running the
-              # upgrade re-runs the revoke. A role name outside [A-Za-z0-9_] stops the job
-              # instead of being spliced into a statement.
+              # role. It runs here, after the rollout. Under `helm upgrade --wait`, Helm waits for
+              # the new ReplicaSets' readiness, not for the old pods to exit, so the last pod of the
+              # previous release may still be terminating: an old worker that provisions a
+              # brand-new tenant in that window re-grants that tenant's role to iverson_app.
+              # Without --wait, this hook runs as soon as the manifests are applied. Re-running the
+              # upgrade (or this hook) revokes any such role. A role name outside [A-Za-z0-9_]
+              # stops the job instead of being spliced into a statement.
               APP_GRANTS="$(fe --batch --skip-column-names -e "SHOW GRANTS FOR 'iverson_app'@'%';")"
               APP_ROLES="$(printf '%s\n' "$APP_GRANTS" | sed -n "/ ON /d; s/.*GRANT \(.*\) TO .*/\1/p" | tr -d "' \`" | tr ',' '\n')"
               set -f

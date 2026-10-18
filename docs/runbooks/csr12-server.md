@@ -10,7 +10,10 @@
 
 - **StarRocks must hold no tenant data written before this release.** There is no backfill. A tenant's login is created by its first write after the upgrade, and a tenant with no login reads as empty. On compose, run `docker compose down -v` before the first `up` of this release. On kind, create a new cluster.
 - **Run `helm dependency build`** in the chart directory. A stale `charts/*.tgz` renders the old subcharts.
-- **Upgrade with `helm upgrade --wait`.** The StarRocks role revoke (§2, step 5) relies on every pod of the previous release being gone when the post-upgrade hooks run, and Helm waits for the rollout before the hooks only under `--wait`. Without it the hooks run as soon as the manifests are applied, and a previous-release worker still running can grant a newly provisioned tenant's role to `iverson_app` after the revoke, which nothing reports. Re-running the upgrade re-runs the revoke.
+- **Upgrade with `helm upgrade --wait`.** The StarRocks role revoke (§2, step 5) runs in a post-upgrade hook, and a previous-release worker still running after it can undo it: when that worker provisions a brand-new tenant, it grants the tenant's role to `iverson_app`, and nothing reports it.
+  - Without `--wait`, Helm runs the hooks as soon as the manifests are applied, while the previous release's pods are still serving.
+  - Under `--wait`, Helm runs them once the new release's workloads are ready. That narrows the window but does not strictly close it. Helm judges a Deployment by its new ReplicaSet's readiness, so the last pod of the previous release may still be terminating when the hook runs, and a tenant it provisions in that window keeps its role on `iverson_app`.
+  - Re-running the upgrade (or the hook) revokes any role granted that way.
 - **Compose:** run `scripts/generate-compose-secrets.sh` once. It adds `IVERSON_STARROCKS_TENANT_KEY` to `.env` and leaves the existing values alone.
 - **The `stack.py query` benchmark tier** (`Iverson.Server/Iverson.LoadTest/scripts/stack.py`) starts `iverson-api` with `--no-deps`, so the worker does not run. The api's login `iverson_api` and its grants exist only once the worker has started on that Postgres volume. On a fresh volume, run the full stack once (`docker compose up -d`, until `iverson-api` is healthy) before the first `stack.py query`. Registering a type also needs the worker (§2, release notes).
 
@@ -43,7 +46,7 @@
    - The api no longer mounts `<release>-postgres-app` (the owner's Secret).
 5. **The hooks, after the rollout:**
    - `<release>-authentik-revoke-cross-db` also waits for `iverson_api` and grants it `CONNECT`. This repeats the worker's grant, which is the one the api relies on.
-   - `<release>-starrocks-create-user` (profiles with StarRocks) revokes every role still granted to `iverson_app`, as read from `SHOW GRANTS`. That covers the hashed `role_tenant_<readable>_<hash>` names and the legacy `role_tenant_<tenantId>` ones. Under `helm upgrade --wait` (§1), every pod of the previous release is gone by then, so nothing re-grants them.
+   - `<release>-starrocks-create-user` (profiles with StarRocks) revokes every role still granted to `iverson_app`, as read from `SHOW GRANTS`. That covers the hashed `role_tenant_<readable>_<hash>` names and the legacy `role_tenant_<tenantId>` ones. Under `helm upgrade --wait` (§1), the new release's pods are ready by then, though a pod of the previous release may still be terminating; §1 says what that leaves and how a re-run clears it.
    - If this hook fails with `unexpected role name granted to iverson_app`, a role whose name is not `[A-Za-z0-9_]` is granted to `iverson_app`. Iverson never creates one. Revoke it by hand, quoting the name with backticks, then re-run the upgrade.
 
 **Release notes (behaviour changes for operators and callers):**
