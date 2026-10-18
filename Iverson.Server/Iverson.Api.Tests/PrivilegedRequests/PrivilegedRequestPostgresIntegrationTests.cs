@@ -49,8 +49,18 @@ public sealed class PrivilegedRequestPostgresFixture : IAsyncLifetime
 [Trait("Category", "Integration")]
 [Collection(ContainerCollection.Name)]
 public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestPostgresFixture fixture)
-    : IClassFixture<PrivilegedRequestPostgresFixture>
+    : IClassFixture<PrivilegedRequestPostgresFixture>, IAsyncLifetime
 {
+    // Each executor's lock class owns a connection pool; the test that built it releases it here.
+    private readonly List<PostgresPrivilegedRequestLocks> _locks = [];
+
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public async Task DisposeAsync()
+    {
+        foreach (var locks in _locks) await locks.DisposeAsync();
+    }
+
     private PrivilegedRequestRepository Requests => new(PrivilegedRequestSchema.TableName, fixture.Repository);
     private SchemaRegistryRepository Registry => new(fixture.Repository);
 
@@ -65,6 +75,8 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
     private PrivilegedRequestExecutor NewExecutor()
     {
         var registry = NewRegistry();
+        var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
+        _locks.Add(locks);
         return new PrivilegedRequestExecutor(
             registry,
             Applier(),
@@ -73,7 +85,7 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
                 Substitute.For<Iverson.Events.IEventProducer>(), NullLogger<Iverson.Api.Reconciliation.ReconciliationService>.Instance),
             Substitute.For<IDlqRepository>(),
             Substitute.For<Iverson.Events.IEventProducer>(),
-            new PostgresPrivilegedRequestLocks(fixture.ConnectionString),
+            locks,
             NullLogger<PrivilegedRequestExecutor>.Instance);
     }
 

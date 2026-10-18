@@ -96,5 +96,8 @@ public class WorkerRoleStartupTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         // Only /health's probe: the api-role startup block, which also probes, does not run here.
         await factory.SchemaManager.Received(1).EnsureCanEnterRuntimeRoleAsync();
+        // The grants and the tables they lock on are the worker's production wiring, not a stub detail.
+        await factory.SchemaManager.Received(1).EnsureApiLoginAsync(
+            "worker-test-password", ApiLoginGrants.Statements, ApiLoginGrants.Tables, Arg.Any<TimeSpan>());
     }
 }
