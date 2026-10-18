@@ -49,7 +49,10 @@ public static class StarRocksResiliencePipelineFactory
     // MySqlConnector 2.6.2 raises a full pool as UnableToConnectToHost with "Connect Timeout expired. All
     // pooled connections are in use." (MySqlConnection.CreateSessionAsync). The same code without that suffix
     // is a real connect timeout, which still counts. Public so the gRPC read paths can answer a full pool as
-    // Unavailable rather than letting the raw exception surface as Unknown.
+    // Unavailable rather than letting the raw exception surface as Unknown. The match is on MySqlConnector's
+    // English message text, which only the live StarRocksTenantLoginIntegrationTests
+    // .OneTenantsFullPool_FailsOnlyThatTenant_AndNeverOpensTheBreaker test exercises: a MySqlConnector upgrade
+    // must keep that test green, or a reworded message would put full pools back in the breaker and the retry.
     public static bool IsPoolExhausted(MySqlException ex) =>
         ex.ErrorCode == MySqlErrorCode.UnableToConnectToHost &&
         ex.Message.Contains("All pooled connections are in use", StringComparison.Ordinal);
