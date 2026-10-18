@@ -24,13 +24,18 @@ public sealed class ExistingTableInspector(IRecordStoreQueryExecutor sql) : IExi
             new { TableName = tableName, TenantColumn = tenantColumn });
 
     // Under iverson_maintenance (BYPASSRLS): the check must see every tenant's rows. A NULL tenant
-    // value counts as another tenant's.
-    public Task<bool> HasRowsOfAnotherTenantAsync(string tableName, string tenantColumn, string ownerTenantId) =>
-        sql.QuerySingleOrDefaultAsync<bool>(
+    // value counts as another tenant's. The predicate means IS DISTINCT FROM @Owner, spelled as two
+    // ranges and a NULL test so that the tenant column's index can answer it; IS DISTINCT FROM
+    // cannot use an index, so it read the whole table.
+    public Task<bool> HasRowsOfAnotherTenantAsync(string tableName, string tenantColumn, string ownerTenantId)
+    {
+        var column = PostgresIdentifier.Quote(tenantColumn);
+        return sql.QuerySingleOrDefaultAsync<bool>(
             $"""
             SELECT EXISTS (SELECT 1 FROM {PostgresIdentifier.Quote(tableName)}
-                           WHERE {PostgresIdentifier.Quote(tenantColumn)} IS DISTINCT FROM @Owner)
+                           WHERE {column} < @Owner OR {column} > @Owner OR {column} IS NULL)
             """,
             new { Owner = ownerTenantId },
             RecordStoreRole.Maintenance);
+    }
 }

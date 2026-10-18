@@ -338,6 +338,29 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
         (await Registry.GetOwnersAsync("Firstletterprobe")).Should().OnlyContain(owner => owner == "tenant-a");
     }
 
+    [Theory]
+    [InlineData("a-tenant")] // sorts before the owner
+    [InlineData("z-tenant")] // sorts after it
+    [InlineData(null)]       // a table whose tenant column allows NULL
+    public async Task TheAdoptionCheck_CountsEveryTenantValueButTheOwnersAsAnotherTenants(string? foreignTenant)
+    {
+        var typeName = $"ForeignRowProbe{(foreignTenant ?? "Null").Replace("-", "")}";
+        var table = SchemaBuilder.ToTableName(typeName);
+        await Applier().ExecuteAsync([Descriptor(typeName, "tenant-a")], [], CancellationToken.None);
+        await fixture.Repository.ExecuteAsync($"""ALTER TABLE {table} ALTER COLUMN "__TenantId" DROP NOT NULL""");
+        await fixture.Repository.ExecuteAsync(
+            $"""INSERT INTO {table} ("Id", "Title", "__TenantId") VALUES (gen_random_uuid(), 'mine', 'tenant-a')""");
+        var inspector = new ExistingTableInspector(fixture.Repository);
+
+        (await inspector.HasRowsOfAnotherTenantAsync(table, SchemaDescriptor.TenantColumnName, "tenant-a")).Should().BeFalse();
+
+        await fixture.Repository.ExecuteAsync(
+            $"""INSERT INTO {table} ("Id", "Title", "__TenantId") VALUES (gen_random_uuid(), 'theirs', @Tenant)""",
+            new { Tenant = foreignTenant });
+
+        (await inspector.HasRowsOfAnotherTenantAsync(table, SchemaDescriptor.TenantColumnName, "tenant-a")).Should().BeTrue();
+    }
+
     [Fact]
     public async Task TheModelChangeRecovery_AdoptsATableHoldingOnlyTheOwnersRows()
     {
