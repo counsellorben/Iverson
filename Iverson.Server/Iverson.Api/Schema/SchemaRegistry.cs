@@ -242,9 +242,9 @@ public sealed class SchemaRegistry(
         }
 
         // Reconcile removals: a schema present in this instance's cache but no longer
-        // returned by Postgres was unregistered by a different process (e.g. a different
-        // api/worker replica calling UnregisterAsync) — without this, a periodic re-poll
-        // could never converge on that removal.
+        // returned by Postgres had its registry row deleted elsewhere (e.g. the documented
+        // model-change recovery) — without this, a periodic re-poll could never converge on
+        // that removal.
         // This loop is the reason `loadedTypeNames.Add` sits OUTSIDE the try above: "not in the
         // set" means EVICT, so a row that merely failed to deserialize must still count as
         // present, or a corruption appearing after boot would unregister a live type mid-flight.
@@ -256,7 +256,16 @@ public sealed class SchemaRegistry(
         logger.LogInformation("SchemaRegistry loaded {Count} schema(s)", _schemas.Count);
     }
 
-    public async Task RegisterAsync(SchemaDescriptor descriptor)
+    /// <summary>
+    /// Test-only: stores <paramref name="descriptor"/> in the registry table and in this process's
+    /// cache, with no owner check. Production writes the registry only in the worker, through
+    /// <see cref="PrivilegedRequests.SchemaRegistrationApplier"/>'s owner-conditional write (CSR
+    /// round 12 §5.3). A call from Iverson.Api fails the build: its project treats IVERSON0001 as an
+    /// error, and only the test project suppresses it.
+    /// </summary>
+    [Obsolete("Test-only: it skips the owner-conditional registry write. Register through the worker's SchemaRegistrationApplier.",
+        DiagnosticId = "IVERSON0001")]
+    internal async Task RegisterAsync(SchemaDescriptor descriptor)
     {
         await repository.EnsureTableAsync();
 
@@ -265,14 +274,6 @@ public sealed class SchemaRegistry(
 
         _schemas[descriptor.TypeName] = descriptor;
         logger.LogInformation("Registered schema for {TypeName}", descriptor.TypeName);
-    }
-
-    public async Task UnregisterAsync(string typeName)
-    {
-        await repository.DeleteAsync(typeName);
-
-        _schemas.TryRemove(typeName, out _);
-        logger.LogInformation("Unregistered schema for {TypeName}", typeName);
     }
 
     /// <summary>

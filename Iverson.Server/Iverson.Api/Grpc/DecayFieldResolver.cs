@@ -13,8 +13,8 @@ internal static class DecayFieldResolver
 {
     // Keyed on schema IDENTITY via reference equality, not on derived content: SchemaRegistry
     // (Iverson.Api/Schema/SchemaRegistry.cs) stores one SchemaDescriptor instance per type in
-    // its own ConcurrentDictionary and replaces the instance wholesale on RegisterAsync
-    // (`_schemas[descriptor.TypeName] = descriptor`) — it is never rebuilt per request. So the
+    // its own ConcurrentDictionary and replaces the instance wholesale when LoadAsync reloads
+    // the type (`_schemas[typeName] = descriptor`) — it is never rebuilt per request. So the
     // SchemaDescriptor handed to ResolveDecayField is stable across repeated calls for an
     // unchanged registration and becomes a brand-new object the moment RegisterSchema
     // re-registers the type, including when only a column's SqlType changes and the column

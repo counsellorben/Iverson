@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- SchemaRegistry.RegisterAsync is test-only: production code may not call it. -->
+    <WarningsAsErrors>$(WarningsAsErrors);IVERSON0001</WarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>

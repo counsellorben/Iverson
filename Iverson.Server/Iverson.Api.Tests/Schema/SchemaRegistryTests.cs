@@ -170,17 +170,6 @@ public class SchemaRegistryTests
     }
 
     [Fact]
-    public async Task UnregisterAsync_RemovesSchema()
-    {
-        await _sut.RegisterAsync(SchemaFixtures.AuthorSchema());
-
-        await _sut.UnregisterAsync("Author");
-
-        _sut.IsRegistered("Author").Should().BeFalse();
-        _sut.Get("Author").Should().BeNull();
-    }
-
-    [Fact]
     public async Task LoadAsync_RemovesSchemasNoLongerInPostgres()
     {
         await _sut.RegisterAsync(SchemaFixtures.AuthorSchema());
@@ -189,7 +178,7 @@ public class SchemaRegistryTests
         _sut.IsRegistered("Article").Should().BeTrue();
 
         // Simulate "Article" having been unregistered by a different process: the next
-        // LoadAsync's query only returns "Author" (matching what UnregisterAsync's DELETE
+        // LoadAsync's query only returns "Author" (matching what deleting its registry row
         // would leave behind in Postgres), even though this instance's in-memory copy still
         // has "Article" from the RegisterAsync call above.
         _repository.LoadAllAsync()
