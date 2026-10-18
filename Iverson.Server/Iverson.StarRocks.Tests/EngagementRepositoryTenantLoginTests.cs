@@ -129,9 +129,17 @@ public class EngagementRepositoryTenantLoginTests
     [Fact]
     public async Task UnrecordedTenant_DeleteHasNothingToRemove_AndDoesNotConnect()
     {
-        var act = () => Repo(new InMemoryProvisionedTenantDirectory()).DeleteAsync("probe", "Id", "k1", "t1");
+        var unrecorded = () => Repo(new InMemoryProvisionedTenantDirectory()).DeleteAsync("probe", "Id", "k1", "t1");
 
-        await act.Should().NotThrowAsync();
+        await unrecorded.Should().NotThrowAsync();
+
+        // The same delete for a recorded tenant connects, and port 1 makes that fail loudly, so the quiet
+        // return above is one that never reached a connection.
+        var directory = new InMemoryProvisionedTenantDirectory();
+        await directory.RecordProvisionedAsync("t1");
+        var recorded = () => Repo(directory).DeleteAsync("probe", "Id", "k1", "t1");
+
+        await recorded.Should().ThrowAsync<EngagementNotReadyException>();
     }
 
     [Fact]
@@ -160,11 +168,22 @@ public class EngagementRepositoryTenantLoginTests
     }
 
     [Fact]
-    public async Task NoDirectory_RefusesReads_BeforeConnecting()
+    public async Task NoDirectory_RefusesReadsAndDeletes_BeforeConnecting()
     {
-        var act = () => Repo(directory: null).SearchAsync(Schema, null, 0, 50, authz: AuthzFor("t1"));
+        var repo = Repo(directory: null);
+        var matchRows = new MatchRowsRequest(
+            [], SearchLogic.And, [], [new SearchSort { Property = "Name" }], [], [], true, [], 100);
 
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*provisioned-tenant directory*");
+        var search = () => repo.SearchAsync(Schema, null, 0, 50, authz: AuthzFor("t1"));
+        var match = async () =>
+        {
+            await foreach (var _ in repo.MatchRowsAsync(Schema, matchRows, AuthzFor("t1"))) { }
+        };
+        var delete = () => repo.DeleteAsync("probe", "Id", "k1", "t1");
+
+        await search.Should().ThrowAsync<InvalidOperationException>().WithMessage("*provisioned-tenant directory*");
+        await match.Should().ThrowAsync<InvalidOperationException>().WithMessage("*provisioned-tenant directory*");
+        await delete.Should().ThrowAsync<InvalidOperationException>().WithMessage("*provisioned-tenant directory*");
     }
 
     // ── provisioning ────────────────────────────────────────────────────────────────────────────
