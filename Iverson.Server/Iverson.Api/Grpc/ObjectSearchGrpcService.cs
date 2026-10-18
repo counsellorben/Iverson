@@ -104,10 +104,9 @@ public sealed partial class ObjectSearchGrpcService(
                 request.Page,
                 request.PageSize);
 
-        IEnumerable<dynamic> rows;
         try
         {
-            rows = await search.SearchAsync(
+            var rows = await search.SearchAsync(
                 SchemaBuilder.ToEngagementQuerySchema(schema),
                 request.Query,
                 request.Page,
@@ -118,6 +117,35 @@ public sealed partial class ObjectSearchGrpcService(
                     ? SchemaBuilder.ToEngagementQuerySchema(d)
                     : null,
                 authz: auth.Constraints);
+
+            var primaryConstraint = auth.Constraints.TryGetValue(schema.TypeName, out var pc) ? pc : null;
+
+            // Inside the try: a failure while the rows are enumerated maps as the call's own would.
+            foreach (var row in rows)
+            {
+                var dict = ((IDictionary<string, object>)row)
+                    .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+                // Result-side strip for the server-owned tenant column. This path never reaches
+                // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+                // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+                // that single point is bypassable. Unconditional, and independent of the AllowedFields
+                // filtering below, which does nothing at all when AllowedFields is null.
+                AuthorizationFieldMasking.RemoveTenantColumn(dict);
+
+                if (primaryConstraint?.AllowedFields is not null)
+                    foreach (var key in dict.Keys.Where(k => !primaryConstraint.AllowedFields.Contains(k)).ToList())
+                        dict.Remove(key);
+
+                await responseStream.WriteAsync(
+                    new SearchResponse
+                    {
+                        Data    = DictToProtoStruct(dict),
+                        Score   = 1.0f,
+                        TraceId = request.TraceId
+                    },
+                    context.CancellationToken);
+            }
         }
         catch (EngagementQueryTranslationException ex)
         {
@@ -134,34 +162,6 @@ public sealed partial class ObjectSearchGrpcService(
         catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
         {
             throw TenantPoolFull();
-        }
-
-        var primaryConstraint = auth.Constraints.TryGetValue(schema.TypeName, out var pc) ? pc : null;
-
-        foreach (var row in rows)
-        {
-            var dict = ((IDictionary<string, object>)row)
-                .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
-
-            // Result-side strip for the server-owned tenant column. This path never reaches
-            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
-            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
-            // that single point is bypassable. Unconditional, and independent of the AllowedFields
-            // filtering below, which does nothing at all when AllowedFields is null.
-            AuthorizationFieldMasking.RemoveTenantColumn(dict);
-
-            if (primaryConstraint?.AllowedFields is not null)
-                foreach (var key in dict.Keys.Where(k => !primaryConstraint.AllowedFields.Contains(k)).ToList())
-                    dict.Remove(key);
-
-            await responseStream.WriteAsync(
-                new SearchResponse
-                {
-                    Data    = DictToProtoStruct(dict),
-                    Score   = 1.0f,
-                    TraceId = request.TraceId
-                },
-                context.CancellationToken);
         }
     }
 
@@ -857,16 +857,36 @@ public sealed partial class ObjectSearchGrpcService(
             logger.LogInformation("[GroupBy] type={Type} keys={Keys} metrics={Metrics}",
                 request.TypeName.SanitizeForLog(), request.Keys.Count, request.Metrics.Count);
 
-        IEnumerable<dynamic> rows;
         try
         {
-            rows = await search.GroupByAsync(
+            var rows = await search.GroupByAsync(
                 SchemaBuilder.ToEngagementQuerySchema(schema),
                 request,
                 t => registry.TryGetVisible(t, actingUserAccessor.ActingUser) is { } d
                     ? SchemaBuilder.ToEngagementQuerySchema(d)
                     : null,
                 authz: auth.Constraints);
+
+            // Inside the try: a failure while the rows are enumerated maps as the call's own would.
+            foreach (var row in rows)
+            {
+                var dict = ((IDictionary<string, object>)row)
+                    .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+                // Result-side strip for the server-owned tenant column. This path never reaches
+                // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+                // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+                // that single point is bypassable. Unconditional, and independent of the AllowedFields
+                // filtering below, which does nothing at all when AllowedFields is null.
+                AuthorizationFieldMasking.RemoveTenantColumn(dict);
+                await responseStream.WriteAsync(
+                    new SearchResponse
+                    {
+                        Data    = DictToProtoStruct(dict),
+                        TraceId = request.TraceId
+                    },
+                    context.CancellationToken);
+            }
         }
         catch (EngagementQueryTranslationException ex)
         {
@@ -883,26 +903,6 @@ public sealed partial class ObjectSearchGrpcService(
         catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
         {
             throw TenantPoolFull();
-        }
-
-        foreach (var row in rows)
-        {
-            var dict = ((IDictionary<string, object>)row)
-                .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
-
-            // Result-side strip for the server-owned tenant column. This path never reaches
-            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
-            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
-            // that single point is bypassable. Unconditional, and independent of the AllowedFields
-            // filtering below, which does nothing at all when AllowedFields is null.
-            AuthorizationFieldMasking.RemoveTenantColumn(dict);
-            await responseStream.WriteAsync(
-                new SearchResponse
-                {
-                    Data    = DictToProtoStruct(dict),
-                    TraceId = request.TraceId
-                },
-                context.CancellationToken);
         }
     }
 
@@ -942,16 +942,36 @@ public sealed partial class ObjectSearchGrpcService(
                 request.TypeName.SanitizeForLog(),
                 request.Steps.Count);
 
-        IEnumerable<dynamic> rows;
         try
         {
-            rows = await search.PipelineAsync(
+            var rows = await search.PipelineAsync(
                 SchemaBuilder.ToEngagementQuerySchema(schema),
                 request,
                 t => registry.TryGetVisible(t, actingUserAccessor.ActingUser) is { } d
                     ? SchemaBuilder.ToEngagementQuerySchema(d)
                     : null,
                 authz: auth.Constraints);
+
+            // Inside the try: a failure while the rows are enumerated maps as the call's own would.
+            foreach (var row in rows)
+            {
+                var dict = ((IDictionary<string, object>)row)
+                    .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+                // Result-side strip for the server-owned tenant column. This path never reaches
+                // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+                // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+                // that single point is bypassable. Unconditional, and independent of the AllowedFields
+                // filtering below, which does nothing at all when AllowedFields is null.
+                AuthorizationFieldMasking.RemoveTenantColumn(dict);
+                await responseStream.WriteAsync(
+                    new SearchResponse
+                    {
+                        Data    = DictToProtoStruct(dict),
+                        TraceId = request.TraceId
+                    },
+                    context.CancellationToken);
+            }
         }
         catch (EngagementQueryTranslationException ex)
         {
@@ -968,26 +988,6 @@ public sealed partial class ObjectSearchGrpcService(
         catch (MySqlException ex) when (StarRocksResiliencePipelineFactory.IsPoolExhausted(ex))
         {
             throw TenantPoolFull();
-        }
-
-        foreach (var row in rows)
-        {
-            var dict = ((IDictionary<string, object>)row)
-                .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
-
-            // Result-side strip for the server-owned tenant column. This path never reaches
-            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
-            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
-            // that single point is bypassable. Unconditional, and independent of the AllowedFields
-            // filtering below, which does nothing at all when AllowedFields is null.
-            AuthorizationFieldMasking.RemoveTenantColumn(dict);
-            await responseStream.WriteAsync(
-                new SearchResponse
-                {
-                    Data    = DictToProtoStruct(dict),
-                    TraceId = request.TraceId
-                },
-                context.CancellationToken);
         }
     }
 

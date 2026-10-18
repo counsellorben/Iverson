@@ -2563,6 +2563,69 @@ public class ObjectSearchGrpcServiceTests
         rpc.Status.Detail.Should().Be(TenantPoolFull);
     }
 
+    // The store's rows are buffered today, but the mappings cover their enumeration too: a result the store
+    // enumerated lazily, failing on its first row, must answer exactly as a failure of the call itself.
+    private static IEnumerable<dynamic> RowsThatFailOnEnumeration(Exception failure)
+    {
+        if (failure is not null) throw failure;
+        yield break;
+    }
+
+    [Fact]
+    public async Task Search_TenantPoolFullWhileItsRowsAreEnumerated_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _search.SearchAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(_ => Task.FromResult(RowsThatFailOnEnumeration(MySqlExceptions.PoolExhausted())));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
+    [Fact]
+    public async Task GroupBy_NotReadyWhileItsRowsAreEnumerated_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+        _search.GroupByAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(_ => Task.FromResult(RowsThatFailOnEnumeration(new EngagementNotReadyException("backends still starting"))));
+
+        var request = new GroupByRequest { TypeName = "Owned", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be("StarRocks is not ready: backends still starting");
+    }
+
+    [Fact]
+    public async Task Pipeline_TenantPoolFullWhileItsRowsAreEnumerated_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
+        _search.PipelineAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(_ => Task.FromResult(RowsThatFailOnEnumeration(MySqlExceptions.PoolExhausted())));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Pipeline(new PipelineRequest { TypeName = "Article" }, writer, TestServerCallContext.Create());
+
+        var rpc = (await act.Should().ThrowAsync<RpcException>()).Which;
+        rpc.StatusCode.Should().Be(StatusCode.Unavailable);
+        rpc.Status.Detail.Should().Be(TenantPoolFull);
+    }
+
     [Fact]
     public async Task Search_ConnectTimeoutThatIsNotAFullPool_StillPropagates()
     {
