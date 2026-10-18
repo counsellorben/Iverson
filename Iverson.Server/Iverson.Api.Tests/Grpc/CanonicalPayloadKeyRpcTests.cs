@@ -351,4 +351,48 @@ public class CanonicalPayloadKeyRpcTests
         row.GetProperty("Extra").GetString().Should().Be("x");
         row.GetProperty("Meta").GetProperty("Url").GetString().Should().Be("nested");
     }
+
+    // The canonicalizer's column map and the serializer's column-name set are cached per descriptor
+    // instance. A re-registration replaces the instance, so the next write must use the new spelling
+    // even when only a column's letter case changed. "Url" then "url": a stale map would rename the
+    // key back to "Url", and a stale set would upper-first it to "Url". The type name is this test's
+    // own, so a cache wrongly keyed on the name could only hold this test's first registration.
+    [Fact]
+    public async Task Post_AfterTheTypeIsReRegisteredWithAReCasedColumn_UsesTheNewSpelling()
+    {
+        var typeName = $"ReRegisteredLink{Guid.NewGuid():N}";
+        var upper = LinkSchema() with
+        {
+            TypeName      = typeName,
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Url", "TEXT", true),
+                new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false),
+            ]
+        };
+        var lower = upper with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("url", "TEXT", true),
+                new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false),
+            ]
+        };
+        async Task<JsonElement> PostAsync()
+        {
+            _written.Clear();
+            await _persistence.Post(new PersistRequest
+            {
+                TypeName = typeName,
+                Payload  = MakePayload(new() { ["url"] = Value.ForString("a") })
+            }, TestServerCallContext.Create());
+            return WrittenRow();
+        }
+
+        await _registry.RegisterAsync(upper);
+        (await PostAsync()).EnumerateObject().Select(p => p.Name).Should().Contain("Url").And.NotContain("url");
+
+        await _registry.RegisterAsync(lower);
+        (await PostAsync()).EnumerateObject().Select(p => p.Name).Should().Contain("url").And.NotContain("Url");
+    }
 }

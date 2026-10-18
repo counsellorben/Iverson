@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Schema;
@@ -27,17 +28,14 @@ namespace Iverson.Api.Grpc;
 /// </summary>
 internal static class PayloadKeyCanonicalizer
 {
+    // Keyed on the descriptor instance, as DecayFieldResolver's cache is: SchemaRegistry replaces a
+    // type's instance wholesale when it reloads or re-registers it, so a recased column is a new key.
+    // The map is a function of the instance's column names alone and is only read after it is built.
+    private static readonly ConditionalWeakTable<SchemaDescriptor, Dictionary<string, List<string>>> ColumnSpellings = new();
+
     internal static void Canonicalize(SchemaDescriptor schema, Struct payload)
     {
-        var columns = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var name in schema.ScalarColumns.Select(c => c.Name).Prepend(schema.KeyColumn.Name))
-        {
-            if (SchemaDescriptor.IsTenantColumn(name)) continue;
-            if (!columns.TryGetValue(name, out var spellings))
-                columns[name] = spellings = [];
-            if (!spellings.Contains(name, StringComparer.Ordinal))
-                spellings.Add(name);
-        }
+        var columns = ColumnSpellings.GetValue(schema, BuildColumnSpellings);
 
         var keyFor = new Dictionary<string, string>(StringComparer.Ordinal);
         var renames = new List<(string From, string To)>();
@@ -72,5 +70,21 @@ internal static class PayloadKeyCanonicalizer
             payload.Fields.Remove(from);
             payload.Fields[to] = value;
         }
+    }
+
+    // Each column the payload may name, ignoring case, with its registered spellings. More than one
+    // spelling means a type stored before case-duplicate columns were refused at registration.
+    private static Dictionary<string, List<string>> BuildColumnSpellings(SchemaDescriptor schema)
+    {
+        var columns = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in schema.ScalarColumns.Select(c => c.Name).Prepend(schema.KeyColumn.Name))
+        {
+            if (SchemaDescriptor.IsTenantColumn(name)) continue;
+            if (!columns.TryGetValue(name, out var spellings))
+                columns[name] = spellings = [];
+            if (!spellings.Contains(name, StringComparer.Ordinal))
+                spellings.Add(name);
+        }
+        return columns;
     }
 }

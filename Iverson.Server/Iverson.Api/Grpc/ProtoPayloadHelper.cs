@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Google.Protobuf.Collections;
 using Google.Protobuf.WellKnownTypes;
@@ -11,6 +12,10 @@ internal static class StructSerializer
     // A nested object's keys never name a column.
     private static readonly HashSet<string> s_noColumns = [];
 
+    // Keyed on the descriptor instance, as DecayFieldResolver's cache is: SchemaRegistry replaces a
+    // type's instance wholesale when it reloads or re-registers it. Only read after it is built.
+    private static readonly ConditionalWeakTable<SchemaDescriptor, HashSet<string>> s_columnNames = new();
+
     /// <summary>
     /// Serializes a write payload. A top-level key that is exactly one of <paramref name="schema"/>'s
     /// column names is written as it is. Every other key, nested keys included, is upper-firsted.
@@ -22,7 +27,8 @@ internal static class StructSerializer
     internal static string SerializePayload(Struct payload, SchemaDescriptor? schema = null) =>
         JsonSerializer.Serialize(FoldKeys(payload.Fields, schema is null
             ? s_noColumns
-            : schema.ScalarColumns.Select(c => c.Name).Append(schema.KeyColumn.Name).ToHashSet(StringComparer.Ordinal)));
+            : s_columnNames.GetValue(schema, s =>
+                s.ScalarColumns.Select(c => c.Name).Append(s.KeyColumn.Name).ToHashSet(StringComparer.Ordinal))));
 
     internal static string UpperFirst(string s) =>
         s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
