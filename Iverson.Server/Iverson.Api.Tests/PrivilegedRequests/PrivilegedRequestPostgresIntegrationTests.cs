@@ -18,8 +18,7 @@ namespace Iverson.Api.Tests.PrivilegedRequests;
 
 public sealed class PrivilegedRequestPostgresFixture : IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
-        .WithImage("postgres:18-alpine")
+    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:18-alpine")
         .Build();
 
     public string ConnectionString { get; private set; } = null!;
@@ -387,18 +386,45 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
 
     // ── The advisory locks ───────────────────────────────────────────────────
 
+    // Each test below releases what it holds in a finally, so a failed assertion cannot leave a
+    // session lock held for the next test. A waiter gets its own token, cancelled on the way out.
+
+    private static async Task ReleaseAsync(
+        IAsyncDisposable? lease, CancellationTokenSource waiterCts, Task<IAsyncDisposable>? waiter)
+    {
+        await waiterCts.CancelAsync();
+        if (waiter is not null)
+        {
+            try { await (await waiter).DisposeAsync(); }
+            catch (OperationCanceledException) { }
+        }
+
+        if (lease is not null)
+            await lease.DisposeAsync();
+    }
+
     [Fact]
     public async Task TheRegistrationLock_IsHeldByOneHolderAtATime()
     {
         await using var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
+        using var waiterCts = new CancellationTokenSource();
+        IAsyncDisposable? first = await locks.AcquireRegistrationAsync(CancellationToken.None);
+        Task<IAsyncDisposable>? second = null;
+        try
+        {
+            second = locks.AcquireRegistrationAsync(waiterCts.Token);
+            await Task.Delay(500);
+            second.IsCompleted.Should().BeFalse("the first holder still has the lock");
 
-        var first = await locks.AcquireRegistrationAsync(CancellationToken.None);
-        var second = locks.AcquireRegistrationAsync(CancellationToken.None);
-        await Task.Delay(500);
-        second.IsCompleted.Should().BeFalse("the first holder still has the lock");
-
-        await first.DisposeAsync();
-        await using var secondLease = await second.WaitAsync(TimeSpan.FromSeconds(10));
+            await first.DisposeAsync();
+            first = null;
+            await using var secondLease = await second.WaitAsync(TimeSpan.FromSeconds(10));
+            second = null;
+        }
+        finally
+        {
+            await ReleaseAsync(first, waiterCts, second);
+        }
     }
 
     [Fact]
@@ -406,50 +432,80 @@ public sealed class PrivilegedRequestPostgresIntegrationTests(PrivilegedRequestP
     {
         // A one-second command timeout stands in for Npgsql's 30 s default.
         await using var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString + ";Command Timeout=1");
+        using var waiterCts = new CancellationTokenSource();
+        IAsyncDisposable? first = await locks.AcquireRegistrationAsync(CancellationToken.None);
+        Task<IAsyncDisposable>? second = null;
+        try
+        {
+            second = locks.AcquireRegistrationAsync(waiterCts.Token);
+            await Task.Delay(3000);
+            second.IsCompleted.Should().BeFalse("the waiter must still be waiting, not timed out");
 
-        var first = await locks.AcquireRegistrationAsync(CancellationToken.None);
-        var second = locks.AcquireRegistrationAsync(CancellationToken.None);
-        await Task.Delay(3000);
-        second.IsCompleted.Should().BeFalse("the waiter must still be waiting, not timed out");
-
-        await first.DisposeAsync();
-        await using var secondLease = await second.WaitAsync(TimeSpan.FromSeconds(10));
+            await first.DisposeAsync();
+            first = null;
+            await using var secondLease = await second.WaitAsync(TimeSpan.FromSeconds(10));
+            second = null;
+        }
+        finally
+        {
+            await ReleaseAsync(first, waiterCts, second);
+        }
     }
 
     [Fact]
     public async Task ATypeLock_SerialisesOneTypeIgnoringCase_AndBlocksNeitherAnotherTypeNorRegistration()
     {
         await using var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
+        using var waiterCts = new CancellationTokenSource();
+        IAsyncDisposable? article = await locks.AcquireTypeAsync("LockArticle", CancellationToken.None);
+        Task<IAsyncDisposable>? sameTypeOtherCase = null;
+        try
+        {
+            await using (var other = await locks.AcquireTypeAsync("LockOther", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10))) { }
+            await using (var registration = await locks.AcquireRegistrationAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10))) { }
 
-        var article = await locks.AcquireTypeAsync("LockArticle", CancellationToken.None);
-        await using (var other = await locks.AcquireTypeAsync("LockOther", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10))) { }
-        await using (var registration = await locks.AcquireRegistrationAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10))) { }
+            sameTypeOtherCase = locks.AcquireTypeAsync("lockarticle", waiterCts.Token);
+            await Task.Delay(500);
+            sameTypeOtherCase.IsCompleted.Should().BeFalse("a type lock folds the name's case");
 
-        var sameTypeOtherCase = locks.AcquireTypeAsync("lockarticle", CancellationToken.None);
-        await Task.Delay(500);
-        sameTypeOtherCase.IsCompleted.Should().BeFalse("a type lock folds the name's case");
-
-        await article.DisposeAsync();
-        await using var sameTypeLease = await sameTypeOtherCase.WaitAsync(TimeSpan.FromSeconds(10));
+            await article.DisposeAsync();
+            article = null;
+            await using var sameTypeLease = await sameTypeOtherCase.WaitAsync(TimeSpan.FromSeconds(10));
+            sameTypeOtherCase = null;
+        }
+        finally
+        {
+            await ReleaseAsync(article, waiterCts, sameTypeOtherCase);
+        }
     }
 
     [Fact]
     public async Task ALockWaiter_HoldsNoConnectionWhileItWaits()
     {
         await using var locks = new PostgresPrivilegedRequestLocks(fixture.ConnectionString);
+        using var waiterCts = new CancellationTokenSource();
+        IAsyncDisposable? first = await locks.AcquireRegistrationAsync(CancellationToken.None);
+        Task<IAsyncDisposable>? second = null;
+        try
+        {
+            second = locks.AcquireRegistrationAsync(waiterCts.Token);
+            await Task.Delay(1000);
 
-        var first = await locks.AcquireRegistrationAsync(CancellationToken.None);
-        var second = locks.AcquireRegistrationAsync(CancellationToken.None);
-        await Task.Delay(1000);
+            // A waiter blocked inside pg_advisory_lock shows as an ungranted advisory lock, on a
+            // connection it keeps checked out of the pool for the whole wait.
+            second.IsCompleted.Should().BeFalse("the first holder still has the lock");
+            (await fixture.Repository.QuerySingleOrDefaultAsync<long>(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")).Should().Be(0);
 
-        // A waiter blocked inside pg_advisory_lock shows as an ungranted advisory lock, on a
-        // connection it keeps checked out of the pool for the whole wait.
-        second.IsCompleted.Should().BeFalse("the first holder still has the lock");
-        (await fixture.Repository.QuerySingleOrDefaultAsync<long>(
-            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")).Should().Be(0);
-
-        await first.DisposeAsync();
-        await using var secondLease = await second.WaitAsync(TimeSpan.FromSeconds(10));
+            await first.DisposeAsync();
+            first = null;
+            await using var secondLease = await second.WaitAsync(TimeSpan.FromSeconds(10));
+            second = null;
+        }
+        finally
+        {
+            await ReleaseAsync(first, waiterCts, second);
+        }
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using Dapper;
 using FluentAssertions;
+using Iverson.Api.PrivilegedRequests;
 using Iverson.Api.Reconciliation;
 using Iverson.Api.Tenancy;
 using Iverson.Sql;
@@ -20,8 +21,7 @@ public sealed class ApiLoginGrantsPostgresContainerFixture : IAsyncLifetime
 {
     public const string ApiPassword = "api-login-test-only";
 
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
-        .WithImage("postgres:18-alpine")
+    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:18-alpine")
         .Build();
 
     public string OwnerConnectionString => _container.GetConnectionString();
@@ -256,11 +256,11 @@ public sealed class ApiLoginGrantsPostgresIntegrationTests(ApiLoginGrantsPostgre
         var dlq = new DlqRepository(DlqSchema.TableName, _api);
         var row = (await dlq.ListUnreplayedAsync(200)).Should().Contain(r => r.MessageKey == messageKey).Which;
 
-        // The replay route's checks (spec §5.2) read the row's tenant and replay flag, by name.
-        var check = await _api.QuerySingleOrDefaultAsync<(string? TenantId, bool Replayed)>(
-            $"""SELECT "TenantId", "Replayed" FROM "{DlqSchema.TableName}" WHERE "Id" = @Id""", new { row.Id });
-        check.TenantId.Should().Be("tenant-a");
-        check.Replayed.Should().BeFalse();
+        // The replay route's checks (spec §5.2): the api's own repository method, as the api login.
+        var check = await dlq.GetUnreplayedSummaryAsync(row.Id);
+        check.Should().NotBeNull();
+        check!.TenantId.Should().Be("tenant-a");
+        check.SourceTopic.Should().Be("iverson.entity-events");
 
         await DeniedAsync(() => _api.QueryAsync<string>($"""SELECT "MessageValue" FROM "{DlqSchema.TableName}" """));
         await DeniedAsync(() => _api.QueryAsync<dynamic>($"""SELECT * FROM "{DlqSchema.TableName}" """));
@@ -269,21 +269,14 @@ public sealed class ApiLoginGrantsPostgresIntegrationTests(ApiLoginGrantsPostgre
     [Fact]
     public async Task PrivilegedRequests_InsertPollAndExpireSucceed_ButOnlyStatusIsWritable()
     {
+        // The api's own repository methods, as the api login: insert, poll, expire.
+        var requests = new PrivilegedRequestRepository(PrivilegedRequestsTable, _api);
         var id = Guid.NewGuid();
-        await _api.ExecuteAsync(
-            $"""
-            INSERT INTO "{PrivilegedRequestsTable}"
-                ("Id", "Kind", "Payload", "RequestedBy", "Status", "RequestedAt", "ExpiresAt")
-            VALUES (@Id, 'ReconcileType', @Payload::jsonb, 'operator', 'pending', now(), NULL)
-            """,
-            new { Id = id, Payload = "{}" });
+        await requests.InsertAsync(id, PrivilegedRequestKinds.ReconcileType, "{}", "operator", expiresAfter: null);
 
-        (await _api.QuerySingleOrDefaultAsync<string>(
-            $"""SELECT "Status" FROM "{PrivilegedRequestsTable}" WHERE "Id" = @Id""", new { Id = id }))
-            .Should().Be("pending");
-        (await _api.ExecuteAsync(
-            $"""UPDATE "{PrivilegedRequestsTable}" SET "Status" = 'expired' WHERE "Id" = @Id AND "Status" = 'pending'""",
-            new { Id = id })).Should().Be(1);
+        (await requests.GetAsync(id))!.Status.Should().Be(PrivilegedRequestStatus.Pending);
+        (await requests.ExpireIfPendingAsync(id)).Should().BeTrue();
+        (await requests.GetAsync(id))!.Status.Should().Be(PrivilegedRequestStatus.Expired);
 
         await DeniedAsync(() => _api.ExecuteAsync(
             $"""UPDATE "{PrivilegedRequestsTable}" SET "ResultJson" = @Result::jsonb WHERE "Id" = @Id""",
