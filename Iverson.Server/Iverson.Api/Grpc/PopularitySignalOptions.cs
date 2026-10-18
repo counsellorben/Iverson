@@ -146,11 +146,11 @@ internal static class PopularitySignalValidator
             if (!PopularitySignalEligibility.IsEligible(parentSchema, relation, childSchema))
                 logger.LogWarning(
                     "{Section}: the signal for relation '{Relation}' on '{ParentType}' is not eligible, " +
-                    "so it is neither computed nor ranked on. A caller who can read '{Parent}' could not " +
+                    "so it is neither computed nor ranked on. A caller who can read that parent could not " +
                     "read every '{ChildType}' row it counts: the parent is owner-scoped, or one of its " +
                     "reading roles cannot read the child's rows, foreign key or [IversonPopularitySignal] " +
                     "column.",
-                    PopularitySignalOptions.Section, signal.Relation, signal.ParentType, signal.ParentType,
+                    PopularitySignalOptions.Section, signal.Relation, signal.ParentType,
                     relation.RelatedTypeName);
 
             if (options.RecencyBoost > 0 && childSchema.PopularitySignalColumn is null)

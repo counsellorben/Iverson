@@ -1704,6 +1704,20 @@ public class SchemaRegistrationOrchestratorTests
     }
 
     [Fact]
+    public async Task RegisterAsync_TwoGroupsOfPropertiesWhoseNamesDifferOnlyByCase_NamesBothGroups()
+    {
+        var td = SimpleType("Widget", "Url", "URL", "Title", "TITLE");
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, null, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should()
+            .Contain("'Url'").And.Contain("'URL'").And.Contain("'Title'").And.Contain("'TITLE'");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
     public async Task RegisterAsync_TheKeyAndAPropertyWhoseNamesDifferOnlyByCase_ThrowsInvalidArgument()
     {
         var td = SimpleType("Widget", "ID");

@@ -105,13 +105,14 @@ public sealed class SchemaRegistrationOrchestrator(
             var nextModel   = hasEmbedded ? (declared ?? defaultService!.ModelId) : null;
 
             // batchDescriptors, not registry.Get alone: this process's registry changes only by
-            // reloading after the worker has run phase 3, so if this SAME request names typeDesc.TypeName twice (a root colliding with a
-            // dependent, or two dependents sharing a name — nothing above rejects that), the registry
-            // is unchanged between the two occurrences and would report the SAME stale priorModel for
-            // both, letting two different resolved models both slip past a null-vs-null or
-            // null-vs-same comparison. batchDescriptors already holds the first occurrence's built
-            // descriptor by the time a second is reached (populated below, after BuildDescriptor), so
-            // it is checked first: the registry alone is stale during a batch.
+            // reloading after the worker has run phase 3, so if this SAME request names
+            // typeDesc.TypeName twice (a root colliding with a dependent, or two dependents sharing
+            // a name — nothing above rejects that), the registry is unchanged between the two
+            // occurrences and would report the SAME stale priorModel for both, letting two different
+            // resolved models both slip past a null-vs-null or null-vs-same comparison.
+            // batchDescriptors already holds the first occurrence's built descriptor by the time a
+            // second is reached (populated below, after BuildDescriptor), so it is checked first:
+            // the registry alone is stale during a batch.
             var priorDescriptor = batchDescriptors.TryGetValue(typeDesc.TypeName, out var inBatch)
                 ? inBatch
                 : registry.Get(typeDesc.TypeName);
@@ -451,13 +452,16 @@ public sealed class SchemaRegistrationOrchestrator(
     // every property.
     private static void RejectCaseDuplicateProperties(TypeDescriptor typeDesc)
     {
-        var duplicate = typeDesc.Properties
+        // Every colliding group is named, so one refusal tells the caller everything to rename.
+        var duplicates = typeDesc.Properties
             .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault(g => g.Count() > 1);
-        if (duplicate is null) return;
+            .Where(g => g.Count() > 1)
+            .ToList();
+        if (duplicates.Count == 0) return;
 
+        var groups = string.Join(" and ", duplicates.Select(g => string.Join(", ", g.Select(p => $"'{p.Name}'"))));
         throw new RpcException(new Status(StatusCode.InvalidArgument,
-            $"'{typeDesc.TypeName}' declares properties {string.Join(", ", duplicate.Select(p => $"'{p.Name}'"))} " +
+            $"'{typeDesc.TypeName}' declares properties {groups} " +
             "whose names are equal ignoring letter case. Property names must be distinct ignoring case; " +
             "rename one of them."));
     }
