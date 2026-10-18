@@ -129,4 +129,20 @@ public class QueuedSchemaRegistrationExecutorTests
         ex.Which.Status.Detail.Should().Contain("registration is still being applied");
         await _requests.DidNotReceive().ExpireIfPendingAsync(Arg.Any<Guid>());
     }
+
+    [Fact]
+    public async Task ARequestThatExpiredBeforeAnyWorkerRan_AnswersUnavailable_WithoutReloading()
+    {
+        // Not Succeeded, Failed or Running: the row is already Expired (another path expired it),
+        // so there is no result to report and the caller is told to retry.
+        _requests.GetAsync(Arg.Any<Guid>()).Returns(StatusRow(PrivilegedRequestStatus.Expired));
+
+        var act = Execute;
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.Unavailable);
+        ex.Which.Status.Detail.Should().Contain("did not pick the registration up");
+        await _requests.DidNotReceive().ExpireIfPendingAsync(Arg.Any<Guid>());
+        await _registryRepository.DidNotReceive().LoadAllAsync();
+    }
 }

@@ -345,6 +345,7 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         public readonly IEngagementStoreHealthCheck StarRocks = Substitute.For<IEngagementStoreHealthCheck>();
         public readonly IVectorSchemaManager Vector = Substitute.For<IVectorSchemaManager>();
         public readonly IEventBrokerHealthCheck Kafka = Substitute.For<IEventBrokerHealthCheck>();
+        public readonly IRecordStoreSchemaManager SchemaManager = Substitute.For<IRecordStoreSchemaManager>();
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -352,6 +353,9 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
 
             builder.ConfigureServices(services =>
             {
+                services.RemoveAll<IRecordStoreSchemaManager>();
+                services.AddSingleton(SchemaManager);
+
                 services.RemoveAll<IRecordStoreQueryExecutor>();
                 services.AddSingleton(Db);
 
@@ -383,6 +387,8 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         factory.Kafka.PingAsync().Returns(true);
 
         var client = factory.CreateClient();
+        // Startup's own runtime-role probe ran when the host booted; count only /health's.
+        factory.SchemaManager.ClearReceivedCalls();
 
         var first = await client.GetAsync("/health");
         var second = await client.GetAsync("/health");
@@ -391,6 +397,7 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         second.StatusCode.Should().Be(HttpStatusCode.OK);
 
         await factory.Db.Received(1).QuerySingleOrDefaultAsync<int>(Arg.Any<string>());
+        await factory.SchemaManager.Received(1).EnsureCanEnterRuntimeRoleAsync();
         await factory.Db.Received(1).QuerySingleOrDefaultAsync<bool>(Arg.Any<string>());
         await factory.StarRocks.Received(1).CheckHealthAsync();
         await factory.Vector.Received(1).PingAsync();

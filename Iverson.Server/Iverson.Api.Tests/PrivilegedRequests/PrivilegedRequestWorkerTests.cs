@@ -127,4 +127,25 @@ public class PrivilegedRequestWorkerTests
         JsonSerializer.Deserialize<PrivilegedRequestResult>(resultJson, SchemaRegistry.JsonOptions)
             .Should().Be(new PrivilegedRequestResult(StatusCode.Unavailable, "The worker stopped before finishing this request."));
     }
+
+    [Fact]
+    public async Task Stopping_WaitsForTheRequestsStillRunning_ToRecordTheirOutcome()
+    {
+        var request = Pending();
+        var gate = new TaskCompletionSource<PrivilegedRequestResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _requests.ListClaimableAsync(Arg.Any<int>()).Returns([request], []);
+        _executor.RunAsync(Arg.Is(request), Arg.Any<CancellationToken>()).Returns(gate.Task);
+
+        await _sut.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => _executor.ReceivedCalls().Any());
+
+        var stopping = _sut.StopAsync(CancellationToken.None);
+        await Task.Delay(300);
+        stopping.IsCompleted.Should().BeFalse("the claimed request has not finished, so the host must not stop yet");
+        _completed.ContainsKey(request.Id).Should().BeFalse();
+
+        gate.SetResult(PrivilegedRequestResult.Ok());
+        await stopping.WaitAsync(TimeSpan.FromSeconds(5));
+        _completed[request.Id].Status.Should().Be(PrivilegedRequestStatus.Succeeded);
+    }
 }

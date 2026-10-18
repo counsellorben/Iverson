@@ -174,6 +174,20 @@ public class PrivilegedAdminEndpointTests : IClassFixture<AuthTestWebApplication
     }
 
     [Fact]
+    public async Task Replay_AnyOtherWorkerFailure_Returns500WithTheRecordedMessage()
+    {
+        var id = Guid.NewGuid();
+        _dlq.GetUnreplayedSummaryAsync(id).Returns(new DlqReplayCheckRow("iverson.entity-events", ActiveTenant));
+        WorkerRecords(PrivilegedRequestStatus.Failed,
+            new PrivilegedRequestResult(RpcStatusCode.Internal, "replay failed"));
+
+        var response = await CreateClient().SendAsync(OperatorPost($"/admin/dlq/{id}/replay"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        (await BodyAsync(response)).GetProperty("error").GetString().Should().Be("replay failed");
+    }
+
+    [Fact]
     public async Task Replay_StillPendingAfterTheWait_Returns202WithTheRequestId()
     {
         var id = Guid.NewGuid();
