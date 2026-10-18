@@ -821,16 +821,24 @@ public class ObjectSearchGrpcServiceTests
 
         var aggregate = _sut.Aggregate(request, TestServerCallContext.Create());
 
-        await fourStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        System.Threading.Volatile.Read(ref started).Should().Be(4);
-        aggregate.IsCompleted.Should().BeFalse();
+        // A failed assertion opens the gate on its way out, so no call stays parked behind it.
+        try
+        {
+            await fourStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            System.Threading.Volatile.Read(ref started).Should().Be(4);
+            aggregate.IsCompleted.Should().BeFalse();
 
-        gate.SetResult();
-        var response = await aggregate.WaitAsync(TimeSpan.FromSeconds(10));
+            gate.SetResult();
+            var response = await aggregate.WaitAsync(TimeSpan.FromSeconds(10));
 
-        started.Should().Be(10);
-        peak.Should().Be(4);
-        response.Results.Select(r => r.Name).Should().Equal(Enumerable.Range(0, 10).Select(i => $"a{i}"));
+            started.Should().Be(10);
+            peak.Should().Be(4);
+            response.Results.Select(r => r.Name).Should().Equal(Enumerable.Range(0, 10).Select(i => $"a{i}"));
+        }
+        finally
+        {
+            gate.TrySetResult();
+        }
 
         async Task<SrAggResult?> RunOneAsync(AggregationDescriptor spec)
         {
