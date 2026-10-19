@@ -21,9 +21,9 @@
 - #3: no TenantAdmin call reads more of the directory than the caller's tenant; admin RPCs and invites are bounded; Authentik is no longer a single server replica.
 - #4: only admins sign in to the console or post traces; Jaeger's memory is capped.
 - #14: a revocation or a tenant-status change reaches every api replica within seconds and ends open streams at their next message.
-- #11, #15: no namespace-RBAC holder can mint, copy or exec their way to a privileged Authentik identity without being in the operators group; no IdP write can create an Operator; the orchestrator pin rejects a token whose pod is gone; logins are throttled per account as well as per address.
+- #11, #15: no namespace-RBAC holder can mint, copy or exec their way to a privileged Authentik identity without being in the operators group; no IdP write can create an Operator; the orchestrator pin rejects a token whose pod is gone; logins are throttled per (address, account) pair as well as per address.
 - #5, #6, #16: every listener is reachable only from its intended peers, including in the operator namespaces.
-- #12: every in-cluster hop is mutually authenticated by the mesh; every edge verifies the pod's certificate except AWS ALB; compose's authentication-carrying hops are TLS.
+- #12: every in-cluster hop is mutually authenticated by the mesh; every edge verifies the api's and Authentik's pod certificates except AWS ALB; the edge → admin-ui hop serves static files and stays plaintext (round 11); compose's authentication-carrying hops are TLS.
 
 **Non-goals.**
 - Stopping a compromised api or worker process from reaching every tenant (sub-project 1, §10).
@@ -39,6 +39,7 @@
 - The client keeps its own check that each returned user's `attributes.tenant_id` equals the tenant, because Authentik returns the unfiltered list when filtering raises a `ValueError` (Verified assumption 1).
 - A new `GetUserAsync(pk)` calls `GET /api/v3/core/users/{pk}/` and returns `uid`, `username`, `email`, `is_active`, `groups` and `attributes.tenant_id`. 404 maps to "not in this tenant".
 - `RequireUserInTenantAsync` (RemoveUser, SetTenantAdmin) uses `GetUserAsync` and compares `tenant_id`; it no longer lists. ListUsers and DeleteTenant's deactivation loop use the filtered list. These four are the only callers (Verified assumption 3).
+- `RequireUserInTenantAsync` first requires `user_id` to be a canonical positive decimal integer; any other value is "not in this tenant" (`PermissionDenied`) with no IdP call. `GetUserAsync` also requires the returned `pk` to equal the requested pk. RemoveUser and SetTenantAdmin pass the checked record's pk, not the raw request string, to `DeactivateUserAsync`, `AddGroupAsync` and `RemoveGroupAsync`.
 
 **Limits.**
 - `RateLimitInterceptor` keeps its 50,000/min per-`sub` limiter for every RPC except the `TenantAdminGrpcService` and `TenantLifecycleGrpcService` methods. Those go to a second limiter at **30 calls per minute**, partitioned by `(service, sub)`, so each of the two services has its own 30/min bucket per caller. Over the limit is `ResourceExhausted`, as today.
@@ -80,7 +81,7 @@
 ### 2.3 Revocation and tenant-status lag (#14)
 
 **Shared invalidation.**
-- Channel `iverson_auth_invalidation`. Every revocation write and every tenant-status write issues `pg_notify` **in the same transaction** as the write. The writers are RemoveUser (both revokes), SetTenantAdmin's demotion (both revokes), DeleteTenant, Suspend and Reactivate, and also CreateTenant's insert and its rollback delete. No worker path writes either table (Verified assumption 15).
+- Channel `iverson_auth_invalidation`. Every revocation write and every tenant-status write issues `pg_notify` **in the same transaction** as the write. The writers are RemoveUser (both revokes), SetTenantAdmin's demotion (both revokes), DeleteTenant, Suspend and Reactivate, and also CreateTenant's insert and its rollback delete, and the worker's legacy-tenant seed (`SeedIfMissingAsync`, `Program.cs:803-807`), which notifies in the same transaction as its insert. That seed is the only worker write to either table (Verified assumption 15).
 - Each api replica holds one dedicated listener connection, opened from its own Postgres connection string with `Keepalive=30`, never returned to the pool. It waits with `NpgsqlConnection.WaitAsync`. On every notification it invalidates both `TokenRevocationCache` and `TenantStatusCache`. The payload is only a hint.
 - On every connect and reconnect it issues `LISTEN` first, then invalidates both caches. A notification sent while it was disconnected is not replayed. Reconnects back off from 1 s to 30 s.
 - The 30 s TTL stays as the backstop. Readiness does not depend on the listener; a lost listener is logged and counted.
@@ -107,7 +108,7 @@
 **One function.** `OperatorAuthorizationPolicy.IsSatisfiedBy(principal, operatorSubjects)` is true when the principal's `sub` is on the list or its `scope` contains `admin`. It is used by:
 - the `Operator` named policy (`Program.cs:231-235`);
 - the three hand-written acting-user checks (`Program.cs:654, 681, 717`);
-- `SchemaAdminAuthorizationPolicy`: `sub` on the list, or scope `schema_admin`, which keeps "Operator implies SchemaAdmin" (`SchemaAdminAuthorizationPolicy.cs:5-9`);
+- `SchemaAdminAuthorizationPolicy`: `OperatorAuthorizationPolicy.IsSatisfiedBy(principal, operatorSubjects)` (the list, the `admin` scope, or the compose fallback), or scope `schema_admin`, which keeps "Operator implies SchemaAdmin" (`SchemaAdminAuthorizationPolicy.cs:5-9`);
 - `ConsoleAdmin` and the roles endpoint (§2.2).
 
 Policy names are unchanged, so `AuditingAuthorizationMiddlewareResultHandler` is unaffected. The `groups` claim no longer yields Operator anywhere on Helm.
@@ -154,7 +155,7 @@ Policy names are unchanged, so `AuditingAuthorizationMiddlewareResultHandler` is
 - The old flow-level binding of `iverson-login-failures-by-address` on the login flow, and that policy, are marked `state: absent`.
 
 **How the counts work** (Verified assumption 22):
-- Each (address, identifier) row is clamped at −5 by Authentik's default limits, so the pair rule is "5 failed attempts" for a known username. An unknown username scores −2 per attempt (identification and login both fail), so the rule trips after 3.
+- Each (address, identifier) row is clamped at −5 by Authentik's default limits. The deny stage runs once per login plan, when identification completes, so the pair rule refuses **new login plans** once the pair's rows reach −5: after 5 failed attempts for a known username, or 3 for an unknown one (it scores −2 per attempt: identification and login both fail). Password retries inside a plan that has passed order 12 are bounded only by the password stage's own cancel rule (`failed_attempts_before_cancel`, default 5, counted as the score drop since the plan started) and, on the cloud profiles, the edge's per-address login rate limit (`authentik_login_rate_limit`, round 11). A plan that starts with the pair at 0 is cancelled at its 5th wrong password; one that starts with the pair between −1 and −4 is never cancelled by the password stage, because the clamp keeps the drop below 5 (Verified assumption 65).
 - The address cap is a sum over rows, each floored at −5, so it is reached only once failures span at least 10 identifiers. Failures concentrated on fewer accounts are stopped first by the pair rule.
 - **Expiry** is 1 h, set install-wide by `AUTHENTIK_REPUTATION__EXPIRY=3600` in `<rel>-authentik-config` (both server and worker read it) and in compose. It is not a brand or API setting. A row's expiry is fixed at its first failure. The expired-row cleanup runs every 5 minutes, and until it runs, new failures for that pair are invisible (§7).
 
@@ -171,7 +172,7 @@ Policy names are unchanged, so `AuditingAuthorizationMiddlewareResultHandler` is
 - The Authentik server pod gets a native sidecar `tokenreview-relay`, the worker's `jwks-relay` pattern. It runs `kubectl proxy --address=127.0.0.1 --port=8001 --accept-paths='^/apis/authentication.k8s.io/v1/tokenreviews$' --reject-methods='^(GET|PUT|PATCH|DELETE)$'`, on its own projected token, with no `--www` and no startup probe.
 - RBAC: a ClusterRole `<rel>-<ns>-authentik-tokenreview` whose only rule is `create` on `tokenreviews`, bound by a ClusterRoleBinding to the existing `<rel>-authentik` ServiceAccount. The server and worker share that account.
 - NetworkPolicy: the server pods get API-server egress (`iverson.apiServerEgress`), as the worker already has (`networkpolicies.yaml:616-626`).
-- The orchestrator pin keeps its claim checks and adds a TokenReview of the presented assertion, with `timeout=2` and audience `iverson-authentik-orchestrator`. It requires `status.authenticated` true and `status.user.username` = `system:serviceaccount:<ns>:<rel>-api`. Any exception or non-200 answer refuses (`invalid_grant`).
+- The orchestrator pin keeps its claim checks and adds a TokenReview of the presented assertion, with `timeout=2` and audience `iverson-authentik-orchestrator`. It requires `status.authenticated` true and `status.user.username` = `system:serviceaccount:<ns>:<rel>-api`. It refuses (`invalid_grant`) on any exception, on any response status outside 2xx (a successful review answers 201), and on a body whose `status.authenticated` is not true or whose `status.user.username` differs.
 - It keys on `context["oauth_jwt"]` and the request, not `request.user`, which is anonymous on a first exchange.
 - The raw assertion is read from the token request's form body. The plan's live test confirms the field is reachable from the policy.
 - Effect: a token copied from a pod stops working about 10–12 s after the pod is deleted, instead of up to 600 s. The Authentik access token from an exchange made before then stays valid for its own 5-minute lifetime (§7).
@@ -186,9 +187,9 @@ Policy names are unchanged, so `AuditingAuthorizationMiddlewareResultHandler` is
 
 **Bootstrap password.**
 - `AUTHENTIK_BOOTSTRAP_PASSWORD` leaves the worker (`deployment-worker.yaml:103-105`), and the `bootstrap-password` key leaves `<rel>-authentik-app` (`secret.yaml:12, 15`). The worker restarts cleanly without it, and an existing `akadmin` is not touched.
-- On a fresh install `akadmin` is then created without a usable password, which is the condition that opens Authentik's stock `initial-setup` flow. Two independent closures cover it:
-  - a Helm-rendered blueprint binds a deny policy to `initial-setup` at flow level;
-  - `:9080` answers 404 for it (§2.7).
+- On a fresh install no bootstrap password or token reaches either pod, so Authentik's Setup flag stays False. While it does, `/setup` plans the stock `initial-setup` flow with the context its stock binding requires, and `/` on the in-cluster route redirects there. The flow's default `any` engine mode lets that binding admit it (Verified assumption 62). Two independent closures cover it:
+  - a Helm-rendered blueprint entry for the `initial-setup` flow sets `policy_engine_mode: all` and binds a policy that always returns false at flow level, so the flow is denied whatever the stock binding returns. `/setup`, and `/` on the in-cluster route, then answer 500, Authentik's unhandled denial;
+  - `:9080` forwards neither `/setup` nor the flow's slug, and redirects `/` to the console (§2.7).
 - Once `superusers.yaml` makes `akadmin` inactive, the bootstrap API token is refused (403). Nothing in Helm uses it; the chart already deletes it (`secret-service-clients.yaml:294-299`).
 
 **`AUTHENTIK_SECRET_KEY` rotation** (runbook): replace the Secret value, then restart the server and worker together. Consequences:
@@ -232,18 +233,18 @@ The two invariants:
 **Rules.** Each rule admits a requester whose `request.userInfo.groups` intersects `admission.operatorGroups`, and denies everyone else. Cluster-admin is denied too, by design (Verified assumption 37):
 - **(a) Token minting.** `CREATE` on `serviceaccounts/token` for `<rel>-api` and `<rel>-admin-automation`. The kubelet (`system:nodes`) is also admitted, so projected tokens keep mounting.
 - **(b) Pod connect.** `CONNECT` on `pods/exec`, `pods/attach` and `pods/portforward` for pods named `<rel>-api-*`, `<rel>-worker-*` and `<rel>-authentik-*`. It matches the pod name because a CONNECT request carries no service account.
-- **(c) Bare pods.** Pod `CREATE` with `serviceAccountName` `<rel>-api` or `<rel>-admin-automation`. Also admitted: `system:serviceaccount:kube-system:replicaset-controller`, `…:statefulset-controller` and `…:job-controller`.
+- **(c) Bare pods.** Pod `CREATE` with `serviceAccountName` `<rel>-api` or `<rel>-admin-automation`. Also admitted: `system:serviceaccount:kube-system:replicaset-controller`, `…:statefulset-controller`, `…:job-controller` and `…:daemon-set-controller`.
 - **(d) Workload templates.** `CREATE` and `UPDATE` of Deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs and CronJobs whose pod template (old or new) uses either of those service accounts. Also admitted: the kube-system controllers that maintain those objects (`deployment-controller`, `replicaset-controller`, `cronjob-controller`, `job-controller`, `generic-garbage-collector`). Without (d), anyone who can create a Job could run a pod as `<rel>-admin-automation` through the job controller, which (c) admits.
 - **(e) Ephemeral containers.** `UPDATE` on `pods/ephemeralcontainers` for the pod names in (b). An ephemeral container shares the target pod's process namespace and so its mounted tokens.
 
 **Consequences.**
-- `kubectl debug --copy-to`, `kubectl run --overrides` with those accounts, `kubectl rollout restart` of the api and every `helm upgrade` of the release need the operators group.
+- `kubectl debug --copy-to`, `kubectl run --overrides` with those accounts, `kubectl rollout restart` of the api and every `helm upgrade` that changes a protected workload object (a chart-version or api template change does) need the operators group. Under PSA baseline `kubectl debug` also needs `--profile=baseline`: kubectl's default profile adds `SYS_PTRACE`.
 - The repo's own tooling must run as the operators group:
   - the kind acting-user token script and LoadTest/ClientConformance's `kubectl create token <rel>-admin-automation`;
   - the runbooks' port-forwards;
   - `ak apply_blueprint` through exec.
 
-  On kind the runbooks and scripts impersonate it in addition to the admin's own groups (`--as=<user> --as-group=<own group> --as-group=<operators group>`; Helm: `--kube-as-user`/`--kube-as-group`).
+  On kind the runbooks and scripts impersonate it in addition to the admin's own groups (`--as=<user> --as-group=<own group> --as-group=<operators group>`; Helm needs `--kube-as-user` together with `--kube-as-group`).
 - No Role or RoleBinding is added.
 - Installing needs cluster-scoped write on `admissionregistration.k8s.io` policies and bindings (on AKS an Entra cluster-scope role).
 - **Group plumbing per cloud** (render/static only):
@@ -273,7 +274,7 @@ The two invariants:
   - LoadTest's `IVERSON_HTTP_URL` default and the `--build-url` defaults of `pattern_leg.py`, `dialogue_patterns.py` and `dialogue_pool.py`;
   - `csr11-transport-network.md:94`;
   - the seven Api.Tests files.
-- NetworkPolicy admits 8082 only from Prometheus (plus 15008). No Ingress or route names 8082.
+- NetworkPolicy admits 8082 only from Prometheus (plus 15008), and the api's and worker's `AuthorizationPolicy` admit 8082 only from Prometheus's principal (§4.2). No Ingress or route names 8082.
 - 8081 keeps `/admin`, `/health` and `/v1/traces`. Probes stay on 8081.
 
 ### 3.4 Operator namespaces and AKS (#16)
@@ -286,7 +287,7 @@ The two invariants:
 | `cnpg-system` | ingress 9443 (webhook) from `apiServerCidrs`; egress to the release's Postgres pods on 8000 |
 | `kafka` | egress to the release's Kafka pods on 9090, 9091, 8443 |
 | `starrocks` | API server and DNS only (observed) |
-| `istio-system` | istiod: ingress 15012 from ztunnel and the edge gateway, 15017 (webhook) from `apiServerCidrs`; ztunnel: egress to istiod 15012 |
+| `istio-system` | istiod: ingress 15012 from ztunnel and the edge gateway, 15017 (webhook) from `apiServerCidrs`; ztunnel: egress to istiod 15012. Istio 1.31.2's ambient pods are not host-network (istio-cni included), so the policy governs all of them; istio-cni needs only the common row. |
 | `iverson-edge` (kind) | ingress 80/443 from any source; egress to the release's api (8080, 8081), admin-ui and Authentik (9080) pods, and to istiod 15012 |
 | `tigera-operator` (kind) | none beyond the common rows. Its pods are host-network, so the policy only governs any future pod. `calico-system` and `calico-apiserver` are left to Calico's own policies. |
 
@@ -300,8 +301,7 @@ The two invariants:
 - **AKS etcd encryption:**
   - `key_management_service { key_vault_key_id, key_vault_network_access = "Public" }` on the cluster (azurerm 3.117.1 has the block);
   - the cluster's existing user-assigned control-plane identity gets encrypt/decrypt on a **dedicated** KMS Key Vault and key.
-  - The existing data-volume vault restricts public access to listed IPs, which AKS KMS does not support (Verified assumption 44). The dedicated vault allows public network access with access policies only, and keeps purge protection.
-  - The runbook covers the one-time re-write of existing Secrets after enabling.
+  - The existing data-volume vault restricts public access to listed IPs, which AKS KMS does not support (Verified assumption 44). The dedicated vault allows public network access with access policies only, and keeps purge protection. The vault carries `#tfsec:ignore:azure-keyvault-specify-network-acl` (AKS KMS needs public network access with access policies) and its key `#tfsec:ignore:azure-keyvault-ensure-key-expiry` (KMS-only, purge-protected, rotated rather than expired), each with a one-line justification, following the module's existing ignores (`cluster-azure/main.tf:44, 199`; Verified assumption 63).
 - **AKS node-level IMDS restriction** is preview with no azurerm argument, so it stays a residual. Pod egress is already default-deny (§7).
 
 ### 3.5 StarRocks readiness without `OPERATE ON SYSTEM`
@@ -309,7 +309,7 @@ The two invariants:
 - `EngagementHealthChecker.AnyBackendReadyAsync` (`:72`; also used by `EngagementRepository.CheckBackendAliveAsync`, the readiness gate before every StarRocks operation) runs `SELECT * FROM TABLE(generate_series(1,2))` under a 5 s query timeout instead of `SHOW BACKENDS`. Two rows mean Healthy. The query needs no grant, returns rows with a backend alive, and fails in about 0.4 s ("Backend node not found") with none (Verified assumption 45).
 - The `Healthy` / `AuthPending` / `Unhealthy` mapping is kept. With no grant needed, `AuthPending` now arises only from a refused login.
 - The criterion "a backend has reported MB-scale disk" is lost (§7).
-- `GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%'` is dropped (`job-create-user.yaml:101`, `docker-compose.yml:116`). Upgraded stacks still hold it, so the job and compose's `starrocks-init` also run `REVOKE OPERATE ON SYSTEM FROM USER 'iverson_app'@'%'`, idempotently, beside the existing role revoke.
+- `GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%'` is dropped (`job-create-user.yaml:101`, `docker-compose.yml:116`). Upgraded stacks still hold it, so the job and compose's `starrocks-init` also run `REVOKE OPERATE ON SYSTEM FROM USER 'iverson_app'@'%'` beside the existing role revoke, after `CREATE USER IF NOT EXISTS`; it succeeds whether or not the user holds OPERATE (Verified assumption 71).
 - Tests that grant OPERATE or assert `SHOW BACKENDS` change (Verified assumption 45).
 
 ### 3.6 Kubernetes versions
@@ -319,7 +319,7 @@ The two invariants:
   - cluster-autoscaler's chart, whose appVersion must match (`operators/versions/Chart.yaml:22-23`);
   - the node AMI family the launch template assumes (AL2 and its root device, `cluster-aws/main.tf:524-526`), which the plan re-checks against the AMIs EKS offers for 1.35;
   - CI's `kubeconform -kubernetes-version` (`deploy-validate.yml:77, 89`, and `.gitlab-ci.yml`).
-- An existing cluster upgrades one minor version at a time (runbook).
+- No cloud cluster is deployed, so each cloud profile is a fresh install at 1.35; there is no cloud upgrade path.
 - kind pins its node image: `kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0` in `kind-config.yaml`. That image was run with kind v0.33.0, so `setup.sh`/`setup.ps1` refuse a kind older than v0.33.0. The repo pins no kind version today, and v0.24.0 defaults to 1.31.0, below Istio 1.31's supported 1.32–1.37.
 - A kind cluster is recreated to change its node image.
 
@@ -332,7 +332,7 @@ The two invariants:
 - The four charts are not in the classic Helm index or the OCI registry for 1.31.x, so they are vendored from the release tarball (URL and SHA-256 pinned in a header) into one directory that Terraform's operators module (`helm_release`) and kind's `setup.sh`/`setup.ps1` both install from. They move back to an index once it carries 1.31.x.
 - GKE sets `global.platform=gke`. EKS: if security groups for pods are ever enabled, the VPC CNI must run with `POD_SECURITY_GROUP_ENFORCING_MODE=standard` (runbook note).
 
-**Enrolment.** The namespaces `iverson`, `cnpg-system`, `kafka` and `starrocks` are labelled `istio.io/dataplane-mode=ambient`, by Terraform and the kind scripts, all four together and only after the chart's 15008 rules exist (§5). Running pods are captured without a restart.
+**Enrolment.** The namespaces `iverson`, `cnpg-system`, `kafka` and `starrocks` are labelled `istio.io/dataplane-mode=ambient`, by Terraform and the kind scripts, all four together. On kind they are labelled only after the chart's 15008 rules exist (§5); on a cloud, always a fresh install, Terraform labels them before any release pod exists. Running pods are captured without a restart.
 
 **Peer authentication.** The chart renders a selector-scoped `PeerAuthentication` per release workload:
 - `mtls.mode: STRICT`, with `portLevelMtls: PERMISSIVE` only for ports reached from outside the mesh;
@@ -346,6 +346,12 @@ Port-level settings are honoured only on workload-selector policies; ztunnel ign
 ### 4.2 NetworkPolicy and HBONE
 
 - **15008 is added to every ingress and every egress rule that lists ports,** in the chart and in the operator-namespace chart, to the same peers. In ambient the source's egress leaves for `<dst>:15008`, so ingress alone times out every hop (Verified assumption 47).
+- **Port scoping in the mesh.** Inside the mesh both sides' NetworkPolicy see only 15008, and ztunnel forwards to whatever port the sender asked for, so NetworkPolicy keeps pod-pair scoping but loses port scoping for in-mesh traffic. The chart therefore renders a selector-scoped ztunnel `AuthorizationPolicy` (ALLOW, `security.istio.io/v1`) per release workload that mirrors each of its NetworkPolicy ingress rules: `from.source.principals` = the peers' service-account principals (`cluster.local/ns/<ns>/sa/<sa>`), `to.operation.ports` = that rule's ports. Once a workload has an ALLOW policy, ztunnel refuses every connection none of its rules lists (Verified assumption 66).
+  - Peers outside the release namespace are named by principal: the CNPG operator (`cnpg-system/sa/cnpg-cloudnative-pg`) → Postgres 8000; the Strimzi cluster-operator (`kafka/sa/strimzi-cluster-operator`) → brokers 9090, 9091 and 8443; the kind gateway (`iverson-edge/sa/<gateway name>-istio`) → api 8080 and 8081, Authentik 9080 and admin-ui 8080.
+  - The StarRocks FE and BE get dedicated service accounts, `<rel>-starrocks-fe` and `<rel>-starrocks-be`, through the `StarRocksCluster` CR's `starRocksFeSpec.serviceAccount` and `starRocksBeSpec.serviceAccount`. Today both run as `default`, which no principal can tell apart from any other pod without a service account.
+  - The PERMISSIVE edge ports on the clouds (§4.1) get one more rule: `from.source.ipBlocks` = the ranges the NetworkPolicy edge rule admits (`clusterCidrs`, and `nodeSubnetFallback` where set), scoped to those ports. A principals-only policy refuses plaintext from outside the mesh. `notPrincipals` is never used (it also matches a connection with no identity, so it admits every caller), and `requestPrincipals` never matches in ztunnel.
+  - Kubelet probes need no rule: they arrive SNATed and are not subject to the policy.
+  - A policy change applies to new connections; connections already open may survive it.
 - New chart rules for operator → operand:
   - Strimzi cluster-operator → Kafka pods on 9090/9091/8443 + 15008;
   - CNPG operator (`ns=cnpg-system`, `app.kubernetes.io/name=cloudnative-pg`) → Postgres pods on 8000 + 15008.
@@ -356,7 +362,7 @@ Port-level settings are honoured only on workload-selector policies; ztunnel ign
 
 1. The chart's Postgres policy admits only app pods on 5432, so the CNPG operator cannot reach the instance status port 8000 ("Instance Status Extraction Error"). §4.2's rule admits it.
 2. `charts/postgres/templates/cluster.yaml:18-22` renders `affinity.nodeSelector: {}` and `tolerations: []`. Once the status port is reachable, CNPG 1.30 sees a PodSpec difference and restarts the primary forever. Each renders only when non-empty.
-3. The StarRocks FE and BE specs get `MYSQL_PWD` from `<rel>-starrocks-app`'s `root-password` (`feEnvVars`, `beEnvVars`). Otherwise a restarted BE's entrypoint (`mysql -u root`, no password) is refused after the create-user job sets root's password, and crash-loops.
+3. The StarRocks FE and BE specs get `MYSQL_PWD` from `<rel>-starrocks-app`'s `root-password` (`feEnvVars`, `beEnvVars`). Otherwise a restarted BE's entrypoint (`mysql -u root`, no password) is refused after the create-user job sets root's password, and crash-loops. Because the FE and BE then log in with root's password from their first start, the create-user Job sets root's password as soon as FE-0 answers, no longer waiting for the BE count first (that wait, `job-create-user.yaml:87-96`, existed only because the BE logged in without one). It then waits for `BE_REPLICAS` backends and every FE before the rest of the batch. A BE or FE follower that starts before the password is set exits 1, unregistered (the BE after about 60 s, a follower after 120 s), and joins on its first restart after it (Verified assumption 64). `MYSQL_PWD` must always equal root's live password, so `root-password` is never changed without running `SET PASSWORD` first: `fe_entrypoint.sh`'s pod-0 discovery treats a refused login as an empty cluster, so an FE-0 rebuilt without metadata would start a second cluster (§7).
 
 ### 4.4 StarRocks, the revoke job and HSTS
 
@@ -373,14 +379,14 @@ Port-level settings are honoured only on workload-selector policies; ztunnel ign
 ### 4.5 Edges
 
 **kind and laptop: Istio gateway** (replaces ingress-nginx, archived 2026-03-24 with no further security fixes).
-- `setup.sh`/`setup.ps1` create the namespace `iverson-edge` (not enrolled) and a Gateway API `Gateway` of class `istio` in it.
-  - Its `infrastructure.parametersRef` ConfigMap gives the gateway pod host ports 80/443 and a ClusterIP Service, so `kind-config.yaml`'s existing `127.0.0.1:8080→80` and `8443→443` mappings reach it.
+- `setup.sh`/`setup.ps1` create the namespace `iverson-edge` (not enrolled) before they install the operator-namespace policy chart (§3.4), then a Gateway API `Gateway` of class `istio` in it.
+  - Its `infrastructure.parametersRef` ConfigMap gives the gateway pod host ports 80/443 and a ClusterIP Service, so `kind-config.yaml`'s existing `127.0.0.1:8080→80` and `8443→443` mappings reach it. It also sets the Deployment strategy to `maxSurge: 0, maxUnavailable: 1`: with host ports, the default surge pod can never schedule on a single-node cluster, so a rollout would deadlock (Verified assumption 70).
   - Its HTTPS listener's `certificateRefs` name the release's `iverson-api-tls`.
   - ingress-nginx and its 40-line justification block are removed from both scripts.
 - When `global.gateway.class` is `istio`, the chart stops rendering the four Ingresses and renders instead:
   - a `ReferenceGrant` for the edge Secret;
   - a `GRPCRoute` for the six gRPC services;
-  - `HTTPRoute`s for `/health`, admin-api, Authentik and admin-ui, with the same hosts and path sets as today's Ingresses (admin-api: `/admin`, `/health`, `/v1/traces` only);
+  - `HTTPRoute`s for admin-api (rendered only when `api.adminConsoleEnabled`, as today), Authentik and admin-ui, with the same hosts and path sets as today's Ingresses (admin-api: `/admin`, `/health`, `/v1/traces` only);
   - a `BackendTLSPolicy` per TLS backend (hostname plus a CA ConfigMap from the internal TLS Secret's `ca.crt`);
   - `ResponseHeaderModifier` filters carrying the headers the nginx `configuration-snippet` sets today (`api/templates/ingress.yaml:30-41`, `admin-ui/templates/ingress.yaml:43-50`);
   - a `URLRewrite` filter for admin-ui's `/admin` prefix.
@@ -400,7 +406,7 @@ Port-level settings are honoured only on workload-selector policies; ztunnel ign
 - With `global.gateway.class` set to `gke-l7-global-external-managed`, the chart renders, in the release namespace (same hosts and path sets as today):
   - one `Gateway` with an HTTPS listener per host, `certificateRefs` to the existing TLS Secrets, the static address (`NamedAddress`), and **no port-80 listener**;
   - `HTTPRoute`s only. GRPCRoute is not supported on this class, so gRPC rides `HTTPRoute` to Service ports with `appProtocol: HTTP2`; the HTTPS ports carry `appProtocol: HTTPS`;
-  - a `BackendTLSPolicy` per backend Service, with a same-namespace ConfigMap holding `ca.crt` and the certificate hostname. Backend authenticated TLS on this class was released 2026-05-29;
+  - a `BackendTLSPolicy` for the api and Authentik Services (admin-ui stays plaintext from the edge, as on every profile), with a same-namespace ConfigMap holding `ca.crt` and the certificate hostname. Backend authenticated TLS on this class was released 2026-05-29;
   - a `GCPBackendPolicy` on the Authentik Service carrying the Cloud Armor `securityPolicy` (round 11's WAF rules), plus timeouts;
   - a `HealthCheckPolicy` per Service matching today's checks (Authentik HTTPS `/-/health/live/` on 9080; api HTTPS on 8081).
 - `BackendConfig`, the `app-protocols` annotations and the GCE branch of `iverson.edgeAnnotations` go away on this profile.
@@ -412,33 +418,38 @@ Port-level settings are honoured only on workload-selector policies; ztunnel ign
 
 ### 4.6 Compose TLS
 
-- `generate-compose-secrets.sh`'s CA signs, in the same pass as today's Authentik certificate, certificates for:
+- `generate-compose-secrets.sh`'s CA signs, in the same pass as today's Authentik certificate (which also gains `localhost`; today it names only `authentik-server`), certificates for:
   - Postgres (`postgres`, `localhost`);
   - the StarRocks FE (`starrocks`, `localhost`);
-  - Kestrel (`iverson-api`, `iverson-worker`, `localhost`, `127.0.0.1`).
+  - Kestrel (`iverson-api`, `iverson-worker`, `localhost`, `127.0.0.1`);
+  - Qdrant (`qdrant`, `localhost`).
 
-  All are rewritten together whenever any is missing or near expiry, and the CA key is still deleted afterwards (`generate-compose-secrets.sh:42-63`).
+  All are rewritten together whenever any is missing or near expiry, and the CA key is still deleted afterwards (`generate-compose-secrets.sh:42-63`). The CA carries `keyUsage = critical, keyCertSign, cRLSign`: Python 3.14's default context refuses a CA without it, and today's has none (Verified assumption 67).
 - **Postgres** serves TLS (`ssl=on` with the mounted certificate). The api, the worker and Authentik connect `VerifyFull`/`verify-full` against the compose CA. Plaintext is still accepted from host tools.
 - **The StarRocks FE** loads a keystore built from its certificate, and the api and worker connect `SslMode=VerifyFull`. Compose does not force secure transport.
 - **Kestrel** serves HTTPS on 8080, 8081 and 8082 with the compose certificate.
+- **Qdrant** serves TLS as Helm does (`QDRANT__SERVICE__ENABLE_TLS`, `QDRANT__TLS__CERT`/`KEY`), and the api and worker set `Qdrant__CertPath` to its certificate, which the client pins by SHA-256 thumbprint (`ServiceCollectionExtensions.cs:36-44`). The API key and the per-tenant JWTs then travel inside TLS.
+- **Authentik:** compose publishes the existing tls-proxy (8443) on `127.0.0.1:9443` and no longer publishes 9000. The api and worker set `Authentication__ExternalIssuer=https://localhost:9443/` and `Authentik__PublicBaseUrl=https://localhost:9443`. The issuer is the scheme plus the Host header the client sends, so every host consumer dials exactly `https://localhost:9443` and stops forcing the Host `authentik-server:9000`: the mint script, LoadTest, ClientConformance, `pattern_leg.py`, the console's dev OIDC authority and the tests that pin those defaults. The scheme is `https` only while Authentik trusts the proxy, so §2.5's `proxy_bind 127.0.0.2` and `TRUSTED_PROXY_CIDRS=127.0.0.2/32` ship in the same change.
 - Every compose consumer moves to `https://localhost:…` and trusts `deploy/compose-tls/ca.crt` through its runtime's standard trust setting:
   - LoadTest and ClientConformance, with the latter's five SDK drivers;
   - the Python scripts and `stack.py`;
+  - the host consumers of Qdrant (`stack.py:172`, `ingest.py:159`);
   - `prometheus.local.yml`;
-  - the console's local dev configuration.
+  - the console's local dev configuration (its browser trusts the compose CA).
 
   The plan enumerates them from a full sweep and confirms each SDK's trust setting.
 - Ports stay loopback-bound. TEI, Ollama and Jaeger stay plaintext in compose; they carry no credentials.
 
 ## 5. Deployment, upgrade order and runbooks
 
-**Order on an existing kind cluster (and the cloud runbook's equivalent).** The node image pin means a new kind cluster; the upgrade-from-`main` check installs `main`'s chart on it first.
+**Order on an existing kind cluster.** No cloud instance is deployed, so the clouds have no upgrade order: a cloud install is the single-pass Terraform apply (Istio, the operator-namespace chart and the labels), then the chart install. The node image pin means a new kind cluster; the upgrade-from-`main` check installs `main`'s chart on it first.
 1. Install Istio (§4.1) and the Gateway API CRDs.
-2. `helm upgrade` the release, run as the operators group. This renders the 15008 rules, the operator → operand rules, PeerAuthentication, the VAP, the routes and the Authentik changes. 15008 rules and PeerAuthentication are inert before enrolment.
-3. Install the operator-namespace policy chart.
-4. Label the four namespaces together.
-5. kind: uninstall ingress-nginx, then create the gateway (the two compete for host ports 80/443). This is a short outage on a dev cluster.
-6. Apply the changed Authentik blueprints (`csr11-identity-plane.md` §2), as the operators group.
+2. `helm upgrade --wait` the release, run as the operators group. This renders the 15008 rules, the operator → operand rules, PeerAuthentication, the VAP, the routes and the Authentik changes. 15008 rules and PeerAuthentication are inert before enrolment. The post-upgrade `REVOKE OPERATE` then runs once the new pods are Ready; a terminating previous-release pod may still briefly fail readiness, as with today's role revoke.
+3. Restart the StarRocks FE (`ssl_force_secure_transport` is read only at start, §4.4).
+4. Create the namespace `iverson-edge` (not enrolled), then install the operator-namespace policy chart.
+5. Label the four namespaces together.
+6. kind: uninstall ingress-nginx, then create the gateway (the two compete for host ports 80/443). This is a short outage on a dev cluster.
+7. Apply the changed Authentik blueprints (`csr11-identity-plane.md` §2), as the operators group.
 
 **Runbooks:**
 - an upgrade note covering the steps above;
@@ -446,20 +457,19 @@ Port-level settings are honoured only on workload-selector policies; ztunnel ign
 - rebuilding the operator list after an Authentik database recreation;
 - the operators group for exec, port-forward, token minting and Helm;
 - `AUTHENTIK_SECRET_KEY` rotation;
-- AKS KMS enablement and the Secret re-write;
 - the AKS fallback value;
 - the GKE issuer check;
-- stepping clusters to 1.35.
+- EKS: VPC CNI `POD_SECURITY_GROUP_ENFORCING_MODE=standard` if security groups for pods are enabled.
 
 ## 6. Testing and verification (proof)
 
 **Unit and integration** (each new guard gets a mutation that the suite must catch):
-- **IdP client:** request shapes, including that every page carries the `attributes` filter; a user whose `tenant_id` differs is dropped even when the server returns it; single-user lookup for RemoveUser and SetTenantAdmin. Live on 2026.8.4: the filter and the per-pk lookup with the orchestrator token.
+- **IdP client:** request shapes, including that every page carries the `attributes` filter; a user whose `tenant_id` differs is dropped even when the server returns it; single-user lookup for RemoveUser and SetTenantAdmin; a non-integer `user_id` is refused with no IdP request. Live on 2026.8.4: the filter and the per-pk lookup with the orchestrator token.
 - **Limits:** the 31st TenantAdmin call in a minute is refused while other RPCs pass; the `"admin"` policy refuses the 31st admin HTTP call; the 101st invite of a tenant's day is refused across two api instances sharing Postgres; the relay's shared ceiling.
 - **Console:** the sign-in policy live (admin admitted, ordinary user refused, operator-list subject admitted); `/v1/traces` 403 for an ordinary console token; schema and data-volume 403 for ordinary users; the roles endpoint; the console's role guard.
-- **Revocation:** a NOTIFY from one instance invalidates another's caches; a listener reconnect invalidates; the 5 s skew boundary; a revoked user's stream ends `Unauthenticated` at its next message and a suspended tenant's with `PermissionDenied`, through both `WriteAsync` overloads.
-- **Operator list:** Operator from the list on the policy, the three acting-user sites and SchemaAdmin; the `operators` group no longer grants Operator without the compose fallback; the fallback is absent from every Helm render.
-- **Authentik live on 2026.8.4** (fixture moved): the superuser refusal running the shipped `superusers.yaml`; the throttle (pair at 5, address at 50, recovery link refused); MFA deny; `add_user`/`remove_user` scoped to `tenant-admins` and refused on other groups; the `iss` pin; the TokenReview pin (needs a Kubernetes API, so in the kind run).
+- **Revocation:** a NOTIFY from one instance invalidates another's caches; a listener reconnect invalidates; the 5 s skew boundary; a revoked user's stream ends `Unauthenticated` at its next message and a suspended tenant's with `PermissionDenied`, through both `WriteAsync` overloads; a seed insert invalidates another instance's cached miss.
+- **Operator list:** Operator from the list on the policy, the three acting-user sites and SchemaAdmin; the compose fallback grants SchemaAdmin; the `operators` group no longer grants Operator without the compose fallback; the fallback is absent from every Helm render.
+- **Authentik live on 2026.8.4** (fixture moved): the superuser refusal running the shipped `superusers.yaml`; the throttle (a new login plan refused once the pair reaches −5, the address cap at 50, a recovery link refused); MFA deny; `add_user`/`remove_user` scoped to `tenant-admins` and refused on other groups; the `iss` pin; the TokenReview pin (needs a Kubernetes API, so in the kind run), including that an exchange from the live api pod succeeds.
 - **Listeners:** the 8082 gate (`/metrics` and `/build` answer only on 8082; 8081 refuses them).
 - **StarRocks:** readiness with no grant, Healthy with a backend alive, Unhealthy within the timeout with none, and the revoke leaving `iverson_app` without OPERATE.
 
@@ -475,15 +485,17 @@ Port-level settings are honoured only on workload-selector policies; ztunnel ign
   - AKS `key_management_service`;
   - the kind gateway routes;
   - `serviceAccountIssuer` and `operatorSubjects` required on cloud overlays;
-  - Authentik PDB and anti-affinity only when replicas > 1.
+  - Authentik PDB and anti-affinity only when replicas > 1;
+  - the KMS vault and key carry exactly the two tfsec ignores (§3.4);
+  - an `AuthorizationPolicy` per release workload whose principals and ports match its NetworkPolicy ingress rules, with an `ipBlocks` rule only on cloud PERMISSIVE ports; the StarRocks FE and BE service accounts.
 
 **Committed probe scripts** under `Iverson.Server/deploy/scripts/`:
-- `authentik-probes.sh`: the superuser refusal on `:9080` for login and recovery; the in-cluster route admitting it; the slug allow-list, including `initial-setup` and `/if/user/` answering 404 and `/` redirecting to the console.
-- `mesh-check.sh`: every release pod enrolled; plaintext from an unenrolled pod to a StarRocks BE port refused; ztunnel reporting mTLS for FE ↔ BE.
+- `authentik-probes.sh`: the superuser refusal on `:9080` for login and recovery; the in-cluster route admitting it; the slug allow-list, including `initial-setup` and `/if/user/` answering 404 and `/` redirecting to the console; on the in-cluster route, `/setup` and the `initial-setup` executor show no prompt; a failed login through `:9080` produces a reputation row whose `ip` is the edge-reported client address, not `127.0.0.2` or `127.0.0.1`, and a failed login through a `kubectl port-forward` to 9000 a row with `ip` `127.0.0.1`, both read from `GET /api/v3/policies/reputation/scores/?identifier=<user>`.
+- `mesh-check.sh`: every release pod enrolled; plaintext from an unenrolled pod to a StarRocks BE port refused; ztunnel reporting mTLS for FE ↔ BE; a peer refused on a port its rule does not list (api → Jaeger 16686); the edge gateway admitted to the api.
 - `admission-check.sh`: a non-operator refused token minting, exec, port-forward, a bare pod, a Job and an ephemeral container for the protected identities; the operators group admitted.
 
 **kind live run:**
-- a fresh install (Istio ambient, VAP, operator-namespace policies, gateway edge);
+- a fresh install (Istio ambient, VAP, operator-namespace policies, gateway edge), in which every FE and BE reaches `Alive: true`;
 - the round-12 Task-13-style checks (compose, kind, the conformance harness);
 - an upgrade from `main`;
 - the three probe scripts.
@@ -500,6 +512,8 @@ Cloud profiles are render and static only.
   - After a reputation row expires, new failures for that pair are invisible until the 5-minute cleanup runs.
   - Scores clamp at ±5, so the pair rule counts unknown usernames as 3 attempts and the address cap needs at least 10 identifiers.
   - Every port-forward caller shares the address 127.0.0.1.
+  - Failures against one account from many addresses are not summed; each address gets its own pair budget.
+  - **Retries inside one login plan.** The pair rule refuses new plans, not password attempts. A plan that starts with the pair's rows between −1 and −4 accepts wrong passwords until the edge rate limit stops it (cloud profiles; kind and laptop have none), and a correct password still completes it. Plans started in parallel before the pair reaches −5 each keep their own retries.
 - **First-come MFA enrolment remains on dev profiles** (compose, kind, laptop), whose test identities enrol at first login. Cloud profiles deny.
 - **Istio ambient on AKS (Azure CNI with Azure NPM) and GKE Dataplane V2 has no vendor support statement.** GKE Dataplane V2's eBPF masquerading is the probe risk Istio documents for Cilium. Any failure is found at first deploy (user choice: on everywhere).
 - **Cloud admission identities are unverified live.** That the controllers' usernames and the operators' groups reach `userInfo` as on kind is confirmed at first deploy. A mismatch fails closed (FailedCreate events, refused commands).
@@ -509,6 +523,9 @@ Cloud profiles are render and static only.
 - **Ollama under the mesh was not exercised live.**
 - **Release history keeps old values.** Helm's stored release history keeps the bootstrap password and old operator lists until those revisions rotate out.
 - **1.35 availability.** That 1.35 is offered on EKS and AKS is taken from the decision. The plan confirms each vendor's version table before pinning add-ons.
+- **The edge → admin-ui hop is plaintext** on every profile (round 11). It serves the console's static files; the mesh covers it on kind, and on clouds it crosses the LB → node network.
+- **An FE-0 rebuilt without metadata while `MYSQL_PWD` differs from root's live password starts a second cluster.** The operator images' entrypoints do not check the login's result. The rule in §4.3 #3 prevents it; nothing enforces it.
+- **Cloud LB sources and `ipBlocks`.** That each cloud LB's traffic reaches the pod from an address inside the edge rule's ranges (not SNATed to something else) is unverified; a mismatch fails closed at first deploy (edge 503s).
 
 ## 8. Out of scope
 
@@ -586,7 +603,7 @@ Evidence was gathered on 2026-10-19 against `bc1be994`. "Live" means a throwaway
 12. **`/v1/traces` and the exporter.** The endpoint is `RequireAuthorization("ConsoleClient")` plus the active-tenant filter and `"traces"` (`Program.cs:882-914`). No existing policy is Operator-or-TenantAdmin (`Program.cs:225-248`). The console exports every signed-in user's spans (`telemetry.ts:60-120`).
 13. **Jaeger is uncapped.** `charts/jaeger/templates/deployment.yaml:35-63` passes no args to `jaegertracing/all-in-one:1.62.0`. Jaeger's v1 CLI documents `--memory.max-traces` (default unbounded).
 14. **LISTEN/NOTIFY needs no privilege and does not replay.** Live (Postgres 16.15; semantics as 18): a no-grant login LISTENed and received a NOTIFY; a NOTIFY with no listener was not delivered to a later LISTEN. Docs: "LISTEN takes effect at transaction commit"; registrations end with the session. The Npgsql API has the `Notification` event and `WaitAsync`; keepalive is off by default.
-15. **Every revocation and tenant-status write is in the two admin services.** `TenantAdminGrpcService.cs:66, 71, 88, 93`; `TenantLifecycleGrpcService.cs:29, 46, 81, 100`. No worker path, runbook SQL or LoadTest writer touches either table.
+15. **Every revocation and tenant-status write is in the two admin services, except the worker's legacy-tenant seed.** `TenantAdminGrpcService.cs:66, 71, 88, 93`; `TenantLifecycleGrpcService.cs:29, 46, 81, 100`. The worker inserts five `active` tenants at startup when `Tenancy:SeedLegacyTenants` is set (`Program.cs:803-807`; `TenantRepository.cs:15-22`, `INSERT … ON CONFLICT ("Id") DO NOTHING`), which `docker-compose.yml:678` sets and Helm sets from `global.provisionTestIdentities` (`worker/templates/deployment.yaml:108-109`). No other worker path, runbook SQL or LoadTest writer touches either table.
 16. **The skew change moves one test.** `TokenRevocationCache.cs:32-39` compares `issuedAt <= revokedAt`; `TokenRevocationCacheTests.cs:50-52` uses +1 s; the other tests use −10 min, exact and null; the pipeline test uses +30 s. `revoked_at` is `now()` (`Iverson.Sql/TokenRevocationRepository.cs:21-28`). `iat` is parsed as integer seconds (`Program.cs:1047-1049`).
 17. **Streams write only through `IServerStreamWriter<T>`.** Search, SearchSimilar, SearchChunks, GroupBy, Pipeline, MatchPattern and GetMany use both overloads (`ObjectSearchGrpcService.cs:138, 499, 632, 880, 965`; `ObjectRetrievalGrpcService.cs:90-151`). In Grpc.Core.Api 2.84.0 the default two-argument implementation throws `NotSupportedException` when the token can be cancelled.
 18. **No client uses `iverson-acting-user`'s refresh grant.** `secret-service-clients.yaml:349-372` declares it; refresh is used only by LoadTest's flow client against `iverson-loadtest-human` (`AuthentikFlowExecutorClient.cs:329, 447`).
@@ -642,7 +659,7 @@ Evidence was gathered on 2026-10-19 against `bc1be994`. "Live" means a throwaway
     - EKS: `aws_eks_cluster.this.identity[0].oidc[0].issuer` exists (`cluster-aws/main.tf:288, 292`) but is not an output.
     - AKS docs (`learn.microsoft.com/azure/aks/use-oidc-issuer`): issuer `https://{region}.oic.prod-aks.azure.com/<tenant>/<cluster>/` with a trailing slash; "enabled by default for new AKS Standard clusters on 1.34+"; cannot be disabled. azurerm 3.117.1 has `oidc_issuer_enabled` and `oidc_issuer_url` (`kubernetes_cluster_resource.go:1210, 1215`).
     - GKE: format not confirmed.
-31. **The bootstrap password can leave the worker.** Live: the worker recreated without it started healthy, logged "Tenant is already setup, skipping", and `akadmin` was unchanged; once `akadmin` is inactive the bootstrap token gets 403 (`api/authentication.py:107`). Statically, `initial-setup` is forwarded by `:9080` today (`configmap-tls-proxy.yaml:79-80`), retitled but kept (`secret-service-clients.yaml:428-431`), and its stock gate is "akadmin has no usable password".
+31. **The bootstrap password can leave the worker.** Live: the worker recreated without it started healthy, logged "Tenant is already setup, skipping", and `akadmin` was unchanged; once `akadmin` is inactive the bootstrap token gets 403 (`api/authentication.py:107`). Statically, `initial-setup` is forwarded by `:9080` today (`configmap-tls-proxy.yaml:79-80`), retitled but kept (`secret-service-clients.yaml:428-431`), and its stock gate is "akadmin has no usable password" plus a context only `/setup` plants (Verified assumption 62).
 32. **`AUTHENTIK_SECRET_KEY` signs cookies and encrypts nothing.** Docs (`docs.goauthentik.io/install-config/configuration/`): "Secret key used for cookie signing… Changing this will invalidate active sessions." Source: every `SECRET_KEY` use in 2026.8.4 is cookie, impersonation and file-URL signing, the outpost/metrics bearer, or a sentry tag; OAuth tokens are signed with the provider's certificate. Consumers: `deployment-server.yaml:68-70, 108-110`, `deployment-worker.yaml:97-99`.
 33. **Round 11's superuser refusal holds on 2026.8.4.** Live with the shipped `superusers.yaml`:
     - a superuser with the public marker header was refused after identification, with no password asked;
@@ -707,7 +724,7 @@ Evidence was gathered on 2026-10-19 against `bc1be994`. "Live" means a throwaway
     - IMDS restriction is "(preview)" (`learn.microsoft.com/azure/aks/imds-restriction`), and azurerm has no argument for it (no `imds` in v5.10.0's resource).
 45. **Readiness works without `OPERATE ON SYSTEM`; today it needs it.**
     - `EngagementHealthChecker.cs:72` runs `SHOW BACKENDS` as `iverson_app` for `/health` and the readiness gate (`EngagementRepository.cs:27-29, 103, 853-860`).
-    - Missing OPERATE would read as `AuthPending` (`EngagementHealthChecker.cs:31-45`), which `ReadinessPolicy.cs:6-33` tolerates.
+    - Missing OPERATE reads as `Unhealthy`, not `AuthPending`. `ClassifyConnectionException` maps only `AccessDenied` (1045) to `AuthPending` (`EngagementHealthChecker.cs:42-44`), and `SHOW BACKENDS` without OPERATE fails with `ERROR 5203` (live, `kind-proto/ev/b10.txt`), which `ReadinessPolicy.cs:27-28` does not tolerate. A pre-upgrade pod still running `SHOW BACKENDS` therefore fails readiness once the revoke has run.
     - Live on StarRocks 4.1.6 as a login with no grants: `SELECT * FROM TABLE(generate_series(1,2))` returned two rows with a backend up (0.5 s) and `ERROR 1064 Backend node not found` with none (0.4 s). `SELECT 1` succeeds either way, and `SHOW BACKENDS`, `SHOW PROC` and `be_metrics` need OPERATE.
     - Tests pinning the old check: `StarRocksHealthCheckerTests`, `StarRocksContainerReadinessTests`, `StarRocksSplitLogins`, `StarRocksCredentialSplitIntegrationTests`, `StarRocksReadinessIntegrationTests`, `RegisterSchemaAuthorizationIntegrationTests:146-175`.
 46. **Kubernetes versions.**
@@ -761,3 +778,16 @@ Evidence was gathered on 2026-10-19 against `bc1be994`. "Live" means a throwaway
 59. **Kafka authorisation does not depend on addresses.** The KafkaUser uses SCRAM-SHA-512 with prefix ACLs and no `host` (`charts/kafka/templates/kafkauser.yaml`). The single `tls` listener has no `networkPolicyPeers` today (`kafka.yaml:13-21`).
 60. **Compose today.** The compose CA signs only Authentik's certificate, and its key is deleted after signing (`generate-compose-secrets.sh:42-63`). Ports are loopback-bound (`docker-compose.yml:47, 65-66, 495-496`). Round 11 accepted plaintext for compose's API, StarRocks and Authentik → Postgres hops (`2026-10-12-csr-round11-transport-network-design.md:124`). Compose clients default to `http://localhost:8080` (`ClientConformance/Program.cs:17`, `LoadTest/Program.cs:36`, `pattern_leg.py:658`), and no compose client configures a custom CA today (`command grep`).
 61. **AWS ALB does not verify targets.** `docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-target-groups.html`: "The load balancer does not validate these certificates… traffic between the load balancer and the targets is authenticated at the packet level".
+
+**Added in review round 1** (2026-10-19, against `203ae962`; records under `udd-probes/` in the same session scratchpad)
+
+62. **`policy_engine_mode: all` plus an always-false flow-level binding denies `initial-setup` on 2026.8.4.** Live, throwaway stack with no bootstrap password, flow in its default `any` mode: `/` → 302 `/setup` → the password prompt, because `SetupView` plants the context the stock policy requires and stays open while the Setup flag is False; the flag is set at startup only by `AUTHENTIK_BOOTSTRAP_PASSWORD`, `_PASSWORD_HASH` or `_TOKEN` (`core/setup/signals.py`). A cold start of the executor is refused by the stock policy itself. The worker's file watcher applied a custom-directory blueprint setting `all` and binding a `return False` policy at flow level; `/setup` then answered 500 (`FlowNonApplicableException`, uncaught in `SetupView.get`) and the executor access-denied. The mode and binding survived a forced API re-apply of `default/flow-oobe.yaml`, `ak apply_blueprint` and a worker restart. Control: the binding alone, in `any` mode, left the prompt reachable. Record: `p1/` (U4).
+63. **The two ignores are what the dedicated KMS vault needs to pass tfsec.** Live, tfsec v1.28.6 (the CI version) on a scratch vault with public network access and a key without expiry: CRITICAL `azure-keyvault-specify-network-acl` plus MEDIUM `azure-keyvault-ensure-key-expiry`, exit 1; with the two ignore comments, 2 ignored, "No problems detected!", exit 0. The unmodified repo tree also reports "No problems detected!". Record: `tfsec-kms/`.
+64. **The StarRocks entrypoints tolerate `MYSQL_PWD` set before root has a password.** Live, the chart's 4.1.6 FE and BE images under podman, with the pod environment copied from operator v1.11.5's source. FE-0 on a fresh install never logs in and starts as leader after 30 s. A BE refused 62 times logged `Time out, abort!` and exited 1 at 61 s, unregistered; after `SET PASSWORD` a restart registered it, `Alive: true`. A follower FE logged "No leader yet" 60 times and exited 1 at 120 s without `ADD FOLLOWER`; a restart after the password joined it as `FOLLOWER` in the same ClusterId. With the password already set, every case joined at first start. The scripts never inspect mysql's exit status (`fe_entrypoint.sh:102-103, 154, 235`; `be_entrypoint.sh:88-89`): an index-0 FE with no metadata, facing an FE whose root password differed, became leader of a second cluster (ClusterIds 1326736343 and 769566813). Kubelet restart backoff was not emulated. Record: `p2/` (U5).
+65. **The login deny stage runs once per plan; password retries inside a plan are bounded by the password stage alone.** Live, throwaway 2026.8.4 stack with §2.5's policy bound to a deny stage at order 12 of `default-authentication-flow` (`evaluate_on_plan: false`, `re_evaluate_policies: true`): the server's evaluation log showed the policy evaluated once per plan, when identification completed, and never on a retried password. A plan starting with the pair's row at 0 was cancelled at the 5th wrong password by the password stage's `failed_attempts_before_cancel` (5). A pair already at −5 was refused at order 12 before the password prompt. Plans starting with the row at −3 and at −4 accepted 12 wrong passwords without cancelling, and a correct password plus TOTP then completed the login. Record: `p1/` (U7).
+66. **ztunnel L4 `AuthorizationPolicy` restores port scoping.** Live, kind with Istio 1.31.2 ambient and STRICT: an ALLOW on Jaeger for the api's and worker's principals on 4317/4318 admitted them there, refused them on 16686 (`allow policies exist, but none allowed`) and refused other service accounts on every port; before the policy every client reached all three ports. Kubelet probes on a port the policy does not list kept the pod Ready. On a PERMISSIVE port, a principals-only ALLOW refused plaintext from an unenrolled pod; adding `from.source.ipBlocks` with its address admitted it; `notPrincipals` admitted it and every other caller; `requestPrincipals: ["*"]` matched nothing. The kind gateway in the unenrolled `iverson-edge` is a mesh client with principal `cluster.local/ns/iverson-edge/sa/edge-istio` (`<gateway>-istio`); a principal ALLOW admitted it and its absence refused it. Cross-namespace principals matched: CNPG operator → Postgres 8000 and Strimzi operator → brokers 9090/9091 (removing either rule broke that operator's reconcile; restoring it fixed it). An ALLOW for `ns/iverson/sa/default` admitted two unrelated pods alike; operator 1.11.5's CRD has `starRocksFeSpec.serviceAccount` and `starRocksBeSpec.serviceAccount`. A policy change did not always cut connections already pooled. Record: `p3/` (Phase 4).
+67. **Compose's Authentik issuer through the tls-proxy.** Live, throwaway 2026.8.4 behind a byte-for-byte copy of `deploy/compose-tls-proxy.conf`: for `issuer_mode: global` providers, the discovery `issuer` and a token's `iss` are `<scheme>://<Host header as received>/`, so `localhost` and `127.0.0.1`, and each port, give different issuers; a forced Host `authentik-server:9000` through the proxy gives `https://authentik-server:9000/`, which the api accepts under none of its issuers (`Program.cs:161-202`). `X-Forwarded-Proto` is honoured only from an address in `TRUSTED_PROXY_CIDRS`: with `127.0.0.2/32` and `proxy_bind 127.0.0.2` the issuer is `https://localhost:<P>/`; with either alone it is `http://…`. Today's leaf names only `DNS:authentik-server` (`generate-compose-secrets.sh:60`), so `-verify_hostname localhost` fails. A CA made by the script's command has no `keyUsage`; Python 3.14.4's default context refuses it ("CA cert does not include key usage extension"), and a CA with `keyUsage=critical,keyCertSign,cRLSign` passes. Port 9443 is free in compose and in kind (`kind-config.yaml:21-23` binds 8443). Record: `p1/` (option A).
+68. **`main`'s ingress-nginx runs on the pinned node image.** Live, kind v0.33.0 with `kindest/node:v1.35.8`: `main`'s unchanged `setup.sh` exited 0; the ingress-nginx controller v1.12.8 (chart 4.12.8) became Ready and its webhook admitted all four Ingresses with no API-deprecation errors; through `127.0.0.1:8443` the gRPC route answered 401 with a Bearer challenge, admin-api `/health` 200, Authentik 200 and admin-ui 200. Record: `p3/` (Phase 1).
+69. **Admission rules (d) and (e) hold live.** Kind, one VAP with rules (a)–(e) as §3.1 states them: a non-operator with namespace `admin` was denied creating a Job, CronJob, Deployment, StatefulSet, DaemonSet and ReplicaSet with either protected account (including the deprecated `serviceAccount` alias, which the API server copies before admission) and denied any update of the api Deployment; an operator was admitted for all. The controllers created pods for operator-made Deployments, ReplicaSets, StatefulSets, Jobs and CronJobs; a DaemonSet's pods were refused (`… created by system:serviceaccount:kube-system:daemon-set-controller denied`) until that controller is admitted, and no other controller identity was missing. Garbage collection completed. `kubectl debug` (ephemeral container) on api, worker and Authentik pods was denied for a non-operator and for cluster-admin, and admitted for an operator. A `helm upgrade` that leaves the api's pod template unchanged sends no patch and passes without the group; one that changes it is denied without the group and admitted with `--kube-as-user` plus the group (`--kube-as-group` alone is refused by Helm). The built-in `admin` and `edit` roles do not grant `pods/ephemeralcontainers`. One policy matching pods, workloads, tokens and CONNECT draws a type-check warning on rule (c) for workload kinds, harmless at runtime. Record: `p3/` (Phase 2).
+70. **The `istio-system` and `iverson-edge` allow lists are complete.** Live, kind after §5's order: with default-deny and exactly §3.4's allows, istiod, ztunnel, istio-cni and the gateway all restarted Ready; ztunnel and the gateway re-subscribed to istiod; new pods got HBONE and freshly issued certificates; istiod's validating webhook answered; every route served. istiod needs no egress beyond the API server and DNS; the gateway needs no ingress beyond 80/443. On kind the 15017-from-API-server and gateway 80/443 rules are not exercised (host traffic is always admitted); egress is enforced. A gateway rollout deadlocked on one node with the default surge until `maxSurge: 0`. Record: `p3/` (Phase 3).
+71. **`REVOKE OPERATE ON SYSTEM` is idempotent for an existing user.** Live, StarRocks 4.1.6 FE with mysql clients 8.0.46 and 26.7.0: the revoke exits 0 for a user without OPERATE, with or without the `USER` keyword; grant → revoke → revoke all exit 0. It errors only for a user that does not exist (`ERROR 1064 … cannot find user`), which in a `set -e` batch would stop it; the batch creates the user first. Record: `p2/` (U6).
