@@ -1,7 +1,7 @@
-// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ 19d74cfb95c4ccb8ceca9e939494828f3359c3a5
+// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ a782ac7674fde9185ad55bb1a986df3008adf050
 // Source: §2.6 "Bootstrap password", lines 188-192
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-19-csr-round12-platform-design/InitialSetupClosure.dfy
-// Round: 1
+// Round: 2
 
 // Authentik flow policy engine mode (§2.6 line 190 "default `any` engine mode";
 // line 191 "sets `policy_engine_mode: all`").

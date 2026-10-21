@@ -1,7 +1,7 @@
-// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ 19d74cfb95c4ccb8ceca9e939494828f3359c3a5
-// Source: §2.1 "Limits" (and §6 line 488), lines 44-47
+// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ a782ac7674fde9185ad55bb1a986df3008adf050
+// Source: §2.1 "Limits" (and §6 line 490), lines 44-47
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-19-csr-round12-platform-design/RateLimitPartition.dfy
-// Round: 1
+// Round: 2
 
 // ---------------------------------------------------------------------------
 // Model
@@ -60,7 +60,7 @@ predicate Allowed(calls: seq<Call>, c: Call)
     CountFor(calls, c.sub, c.service) < AdminLimit
 }
 
-// "in a minute" (§6 line 488) / "per minute" (§2.1 line 45): `calls` is the
+// "in a minute" (§6 line 490) / "per minute" (§2.1 line 45): `calls` is the
 // log of calls admitted in the current one-minute window, in arrival order;
 // each was admitted by the rule given the calls admitted before it.
 predicate ValidWindow(calls: seq<Call>)
@@ -72,7 +72,7 @@ predicate ValidWindow(calls: seq<Call>)
 // Properties
 // ---------------------------------------------------------------------------
 
-// Citation: "the 31st TenantAdmin call in a minute is refused while other RPCs pass" (§6 line 488)
+// Citation: "the 31st TenantAdmin call in a minute is refused while other RPCs pass" (§6 line 490)
 lemma P1_ThirtyFirstRefusedOthersPass(calls: seq<Call>, sub: string)
   requires ValidWindow(calls) && CountFor(calls, sub, TenantAdmin) == 30 && GeneralCount(calls, sub) < 50000
   ensures !Allowed(calls, Call(sub, TenantAdmin)) && Allowed(calls, Call(sub, Other))

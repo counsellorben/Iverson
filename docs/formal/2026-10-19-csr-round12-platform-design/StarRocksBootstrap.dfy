@@ -1,7 +1,7 @@
-// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ 19d74cfb95c4ccb8ceca9e939494828f3359c3a5
-// Source: §4.3 #3, lines 374-374
+// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ a782ac7674fde9185ad55bb1a986df3008adf050
+// Source: §4.3 #3, lines 375-375
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-19-csr-round12-platform-design/StarRocksBootstrap.dfy
-// Round: 1
+// Round: 2
 
 // ---------------------------------------------------------------------------
 // Model
@@ -13,7 +13,7 @@ datatype PodId = FE(i: nat) | BE(i: nat)
 
 predicate IsFe0(pod: PodId) { pod.FE? && pod.i == 0 }
 
-// Phases of the create-user Job. The new order (line 374):
+// Phases of the create-user Job. The new order (line 375):
 //   WaitingForFe0 --(FE-0 answers; SET PASSWORD)--> WaitingForBackendsAndFes
 //   --(BE_REPLICAS backends and every FE)--> RestOfBatch --> Done
 // The old order (job-create-user.yaml:87-96):
@@ -64,7 +64,7 @@ function StartPod(s: InstallState, pod: PodId): InstallState
     s
 }
 
-// One step of the create-user Job in the new order (line 374).
+// One step of the create-user Job in the new order (line 375).
 function JobStep(s: InstallState): InstallState
 {
   match s.job
@@ -162,21 +162,21 @@ lemma RunOldPreservesStuck(s: InstallState, steps: seq<Event>)
 // Properties
 // ---------------------------------------------------------------------------
 
-// Citation: "A BE or FE follower that starts before the password is set exits 1, unregistered … and joins on its first restart after it (Verified assumption 64)." (§4.3 line 374)
+// Citation: "A BE or FE follower that starts before the password is set exits 1, unregistered … and joins on its first restart after it (Verified assumption 64)." (§4.3 line 375)
 lemma P1_StartAfterPasswordJoins(s: InstallState, pod: PodId)
   requires s.rootPasswordSet
   ensures Joined(StartPod(s, pod), pod)
 {
 }
 
-// Citation: "the create-user Job sets root's password as soon as FE-0 answers, no longer waiting for the BE count first" (§4.3 line 374)
+// Citation: "the create-user Job sets root's password as soon as FE-0 answers, no longer waiting for the BE count first" (§4.3 line 375)
 lemma P2_JobSetsPasswordOnFe0(s: InstallState)
   requires s.fe0Answers && !s.rootPasswordSet && s.job == WaitingForFe0
   ensures JobStep(s).rootPasswordSet
 {
 }
 
-// Citation: "that wait, `job-create-user.yaml:87-96`, existed only because the BE logged in without one" (§4.3 line 374)
+// Citation: "that wait, `job-create-user.yaml:87-96`, existed only because the BE logged in without one" (§4.3 line 375)
 lemma P3_OldOrderDeadlocks(s: InstallState, steps: seq<Event>)
   requires !s.rootPasswordSet && OldJobOrder(s) && NoBeJoined(s) && s.beReplicas > 0
   ensures !RunOld(s, steps).rootPasswordSet

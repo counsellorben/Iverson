@@ -1,7 +1,7 @@
-// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ 19d74cfb95c4ccb8ceca9e939494828f3359c3a5
+// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ a782ac7674fde9185ad55bb1a986df3008adf050
 // Source: §2.2 "API" (line 69) and §2.4 "The list", "One function", "Compose", lines 69-119
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-19-csr-round12-platform-design/RoleFunctions.dfy
-// Round: 1
+// Round: 2
 
 // ---------------------------------------------------------------------------
 // Model

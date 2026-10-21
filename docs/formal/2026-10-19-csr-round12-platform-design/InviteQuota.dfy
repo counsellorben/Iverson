@@ -1,7 +1,7 @@
-// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ 19d74cfb95c4ccb8ceca9e939494828f3359c3a5
-// Source: §2.1 "Invite quota" (and §6 line 488), lines 49-55
+// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ a782ac7674fde9185ad55bb1a986df3008adf050
+// Source: §2.1 "Invite quota" (and §6 line 490), lines 49-55
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-19-csr-round12-platform-design/InviteQuota.dfy
-// Round: 1
+// Round: 2
 
 // ---------------------------------------------------------------------------
 // Model
@@ -64,7 +64,7 @@ function StoredCount(s: QuotaRow): int
 // State of the (TenantId, Day) row after `attempts` InviteUser calls on
 // that tenant's day, starting from no row (line 55: rows are one per
 // tenant per active day; a new day is a new key, so it starts absent).
-// §6 line 488: attempts from two api instances sharing Postgres; the
+// §6 line 490: attempts from two api instances sharing Postgres; the
 // single upsert statement is applied atomically per row, so concurrent
 // attempts are modelled as one serial sequence. The IdP outcome does not
 // matter (InviteAttempt ignores it), so `false` is passed.
@@ -114,7 +114,7 @@ lemma P1_AtMostHundredReserved(attempts: nat)
   CountAfterInvariant(attempts);
 }
 
-// Citation: "the 101st invite of a tenant's day is refused across two api instances sharing Postgres" (§6 line 488)
+// Citation: "the 101st invite of a tenant's day is refused across two api instances sharing Postgres" (§6 line 490)
 lemma P2_HundredFirstRefused(attempts: nat)
   requires attempts >= 100
   ensures !ReturnsRow(CountAfter(attempts))

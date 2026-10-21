@@ -1,7 +1,7 @@
-// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ 19d74cfb95c4ccb8ceca9e939494828f3359c3a5
-// Source: §3.1 "What renders", "Rules" (and line 243), lines 228-243
+// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ a782ac7674fde9185ad55bb1a986df3008adf050
+// Source: §3.1 "What renders", "Rules" and "Consequences", lines 228-243
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-19-csr-round12-platform-design/AdmissionPolicy.dfy
-// Round: 1
+// Round: 2
 
 // ---------------------------------------------------------------------------
 // Model
@@ -13,7 +13,8 @@
 // NoSA stands for "no old object" (oldObject is null on CREATE).
 datatype SA = SA(ns: string, name: string) | NoSA
 
-// A pod reference: its namespace and name (CONNECT carries only the pod name, line 235).
+// A pod reference: its namespace and name. CONNECT carries only the pod name
+// (line 235); a pod CREATE is seen with its final, generated name (line 236, VA 96).
 datatype PodRef = PodRef(ns: string, name: string)
 
 // spec.containers[*].image and spec.initContainers[*].image (line 239).
@@ -33,7 +34,7 @@ datatype WriteVerb = Create | Update
 datatype Operation =
   | TokenCreate(sa: SA)                                   // (a) CREATE serviceaccounts/token
   | PodConnect(kind: ConnectKind, pod: PodRef)             // (b) CONNECT pods/exec|attach|portforward
-  | PodCreate(sa: SA)                                     // (c) Pod CREATE, sa = (pod ns, serviceAccountName)
+  | PodCreate(pod: PodRef, saName: string)                // (c) Pod CREATE: the pod and its serviceAccountName
   | WorkloadWrite(verb: WriteVerb, wkind: WorkloadKind,
                   oldSa: SA, newSa: SA)                   // (d) template SA in oldObject / object
   | EphemeralUpdate(pod: PodRef)                          // (e) UPDATE pods/ephemeralcontainers
@@ -46,7 +47,8 @@ datatype Operation =
 datatype Request = Request(user: string, groups: set<string>, op: Operation)
 
 // Rendered values: the release name, the release namespace (namespaceSelector,
-// line 230) and admission.operatorGroups (line 231).
+// line 230) and admission.operatorGroups (line 231; render-checked non-empty,
+// which no property here depends on).
 datatype AdmissionConfig = AdmissionConfig(rel: string, releaseNs: string, operatorGroups: set<string>)
 {
   // "<rel>-api and <rel>-admin-automation" (line 234), in the release namespace.
@@ -109,7 +111,7 @@ predicate Matched(r: Request, cfg: AdmissionConfig)
   match r.op
   case TokenCreate(sa) => ProtectedSA(sa, cfg)                                     // (a)
   case PodConnect(_, pod) => ProtectedPod(pod, cfg)                                // (b)
-  case PodCreate(sa) => ProtectedSA(sa, cfg)                                       // (c)
+  case PodCreate(pod, saName) => ProtectedSA(SA(pod.ns, saName), cfg)              // (c)
   case WorkloadWrite(_, _, oldSa, newSa) =>
     ProtectedSA(oldSa, cfg) || ProtectedSA(newSa, cfg)                             // (d)
   case EphemeralUpdate(pod) => ProtectedPod(pod, cfg)                              // (e)
@@ -128,21 +130,63 @@ predicate Operator(r: Request, cfg: AdmissionConfig)
 predicate ExemptRequester(r: Request)
 {
   match r.op
-  case TokenCreate(_) => "system:nodes" in r.groups                 // (a) the kubelet
+  case TokenCreate(_) => "system:nodes" in r.groups                 // (a) the kubelet (line 234)
   case PodConnect(_, _) => false                                     // (b) none
-  case PodCreate(_) => r.user in PodCreateControllers()             // (c)
-  case WorkloadWrite(_, _, _, _) => r.user in WorkloadControllers() // (d)
+  case PodCreate(_, _) => r.user in PodCreateControllers()          // (c) line 236
+  case WorkloadWrite(_, _, _, _) => r.user in WorkloadControllers() // (d) line 237
   case EphemeralUpdate(_) => false                                   // (e) none
   case PodUpdate(_, _, _) => false                                   // (f) none
   case ScaleUpdate(_) => false
   case OtherOp => false
 }
 
-// A matched rule admits operators and its own "also admitted" requesters and denies
-// everyone else, cluster-admin included (line 233); an unmatched request is admitted.
+// (c) line 236: "Whoever creates it, the operators group and those controllers
+// included, a pod with either account is admitted only when its name starts with
+// `<rel>-api-`". Only rule (c) carries a clause on the object beyond its match.
+predicate NameClause(r: Request, cfg: AdmissionConfig)
+{
+  match r.op
+  case PodCreate(pod, _) => (cfg.rel + "-api-") <= pod.name
+  case _ => true
+}
+
+// An unmatched request is admitted. A matched rule admits operators (line 233) and its
+// own "also admitted" requesters (lines 234, 236, 237), and denies everyone else,
+// cluster-admin included (line 233); rule (c) admits them only under its name clause
+// (line 236).
 predicate Admits(r: Request, cfg: AdmissionConfig)
 {
-  !Matched(r, cfg) || Operator(r, cfg) || ExemptRequester(r)
+  !Matched(r, cfg) || ((Operator(r, cfg) || ExemptRequester(r)) && NameClause(r, cfg))
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// A prefix of a sequence is a prefix of that sequence extended.
+lemma PrefixOfConcat(a: string, b: string)
+  ensures a <= a + b
+{
+  assert (a + b)[..|a|] == a;
+}
+
+// Concrete scenario for line 233 against line 236: an operator's bare pod `steal`
+// running as `<rel>-api` (VA 96's name) is refused by the name clause.
+lemma OperatorMisnamedPodRefused()
+  ensures var cfg := AdmissionConfig("iverson", "iverson", {"iverson-operators"});
+          var r := Request("alice", {"iverson-operators"},
+                           PodCreate(PodRef("iverson", "steal"), "iverson-api"));
+          r.groups * cfg.operatorGroups != {} && !Admits(r, cfg)
+{
+  var cfg := AdmissionConfig("iverson", "iverson", {"iverson-operators"});
+  var r := Request("alice", {"iverson-operators"},
+                   PodCreate(PodRef("iverson", "steal"), "iverson-api"));
+  assert "iverson-operators" in r.groups * cfg.operatorGroups;
+  assert cfg.rel + "-api" == "iverson-api";
+  assert SA("iverson", "iverson-api") in cfg.protectedAccounts;
+  assert Matched(r, cfg);
+  assert "steal"[0] != (cfg.rel + "-api-")[0];
+  assert !((cfg.rel + "-api-") <= "steal");
 }
 
 // ---------------------------------------------------------------------------
@@ -188,8 +232,35 @@ lemma P5_ScaleAdmitted(r: Request, cfg: AdmissionConfig)
 // Citation: "Without (d), anyone who can create a Job could run a pod as `<rel>-admin-automation` through the job controller, which (c) admits." (§3.1 line 237)
 lemma P6_NoProtectedPodOrTemplateForNonOperators(r: Request, cfg: AdmissionConfig)
   requires r.groups * cfg.operatorGroups == {} && !ExemptRequester(r)
-  requires (r.op.PodCreate? && r.op.sa in cfg.protectedAccounts)
+  requires (r.op.PodCreate? && SA(r.op.pod.ns, r.op.saName) in cfg.protectedAccounts)
         || (r.op.WorkloadWrite? && (r.op.oldSa in cfg.protectedAccounts || r.op.newSa in cfg.protectedAccounts))
   ensures !Admits(r, cfg)
 {
+}
+
+// Citation: "Whoever creates it, the operators group and those controllers included, a pod with either account is admitted only when its name starts with `<rel>-api-`" (§3.1 line 236)
+lemma P7_MisnamedProtectedPodRefusedForAll(r: Request, cfg: AdmissionConfig)
+  requires r.op.PodCreate? && SA(r.op.pod.ns, r.op.saName) in cfg.protectedAccounts
+  requires !((cfg.rel + "-api-") <= r.op.pod.name)
+  ensures !Admits(r, cfg)
+{
+}
+
+// Citation: "so (b), (e) and (f) match every pod that holds a protected token" (§3.1 line 236)
+lemma P8_AdmittedProtectedPodIsGated(r: Request, cfg: AdmissionConfig)
+  requires r.op.PodCreate? && SA(r.op.pod.ns, r.op.saName) in cfg.protectedAccounts
+  requires Admits(r, cfg)
+  ensures ProtectedPod(r.op.pod, cfg)
+{
+}
+
+// Citation: "the api's ReplicaSet pods (`<rel>-api-<hash>-<suffix>`) already do (Verified assumption 96)" (§3.1 line 236)
+lemma P9_ApiReplicaSetPodsAdmitted(cfg: AdmissionConfig, groups: set<string>, hash: string, suffix: string)
+  ensures Admits(Request(KubeSystemSA("replicaset-controller"), groups,
+                         PodCreate(PodRef(cfg.releaseNs, cfg.rel + "-api-" + hash + "-" + suffix), cfg.rel + "-api")), cfg)
+{
+  var name := cfg.rel + "-api-" + hash + "-" + suffix;
+  assert name == (cfg.rel + "-api-") + (hash + "-" + suffix);
+  PrefixOfConcat(cfg.rel + "-api-", hash + "-" + suffix);
+  assert KubeSystemSA("replicaset-controller") in PodCreateControllers();
 }
