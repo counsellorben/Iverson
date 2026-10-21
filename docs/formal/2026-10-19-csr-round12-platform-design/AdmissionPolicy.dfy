@@ -1,201 +1,204 @@
-// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ a782ac7674fde9185ad55bb1a986df3008adf050
+// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ a11e848d722d05cc808840ae796e6afdb2101aa2
 // Source: §3.1 "What renders", "Rules" and "Consequences", lines 228-243
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-19-csr-round12-platform-design/AdmissionPolicy.dfy
-// Round: 2
+// Round: 3
 
 // ---------------------------------------------------------------------------
-// Model
+// Configuration (lines 228-231)
 // ---------------------------------------------------------------------------
 
-// A service account identity: its namespace and name. Namespace-qualified so the
-// binding's namespaceSelector on the release namespace (line 230) is part of the
-// identity: a same-named account in another namespace is a different account.
-// NoSA stands for "no old object" (oldObject is null on CREATE).
-datatype SA = SA(ns: string, name: string) | NoSA
+// A service account: namespace and name.
+datatype SA = SA(ns: string, name: string)
 
-// A pod reference: its namespace and name. CONNECT carries only the pod name
-// (line 235); a pod CREATE is seen with its final, generated name (line 236, VA 96).
-datatype PodRef = PodRef(ns: string, name: string)
-
-// spec.containers[*].image and spec.initContainers[*].image (line 239).
-datatype PodImages = PodImages(containers: seq<string>, initContainers: seq<string>)
-
-// (b): pods/exec, pods/attach, pods/portforward (line 235).
-datatype ConnectKind = Exec | Attach | PortForward
-
-// (d): Deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs and CronJobs (line 237).
-datatype WorkloadKind = Deployment | ReplicaSet | StatefulSet | DaemonSet | Job | CronJob
-
-// (d): CREATE and UPDATE (line 237).
-datatype WriteVerb = Create | Update
-
-// The admission request's operation, in the spec's order of rules (a)-(f),
-// followed by the requests no rule names.
-datatype Operation =
-  | TokenCreate(sa: SA)                                   // (a) CREATE serviceaccounts/token
-  | PodConnect(kind: ConnectKind, pod: PodRef)             // (b) CONNECT pods/exec|attach|portforward
-  | PodCreate(pod: PodRef, saName: string)                // (c) Pod CREATE: the pod and its serviceAccountName
-  | WorkloadWrite(verb: WriteVerb, wkind: WorkloadKind,
-                  oldSa: SA, newSa: SA)                   // (d) template SA in oldObject / object
-  | EphemeralUpdate(pod: PodRef)                          // (e) UPDATE pods/ephemeralcontainers
-  | PodUpdate(pod: PodRef, oldImages: PodImages,
-              newImages: PodImages)                       // (f) UPDATE pods (main resource)
-  | ScaleUpdate(wkind: WorkloadKind)                      // UPDATE through the scale subresource (line 243)
-  | OtherOp                                               // anything else
-
-// request.userInfo.username and request.userInfo.groups (line 233).
-datatype Request = Request(user: string, groups: set<string>, op: Operation)
-
-// Rendered values: the release name, the release namespace (namespaceSelector,
-// line 230) and admission.operatorGroups (line 231; render-checked non-empty,
-// which no property here depends on).
+// The release: `<rel>`, its namespace (the binding's namespaceSelector, line 230)
+// and `admission.operatorGroups` (line 231).
 datatype AdmissionConfig = AdmissionConfig(rel: string, releaseNs: string, operatorGroups: set<string>)
 {
-  // "<rel>-api and <rel>-admin-automation" (line 234), in the release namespace.
+  // `<rel>-api` and `<rel>-admin-automation` (lines 234, 236), in the release namespace.
   const protectedAccounts: set<SA> :=
     {SA(releaseNs, rel + "-api"), SA(releaseNs, rel + "-admin-automation")}
 }
 
-function KubeSystemSA(name: string): string
+// `admission.operatorGroups` is non-empty, render-checked (line 231).
+predicate RendersOk(cfg: AdmissionConfig)
 {
-  "system:serviceaccount:kube-system:" + name
+  cfg.operatorGroups != {}
 }
 
-// (c) line 236: the controllers admitted for bare pod CREATE.
-function PodCreateControllers(): set<string>
+// ---------------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------------
+
+// The requester's user name. KubeSystemSA(n) is
+// `system:serviceaccount:kube-system:<n>` (lines 236, 237).
+datatype User = KubeSystemSA(saName: string) | OtherUser(userName: string)
+
+datatype PodRef = PodRef(ns: string, name: string)
+
+datatype ConnectSub = Exec | Attach | PortForward
+
+datatype WorkloadKind = Deployment | ReplicaSet | StatefulSet | DaemonSet | Job | CronJob
+
+datatype Verb = Create | Update
+
+datatype Op =
+    // (a) CREATE on serviceaccounts/token for account `sa` (line 234)
+    TokenCreate(sa: SA)
+    // (b) CONNECT on pods/exec|attach|portforward (line 235)
+  | PodConnect(sub: ConnectSub, pod: PodRef)
+    // (c) Pod CREATE with spec.serviceAccountName `saName`, in pod.ns (line 236)
+  | PodCreate(pod: PodRef, saName: string)
+    // (d) CREATE/UPDATE of a workload object (main resource) in namespace `wns`
+    //     whose pod template's serviceAccountName is oldSaName (oldObject) and
+    //     newSaName (object) (line 237)
+  | WorkloadWrite(verb: Verb, kind: WorkloadKind, wns: string, oldSaName: string, newSaName: string)
+    // UPDATE through a workload's `scale` subresource (line 243)
+  | ScaleUpdate(skind: WorkloadKind, sns: string)
+    // (e) UPDATE on pods/ephemeralcontainers (line 238)
+  | EphemeralUpdate(pod: PodRef)
+    // (f) UPDATE on pods (main resource); images = every spec.containers[*].image
+    //     and spec.initContainers[*].image, oldObject vs object (line 239)
+  | PodUpdate(pod: PodRef, oldImages: seq<string>, newImages: seq<string>)
+    // Anything else the policy does not name.
+  | OtherOp(ons: string)
 {
-  {KubeSystemSA("replicaset-controller"), KubeSystemSA("statefulset-controller"),
-   KubeSystemSA("job-controller"), KubeSystemSA("daemon-set-controller")}
+  // The template's service account in oldObject. A CREATE has no oldObject, so
+  // the only template is the new one.
+  const oldSa: SA :=
+    if this.WorkloadWrite? then
+      (if this.verb == Create then SA(this.wns, this.newSaName) else SA(this.wns, this.oldSaName))
+    else SA("", "")
+  // The template's service account in object.
+  const newSa: SA :=
+    if this.WorkloadWrite? then SA(this.wns, this.newSaName) else SA("", "")
 }
 
-// (d) line 237: the controllers admitted for workload template writes.
-function WorkloadControllers(): set<string>
+datatype Request = Request(user: User, groups: set<string>, op: Op)
+
+// The request's namespace, which the binding's namespaceSelector tests (line 230).
+function RequestNs(op: Op): string
 {
-  {KubeSystemSA("deployment-controller"), KubeSystemSA("replicaset-controller"),
-   KubeSystemSA("cronjob-controller"), KubeSystemSA("job-controller"),
-   KubeSystemSA("generic-garbage-collector")}
+  match op
+  case TokenCreate(sa) => sa.ns
+  case PodConnect(_, pod) => pod.ns
+  case PodCreate(pod, _) => pod.ns
+  case WorkloadWrite(_, _, wns, _, _) => wns
+  case ScaleUpdate(_, sns) => sns
+  case EphemeralUpdate(pod) => pod.ns
+  case PodUpdate(pod, _, _) => pod.ns
+  case OtherOp(ons) => ons
 }
 
-// Binding namespaceSelector on the release namespace (line 230).
-predicate InReleaseNs(ns: string, cfg: AdmissionConfig)
-{
-  ns == cfg.releaseNs
-}
+// ---------------------------------------------------------------------------
+// Rule vocabulary (lines 233-239)
+// ---------------------------------------------------------------------------
 
-// A protected account: namespaceSelector (line 230) and the two names (line 234).
-predicate ProtectedSA(sa: SA, cfg: AdmissionConfig)
-{
-  sa.SA? && InReleaseNs(sa.ns, cfg) && sa in cfg.protectedAccounts
-}
-
-// (b) line 235: pods named <rel>-api-*, <rel>-worker-*, <rel>-authentik-*, <rel>-postgres-*,
-// in the release namespace (line 230).
-predicate ProtectedPod(p: PodRef, cfg: AdmissionConfig)
-{
-  InReleaseNs(p.ns, cfg) &&
-  ( (cfg.rel + "-api-") <= p.name
-  || (cfg.rel + "-worker-") <= p.name
-  || (cfg.rel + "-authentik-") <= p.name
-  || (cfg.rel + "-postgres-") <= p.name )
-}
-
-// (f) line 239: any container or init-container image differs between oldObject and object.
-predicate ImagesDiffer(oldI: PodImages, newI: PodImages)
-{
-  oldI.containers != newI.containers || oldI.initContainers != newI.initContainers
-}
-
-// Whether a rule (a)-(f) matches the request (lines 234-239; line 243 for scale).
-predicate Matched(r: Request, cfg: AdmissionConfig)
-{
-  match r.op
-  case TokenCreate(sa) => ProtectedSA(sa, cfg)                                     // (a)
-  case PodConnect(_, pod) => ProtectedPod(pod, cfg)                                // (b)
-  case PodCreate(pod, saName) => ProtectedSA(SA(pod.ns, saName), cfg)              // (c)
-  case WorkloadWrite(_, _, oldSa, newSa) =>
-    ProtectedSA(oldSa, cfg) || ProtectedSA(newSa, cfg)                             // (d)
-  case EphemeralUpdate(pod) => ProtectedPod(pod, cfg)                              // (e)
-  case PodUpdate(pod, oldI, newI) => ProtectedPod(pod, cfg) && ImagesDiffer(oldI, newI) // (f)
-  case ScaleUpdate(_) => false     // line 243: "other than through the `scale` subresource"
-  case OtherOp => false
-}
-
-// The requester is in admission.operatorGroups (line 233).
-predicate Operator(r: Request, cfg: AdmissionConfig)
+// "Each rule admits a requester whose request.userInfo.groups intersects
+// admission.operatorGroups" (line 233).
+predicate IsOperator(r: Request, cfg: AdmissionConfig)
 {
   r.groups * cfg.operatorGroups != {}
 }
 
-// The per-rule "Also admitted" requesters of the rule the request's operation falls under.
+// (b)'s pod names: `<rel>-api-*`, `<rel>-worker-*`, `<rel>-authentik-*`,
+// `<rel>-postgres-*` (line 235), reused by (e) and (f) (lines 238, 239).
+function GatedPrefixes(cfg: AdmissionConfig): set<string>
+{
+  {cfg.rel + "-api-", cfg.rel + "-worker-", cfg.rel + "-authentik-", cfg.rel + "-postgres-"}
+}
+
+predicate ProtectedPod(pod: PodRef, cfg: AdmissionConfig)
+{
+  pod.ns == cfg.releaseNs && exists p :: p in GatedPrefixes(cfg) && p <= pod.name
+}
+
+// (c)'s admitted controllers (line 236).
+const PodControllers: set<string> :=
+  {"replicaset-controller", "statefulset-controller", "job-controller", "daemon-set-controller"}
+
+// (d)'s admitted controllers (line 237).
+const WorkloadControllers: set<string> :=
+  {"deployment-controller", "replicaset-controller", "cronjob-controller", "job-controller", "generic-garbage-collector"}
+
+// The per-rule non-operator admissions: the kubelet for (a) (line 234), the
+// controllers for (c) (line 236) and (d) (line 237). (b), (e), (f) have none.
 predicate ExemptRequester(r: Request)
 {
   match r.op
-  case TokenCreate(_) => "system:nodes" in r.groups                 // (a) the kubelet (line 234)
-  case PodConnect(_, _) => false                                     // (b) none
-  case PodCreate(_, _) => r.user in PodCreateControllers()          // (c) line 236
-  case WorkloadWrite(_, _, _, _) => r.user in WorkloadControllers() // (d) line 237
-  case EphemeralUpdate(_) => false                                   // (e) none
-  case PodUpdate(_, _, _) => false                                   // (f) none
-  case ScaleUpdate(_) => false
-  case OtherOp => false
+  case TokenCreate(_) => "system:nodes" in r.groups
+  case PodCreate(_, _) => r.user.KubeSystemSA? && r.user.saName in PodControllers
+  case WorkloadWrite(_, _, _, _, _) => r.user.KubeSystemSA? && r.user.saName in WorkloadControllers
+  case _ => false
 }
 
-// (c) line 236: "Whoever creates it, the operators group and those controllers
-// included, a pod with either account is admitted only when its name starts with
-// `<rel>-api-`". Only rule (c) carries a clause on the object beyond its match.
-predicate NameClause(r: Request, cfg: AdmissionConfig)
+// Whether the bound policy matches the request: the namespaceSelector (line 230)
+// and then each rule's match condition, in the spec's order (a)-(f).
+predicate Matched(r: Request, cfg: AdmissionConfig)
 {
+  RequestNs(r.op) == cfg.releaseNs &&
   match r.op
-  case PodCreate(pod, _) => (cfg.rel + "-api-") <= pod.name
-  case _ => true
+  // (a) line 234
+  case TokenCreate(sa) => sa in cfg.protectedAccounts
+  // (b) line 235
+  case PodConnect(_, pod) => ProtectedPod(pod, cfg)
+  // (c) line 236
+  case PodCreate(pod, saName) => SA(pod.ns, saName) in cfg.protectedAccounts
+  // (d) line 237: "whose pod template (old or new) uses either of those service accounts"
+  case WorkloadWrite(_, _, _, _, _) =>
+    r.op.oldSa in cfg.protectedAccounts || r.op.newSa in cfg.protectedAccounts
+  // line 243: "other than through the `scale` subresource"
+  case ScaleUpdate(_, _) => false
+  // (e) line 238
+  case EphemeralUpdate(pod) => ProtectedPod(pod, cfg)
+  // (f) line 239: only when an image differs
+  case PodUpdate(pod, oldImages, newImages) => ProtectedPod(pod, cfg) && oldImages != newImages
+  case OtherOp(_) => false
 }
 
-// An unmatched request is admitted. A matched rule admits operators (line 233) and its
-// own "also admitted" requesters (lines 234, 236, 237), and denies everyone else,
-// cluster-admin included (line 233); rule (c) admits them only under its name clause
-// (line 236).
+// The admission decision (failurePolicy Fail, validationActions [Deny], line 229:
+// a matched request that the rule does not admit is denied).
 predicate Admits(r: Request, cfg: AdmissionConfig)
 {
-  !Matched(r, cfg) || ((Operator(r, cfg) || ExemptRequester(r)) && NameClause(r, cfg))
+  if !Matched(r, cfg) then true
+  else
+    match r.op
+    // (a) operators, and the kubelet (line 234)
+    case TokenCreate(_) => IsOperator(r, cfg) || ExemptRequester(r)
+    // (b) operators only (line 235)
+    case PodConnect(_, _) => IsOperator(r, cfg)
+    // (c) operators or the four controllers, and in every case the name
+    //     clause `<rel>-api-` (line 236)
+    case PodCreate(pod, _) =>
+      (IsOperator(r, cfg) || ExemptRequester(r)) && (cfg.rel + "-api-") <= pod.name
+    // (d) operators or the five controllers (line 237)
+    case WorkloadWrite(_, _, _, _, _) => IsOperator(r, cfg) || ExemptRequester(r)
+    case ScaleUpdate(_, _) => true
+    // (e) operators only (line 238)
+    case EphemeralUpdate(_) => IsOperator(r, cfg)
+    // (f) operators only (line 239)
+    case PodUpdate(_, _, _) => IsOperator(r, cfg)
+    case OtherOp(_) => true
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-// A prefix of a sequence is a prefix of that sequence extended.
 lemma PrefixOfConcat(a: string, b: string)
   ensures a <= a + b
 {
   assert (a + b)[..|a|] == a;
 }
 
-// Concrete scenario for line 233 against line 236: an operator's bare pod `steal`
-// running as `<rel>-api` (VA 96's name) is refused by the name clause.
-lemma OperatorMisnamedPodRefused()
-  ensures var cfg := AdmissionConfig("iverson", "iverson", {"iverson-operators"});
-          var r := Request("alice", {"iverson-operators"},
-                           PodCreate(PodRef("iverson", "steal"), "iverson-api"));
-          r.groups * cfg.operatorGroups != {} && !Admits(r, cfg)
-{
-  var cfg := AdmissionConfig("iverson", "iverson", {"iverson-operators"});
-  var r := Request("alice", {"iverson-operators"},
-                   PodCreate(PodRef("iverson", "steal"), "iverson-api"));
-  assert "iverson-operators" in r.groups * cfg.operatorGroups;
-  assert cfg.rel + "-api" == "iverson-api";
-  assert SA("iverson", "iverson-api") in cfg.protectedAccounts;
-  assert Matched(r, cfg);
-  assert "steal"[0] != (cfg.rel + "-api-")[0];
-  assert !((cfg.rel + "-api-") <= "steal");
-}
-
 // ---------------------------------------------------------------------------
 // Properties
 // ---------------------------------------------------------------------------
 
-// Citation: "Each rule admits a requester whose `request.userInfo.groups` intersects `admission.operatorGroups`, and denies everyone else." (§3.1 line 233)
+// Citation: "Each rule admits a requester whose `request.userInfo.groups` intersects `admission.operatorGroups`, and denies everyone else; rule (c)'s name clause binds the operators group too." (§3.1 line 233)
 lemma P1_OperatorsAdmitted(r: Request, cfg: AdmissionConfig)
   requires r.groups * cfg.operatorGroups != {}
+  requires !(r.op.PodCreate? && SA(r.op.pod.ns, r.op.saName) in cfg.protectedAccounts
+             && !((cfg.rel + "-api-") <= r.op.pod.name))
   ensures Admits(r, cfg)
 {
 }
@@ -252,6 +255,7 @@ lemma P8_AdmittedProtectedPodIsGated(r: Request, cfg: AdmissionConfig)
   requires Admits(r, cfg)
   ensures ProtectedPod(r.op.pod, cfg)
 {
+  assert cfg.rel + "-api-" in GatedPrefixes(cfg);
 }
 
 // Citation: "the api's ReplicaSet pods (`<rel>-api-<hash>-<suffix>`) already do (Verified assumption 96)" (§3.1 line 236)
@@ -259,8 +263,8 @@ lemma P9_ApiReplicaSetPodsAdmitted(cfg: AdmissionConfig, groups: set<string>, ha
   ensures Admits(Request(KubeSystemSA("replicaset-controller"), groups,
                          PodCreate(PodRef(cfg.releaseNs, cfg.rel + "-api-" + hash + "-" + suffix), cfg.rel + "-api")), cfg)
 {
-  var name := cfg.rel + "-api-" + hash + "-" + suffix;
-  assert name == (cfg.rel + "-api-") + (hash + "-" + suffix);
-  PrefixOfConcat(cfg.rel + "-api-", hash + "-" + suffix);
-  assert KubeSystemSA("replicaset-controller") in PodCreateControllers();
+  var p := cfg.rel + "-api-";
+  var rest := hash + "-" + suffix;
+  assert cfg.rel + "-api-" + hash + "-" + suffix == p + rest;
+  PrefixOfConcat(p, rest);
 }

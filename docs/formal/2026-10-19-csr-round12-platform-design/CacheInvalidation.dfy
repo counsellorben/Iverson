@@ -1,7 +1,7 @@
-// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ a782ac7674fde9185ad55bb1a986df3008adf050
+// Spec: /home/ben/repositories/Iverson/docs/specs/2026-10-19-csr-round12-platform-design.md @ a11e848d722d05cc808840ae796e6afdb2101aa2
 // Source: §2.3 "Shared invalidation" (and §6 line 492), lines 83-88
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-19-csr-round12-platform-design/CacheInvalidation.dfy
-// Round: 2
+// Round: 3
 
 // ---------------------------------------------------------------------------
 // Model: one api replica's dedicated listener connection, seen as a trace of
