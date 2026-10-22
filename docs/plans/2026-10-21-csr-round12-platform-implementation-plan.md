@@ -932,7 +932,7 @@ Newly introduced by this plan and verified at plan-write time, against `2f6c6404
 | 282 | 15 | consumer | The job and `starrocks-init` both keep the batch shape; the revoke follows `CREATE USER IF NOT EXISTS`; the job's script still parses | Step 5's python check and `sh -n` on the rendered job script, run on the replay tree: `[job] PASS`, `[starrocks-init] PASS`, `job script parses` |
 | 283 | 15 | consumer | `RegisterSchemaAuthorizationIntegrationTests.cs:146-175` and `StarRocksIntegrationTests.cs:162` run `SHOW BACKENDS` as root for their own containers' readiness; left unchanged (see questions) | file reads (`UserID = "root"`) |
 | 284 | 16 | code validity | EKS VPC CNI EKS-type latest for 1.35 is `v1.23.1-eksbuild.1` | AWS EKS user guide `managing-vpc-cni.html`, table "Amazon VPC CNI versions" (fetched 2026-10-21): 1.31–1.37 all `v1.23.1-eksbuild.1` |
-| 285 | 16 | code validity | `aws-ebs-csi-driver` `v1.66.1-eksbuild.1` exists for 1.35 | **UNVERIFIED**: AWS publishes no table and no account is available. Upstream v1.66.1 released 2026-10-08 (GitHub API). See questions |
+| 285 | 16 | code validity | `aws-ebs-csi-driver` `v1.66.1-eksbuild.1` exists for 1.35 | **UNVERIFIED**: AWS publishes no table and no account is available. Upstream v1.66.1 released 2026-10-08 (GitHub API). The user chose to confirm it at the first deploy (Task 24 §5) rather than before pinning as spec §7 states (CIR-1 §3.1, option A) |
 | 286 | 16 | code validity | EKS publishes no AL2 AMI for 1.33+; AL2023's root device is `/dev/xvda`; `ami_type = "AL2023_x86_64_STANDARD"` is valid in aws 5.100.0 | AWS "AL2 deprecation FAQ" ("Kubernetes version 1.32 is the last version for which Amazon EKS will release AL2 AMIs"); `amazon-eks-ami` `templates/al2023/template.pkr.hcl:231` (`device_name = "/dev/xvda"`); `terraform validate` Success |
 | 287 | 16 | code validity | cluster-autoscaler chart 9.59.0 has `appVersion: 1.35.0` and keeps the values Terraform sets | `kubernetes.github.io/autoscaler/index.yaml` (9.54.0–9.59.0 → 1.35.0); `helm show values … --version 9.59.0`: `autoDiscovery.clusterName`, `awsRegion`, `rbac.serviceAccount.annotations` present |
 | 288 | 16 | command | kubeconform v0.6.7 resolves `-kubernetes-version 1.35.0` schemas (strict, no ignore) | local `kubeconform -kubernetes-version 1.35.0` on the PVC chart → `Valid: 2 … Skipped: 0`; overlays same Valid counts as at 1.30.0 |
@@ -1012,7 +1012,7 @@ Newly introduced by this plan and verified at plan-write time, against `2f6c6404
 | 362 | 21 | 6 consumers | `backendconfig.yaml` is referenced only by the Authentik Service's annotation (removed together) | `command grep -rn backend-config\|BackendConfig` |
 | 363 | 21 | 6 consumers | `className "gce"` was set only by `values-gcp.yaml` | `command grep -rn '"gce"' values-*.yaml` |
 | 364 | 21 | 5 code | the GKE Gateway's proxies connect from 130.211.0.0/22 and 35.191.0.0/16 like the GCE load balancer, so `clusterCidrs`, the `ipBlocks` rules and `trustedProxies` stay | Google documents the same front-end ranges for global external Application Load Balancers; UNVERIFIED live (spec §7, cloud LB sources) |
-| 365 | 21 | 5 code | one HTTPS listener may carry two `certificateRefs` for the same host | UNVERIFIED on GKE; questions Q3 |
+| 365 | 21 | 5 code | one HTTPS listener may carry two `certificateRefs` for the same host | UNVERIFIED on GKE; the user kept both refs (CIR-1 §3.2, option A), and Task 24 §5's first-deploy check reads the `main` listener's `Programmed` and `ResolvedRefs` conditions |
 | 366 | 21 | 5 code | the GKE guards fail the render with the stated messages, and `gce` is refused without a gateway | `t21_guards.sh`: 5 PASS; M5, M6 caught |
 | 367 | 21 | 3 commands | tfsec stays clean after the Terraform edits | scratch `tfsec`: `No problems detected!` |
 | 368 | 17–21 | 3 commands | renders with each cloud overlay's CI override, `helm lint`, kubeconform 1.30.0, kube-score with `deploy-validate.yml`'s flags | `.github/workflows/deploy-validate.yml:29-40, 60-71, 110-128`; `t18_ci.sh` output |
@@ -1169,6 +1169,13 @@ Newly introduced by this plan and verified at plan-write time, against `2f6c6404
 | 519 | 27 | command | Nothing runs now: no kind cluster, every listed container exited | `kind get clusters` → `No kind clusters found.`; `docker ps -a` statuses all `Exited` |
 | 520 | 27 | ordering | Task 27 runs last; its only commit is the laptop comment (and, conditionally, a §7 bullet) | outline (T27 "fix … values-laptop.yaml's comment"); spec §6 convergence clause |
 | 521 | 27 | consumer | `values-laptop.yaml`'s capacity comment is read by nothing else (a comment) | `command grep -rn 'Capacity' --include=*.yaml Iverson.Server/deploy` (only `values-laptop.yaml:9`) |
+| 522 | 20 | code validity | Step 3i's `setup.ps1` certificate block parses and runs under PowerShell 7.6.7: no Secret and `openssl` on PATH → `kubectl create secret tls iverson-api-tls -n iverson` with `CN=iverson.local`, SAN `DNS:iverson.local`, temp files removed; Secret present → only `kubectl get`; no `openssl` → throws before any create | CIR-1 controller row C-6: pwsh 7.6.7, stub `kubectl`, record `/home/ben/.cache/csr12p-cir1-probe/ps2/record.txt` (md5 `587741a8ef29991c574d3fda8fefe4db`), `parse errors: 0` on the post-plan `setup.ps1` with the block inserted |
+| 523 | 24 | command | `kubectl auth can-i create pods/exec` sends `exec` as the object **name**; `--subresource=exec` (likewise `portforward`, `token`) sends the subresource | CIR-1 §2.3: kubectl v1.36.2 against a fake API server logging SelfSubjectAccessReview bodies: `pods/exec` → subresource empty, name `exec`; `pods --subresource=exec` → subresource `exec`, name empty |
+| 524 | 27 | code validity | `ak apply_blueprint` writes no `BlueprintInstance` status; only the worker's `apply_blueprint` actor sets `successful`, which it did for failed custom files within about 70 s of a fresh install | `ak-src authentik/blueprints/management/commands/apply_blueprint.py:20-36`; CIR-1 controller row C-2: an instance in `error` stayed `error` across a successful `ak apply_blueprint` (`/home/ben/.cache/csr12p-cir1-probe/ev/run2/apply.txt`, md5 `20946ae2…`) |
+| 525 | 27 | code validity | The poller's `'paths'` object (`json_object_agg(path, status) … WHERE path LIKE 'custom/%'`) is `null` on an empty table and ignores stock instances; the streak test on it exits 0 only when every `custom/` row is `successful` | CIR-1 controller row C-5: `postgres:16-alpine`, record `/home/ben/.cache/csr12p-cir1-probe/pg/record.txt` (md5 `90cd1d081907be1315c0c9b40860eeb2`): empty → exit 1; stock `error` + custom `successful` → exit 0; one custom `error` → exit 1 |
+| 526 | 27 | command | An unauthenticated gRPC Search through the edge answers `HTTP/2 401` with `www-authenticate: Bearer`, no `content-type` and no `grpc-status` (the api's fallback authorization policy) | `Iverson.Api/Program.cs` `options.FallbackPolicy`; live records `udd-probes/p3/ev/p1-requests.txt:8-19` (ingress-nginx) and `udd2-probes/p5/ev/p3b-hops.txt:4` (Istio gateway: `HTTP/2 401 server: istio-envoy www-authenticate: Bearer`) |
+| 527 | 27 | command | The system `python3` has no numpy and `ingest.py` reads `QDRANT__SERVICE__API_KEY` at import, so the whole scripts directories fail at collection; the four suites with the python-libs `PYTHONPATH` pass | CIR-1 §2.6: post-plan replay tree `201 passed`; base tree (`2f6c6404`, UIP-1 re-run) `196 passed in 3.31s`, no new files |
+| 528 | 27 | command | With engagement disabled (laptop), `/health` returns `{"status":"healthy","checks":{…,"starrocks":"disabled",…}}` | `Iverson.Api/Program.cs` `starrocks = engagementEnabled ? … : "disabled"`; live laptop record `udd-probes/p3/ev/p1-requests.txt` (md5 `2aa60c83d3cd3e1ecf2bf3f970aca42e`) |
 
 ---
 
@@ -14470,6 +14477,34 @@ kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker
 
 In `docs/runbooks/operator-access-onboarding.md`, replace:
 ```markdown
+   Then `helm upgrade` the release with that file. The api pods roll, because their template changes, and
+```
+with:
+```markdown
+   Then `helm upgrade … $HOPS` the release with that file, as the operators group
+   (`docs/runbooks/operators-group.md` §1). The api pods roll, because their template changes, and
+```
+
+In `docs/runbooks/operator-access-onboarding.md`, replace:
+```markdown
+then `helm upgrade` and apply
+```
+with:
+```markdown
+then `helm upgrade … $HOPS` (as the operators group) and apply
+```
+
+In `docs/user-management-and-security.md`, replace:
+```markdown
+add the `sub` to `global.operatorSubjects`, and `helm upgrade`.
+```
+with:
+```markdown
+add the `sub` to `global.operatorSubjects`, and `helm upgrade` as the operators group (`docs/runbooks/operators-group.md`).
+```
+
+In `docs/runbooks/operator-access-onboarding.md`, replace:
+```markdown
 # Operator Access Onboarding
 ```
 with:
@@ -14485,6 +14520,13 @@ cd "$WT"
 command grep -rnE "kubectl -n <ns> (exec deploy/<release>-(api|worker|authentik)|port-forward svc/<release>-(api|authentik)|create token <release>-(api|admin-automation))|kubectl cnpg psql|kubectl (-n <ns> )?rollout restart deployment/<release>-api" docs/runbooks docs/user-management-and-security.md Iverson.Server --include=*.md --include=*.cs --include=*.yaml --include=*.sh --include=*.ps1 --include=*.py | cut -c1-120
 ```
 Expected, exactly six lines, each naming the group and the runbook: `docs/runbooks/operators-group.md:57` and `:65` (the runbook's own mentions of `kubectl cnpg psql`), `PostgresSchemaManager.cs:266, 394, 427` and `charts/postgres/templates/cluster.yaml:41`. No exec, port-forward, token or api-restart command without `$OPS` remains.
+
+```bash
+source /tmp/claude-1000/-home-ben-repositories-Iverson/a8dc481d-50d9-445a-974d-18c6594e3306/scratchpad/csr12p-sdd/env.sh
+cd "$WT"
+command grep -n 'helm upgrade' docs/runbooks/operator-access-onboarding.md
+```
+Expected, exactly two lines (the list change in step 4 and step 3 of the rebuild), each reading `helm upgrade … $HOPS`.
 
 - [ ] **Step 11: Commit**
 
@@ -17100,7 +17142,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: Task 11's `$SCR/b_render.sh`, `b_ci.sh`, `b_tf.sh`; Task 11's and Task 14's edits to `cluster-aws/main.tf`, `setup.sh`, `setup.ps1`, `deploy-validate.yml` and `.gitlab-ci.yml` (this task's find strings are the add-on blocks, the launch-template comment, the node group's first attributes, each script's first lines, and every `-kubernetes-version 1.30.0`, four per CI file after Task 14).
 - Produces: kind clusters created from `kind-config.yaml` run Kubernetes 1.35.8, inside Istio 1.31's 1.32–1.37 (Task 17). **Task 27 needs kind v0.33.0 or later on `PATH`**: this machine's `kind` is v0.24.0 (`kind version`), which `setup.sh` now refuses. Recreating a kind cluster is how its node image changes.
-- **The EBS CSI add-on pin is not confirmed against AWS.** AWS publishes no per-Kubernetes-version table for this add-on, and no AWS account is available. `v1.66.1-eksbuild.1` follows the upstream driver release v1.66.1 (2026-10-08) and AWS's `v<driver>-eksbuild.<n>` naming. Task 24's first-deploy checks confirm it with `aws eks describe-addon-versions --addon-name aws-ebs-csi-driver --kubernetes-version 1.35`; a wrong pin fails `terraform apply` at the add-on, before any workload.
+- **The EBS CSI add-on pin is not confirmed against AWS.** AWS publishes no per-Kubernetes-version table for this add-on, and no AWS account is available. `v1.66.1-eksbuild.1` follows the upstream driver release v1.66.1 (2026-10-08) and AWS's `v<driver>-eksbuild.<n>` naming. Task 24's first-deploy checks confirm it with `aws eks describe-addon-versions --addon-name aws-ebs-csi-driver --kubernetes-version 1.35`; a wrong pin fails `terraform apply` at the add-on, before any workload. Confirming at the first deploy, not before pinning as spec §7 states, is the user's choice (CIR-1 §3.1, option A).
 
 - [ ] **Step 1: Write the failing checks**
 
@@ -20512,6 +20554,9 @@ for f, marker, gdef, calls, phases in (
     order = [*calls, f"{marker}All operators installed."]
     pos = [s.find(x) for x in order]
     check(all(p >= 0 for p in pos) and pos == sorted(pos), f"{f}: fresh-install order wrong: {list(zip(order, pos))}")
+ps1 = open(f"{K}/setup.ps1").read()
+tls, call = ps1.find("kubectl create secret tls iverson-api-tls"), ps1.find("\nNew-EdgeGateway\n")
+check(0 <= tls < call, "setup.ps1 does not create the edge certificate iverson-api-tls before the gateway phase")
 try:
     docs = {d["kind"]: d for d in yaml.safe_load_all(open(f"{K}/edge-gateway.yaml")) if d}
 except FileNotFoundError:
@@ -20897,6 +20942,34 @@ Add-AmbientLabels
 New-EdgeGateway
 
 Write-Host "All operators installed."
+```
+
+**3i.** The edge certificate, which `setup.sh` already creates. In `Iverson.Server/deploy/kind/setup.ps1`, replace:
+
+```powershell
+kubectl create namespace iverson --dry-run=client -o yaml | kubectl apply -f -
+kubectl label namespace iverson pod-security.kubernetes.io/enforce=baseline --overwrite
+```
+
+with:
+
+```powershell
+kubectl create namespace iverson --dry-run=client -o yaml | kubectl apply -f -
+kubectl label namespace iverson pod-security.kubernetes.io/enforce=baseline --overwrite
+
+# CSR round 12 §4.5: the edge gateway's HTTPS listener (deploy/kind/edge-gateway.yaml) serves this
+# certificate for iverson.local; setup.sh generates the same one. openssl ships with Git for Windows.
+kubectl get secret iverson-api-tls -n iverson *> $null
+if ($LASTEXITCODE -ne 0) {
+  if (-not (Get-Command openssl -ErrorAction SilentlyContinue)) {
+    throw "openssl is not on PATH: it generates the edge gateway's self-signed certificate (iverson-api-tls). Add Git for Windows' usr\bin to PATH, or create the Secret yourself, then re-run."
+  }
+  Write-Host "Generating a self-signed dev cert for the edge gateway's HTTPS listener (iverson.local)..."
+  $Key = Join-Path $env:TEMP "iverson-api-tls.key"; $Crt = Join-Path $env:TEMP "iverson-api-tls.crt"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 365 -keyout $Key -out $Crt -subj "/CN=iverson.local" -addext "subjectAltName=DNS:iverson.local"
+  kubectl create secret tls iverson-api-tls -n iverson --cert=$Crt --key=$Key
+  Remove-Item -Force $Key, $Crt
+}
 ```
 
 - [ ] **Step 4: Backend TLS keyed on the gateway, and the retired nginx class**
@@ -24960,9 +25033,9 @@ mismatch fails closed (a refused command, a FailedCreate event, or an edge 503),
 
   ```bash
   kubectl auth whoami          # Groups lists a group named in admission.operatorGroups
-  kubectl auth can-i create pods/exec -n <ns>
-  kubectl auth can-i create pods/portforward -n <ns>
-  kubectl auth can-i create serviceaccounts/token -n <ns>
+  kubectl auth can-i create pods --subresource=exec -n <ns>
+  kubectl auth can-i create pods --subresource=portforward -n <ns>
+  kubectl auth can-i create serviceaccounts --subresource=token -n <ns>
   kubectl auth can-i create validatingadmissionpolicies.admissionregistration.k8s.io
   kubectl auth can-i create validatingadmissionpolicybindings.admissionregistration.k8s.io
   kubectl auth can-i create clusterroles.rbac.authorization.k8s.io
@@ -24997,7 +25070,7 @@ mismatch fails closed (a refused command, a FailedCreate event, or an edge 503),
 - **GKE: the main host's two certificates.** The Gateway's `main` listener names both
   `api.ingress.tlsSecretName` and `adminUi.ingress.tlsSecretName` for the one host; that GKE accepts two
   certificates there is unverified. If `kubectl -n <ns> describe gateway <release>-edge` shows the
-  `main` listener not `Programmed`, or the host serves no certificate, set `adminUi.ingress.tlsSecretName:
+  `main` listener without both `Programmed=True` and `ResolvedRefs=True`, or the host serves no certificate, set `adminUi.ingress.tlsSecretName:
   ""` in `values-gcp.yaml` (the listener then carries the api's certificate alone, for the same host)
   and upgrade.
 - **GKE: gRPC-Web through the Gateway.** The class's documentation does not mention it. Open the console
@@ -27667,10 +27740,10 @@ cd ../Iverson.Clients/DotNet && for p in Iverson.Client.Core.Tests Iverson.Clien
 dotnet build-server shutdown >/dev/null 2>&1
 cd ../../Iverson.AdminUI && systemd-run --user --scope -q -p MemoryMax=3G npm ci --no-fund --no-audit 2>&1 | tail -1
 systemd-run --user --scope -q -p MemoryMax=3G npm test 2>&1 | command grep -E 'Test Files|Tests ' | tail -2
-cd .. && python3 -m pytest Iverson.Server/deploy/scripts Iverson.Server/Iverson.LoadTest/scripts -q 2>&1 | tail -1
+cd .. && PYTHONPATH=/home/ben/repositories/iverson-benchmark-corpora/python-libs python3 -m pytest Iverson.Server/deploy/scripts Iverson.Server/Iverson.LoadTest/scripts/test_pattern_leg.py Iverson.Server/Iverson.LoadTest/scripts/test_dialogue_patterns.py Iverson.Server/Iverson.LoadTest/scripts/test_dialogue_pool.py -q -p no:cacheprovider 2>&1 | tail -1
 ```
 
-Expected: every .NET line reads `Passed!` with 0 failed; `npm ci` prints `added <n> packages …`; vitest's `Test Files` and `Tests` lines show only passed; pytest's last line shows only passed. `Iverson.AdminUI/node_modules` is gitignored.
+Expected: every .NET line reads `Passed!` with 0 failed; `npm ci` prints `added <n> packages …`; vitest's `Test Files` and `Tests` lines show only passed; pytest's last line reads `201 passed`. `Iverson.AdminUI/node_modules` is gitignored.
 
 - [ ] **Step 2: Tools and environment for the live run.** kind v0.33.0 from its release, checked against the published SHA-256, into `/home/ben/.cache/csr12p-live/bin`, which the environment puts first on `PATH`.
 
@@ -27901,8 +27974,8 @@ print("FE heap lowered in the scratch chart")
 T27HEAP
 cd $LIVE/chart && helm dependency build . > /dev/null && echo deps-built
 cat > $LIVE/converge-poll.sh <<'T27POLL'
-# Polls Authentik's database every 5 s, from before the release exists until every blueprint instance has
-# read successful for 12 polls in a row, or 40 minutes. One JSON line per poll in $LIVE/converge.log.
+# Polls Authentik's database every 5 s, from before the release exists until every custom/ blueprint instance
+# has read successful for 12 polls in a row, or 40 minutes. One JSON line per poll in $LIVE/converge.log.
 source /tmp/claude-1000/-home-ben-repositories-Iverson/a8dc481d-50d9-445a-974d-18c6594e3306/scratchpad/csr12p-sdd/env.sh
 OUT=$LIVE/converge.log; : > $OUT
 PSQL="kubectl $OPS_AS -n iverson exec iverson-postgres-1 -c postgres -- psql -d authentik -tA -c"
@@ -27920,6 +27993,7 @@ for i in $(seq 1 480); do
   row=$($PSQL "SELECT json_build_object(
     't', '$now',
     'instances', (SELECT json_object_agg(name, status) FROM authentik_blueprints_blueprintinstance),
+    'paths', (SELECT json_object_agg(path, status) FROM authentik_blueprints_blueprintinstance WHERE path LIKE 'custom/%'),
     'api_app', (SELECT count(*) FROM authentik_core_application WHERE slug = 'iverson-api'),
     'api_gate', (SELECT count(*) FROM authentik_core_application a
                    JOIN authentik_policies_policybinding b ON b.target_id = a.policybindingmodel_ptr_id AND b.enabled
@@ -27949,7 +28023,7 @@ for i in $(seq 1 480); do
     echo "{\"t\": \"$now\", \"state\": \"query failed\"}" >> $OUT
   else
     echo "$row" >> $OUT
-    if echo "$row" | python3 -c 'import json, sys; d = json.load(sys.stdin)["instances"] or {}; sys.exit(not d or any(v != "successful" for v in d.values()))'; then
+    if echo "$row" | python3 -c 'import json, sys; d = json.load(sys.stdin)["paths"] or {}; sys.exit(not d or any(v != "successful" for v in d.values()))'; then
       streak=$((streak + 1))
     else
       streak=0
@@ -27991,7 +28065,8 @@ print(f"final values: mfa={polls[-1]['mfa'] if polls else '-'} setup_mode={polls
 T27REPORT
 cat > $LIVE/apply-blueprints.sh <<'T27APPLY'
 # Usage: bash apply-blueprints.sh <label>. Applies every custom/ blueprint Authentik has an instance for, as the
-# operators group, in rounds until each is successful (at most three; apply is idempotent).
+# operators group, in rounds until the apply exits 0 (at most three; apply is idempotent). `ak apply_blueprint`
+# does not update instance status, so the count it prints is information only.
 source /tmp/claude-1000/-home-ben-repositories-Iverson/a8dc481d-50d9-445a-974d-18c6594e3306/scratchpad/csr12p-sdd/env.sh
 PSQL="kubectl $OPS_AS -n iverson exec iverson-postgres-1 -c postgres -- psql -d authentik -tA -c"
 for round in 1 2 3; do
@@ -27999,8 +28074,8 @@ for round in 1 2 3; do
   kubectl $OPS_AS -n iverson exec deploy/iverson-authentik-worker -c worker -- ak apply_blueprint $paths > $LIVE/apply-$1-$round.log 2>&1
   rc=$?
   bad=$($PSQL "SELECT count(*) FROM authentik_blueprints_blueprintinstance WHERE path LIKE 'custom/%' AND status <> 'successful'")
-  echo "[$1] round $round: apply exit=$rc, custom instances not successful: $bad"
-  [ "$rc" = 0 ] && [ "$bad" = 0 ] && break
+  echo "[$1] round $round: apply exit=$rc, custom instances not yet re-run by discovery (status error): $bad"
+  [ "$rc" = 0 ] && break
 done
 echo "[$1] stock instances not successful: $($PSQL "SELECT coalesce(string_agg(path || '=' || status, ', '), 'none') FROM authentik_blueprints_blueprintinstance WHERE path NOT LIKE 'custom/%' AND status <> 'successful'")"
 T27APPLY
@@ -28067,11 +28142,12 @@ bash $LIVE/apply-blueprints.sh fresh
 
 Expected:
 - `POLL-DONE after <n> polls`.
-- `W1` to `W4b` each read `never`; `last poll: <n> blueprint instances, not successful: none`; `final values: mfa=configure setup_mode=all`.
-- `[fresh] round 1: apply exit=0, custom instances not successful: 0` (a 137 exit is a memory kill; the next round re-runs it), and the stock line, which records any stock instance in error (VA81 saw `default/flow-oobe.yaml`).
+- `W1` to `W4b` each read `never`; the W1–W4b lines and `final values` decide; a `custom/` instance whose first discovery failed may read `error` until the next discovery, because `ak apply_blueprint` does not update instance status (`apply_blueprint.py:20-36`); `final values: mfa=configure setup_mode=all`.
+- `[fresh] round 1: apply exit=0` (a 137 exit is a memory kill; the next round re-runs it), and the stock line, which records any stock instance in error (VA81 saw `default/flow-oobe.yaml`).
 
 If a window opened, the spec decides the fix (§6 "Fresh-install blueprint convergence"):
-- **W1** (the console sign-in binding), **W2** (`initial-setup`) or **W4b** (`iverson-recovery`'s throttle stage) open: an Iverson document carries the target. Stop and report the report lines: the fix moves the gate into its target's document (the sign-in policy and binding into the `service-clients.yaml` document after `iverson-api`; the `initial-setup` entry carrying the stock entry's `name`, `title` and `designation`; the `iverson-recovery` throttle binding into `recovery-flow.yaml`) in Task 9's files, and this task restarts at Step 9 on a new cluster afterwards.
+- **W1** (the console sign-in binding) or **W4b** (`iverson-recovery`'s throttle stage) open: an Iverson document carries the target. Stop and report the report lines: the fix moves the gate into its target's document (the sign-in policy and binding into the `service-clients.yaml` document after `iverson-api`; the `iverson-recovery` throttle binding into `recovery-flow.yaml`) in Task 9's files, and this task restarts at Step 9 on a new cluster afterwards.
+- **W2** (`initial-setup`) open: Task 9's `initial-setup.yaml` already carries the spec's remedy (the entry with the stock entry's `name`, `title` and `designation`), so the window means Authentik's stock `default/flow-oobe.yaml` applied before it. Do not stop or restart: record the W2 report line, report it to the user with this task's results, and continue with Step 13 (CIR-1 §3.3, option C).
 - **W3** or **W4a** open: no Iverson document carries the stock target, so the window is recorded in §7. In `docs/specs/2026-10-19-csr-round12-platform-design.md`, insert the matching bullet directly before the line that starts `- **First-come MFA enrolment remains on dev profiles**`, and commit it with Step 13's commit.
   - W3, the bullet to insert:
 
@@ -28360,20 +28436,20 @@ echo "row: $(kubectl $OPS_AS -n iverson exec iverson-postgres-1 -c postgres -- p
 T27CT
 bash $LIVE/createtenant.sh csr12p-fresh
 # Task 20's GRPCRoute sets the security headers with a ResponseHeaderModifier, which the prototype checked only on
-# an HTTPRoute: read them from a gRPC response through the gateway. The call carries no token, so the api answers
-# with a gRPC status in a trailers-only response; the headers ride on it.
+# an HTTPRoute: read them from the response to a gRPC request through the gateway. The call carries no token, so the
+# api's fallback authorization policy answers HTTP 401 with a Bearer challenge (as mesh-check.sh M5 expects); the headers ride on it.
 curl -s --http2 --cacert $LIVE/edge-cert.pem --connect-to iverson.local:8443:127.0.0.1:8443 -o /dev/null -D $LIVE/grpc-headers.txt \
   -X POST -H 'content-type: application/grpc' -H 'te: trailers' --data-binary @/dev/null \
   https://iverson.local:8443/iverson.ObjectSearchService/Search
 H="$(tr -d '\r' < $LIVE/grpc-headers.txt)"
-echo "G1 gRPC response headers: $(printf '%s\n' "$H" | command grep -ciE '^(x-frame-options: DENY|x-content-type-options: nosniff|referrer-policy: no-referrer|content-security-policy: |permissions-policy: )')/5, content-type: $(printf '%s\n' "$H" | command grep -i '^content-type:' | cut -d' ' -f2), grpc-status present: $(printf '%s\n' "$H" | command grep -qi '^grpc-status:' && echo yes || echo no)"
+echo "G1 gRPC response headers: $(printf '%s\n' "$H" | command grep -ciE '^(x-frame-options: DENY|x-content-type-options: nosniff|referrer-policy: no-referrer|content-security-policy: |permissions-policy: )')/5, status: $(printf '%s\n' "$H" | sed -nE 's#^HTTP/[0-9.]+ ([0-9]+).*#\1#p' | head -n 1), Bearer challenge: $(printf '%s\n' "$H" | command grep -qi '^www-authenticate: Bearer' && echo yes || echo no)"
 ```
 
 Expected:
 - `T1 pod alive:          200 -` and `T2 30 s after delete:  400 invalid_grant`.
 - `Build succeeded`.
 - `link host=http://authentik.iverson.local path=/if/flow/iverson-recovery/` and `row: csr12p-fresh|active`.
-- `G1 gRPC response headers: 5/5, content-type: application/grpc, grpc-status present: yes`. Fewer than 5 means Istio does not apply the `ResponseHeaderModifier` on a `GRPCRoute`: stop and report it with Task 20 (the headers have no browser audience on gRPC, but §4.5 keeps them on every edge route).
+- `G1 gRPC response headers: 5/5, status: 401, Bearer challenge: yes`. Fewer than 5 means Istio does not apply the `ResponseHeaderModifier` on a `GRPCRoute`: stop and report it with Task 20 (the headers have no browser audience on gRPC, but §4.5 keeps them on every edge route).
 
 - [ ] **Step 17: Kind upgrade from `main` with Authentik 2026.5.3** (§5, §6, VA81). Delete the fresh cluster, create a new one from the branch's `kind-config.yaml` (the node image pin), install `main`'s platform and chart with Authentik 2026.5.3 on it, then take it through §5's order. `main` is exported with `git archive` into `/home/ben/.cache/csr12p-live/main-src`; no worktree is added. Run each slow command with `run_in_background`.
 
@@ -28405,7 +28481,7 @@ bash $LIVE/createtenant.sh csr12p-pre
 Expected:
 - `delete exit=0`, `kind create exit=0`, `node cap exit=0`, `main setup exit=0` (`main`'s ingress-nginx runs on the pinned node, VA68), `main build exit=0`, `main models exit=0`.
 - `main install exit=0`; both Authentik Deployments on `ghcr.io/goauthentik/server:2026.5.3`.
-- `stock flow present: yes`; `[main] round <n>: apply exit=0, custom instances not successful: 0`.
+- `stock flow present: yes`; `[main] round <n>: apply exit=0`.
 - `link host=http://authentik.iverson.local path=/if/flow/iverson-recovery/` and `row: csr12p-pre|active` (through `main`'s ingress-nginx edge).
 
 **17b. §5 steps 1, 2 and 2a–3: Istio, then the branch's chart, while a poller records the in-cluster Authentik health.** The upgrade leaves `authentik.image` to the branch's chart (2026.8.4), so the worker migrates while the 2026.5.3 server serves. The poller reads `/-/health/live/` through the API server's service proxy every 3 s (the edge goes when the chart's Ingresses do). Start it with `run_in_background`; run the upgrade with `run_in_background`.
@@ -28478,9 +28554,9 @@ bash $LIVE/kind-checks.sh upgrade 2>&1 | command grep -E 'K1|K5'
 
 Expected:
 - `step 4 exit=0`, `step 5 exit=0`, `step 6 uninstall exit=0`, `step 6 gateway exit=0`.
-- `[upgrade] round <n>: apply exit=0, custom instances not successful: 0`; the stock line may name `default/flow-oobe.yaml` (VA81).
+- `[upgrade] round <n>: apply exit=0`; the stock line may name `default/flow-oobe.yaml` (VA81).
 - The four namespaces `ambient`, `iverson-edge` unlabelled.
-- No `upgrade K1 NOT READY` lines, and `upgrade K5 api /health:` with every field `true` (laptop runs no StarRocks, so the `starrocks` field is absent or true).
+- No `upgrade K1 NOT READY` lines, and `upgrade K5 api /health:` with `status` `healthy` and every `checks` field `true` except `starrocks`, which reads `"disabled"` (laptop runs no StarRocks).
 
 - [ ] **Step 18: Kind upgrade: the probes and the edge after §5.**
 
@@ -28528,7 +28604,7 @@ Expected:
 - `containers-unchanged`, `volumes-unchanged`, `networks-unchanged` (the `kind` network existed before), and `no-image-removed-or-repointed`.
 - An empty `git status`; the newest commits carry the `Claude Opus 5.5 (1M context)` trailer.
 
-Then remove what this task built: any `*csr12p*` image under "new images", any `iverson-tei-model:*` image this task built, and any untagged `<none>` image created during this task's build windows (`docker image inspect <id> --format '{{.Created}}'`). Newly pulled base images (the kind node, Calico, Istio, busybox) are acceptable; list them in the report.
+Then remove what this task built: any `*csr12p*` image under "new images", any `iverson-tei-model` image whose ID is not in `$LIVE/before-images.txt`, removed by ID and never by tag (the `iverson-tei-model` tags this task builds already exist on this host and belong to the user's stack), and any untagged `<none>` image created during this task's build windows (`docker image inspect <id> --format '{{.Created}}'`). Newly pulled base images (the kind node, Calico, Istio, busybox) are acceptable; list them in the report.
 
 ---
 
