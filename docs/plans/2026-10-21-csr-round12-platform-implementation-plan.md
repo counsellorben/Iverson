@@ -817,7 +817,7 @@ Newly introduced by this plan and verified at plan-write time, against `2f6c6404
 | 167 | 8 | Signatures | The token request's form body is readable from an application policy as `request.http_request.POST["client_assertion"]` | UNVERIFIED at plan time (spec §2.6: "The plan's live test confirms the field is reachable"). T9's `OrchestratorTokenReview_ReadsTheRawAssertion_AndRefusesWithoutAReview` confirms it on the fixture; T27 confirms the full review on kind. Listed in questions (Q2) |
 | 168 | 8 | Signatures | A TokenReview `POST` answers 201 with `status.authenticated` and `status.user.username`; the review takes `spec.audiences` | Kubernetes `authentication.k8s.io/v1` TokenReview API; [VA 25] (pod-bound token reviewed `authenticated=True`) |
 | 169 | 8 | Signatures | `!KeyOf <id>` resolves a PolicyBindingModel entry to its `pbm_uuid` for a policybinding target; `!Find` of a flow gives `flow_uuid` (wrong for a binding target), of an application its pk (right) | [src] `blueprints/v1/common.py:230-252, 369-413`; [repo] `reputation.yaml:43-45` comment; `compose-only/service-clients.yaml:151-155` |
-| 170 | 8 | Signatures | nginx accepts `proxy_bind` and `add_header … always` at server level and a regex `location ~ …$`; a location that sets any `proxy_set_header` inherits none from the server block | nginx documentation (`ngx_http_proxy_module`: `proxy_bind` context http, server, location; `proxy_set_header` inheritance rule; `ngx_http_headers_module`: `add_header … always`); [VA 55, 67]. Checked at execution by `t8_nginx.sh` (`nginx -t`); not run at plan time (no containers) |
+| 170 | 8 | Signatures | nginx accepts `proxy_bind` and `add_header … always` at server level and a regex `location ~ …\z`; a location that sets any `proxy_set_header` inherits none from the server block | nginx documentation (`ngx_http_proxy_module`: `proxy_bind` context http, server, location; `proxy_set_header` inheritance rule; `ngx_http_headers_module`: `add_header … always`); [VA 55, 67]. Checked at execution by `t8_nginx.sh` (`nginx -t`); not run at plan time (no containers) |
 | 171 | 8 | Signatures | Terraform: `aws_eks_cluster.this.identity[0].oidc[0].issuer` exists; azurerm 3.117.1 has `oidc_issuer_enabled` and `oidc_issuer_url`; `google_container_cluster.this.location` and `.name` are readable | [repo] `cluster-aws/main.tf:288, 292`; [VA 30]; [repo] `cluster-gcp/main.tf:134-136` |
 | 172 | 9 | Signatures | Blueprint entries support `conditions:` (all truthy, else the entry is skipped) and `state: absent` (deletes if found, skips otherwise) | [src] `blueprints/v1/common.py:76-85, 176-178`; `importer.py:215-221, 433-441` |
 | 173 | 9 | Signatures | An entry's `permissions:` (`permission`, `role`) assigns object permissions to the role after the entry is saved, and skips while the role is missing | [src] `blueprints/v1/common.py:66-72`; `importer.py:366-375`; [VA 29, 73] |
@@ -1243,7 +1243,7 @@ Newly introduced by this plan and verified at plan-write time, against `2f6c6404
 | 593 | 17 | code validity | Under pwsh 7.6.7 with `$ErrorActionPreference = "Stop"`, `Add-AmbientLabels` does not throw when `kubectl` writes to stderr and exits 0, as it does with "No resources found". It labels on a fresh cluster and refuses on a release without 15008. | Copied the post-plan `deploy/kind/setup.ps1` (md5 `7a16aad12414e40a420c5a6800852614`, identical to the tree's) to `/home/ben/.cache/csr12p-uip4/span/f17/run/kind/`, and put stub `kubectl`, `kind` and `helm` first on PATH. The `kubectl` stub logs to `$CALLS`. In mode `nopol`, both `get networkpolicy -n iverson` calls print `No resources found in iverson namespace.` to stderr and exit 0. Ran `/home/ben/.cache/csr12p-pwsh/x/pwsh -NoProfile -NonInteractive -File …/setup.ps1 --only ambient-labels` (`PSNativeCommandUseErrorActionPreference` = False). `nopol`: pwsh rc 0, the stderr lines are echoed, then `namespace/iverson labeled` (1 `label namespace` call). `old` (policies whose ports lack 15008): rc 0, the "Not enrolled … do not list port 15008 yet" message, 0 label calls. `new` (ports include 15008): rc 0, 1 label call. Code: `setup.ps1:96-111`. |
 | 594 | 21 | consumer | The GKE `HealthCheckPolicy` for Authentik probes a path the `:9080` allow-list forwards. The api's health check goes straight to the api, not through `:9080`. | Post-plan gcp render (`values-gcp.yaml` + its CI override): `HealthCheckPolicy iverson-authentik` = `type: HTTPS, httpsHealthCheck: {port: 9080, requestPath: /-/health/live/}` targeting Service `iverson-authentik` (`templates/gateway-gke.yaml:165-173`). `iverson-api` = `{port: 8081, requestPath: /health}` (`:177-185`). The rendered tls-proxy config has `listen 9080 ssl;` and `location = /-/health/live/ { proxy_pass http://127.0.0.1:9000; }` (`configmap-tls-proxy.yaml:74, 112`). Ran it: nginx 1.31.6 from the compose-pinned image's layers (`/home/ben/.cache/csr12p-uip2/span/nginx-root`, through its `ld-musl`), on the rendered gcp `default.conf` with the listeners moved to 127.0.0.1:18443/19080, a scratch certificate, and an echo upstream for 9000. `GET /-/health/live/` → 200, and the upstream logged `GET /-/health/live/ HTTP/1.1`. `/-/health/ready/`, `/api/v3/core/users/` and `/if/admin/` → 404 and did not reach the upstream. Record: `/home/ben/.cache/csr12p-uip4/span/f18/`; processes killed. |
 | 595 | 22 | consumer | The containers that read the newly bind-mounted compose CA and certificates can read them: the files are 0644, Authentik runs as uid 1000 and Prometheus as `nobody`, and compose overrides neither user. | Post-plan `scripts/generate-compose-secrets.sh:85` `chmod 644 "$TLS_DIR/$stem.crt" "$TLS_DIR/$stem.key"`, `:87` `chmod 644 "$TLS_DIR/ca.crt"`, `:71` `chmod 700 "$TLS_DIR"`. Ran a copy in scratch (`/home/ben/.cache/csr12p-uip4/span/f19`, rc 0): `stat -c %a` gives `700` for the directory and `644` for `ca.crt` and all ten leaf files. Each mount is a single-file bind. New CA mounts (vs `git show 2f6c6404:Iverson.Server/docker-compose.yml`, which mounts `ca.crt` only for iverson-api and iverson-worker): starrocks `:90`, prometheus `:343`, authentik-migrate `:382`, authentik-server `:437`, authentik-worker `:483`. Image users from `podman image inspect`: `ghcr.io/goauthentik/server` digest `e7226ae1…` (the compose pin, podman `fce88469e565`) `User=1000`; `prom/prometheus:v2.55.1` digest `2659f4c2…` (`899b369f202e`) `User=nobody`. None of these services sets `user:` in the compose file (awk over each service block). |
-| 596 | 22 | consumer | A fresh `starrocks_data` volume holds the image's `fe.conf` at the path the FE wrapper appends to, with no `ssl_*` key, so the wrapper's three settings are each appended once. | Compose `docker-compose.yml:86` mounts `starrocks_data:/data/deploy`, so an empty named volume receives the image's `/data/deploy` on first use (podman/Docker copy-up; not run here). Image `starrocks/allin1-ubuntu:4.1.6` digest `5cbf09c4…` (podman `ee5eb57ad1aa`, the compose pin `:72`): `Env SR_HOME=/data/deploy/starrocks`, `WorkingDir=/data/deploy`. Layers holding `starrocks/fe/conf/fe.conf` are L6 `7566d5dc888c` (67 lines) and L9 `df1e53948558`, the top layer: 84 lines, md5 `b5bf8bd5bb193b9fed4509dff8a055c8`, ending in a newline, and `command grep -i ssl` gives 0 hits. No later layer whites it out. The wrapper `deploy/starrocks/fe-tls-entrypoint.sh:17` uses `conf="$SR_HOME/fe/conf/fe.conf"`. `:18-24` appends `ssl_keystore_location`, `ssl_keystore_password` and `ssl_key_password` only when `grep -Eq "^[[:space:]]*${key}[[:space:]]*="` misses. |
+| 596 | 22 | consumer | A fresh `starrocks_data` volume holds the image's `fe.conf` at the path the FE wrapper appends to, with no `ssl_*` key, so the wrapper's three settings are each appended once. | Compose `docker-compose.yml:86` mounts `starrocks_data:/data/deploy`, so an empty named volume receives the image's `/data/deploy` on first use (podman/Docker copy-up; not run here). Image `starrocks/allin1-ubuntu:4.1.6` digest `5cbf09c4…` (podman `ee5eb57ad1aa`, the compose pin `:72`): `Env SR_HOME=/data/deploy/starrocks`, `WorkingDir=/data/deploy`. Layers holding `starrocks/fe/conf/fe.conf` are L6 `7566d5dc888c` (67 lines) and L9 `df1e53948558`, the top layer: 84 lines, md5 `b5bf8bd5bb193b9fed4509dff8a055c8`, ending in a newline, and `command grep -i ssl` gives 0 hits. No later layer whites it out. The wrapper `deploy/starrocks/fe-tls-entrypoint.sh:17` uses `conf="$SR_HOME/fe/conf/fe.conf"`. `:18-24` appends `ssl_keystore_location`, `ssl_keystore_password` and `ssl_key_password` only when `grep -aEq "^[[:space:]]*${key}[[:space:]]*="` misses. |
 | 597 | 22 | code validity | The post-plan compose file has no duplicate YAML mapping keys, no duplicate environment names within a service, and no duplicate mount targets within a service. | `python3 -I /home/ben/.cache/csr12p-uip4/span/dupcheck.py Iverson.Server/docker-compose.yml` (PyYAML 6.0.3 with a `construct_mapping` that records every repeated key): `duplicate mapping keys: []`, 19 services, 154 environment entries, 42 mount targets (short and long `volumes:` forms plus `tmpfs`), 0 duplicates. Self-test on a crafted file with a repeated key, `[A=1, A=2]` and two mounts at `/d` reports all three. |
 | 598 | 27 | consumer | Step 18's A7 `/setup: 302 /` after the upgrade relies on `main`'s run under Authentik 2026.5.3 having set the Setup flag from its bootstrap password. The flag persists, and both versions' `SetupView` redirect once it is set. | Local image `ghcr.io/goauthentik/server:2026.5.3` (podman `5c6a739e86f0`, label `refs/tags/version/2026.5.3`), layer `324a75b92541`: `authentik/core/setup/signals.py:17-42` (md5 `78a7b033…`). Its `post_startup` receiver returns unless `AUTHENTIK_BOOTSTRAP_PASSWORD`, `_PASSWORD_HASH` or `_TOKEN` is set; otherwise it applies `system/bootstrap.yaml` to each ready tenant not yet set up and calls `Setup.set(True, tenant=tenant)`. `tasks/middleware.py:31-36`: the worker's `after_process_boot` sends `post_startup`. `core/apps.py:10` `class Setup(Flag[bool], key="setup")`. `core/setup/views.py:35-37`: `dispatch` returns `redirect(reverse("authentik_core:root-redirect"))` when `Setup.get()`. `core/urls.py:36-39`: that route is `path("", …)`. 2026.8.4's `SetupView.dispatch` is the same (ak-src `core/setup/views.py:39-41`). `main`'s worker env: `git show 2f6c6404:…/charts/authentik/templates/deployment-worker.yaml:103-105` `AUTHENTIK_BOOTSTRAP_PASSWORD` from `<rel>-authentik-app`/`bootstrap-password`, which `secret.yaml:12-15` fills with `randAlphaNum 32`. Step 17 installs `main`'s chart with `--set authentik.image=ghcr.io/goauthentik/server:2026.5.3` (plan :28520). |
 | 599 | 27 | command | The StarRocks FE image's `mysql` client is MySQL 8.0.46 and accepts `--ssl-mode`, including `DISABLED`, which the plan uses. | `starrocks/fe-ubuntu:4.1.6` (podman `a362ef03aec4`, the chart's `charts/starrocks/values.yaml:3` tag). Layer `ac6765c62d0f` `var/lib/dpkg/status`: `mysql-client`, `mysql-client-8.0` and `mysql-client-core-8.0` `8.0.46-0ubuntu0.24.04.4`, and it holds `usr/bin/mysql`. Ran natively through the base layer's `ld-linux-x86-64.so.2 --library-path <layer lib dirs>`. `mysql --version` → `Ver 8.0.46-0ubuntu0.24.04.4 for Linux on x86_64 ((Ubuntu))`. `--help` lists `--ssl-mode=name SSL connection mode.` (line 115). `--ssl-mode=DISABLED --help`, `=REQUIRED` and `=VERIFY_CA` each rc 0. `=NOPE` → rc 1, `Unknown option to ssl-mode: NOPE … 'DISABLED','PREFERRED','REQUIRED','VERIFY_CA','VERIFY_IDENTITY'`. The plan's Task 27 uses `ssl-mode=DISABLED` (:28370). |
@@ -1349,6 +1349,14 @@ Newly introduced by this plan and verified at plan-write time, against `2f6c6404
 | 699 | 27 | code validity | UIP-7's wait in Step 14 (`command grep -qF '"starrocks":true'`) matches what the local api's `/health` writes once StarRocks is healthy: `"starrocks":true`, with no whitespace. On local the engagement store is on, so the field is a JSON boolean rather than `"disabled"`. | Post-plan `Iverson.Api/Program.cs:653-714`: `checks` is an anonymous object with `starrocks = engagementEnabled ? (object)(srStatus == EngagementHealthStatus.Healthy) : "disabled"` (`:696`), returned through `Results.Ok`/`Results.Json` (`:706-707`). No `WriteIndented` or `ConfigureHttpJsonOptions` exists in `Iverson.Api` (the only `WriteIndented = false` is `Schema/SchemaRegistry.cs:289`). Local render: api `Engagement__Enabled` `"true"`. Record re-read, not re-run: `kind-proto/ev/c6.txt` (md5 `79aacd0413fade60faafbfeca425f8ce`) `:6` `{"status":"healthy","checks":{"postgres":true,"apiGrants":true,"runtimeRole":true,"registry":true,"starrocks":true,"qdrant":true,"kafka":true}} -> 200`. Plan :28537. (CIR-8 span check, S7; re-verified in UIP-8) |
 | 700 | 27 | code validity | `alive()` in Step 14's `kind-checks.sh` reads the real 4.1.6 outputs: `SHOW FRONTENDS` and `SHOW BACKENDS` from `mysql --batch` → `true` when every row is alive. | Extracted `alive()`'s Python verbatim from plan `:28524-28527` into `/home/ben/.cache/csr12p-uip8/span/alive/alive.py` and ran it (`python3 -I -B`). On `udd-probes/p2/ev/u5-1-fe0-first-start.txt` (md5 `880a203992cfb39e515373b69744b9c8`) `:26-27`, a real `show frontends;` through `mysql … --batch` in `fe-ubuntu:4.1.6` (`p2/sql.sh:4-5`), 17 tab-separated columns with an empty `ErrMsg`: `true`. On `/home/ben/.cache/csr12p-cir7-probe/sr/record.txt` (md5 `98b56634234514487396bb5eb9cb554a`) `:29-30`, `SHOW BACKENDS` cut to 8 columns, `Alive` among them: `true`. Record re-read, not re-run: that probe's `run.sh` (md5 `4decd2a04459748c5e51187d977b54c0`) `:37` `mysql … --batch` and `:40-43` the same parser over the full `SHOW BACKENDS` output logged `Alive=true` (`record.txt:17`). (CIR-8 span check, S7; re-verified in UIP-8) |
 | 701 | 27 | consumer | After the create-user hook, `kubectl exec iverson-starrocks-fe-0 -- mysql -h127.0.0.1 -P9030 -uroot …` (with no `-p`) logs in as root, which the K2 wait, K3 and K4 rely on. The FE container's `MYSQL_PWD` comes from the same Secret key as the root password that the hook sets: `<rel>-starrocks-app`/`root-password`. The operator puts `feEnvVars` on the `fe` container, which is the pod's only container, so `kubectl exec` lands there. | Post-plan `charts/starrocks/templates/starrockscluster.yaml:83-85` `feEnvVars: MYSQL_PWD` from `{{ .Release.Name }}-starrocks-app` key `root-password`; `job-create-user.yaml:49-50` `ROOT_PW` from the same key, `:93` `SET PASSWORD FOR 'root' = PASSWORD('$ROOT_PW')`. Local render: `StarRocksCluster` FE `feEnvVars` `[{name: MYSQL_PWD, valueFrom: {secretKeyRef: {name: iverson-starrocks-app, key: root-password}}}]`, Job `create-user` `ROOT_PW` the same; the FE spec has `initContainers` (`fe-keystore`) and no `sidecars`. Operator v1.11.5 source (`udd-probes/p2/src/op`): `subcontrollers/fe/fe_pod.go:60` `pod.Envs(…, feSpec.FeEnvVars)` → the `feContainer` `Env` (`:62-68`); `k8sutils/templates/pod/spec.go:270-275` appends sidecars after it. Plan :28521-28545 (`FE=` and the `alive`, K3, K4 calls). (CIR-8 span check, S7; re-verified in UIP-8) |
+| 702 | 7 | code validity | A migrator killed after writing this version's `authentik_version_history` row leaves the row behind and lock 1000 free, with no Django migration applied. A wait on the row and the lock alone then finishes. The Step 3a wait, which also requires `MigrationExecutor.migration_plan(leaf_nodes())` to be empty, keeps waiting until a second migrator completes. | Live, `/home/ben/.cache/csr12p-dpvfix/wait/run.sh`: a throwaway network and `postgres:18-alpine`, Authentik 2026.8.4 at the pinned digest, both waits as `python -c`. Migrator 1's row was present 2 s after it started, and migrator 1 was killed. Lock 1000 holders: `0`. `django_migrations`: absent. 20 s later the row-and-lock wait was `FINISHED (exit 0)` and the new wait still `waiting`. Migrator 2 exited 0 with 777 `django_migrations` rows, then the new wait was `FINISHED (exit 0)` (`record.txt`, `record2.txt`). [DPV-1 `deployment-server.wait-for-migration` P3] |
+| 703 | 7 | code validity | The Step 3a wait only reads. It fits the server's values-local limit (512Mi), and the migrator completes at 512 MiB. `django.setup()` needs a non-empty secret key: without one it raises `ImproperlyConfigured("The SECRET_KEY setting must not be empty.")` when it imports `authentik/core/user_switching.py`, whose `:18` is `_SIGNING_HASH = get_cookie_signing_key()`, so the script sets a placeholder with `setdefault`. No app's `ready()` runs a reconciler: `ManagedAppConfig.ready` only connects `_on_startup_callback` to the `startup` signal (`authentik/blueprints/apps.py:30-33`), and `django.setup()` does not send it. | Live, `/home/ben/.cache/csr12p-dpvfix/wait/ro.sh`. A migrator at `--memory 512m` exited 0 (`OOMKilled=false`) in 2 m 43 s, with 777 rows. The new wait then ran as a role holding only `pg_read_all_data`, so Postgres would refuse any write. It exited 0 (`database migrated for 2026.8.4`), with 0 errors logged for that role and a peak of 222.7 MB under `--memory 512m` (`ro-record.txt`). The image source was read with `podman run --network none`. Charts: `values-local.yaml:162` and `values-laptop.yaml:127` set the server limit to `memory: "512Mi"`. |
+| 704 | 7 | code validity | Task 7's eight-state probe passes on the plan's own render, and each of M5, M6 and M7 makes exactly the state the Step 5 table names FAIL. | The edited plan replays 709/709 onto the CIR replay base `/home/ben/.cache/csr12p-cir6/base` (`/home/ben/.cache/csr12p-dpvfix/replay`). In the `values-local` render, `wait-for-migration`'s script equals the live-probed `wait_new.py` byte for byte, apart from the trailing newline. `t7_wait_probe.sh` extracted from the plan prints eight `PASS` lines (`/home/ben/.cache/csr12p-dpvfix/run/probe-main.txt`): the fifth 2 m 46 s after the fourth, the last 20 s after the seventh. Afterwards nothing named `csr12p-t7-*` is left and the volume list is unchanged. Step 5's mutations, run on copies of the chart with `helm dependency build` before each render (`/home/ben/.cache/csr12p-dpvfix/run/probe-muts.txt`); each mutated line reaches the render once. M5 fails only `[wait:migrated, this version's row while lock 1000 is held: still waiting]`. M6 fails `[wait:migrated, only an older version's row: still waiting]` and, since that wait has already exited, the state after it. M7 fails only `[wait:lock released, migrations not applied: still waiting]`, which is the DPV-1 counterexample: lock and row alone. |
+| 705 | 8 | code validity | nginx 1.31.6 decodes `%0A` into `$uri`, and PCRE's `$` also matches before that final newline. So with `/$` the `:9080` regex forwards a listed flow path followed by `%0A`; with `/\z` that request falls to `location / { return 404; }`. Listed flow paths are still forwarded, and `nginx -t` accepts the `\z` line. | `/home/ben/.cache/csr12p-dpvfix/nginx/record.txt`. Setup: the pinned `nginx-unprivileged:1.31.6-alpine@sha256:884e0b7f…`, `--network none`, the plan's exact `location ~` line plus the fallback, `wget` from inside the container. With `$`: `GET /api/v3/flows/executor/default-authentication-flow/%0A` and `GET /if/flow/iverson-recovery/%0a` gave 502 (proxied; no upstream). With `\z`: both gave 404. `…/default-authentication-flow/` gave 502 under both, and `/if/flow/iverson-recovery/x` 404 under both. [DPV-1 `configmap-tls-proxy.public-locations` P5] |
+| 706 | 8 | code validity | `check_t8.py`'s `route()` runs the location regex through Python's `re`, and the host's Python reads `\z` as end of string. The new newline check passes on the edited render and fails when `\z` reverts to `$`, which is what M14 does. | `python3 --version`: 3.14.4. `re.search(r"^/(if/flow\|…)/\z", "/if/flow/iverson-recovery/\n")` gives `False`, and gives `True` with `$`. `check_t8.py`, extracted from the edited plan, prints `[values-local] PASS` on `/home/ben/.cache/csr12p-dpvfix/run/render-local.yaml`. On the same render with the one `\z` changed to `$`, it prints `[values-local] FAIL` with the single message `:9080 forwards a listed flow path followed by a newline (%0A)`. M14's anchor occurs once in the replayed `configmap-tls-proxy.yaml`. |
+| 707 | 14, 17, 24 | code validity | With the final phase list (`istio operator-namespaces ambient-labels gateway`), the old `setup.sh` guard accepts `--only "ambient-labels gateway"` and `--only "istio operator-namespaces"`, setting `ONLY` to both words. The new guard refuses both with the usage line and exit 2. It still accepts each single phase, and still refuses `--only no-such-phase`, `--only isti`, `--only ''`, `--onlyx istio` and a tab-prefixed phase. | `/home/ben/.cache/csr12p-dpvfix/setup/record.txt`: the guard lines of the replayed `setup.sh:44-52`, run on their own under bash 5.3.9, before and after the change. [DPV-1 `setup.sh.guards` P2] |
+| 708 | 14, 17, 24 | code validity | A PowerShell caller of the old `setup.ps1` guard (``& setup.ps1 "--only`n" istio``) gets the phase run, because `-notmatch '^--?only$'` accepts a flag that ends in a newline. With `-notin @('--only', '-only')`, that flag gets the usage throw. `--only`, `-only` and `-ONLY` are still accepted, since `-notin` is case-insensitive as `-notmatch` was, and `--onlyx` is still refused. From bash, `pwsh -File` passes the script `--only` without the newline (length 6), so only a PowerShell caller reaches the old defect. | `/home/ben/.cache/csr12p-dpvfix/setup/record.txt`: PowerShell 7.6.7 (`/home/ben/.cache/csr12p-pwsh/x/pwsh`), on the guard lines of the replayed `setup.ps1:43-50`, before and after the change. [DPV-1 `setup.ps1.guards` P2] |
+| 709 | 22 | code validity | With the old lines, an `fe.conf` whose last byte is NUL gets `ssl_keystore_location = …` glued onto that line, because `$(tail -c 1 …)` drops the NUL and no newline is written. The new lines keep the NUL line whole and append each setting once, on its own line. The new lines are `grep -aEq` and `[ "$(tail -c 1 "$conf" | wc -l)" -eq 0 ]`. On four other inputs, old and new write the same bytes after two runs each: no trailing newline, a trailing newline, an empty file, and a NUL mid-file. | Run in the compose StarRocks image (`allin1-ubuntu:4.1.6`, podman `ee5eb57ad1aa`), which has GNU grep 3.11, bash 5.2.21, `/usr/bin/tail` and `/usr/bin/wc`. `/home/ben/.cache/csr12p-dpvfix/fe/record.txt`: `[old:nul] per-key-at-line-start=0,1,1`, `[new:nul] lines=4 per-key-at-line-start=1,1,1`. Equal md5s, old and new: `fc5dd4d5` (no newline), `a1386637` (newline), `ce074119` (empty), `9380e8b7` (mid-file NUL). M3's new anchor occurs once in the replayed wrapper. [DPV-1 `fe-tls-entrypoint.settings` P1, P2] |
 
 ---
 
@@ -8743,7 +8751,7 @@ if srv and wkr:
         except SyntaxError as exc:
             fails.append(f"wait-for-migration script does not parse: {exc}")
         for s in ("authentik_version_history", "objid = 1000", "objsubid = 1", "authentik_version()", "authentik_build_hash()",
-                  "postgresql_direct_connection_kwargs(CONFIG)"):
+                  "postgresql_direct_connection_kwargs(CONFIG)", "migration_plan(executor.loader.graph.leaf_nodes())"):
             check(s in script, f"wait-for-migration script lacks {s!r}")
         check("granted" not in script, "wait-for-migration ignores a session waiting for lock 1000")
         check([e["name"] for e in w.get("env", [])] == ["AUTHENTIK_POSTGRESQL__PASSWORD"], "wait-for-migration env is not exactly the DB password")
@@ -8835,9 +8843,12 @@ A3MUT
 cat > $SCR/t7_wait_probe.sh <<'T7PROBE'
 #!/usr/bin/env bash
 # CSR round 12 §2.1: runs the server's wait-for-migration script, taken from the render in $1, against a throwaway
-# Postgres. It must keep waiting with no version table, with only an older version's row, and with this image's row
-# while lock 1000 is held, and finish once the lock is released. Prints one PASS or FAIL line per state; removes
-# every container, its anonymous volumes (postgres declares one), and the network it creates. Usage: t7_wait_probe.sh <render.yaml>
+# Postgres. A first wait must keep waiting with no version table, with only an older version's row, with this image's
+# row while lock 1000 is held, and with the lock released but none of this image's migrations applied (what a migrator
+# killed after writing its row leaves); it finishes once a real migrator, `python -m lifecycle.migrate`, completes. A
+# second wait, on the migrated database, must keep waiting with only an older version's row and with this image's row
+# while lock 1000 is held, and finish once the lock is released. Prints one PASS or FAIL line per state; removes every
+# container, its anonymous volumes (postgres declares one), and the network it creates. Usage: t7_wait_probe.sh <render.yaml>
 source /tmp/claude-1000/-home-ben-repositories-Iverson/a8dc481d-50d9-445a-974d-18c6594e3306/scratchpad/csr12p-sdd/env.sh
 P=csr12p-t7; D=$SCR/t7-probe; rm -rf $D; mkdir -p $D
 IMG=ghcr.io/goauthentik/server:2026.8.4@sha256:e7226ae116dac5aa0a5643803e735b010038f492c401e08e16b3bf1ac54c090c
@@ -8847,33 +8858,48 @@ d = next(d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"] == 
 w = next(c for c in d["spec"]["template"]["spec"]["initContainers"] if c["name"] == "wait-for-migration")
 print(w["command"][2], end="")
 T7EXTRACT
-cleanup() { podman rm -f -v $P-wait $P-pg >/dev/null 2>&1; podman network rm $P-net >/dev/null 2>&1; }
+cleanup() { podman rm -f -v $P-wait $P-wait2 $P-mig $P-pg >/dev/null 2>&1; podman network rm $P-net >/dev/null 2>&1; }
 cleanup; trap cleanup EXIT
 podman network create $P-net >/dev/null
 podman run -d --name $P-pg --network $P-net --memory 512m -e POSTGRES_USER=authentik -e POSTGRES_PASSWORD=probe \
   -e POSTGRES_DB=authentik docker.io/library/postgres:18-alpine >/dev/null
 for i in $(seq 1 30); do podman exec $P-pg pg_isready -U authentik -d authentik >/dev/null 2>&1 && break; sleep 1; done
-sql() { podman exec $P-pg psql -v ON_ERROR_STOP=1 -qtA -U authentik -d authentik -c "$1" >/dev/null; }
+sql() { podman exec $P-pg psql -v ON_ERROR_STOP=1 -qtA -U authentik -d authentik -c "$1"; }
 read -r VER BUILD < <(podman run --rm --network none --entrypoint python $IMG -c \
   "from authentik import authentik_build_hash, authentik_version; print(authentik_version(), authentik_build_hash() or '-')")
 [ "$BUILD" = - ] && BUILD=""
-podman run -d --name $P-wait --network $P-net --memory 512m --entrypoint python \
-  -e AUTHENTIK_POSTGRESQL__HOST=$P-pg -e AUTHENTIK_POSTGRESQL__NAME=authentik -e AUTHENTIK_POSTGRESQL__USER=authentik \
-  -e AUTHENTIK_POSTGRESQL__PASSWORD=probe $IMG -c "$(cat $D/wait.py)" >/dev/null
-running() { [ "$(podman inspect -f '{{.State.Running}}' $P-wait)" = true ]; }
+DB="-e AUTHENTIK_POSTGRESQL__HOST=$P-pg -e AUTHENTIK_POSTGRESQL__NAME=authentik -e AUTHENTIK_POSTGRESQL__USER=authentik -e AUTHENTIK_POSTGRESQL__PASSWORD=probe"
+start() { podman run -d --name $1 --network $P-net --memory 512m --entrypoint python $DB $IMG -c "$(cat $D/wait.py)" >/dev/null; }
+running() { [ "$(podman inspect -f '{{.State.Running}}' $1)" = true ]; }
+finished() {  # container, seconds to wait for it to exit
+  for i in $(seq 1 $2); do running $1 || break; sleep 1; done
+  ! running $1 && [ "$(podman inspect -f '{{.State.ExitCode}}' $1)" = 0 ] && podman logs $1 2>&1 | command grep -q "database migrated for $VER"
+}
 say() { if $1; then echo "[wait:$2] PASS"; else echo "[wait:$2] FAIL"; fi; }
-sleep 10; say running "no version table: still waiting"
+hold_lock() { podman exec -d $P-pg psql -U authentik -d authentik -c "SELECT pg_advisory_lock(1000); SELECT pg_sleep(25);" >/dev/null; sleep 2; }
+lock_free() { for i in $(seq 1 40); do [ "$(sql "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = 1000")" = 0 ] && return; sleep 1; done; }
+start $P-wait
+sleep 15; say "running $P-wait" "no version table: still waiting"
 sql 'CREATE TABLE authentik_version_history (id BIGSERIAL PRIMARY KEY, "timestamp" timestamptz NOT NULL, version text NOT NULL, build text NOT NULL)'
 sql "INSERT INTO authentik_version_history (\"timestamp\", version, build) VALUES (now(), '2026.5.3', '$BUILD')"
-sleep 10; say running "only an older version's row: still waiting"
-podman exec -d $P-pg psql -U authentik -d authentik -c "SELECT pg_advisory_lock(1000); SELECT pg_sleep(25);" >/dev/null
-sleep 2
+sleep 10; say "running $P-wait" "only an older version's row: still waiting"
+hold_lock
 sql "INSERT INTO authentik_version_history (\"timestamp\", version, build) VALUES (now(), '$VER', '$BUILD')"
-sleep 10; say running "this version's row while lock 1000 is held: still waiting"
-for i in $(seq 1 40); do running || break; sleep 1; done
-code=$(podman inspect -f '{{.State.ExitCode}}' $P-wait)
-done_ok() { ! running && [ "$code" = 0 ] && podman logs $P-wait 2>&1 | command grep -q "database migrated for $VER"; }
-say done_ok "lock released: finished (exit $code)"
+sleep 10; say "running $P-wait" "this version's row while lock 1000 is held: still waiting"
+lock_free
+sleep 10; say "running $P-wait" "lock released, migrations not applied: still waiting"
+podman run -d --name $P-mig --network $P-net --memory 512m --entrypoint python $DB -e AUTHENTIK_SECRET_KEY=t7-probe-secret-key-0123456789 \
+  $IMG -m lifecycle.migrate >/dev/null
+for i in $(seq 1 600); do running $P-mig || break; sleep 1; done
+mig=$(podman inspect -f '{{.State.ExitCode}}' $P-mig)
+say "finished $P-wait 60" "migrator finished (exit $mig): finished (exit 0)"
+sql "DELETE FROM authentik_version_history WHERE version = '$VER'"
+start $P-wait2
+sleep 15; say "running $P-wait2" "migrated, only an older version's row: still waiting"
+hold_lock
+sql "INSERT INTO authentik_version_history (\"timestamp\", version, build) VALUES (now(), '$VER', '$BUILD')"
+sleep 10; say "running $P-wait2" "migrated, this version's row while lock 1000 is held: still waiting"
+say "finished $P-wait2 40" "lock released: finished (exit 0)"
 T7PROBE
 ls $SCR/check_t7.py $SCR/a3_render.sh $SCR/a3_ci.sh $SCR/a3_mut.sh $SCR/t7_wait_probe.sh | wc -l
 for f in a3_render.sh a3_ci.sh a3_mut.sh t7_wait_probe.sh; do bash -n $SCR/$f || echo "$f does not parse"; done
@@ -8960,12 +8986,12 @@ with:
       # Each server pod waits here until the database is migrated for its own image's version.
       # Neither marker shows that alone (Verified assumption 72): lifecycle/migrate.py writes this
       # version's authentik_version_history row before migrate_schemas runs, and advisory lock 1000
-      # is free until a migrator takes it. Both together do: the row exists only once a pass for this
-      # version has started, and that pass holds lock 1000 until it ends. So the wait ends when the
-      # row exists and no session holds or waits for lock 1000. That holds on a fresh install (no
-      # row until the worker's pass starts) and on an upgrade (the old version's servers keep serving
-      # while the new ones wait). It reads the database with the image's own Python and connection
-      # settings, and writes nothing.
+      # is free until a migrator takes it. Both together do not either: a migrator killed after
+      # writing the row leaves the row behind, and Postgres frees the lock. So the wait ends when the
+      # row exists, no session holds or waits for lock 1000, and none of this image's Django
+      # migrations is unapplied. That holds on a fresh install (no row until the worker's pass
+      # starts) and on an upgrade (the old version's servers keep serving while the new ones wait).
+      # It reads the database with the image's own Python and connection settings, and writes nothing.
       initContainers:
         - name: wait-for-migration
           image: {{ .Values.image | quote }}
@@ -8973,7 +8999,20 @@ with:
             - python
             - -c
             - |
+              import os
               import time
+
+              # The pass's last state change is migrate_schemas (lifecycle/migrate.py), so the wait also
+              # requires that none of this image's Django migrations is unapplied: a migrator killed after
+              # writing this version's row leaves the row and a free lock behind, with migrations unapplied.
+              # Django's settings need a secret key at import; this process only reads the migration state
+              # and signs nothing, so it gets a placeholder rather than the real key.
+              os.environ.setdefault("DJANGO_SETTINGS_MODULE", "authentik.root.settings")
+              os.environ.setdefault("AUTHENTIK_SECRET_KEY", "wait-for-migration-reads-only")
+              import django
+              django.setup()
+              from django.db import connection
+              from django.db.migrations.executor import MigrationExecutor
               from psycopg import connect
               from authentik import authentik_build_hash, authentik_version
               from authentik.lib.config import CONFIG, postgresql_direct_connection_kwargs
@@ -9001,7 +9040,13 @@ with:
                       if not cur.fetchone()[0]:
                           return False
                       cur.execute(LOCK_1000)
-                      return not cur.fetchone()[0]
+                      if cur.fetchone()[0]:
+                          return False
+                  try:
+                      executor = MigrationExecutor(connection)
+                      return not executor.migration_plan(executor.loader.graph.leaf_nodes())
+                  finally:
+                      connection.close()
 
               while True:
                   try:
@@ -9331,7 +9376,7 @@ podman ps -a --format '{{.Names}}' | command grep -c '^csr12p-t7-' ; podman netw
 Expected:
 - `[values-local] PASS`, `[values-laptop] PASS`, `[values-aws] PASS`, `[values-azure] PASS`, `[values-gcp] PASS`.
 - `a3_ci.sh t7`: every overlay `0 chart(s) failed`, kubeconform `Invalid: 0, Errors: 0`, and the same `criticals:` counts as Step 2 (0 at plan time). The cloud overlays gain one resource each (the PDB).
-- The probe prints four `PASS` lines: `[wait:no version table: still waiting]`, `[wait:only an older version's row: still waiting]`, `[wait:this version's row while lock 1000 is held: still waiting]` and `[wait:lock released: finished (exit 0)]`. The last comes about 25–30 s after the third, when the session holding lock 1000 ends.
+- The probe prints eight `PASS` lines: `[wait:no version table: still waiting]`, `[wait:only an older version's row: still waiting]`, `[wait:this version's row while lock 1000 is held: still waiting]`, `[wait:lock released, migrations not applied: still waiting]`, `[wait:migrator finished (exit 0): finished (exit 0)]`, `[wait:migrated, only an older version's row: still waiting]`, `[wait:migrated, this version's row while lock 1000 is held: still waiting]` and `[wait:lock released: finished (exit 0)]`. The fifth comes once the migrator ends, about 3 minutes after the fourth; the last about 15–20 s after the seventh, when the session holding lock 1000 ends.
 - The last two commands print `0` and `0`: nothing named `csr12p-t7-*` is left (the cleanup's `-v` removes the Postgres container's anonymous volume too).
 
 If the probe's first state FAILs with the container already exited, run `podman logs csr12p-t7-wait` before the cleanup trap removes it (comment out the `trap` line): an import error means the image's Python path differs from `python -c` at `/`, which is a finding to report, not to work around.
@@ -9351,8 +9396,9 @@ echo M1; mutate $A/pdb.yaml 'gt (.Values.server.replicas | int) 1' 'gt (.Values.
 echo M2; mutate $A/deployment-server.yaml '      {{- if gt (.Values.server.replicas | int) 1 }}' '      {{- if true }}' && { chk; restore $A/deployment-server.yaml; }
 echo M3; mutate $A/deployment-worker.yaml '    type: Recreate' '    type: RollingUpdate' && { chk; restore $A/deployment-worker.yaml; }
 echo M4; mutate $C/charts/jaeger/templates/deployment.yaml '--memory.max-traces={{ .Values.maxTraces | int }}' '--memory.max-traces=0' && { chk; restore $C/charts/jaeger/templates/deployment.yaml; }
-echo M5; mutate $A/deployment-server.yaml '                      return not cur.fetchone()[0]' '                      return True' && { probe; restore $A/deployment-server.yaml; }
+echo M5; mutate $A/deployment-server.yaml '                      if cur.fetchone()[0]:' '                      if False:' && { probe; restore $A/deployment-server.yaml; }
 echo M6; mutate $A/deployment-server.yaml '                          (authentik_version(), authentik_build_hash()),' '                          ("2026.5.3", authentik_build_hash()),' && { probe; restore $A/deployment-server.yaml; }
+echo M7; mutate $A/deployment-server.yaml '                      return not executor.migration_plan(executor.loader.graph.leaf_nodes())' '                      return True' && { probe; restore $A/deployment-server.yaml; }
 ```
 
 | # | Guard | One-line mutation | Must print |
@@ -9361,8 +9407,9 @@ echo M6; mutate $A/deployment-server.yaml '                          (authentik_
 | M2 | Anti-affinity only above one replica | the affinity `if` becomes `if true` | `[values-local] FAIL` … `server affinity renders at one replica` |
 | M3 | One migrator at a time | `type: Recreate` becomes `RollingUpdate` | `[values-local] FAIL` … `worker strategy not Recreate` |
 | M4 | Jaeger's cap | the flag's value becomes `0` (unbounded) | `[values-local] FAIL` … `jaeger args wrong: ['--memory.max-traces=0']` |
-| M5 | The wait observes the end of the pass (lock 1000) | `return not cur.fetchone()[0]` becomes `return True` | `[wait:this version's row while lock 1000 is held: still waiting] FAIL` |
-| M6 | The wait is for this image's version | the version parameter becomes `"2026.5.3"` | `[wait:only an older version's row: still waiting] FAIL` |
+| M5 | The wait observes the end of the pass (lock 1000) | `if cur.fetchone()[0]:` becomes `if False:` | `[wait:migrated, this version's row while lock 1000 is held: still waiting] FAIL` |
+| M6 | The wait is for this image's version | the version parameter becomes `"2026.5.3"` | `[wait:migrated, only an older version's row: still waiting] FAIL` |
+| M7 | The wait observes the end of `migrate_schemas` | `return not executor.migration_plan(…)` becomes `return True` | `[wait:lock released, migrations not applied: still waiting] FAIL` |
 
 No line may print `mutation not applied`. Then `find $SCR/a3-bak -type f | wc -l` prints `0`: every mutated file was restored.
 
@@ -9664,6 +9711,8 @@ for p in allowed:
     check(FWD in (route(p) or ""), f":9080 does not forward {p}")
 for p in refused:
     check((route(p) or "").strip() == "return 404;", f":9080 does not answer 404 for {p}")
+nl = "/api/v3/flows/executor/default-authentication-flow/\n"
+check((route(nl) or "").strip() == "return 404;", ":9080 forwards a listed flow path followed by a newline (%0A)")
 check((route("/") or "").strip() == f"return 302 {console};", f":9080 `= /` is not a 302 to {console}: {route('/')}")
 ws = route("/ws/client/") or ""
 for h in ("proxy_set_header Upgrade $http_upgrade;", 'proxy_set_header Connection "upgrade";', "proxy_set_header X-Iverson-Public-Ingress 1;",
@@ -10334,7 +10383,7 @@ with:
       proxy_set_header X-Forwarded-Host authentik.{{ .Values.global.ingressHost }};
       proxy_set_header X-Iverson-Public-Ingress 1;
       proxy_set_header X-Forwarded-For $iverson_client_addr;
-      location ~ ^/(if/flow|api/v3/flows/executor)/(default-authentication-flow|iverson-recovery|default-provider-authorization-implicit-consent|default-invalidation-flow|default-provider-invalidation-flow)/$ { proxy_pass http://127.0.0.1:9000; }
+      location ~ ^/(if/flow|api/v3/flows/executor)/(default-authentication-flow|iverson-recovery|default-provider-authorization-implicit-consent|default-invalidation-flow|default-provider-invalidation-flow)/\z { proxy_pass http://127.0.0.1:9000; }
       location = /flows/-/default/authentication/ { proxy_pass http://127.0.0.1:9000; }
       location = /flows/-/default/invalidation/ { proxy_pass http://127.0.0.1:9000; }
       location = /flows/-/cancel/ { proxy_pass http://127.0.0.1:9000; }
@@ -10527,6 +10576,7 @@ echo M5; mutate $A/clusterrole-tokenreview.yaml 'verbs: ["create"]' 'verbs: ["cr
 echo M6; mutate $A/deployment-server.yaml '--reject-methods=^(GET|PUT|PATCH|DELETE)$' '--reject-methods=^(PUT|PATCH|DELETE)$' && { chk; restore $A/deployment-server.yaml; }
 echo M7; mutate $C/templates/networkpolicies.yaml $'        operator: In\n        values: ["{{ .Release.Name }}-authentik-server", "{{ .Release.Name }}-authentik-worker"]\n  policyTypes: ["Egress"]\n  egress:\n    {{- include "iverson.apiServerEgress"' $'        operator: In\n        values: ["{{ .Release.Name }}-authentik-worker"]\n  policyTypes: ["Egress"]\n  egress:\n    {{- include "iverson.apiServerEgress"' && { chk; restore $C/templates/networkpolicies.yaml; }
 echo M8; mutate $A/_helpers.tpl '{{- required "authentik.serviceAccountIssuer is required' '{{- default "authentik.serviceAccountIssuer is required' && { (cd $C && helm dependency build . >/dev/null && helm template iverson . -n iverson -f values-aws.yaml -f values-aws.ci-override.yaml --set authentik.serviceAccountIssuer= >/dev/null 2>&1 && echo "M8: empty issuer rendered" || echo "M8: render failed"); restore $A/_helpers.tpl; }
+echo M14; mutate $A/configmap-tls-proxy.yaml 'default-provider-invalidation-flow)/\z {' 'default-provider-invalidation-flow)/$ {' && { chk; restore $A/configmap-tls-proxy.yaml; }
 ```
 
 Then the test-level mutations, in the worktree (restored with `restore`):
@@ -10560,6 +10610,7 @@ cd "$WT" && git status --short Iverson.Server/deploy/helm/iverson/charts/authent
 | M11 | Any status outside 2xx refuses | only 5xx refuses | `Failed TokenReviewExpression_ReviewsTheRawAssertion_AndRefusesEveryFailure` |
 | M12 | Only an authenticated review admits | the clause becomes `True` | `Failed TokenReviewExpression_ReviewsTheRawAssertion_AndRefusesEveryFailure` |
 | M13 | The review is bound | its binding names the marker instead | `Failed OrchestratorApp_HasExactlyThePinMarkerAndTokenReviewBindings_InOrder` |
+| M14 | The flow regex ends at the end of the path | its `\z` becomes `$` | `[values-local] FAIL` … `:9080 forwards a listed flow path followed by a newline (%0A)` |
 
 No line may print `mutation not applied`. `find` prints `0`, and `git status` lists the same files as before Step 5 (this task's uncommitted changes, nothing more).
 
@@ -16443,7 +16494,7 @@ STARROCKS_OPERATOR_VERSION=$(operator_version operator)
 PHASES="operator-namespaces"
 ONLY=""
 if [ "$#" -gt 0 ]; then
-  if [ "$#" -ne 2 ] || [ "$1" != "--only" ] || [[ " $PHASES " != *" $2 "* ]]; then
+  if [ "$#" -ne 2 ] || [ "$1" != "--only" ] || [[ "$2" == *[[:space:]]* || " $PHASES " != *" $2 "* ]]; then
     echo "usage: $0 [--only <phase>]   (phases: $PHASES)" >&2
     exit 2
   fi
@@ -16500,7 +16551,7 @@ $StarRocksOperatorVersion = Get-OperatorVersion "operator"
 $Phases = @("operator-namespaces")
 $Only = ""
 if ($args.Count -gt 0) {
-  if ($args.Count -ne 2 -or $args[0] -notmatch '^--?only$' -or $Phases -notcontains $args[1]) {
+  if ($args.Count -ne 2 -or $args[0] -notin @('--only', '-only') -or $Phases -notcontains $args[1]) {
     throw "usage: setup.ps1 [--only <phase>]   (phases: $($Phases -join ' '))"
   }
   $Only = $args[1]
@@ -23272,7 +23323,7 @@ G=$M/scripts/generate-compose-secrets.sh
 C=$M/Iverson.Server/docker-compose.yml
 run M1 $G ' -addext "keyUsage=critical,keyCertSign,cRLSign"' '' gen_check
 run M2 $G '    if [ ! -f "$TLS_DIR/$stem.crt" ] || [ ! -f "$TLS_DIR/$stem.key" ] \' '    if [ ! -f "$TLS_DIR/$stem.crt" ] \' gen_check
-run M3 $M/Iverson.Server/deploy/starrocks/fe-tls-entrypoint.sh '    if ! grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$conf"; then' '    if true; then' fe_check
+run M3 $M/Iverson.Server/deploy/starrocks/fe-tls-entrypoint.sh '    if ! grep -aEq "^[[:space:]]*${key}[[:space:]]*=" "$conf"; then' '    if true; then' fe_check
 run M4 $C '-quiet -verify_return_error -CAfile' '-quiet -CAfile' compose_check
 run M5 $C 'pw-0123456789;SSL Mode=VerifyFull;Root Certificate=/etc/iverson/authentik-ca/ca.crt' 'pw-0123456789' compose_check
 run M6 $C '      AUTHENTIK_POSTGRESQL__SSLMODE: verify-full
@@ -23416,8 +23467,8 @@ openssl pkcs12 -export -name fe -in "$src/tls.crt" -inkey "$src/tls.key" -certfi
 conf="$SR_HOME/fe/conf/fe.conf"
 for setting in "ssl_keystore_location = $keystore" "ssl_keystore_password = $password" "ssl_key_password = $password"; do
     key="${setting%% =*}"
-    if ! grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$conf"; then
-        if [ -s "$conf" ] && [ -n "$(tail -c 1 "$conf")" ]; then echo >> "$conf"; fi
+    if ! grep -aEq "^[[:space:]]*${key}[[:space:]]*=" "$conf"; then
+        if [ -s "$conf" ] && [ "$(tail -c 1 "$conf" | wc -l)" -eq 0 ]; then echo >> "$conf"; fi
         echo "$setting" >> "$conf"
     fi
 done
