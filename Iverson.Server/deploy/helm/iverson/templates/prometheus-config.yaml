@@ -2,7 +2,7 @@
 {{- /* CSR round-11 #4: moved here from charts/prometheus/templates/configmap.yaml, because only the
    parent sees the api subchart's ingress class, which decides whether the API serves TLS
    (iverson.backendTls). Same name: charts/prometheus/templates/deployment.yaml mounts it. */}}
-{{- $apiTls := eq (include "iverson.backendTls" (dict "className" .Values.api.ingress.className "trustedRoot" .Values.api.ingress.appgwTrustedRootCertificate)) "true" }}
+{{- $apiTls := eq (include "iverson.backendTls" (dict "className" .Values.api.ingress.className "trustedRoot" .Values.api.ingress.appgwTrustedRootCertificate "gatewayClass" (dig "gateway" "class" "" .Values.global))) "true" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

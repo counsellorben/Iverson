@@ -40,7 +40,7 @@ $StarRocksOperatorVersion = Get-OperatorVersion "operator"
 # <phase>` runs that phase alone. Each phase is a function below; the fresh install calls them in the
 # same order, after the operators. The script declares no parameters, so PowerShell hands both words to
 # $args ("-only" is accepted too).
-$Phases = @("istio", "operator-namespaces", "ambient-labels")
+$Phases = @("istio", "operator-namespaces", "ambient-labels", "gateway")
 $Only = ""
 if ($args.Count -gt 0) {
   if ($args.Count -ne 2 -or $args[0] -notin @('--only', '-only') -or $Phases -notcontains $args[1]) {
@@ -110,11 +110,43 @@ function Add-AmbientLabels {
   }
 }
 
+function New-EdgeGateway {
+  Write-Host "Creating the edge gateway (Istio, namespace iverson-edge)..."
+  # CSR round 12 §4.5: kind's edge, replacing ingress-nginx (archived 2026-03-24, no further security
+  # fixes). edge-gateway.yaml gives the gateway's pod host ports 80 and 443, which kind-config.yaml maps to
+  # 127.0.0.1:8080 and 8443; the chart renders the routes that attach to it. Its namespace, iverson-edge,
+  # is the operator-namespace phase's. istiod creates the gateway's Deployment (edge-istio) a few seconds
+  # after the Gateway, so wait for it to exist first.
+  # The HTTPS listener api-https serves Secret iverson/iverson-api-tls (edge-gateway.yaml); setup.sh's fresh
+  # install generates the same one. This phase creates it where it is missing, so a cluster set up by an
+  # earlier setup.ps1, which never created it, gets it at the upgrade's --only gateway too. openssl ships
+  # with Git for Windows.
+  kubectl get secret iverson-api-tls -n iverson *> $null
+  if ($LASTEXITCODE -ne 0) {
+    if (-not (Get-Command openssl -ErrorAction SilentlyContinue)) {
+      throw "openssl is not on PATH: it generates the edge gateway's self-signed certificate (iverson-api-tls). Add Git for Windows' usr\bin to PATH, or create the Secret yourself, then re-run."
+    }
+    Write-Host "Generating a self-signed dev cert for the edge gateway's HTTPS listener (iverson.local)..."
+    $Key = Join-Path $env:TEMP "iverson-api-tls.key"; $Crt = Join-Path $env:TEMP "iverson-api-tls.crt"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 365 -keyout $Key -out $Crt -subj "/CN=iverson.local" -addext "subjectAltName=DNS:iverson.local"
+    kubectl create secret tls iverson-api-tls -n iverson --cert=$Crt --key=$Key
+    Remove-Item -Force $Key, $Crt
+  }
+  kubectl apply -f (Join-Path $PSScriptRoot "edge-gateway.yaml")
+  for ($i = 0; $i -lt 30; $i++) {
+    kubectl get deployment edge-istio -n iverson-edge *> $null
+    if ($LASTEXITCODE -eq 0) { break }
+    Start-Sleep -Seconds 2
+  }
+  kubectl rollout status deployment/edge-istio -n iverson-edge --timeout=180s
+}
+
 if ($Only) {
   switch ($Only) {
     "istio" { Install-Istio }
     "operator-namespaces" { Install-OperatorNamespacePolicies }
     "ambient-labels" { Add-AmbientLabels }
+    "gateway" { New-EdgeGateway }
   }
   exit 0
 }
@@ -157,15 +189,6 @@ helm upgrade --install calico tigera-operator `
 Write-Host "Creating iverson namespace with restricted-baseline Pod Security Admission label..."
 kubectl create namespace iverson --dry-run=client -o yaml | kubectl apply -f -
 kubectl label namespace iverson pod-security.kubernetes.io/enforce=baseline --overwrite
-
-Write-Host "Installing ingress-nginx..."
-helm upgrade --install ingress-nginx ingress-nginx `
-  --repo https://kubernetes.github.io/ingress-nginx `
-  --version 4.12.8 `
-  --namespace ingress-nginx --create-namespace `
-  --set controller.hostPort.enabled=true `
-  --set controller.service.type=ClusterIP `
-  --wait
 
 Write-Host "Installing CloudNativePG operator..."
 helm upgrade --install cnpg cloudnative-pg `
@@ -217,6 +240,7 @@ helm upgrade --install metrics-server metrics-server `
 Install-Istio
 Install-OperatorNamespacePolicies
 Add-AmbientLabels
+New-EdgeGateway
 
 Write-Host "All operators installed."
 Write-Host "Next: deploy/kind/build-and-load-image.ps1 to build+load the app image, then helm upgrade --install --wait iverson . -f values-local.yaml -n iverson --kube-as-user=kubernetes-admin --kube-as-group=kubeadm:cluster-admins --kube-as-group=iverson-operators (the kube-as flags: CSR round 12's admission policy admits only the iverson-operators group to install or change the api, see docs/runbooks/operators-group.md; --wait: the post-upgrade StarRocks role revoke then runs once the new pods are ready, though a previous-release pod may still be running or terminating; see docs/runbooks/csr12-server.md §1)"

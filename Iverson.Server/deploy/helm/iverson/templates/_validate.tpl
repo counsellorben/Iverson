@@ -116,6 +116,18 @@ they behave identically under `helm template` and a real install/upgrade.
 {{- end }}
 {{- end }}
 {{- /*
+CSR round 12 §4.5: the edge. global.gateway.class is empty (each Ingress's own class) or istio (kind
+and laptop: the Istio Gateway deploy/kind/edge-gateway.yaml creates). Its HTTPS listener serves
+api.ingress.tlsSecretName, which the chart's ReferenceGrant lets it read.
+*/}}
+{{- $gatewayClass := dig "gateway" "class" "" .Values.global }}
+{{- if not (has $gatewayClass (list "" "istio")) }}
+{{- fail (printf "global.gateway.class %q is not one this chart renders: \"\" (each Ingress's own class) or \"istio\"" $gatewayClass) }}
+{{- end }}
+{{- if and (eq $gatewayClass "istio") (not (dig "ingress" "tlsSecretName" "" (default dict .Values.api))) }}
+{{- fail "global.gateway.class istio needs api.ingress.tlsSecretName: the edge certificate the gateway's HTTPS listener serves (deploy/kind/edge-gateway.yaml), which the chart's ReferenceGrant names" }}
+{{- end }}
+{{- /*
 CSR round-11 #4 (two-phase Azure rollout): Application Gateway trusts a backend certificate
 only through a trusted root that Terraform uploaded to the gateway (appgw_backend_trusted_roots)
 and that the Ingress names. The API's internal-TLS Secret exists once the chart's certificates

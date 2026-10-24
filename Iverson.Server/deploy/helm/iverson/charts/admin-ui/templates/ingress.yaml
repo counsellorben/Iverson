@@ -1,16 +1,12 @@
+{{- if not (dig "gateway" "class" "" .Values.global) }}
 {{/*
-Mirror the security-header block nginx.conf already serves from the admin-ui pod
-itself, at the Ingress layer, for the controller classes that support it. There is
-no portable response-header annotation across ingress controllers, so each class
-gets its own mechanism:
-  - nginx: a configuration-snippet using more_set_headers (which replaces rather
-    than appends, avoiding duplicate headers) — requires the controller-wide
-    `allow-snippet-annotations: true` setting, disabled by default since
-    ingress-nginx v1.9. This is NOT an external prerequisite on the kind
-    profile: `Iverson.Server/deploy/kind/setup.sh` is where this repo installs
-    ingress-nginx, and it now passes `--set controller.allowSnippetAnnotations=true`
-    for exactly this reason. On a cloud target that brings its own
-    already-running ingress-nginx, the setting is still external to this chart.
+CSR round 12 §4.5: rendered only where the profile's own Ingress class is the edge (AWS's alb, Azure's
+Application Gateway); where global.gateway.class is set, the parent's gateway templates route this path
+instead, with the same security headers.
+
+The security headers nginx.conf serves from the admin-ui pod itself are mirrored at the Ingress layer
+where the class supports it. There is no portable response-header annotation across ingress
+controllers:
   - azure-application-gateway: AGIC's rewrite-rule-set annotation references a
     named rule set; the header text itself cannot live in the annotation, and
     this repo's Terraform does not provision one (the AGIC add-on is enabled in
@@ -21,35 +17,22 @@ gets its own mechanism:
     `ingress.securityHeadersRuleSet` is set to the name of a rule set you have
     provisioned separately. Left at its default (empty), no such annotation is
     rendered and AGIC gets nothing to fail to resolve.
-  - alb, gce: neither controller exposes a response-header annotation, so for
-    these classes the headers come from the origin (this pod's own nginx) only.
+  - alb: the controller exposes no response-header annotation, so the headers come from the origin
+    (this pod's own nginx) only.
 */}}
-{{- $oidcOrigin := printf "%s://authentik.%s" .Values.global.externalScheme .Values.global.ingressHost }}
+{{- include "iverson.refuseRetiredIngressClass" (dict "label" "adminUi.ingress" "className" .Values.ingress.className) }}
 {{- /* CSR round-11 #6: the class's port-80 setting only (iverson.edgeAnnotations); the edge → admin-ui
    hop serves static files and stays plaintext. The call passes only className and backendTls false
    because with backendTls off the helper reads no other key (missing keys read as nil). */}}
 {{- $edge := include "iverson.edgeAnnotations" (dict "className" .Values.ingress.className "backendTls" false) | fromYaml }}
-{{- $annotations := mergeOverwrite (dict "nginx.ingress.kubernetes.io/rewrite-target" "/$2") (deepCopy (default dict .Values.ingress.annotations)) $edge }}
-{{- if and (eq .Values.ingress.className "nginx") (ne .Values.global.externalScheme "https") }}
-{{- $annotations = mergeOverwrite $annotations (dict "nginx.ingress.kubernetes.io/ssl-redirect" "false") }}
-{{- end }}
+{{- $annotations := mergeOverwrite (deepCopy (default dict .Values.ingress.annotations)) $edge }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Release.Name }}-admin-ui
   annotations:
     {{- toYaml $annotations | nindent 4 }}
-    {{- if eq .Values.ingress.className "nginx" }}
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      more_set_headers "X-Frame-Options: DENY";
-      more_set_headers "X-Content-Type-Options: nosniff";
-      more_set_headers "Referrer-Policy: no-referrer";
-      more_set_headers "Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' {{ printf "%s://admin-api.%s" .Values.global.externalScheme .Values.global.ingressHost }} {{ $oidcOrigin }}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'";
-      more_set_headers "Permissions-Policy: camera=(), microphone=(), geolocation=()";
-      {{- if eq .Values.global.externalScheme "https" }}
-      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
-      {{- end }}
-    {{- else if and (eq .Values.ingress.className "azure-application-gateway") .Values.ingress.securityHeadersRuleSet }}
+    {{- if and (eq .Values.ingress.className "azure-application-gateway") .Values.ingress.securityHeadersRuleSet }}
     appgw.ingress.kubernetes.io/rewrite-rule-set: {{ .Values.ingress.securityHeadersRuleSet | quote }}
     {{- end }}
 spec:
@@ -70,3 +53,4 @@ spec:
                 name: {{ .Release.Name }}-admin-ui
                 port:
                   number: 8080
+{{- end }}

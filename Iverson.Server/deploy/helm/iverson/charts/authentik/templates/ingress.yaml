@@ -1,3 +1,7 @@
+{{- if not (dig "gateway" "class" "" .Values.global) }}
+{{- /* CSR round 12 §4.5: where global.gateway.class is set, the parent's gateway templates route this
+   host instead. */}}
+{{- include "iverson.refuseRetiredIngressClass" (dict "label" "authentik.ingress" "className" .Values.ingress.className) }}
 {{- $wafKey := get (dict "alb" "wafAclArn" "gce" "securityPolicy" "azure-application-gateway" "wafPolicyId") .Values.ingress.className }}
 {{- if and $wafKey (not (get .Values.ingress $wafKey)) }}
 {{- fail (printf "authentik.ingress.%s must be set with ingress className %q: copy it from the Terraform output (docs/runbooks/csr11-identity-plane.md). Without it the public login has no edge rate limit (CSR round-11 #5)." $wafKey .Values.ingress.className) }}
@@ -20,8 +24,7 @@ metadata:
   # No ingress-level CORS annotations: Authentik's own OAuth2 provider CORS middleware already
   # scopes Access-Control-Allow-Origin to each client's registered redirect-URI origins (verified
   # empirically against a live Authentik instance — see Task 2 report) — this is application-layer
-  # behavior, independent of ingress class, so it covers nginx/alb/gce alike. An ingress-nginx-only
-  # annotation here would have been redundant on nginx and silently absent on alb/gce.
+  # behavior, independent of the edge in front of it.
   annotations:
     {{- toYaml $annotations | nindent 4 }}
 spec:
@@ -42,3 +45,4 @@ spec:
                 name: {{ .Release.Name }}-authentik
                 port:
                   number: 9080
+{{- end }}

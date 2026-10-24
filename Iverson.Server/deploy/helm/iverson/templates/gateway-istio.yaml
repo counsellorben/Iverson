@@ -1,0 +1,144 @@
+{{- if eq (dig "gateway" "class" "" .Values.global) "istio" }}
+{{- /*
+CSR round 12 §4.5: kind's edge. deploy/kind/setup.sh creates the Istio Gateway (deploy/kind/edge-gateway.yaml):
+an HTTPS listener api-https for global.ingressHost serving api.ingress.tlsSecretName, and HTTP listeners
+admin-api-http, authentik-http and ui-http. These routes attach to it with the hosts and paths the
+Ingresses had. The gateway is a mesh client, so each hop to a pod is mutual TLS through ztunnel, and the
+API's and Authentik's own TLS runs inside it: a BackendTLSPolicy per TLS Service names the CA
+(<release>-api-ca, <release>-authentik-ca, rendered beside each internal TLS Secret) and the host name
+the pod certificate carries. ResponseHeaderModifier sets the security headers the ingress-nginx
+configuration snippets set.
+*/}}
+{{- $gw := dict "name" (include "iverson.edgeGatewayName" .) "namespace" (include "iverson.edgeGatewayNamespace" .) }}
+{{- $oidcOrigin := printf "%s://authentik.%s" .Values.global.externalScheme .Values.global.ingressHost }}
+{{- $https := eq .Values.global.externalScheme "https" }}
+# The gateway's HTTPS listener reads the edge certificate from this namespace.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ .Release.Name }}-edge-certificate
+spec:
+  from:
+    - { group: gateway.networking.k8s.io, kind: Gateway, namespace: {{ $gw.namespace }} }
+  to:
+    - { group: "", kind: Secret, name: {{ .Values.api.ingress.tlsSecretName }} }
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: {{ .Release.Name }}-api
+spec:
+  parentRefs:
+    - { name: {{ $gw.name }}, namespace: {{ $gw.namespace }}, sectionName: api-https }
+  hostnames: [{{ .Values.global.ingressHost | quote }}]
+  rules:
+    - matches:
+        {{- range list "ObjectMappingService" "ObjectPersistenceService" "ObjectRetrievalService" "ObjectSearchService" "TenantLifecycleGrpcService" "TenantAdminGrpcService" }}
+        - method: { service: iverson.{{ . }} }
+        {{- end }}
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - { name: X-Frame-Options, value: DENY }
+              - { name: X-Content-Type-Options, value: nosniff }
+              - { name: Referrer-Policy, value: no-referrer }
+              - name: Content-Security-Policy
+                value: "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' {{ $oidcOrigin }}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+              - { name: Permissions-Policy, value: "camera=(), microphone=(), geolocation=()" }
+              {{- if $https }}
+              - { name: Strict-Transport-Security, value: "max-age=31536000; includeSubDomains" }
+              {{- end }}
+      backendRefs:
+        - { name: {{ .Release.Name }}-api, port: 8080 }
+{{- if .Values.api.adminConsoleEnabled }}
+---
+# admin-api.<host>: only /admin, /health and /v1/traces, on the API's 8081.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}-admin-api
+spec:
+  parentRefs:
+    - { name: {{ $gw.name }}, namespace: {{ $gw.namespace }}, sectionName: admin-api-http }
+  hostnames: [{{ printf "admin-api.%s" .Values.global.ingressHost | quote }}]
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /admin }
+        - path: { type: PathPrefix, value: /health }
+        - path: { type: PathPrefix, value: /v1/traces }
+      backendRefs:
+        - { name: {{ .Release.Name }}-api, port: 8081 }
+{{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}-authentik
+spec:
+  parentRefs:
+    - { name: {{ $gw.name }}, namespace: {{ $gw.namespace }}, sectionName: authentik-http }
+  hostnames: [{{ printf "authentik.%s" .Values.global.ingressHost | quote }}]
+  rules:
+    - backendRefs:
+        - { name: {{ .Release.Name }}-authentik, port: 9080 }
+{{- if .Values.adminUi.enabled }}
+---
+# The console under /admin on the main host; the prefix is stripped before the request reaches admin-ui.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}-admin-ui
+spec:
+  parentRefs:
+    - { name: {{ $gw.name }}, namespace: {{ $gw.namespace }}, sectionName: ui-http }
+  hostnames: [{{ .Values.global.ingressHost | quote }}]
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /admin }
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path: { type: ReplacePrefixMatch, replacePrefixMatch: / }
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - { name: X-Frame-Options, value: DENY }
+              - { name: X-Content-Type-Options, value: nosniff }
+              - { name: Referrer-Policy, value: no-referrer }
+              - name: Content-Security-Policy
+                value: "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' {{ printf "%s://admin-api.%s" .Values.global.externalScheme .Values.global.ingressHost }} {{ $oidcOrigin }}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+              - { name: Permissions-Policy, value: "camera=(), microphone=(), geolocation=()" }
+              {{- if $https }}
+              - { name: Strict-Transport-Security, value: "max-age=31536000; includeSubDomains" }
+              {{- end }}
+      backendRefs:
+        - { name: {{ .Release.Name }}-admin-ui, port: 8080 }
+{{- end }}
+---
+# The gateway re-encrypts to the API (8080 and 8081, one Kestrel) and verifies its certificate.
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: {{ .Release.Name }}-api
+spec:
+  targetRefs:
+    - { group: "", kind: Service, name: {{ .Release.Name }}-api }
+  validation:
+    hostname: {{ .Release.Name }}-api
+    caCertificateRefs:
+      - { group: "", kind: ConfigMap, name: {{ .Release.Name }}-api-ca }
+---
+# ... and to Authentik's public listener (9080, the tls-proxy).
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: {{ .Release.Name }}-authentik
+spec:
+  targetRefs:
+    - { group: "", kind: Service, name: {{ .Release.Name }}-authentik, sectionName: http-public }
+  validation:
+    hostname: {{ .Release.Name }}-authentik
+    caCertificateRefs:
+      - { group: "", kind: ConfigMap, name: {{ .Release.Name }}-authentik-ca }
+{{- end }}

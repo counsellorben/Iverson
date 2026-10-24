@@ -44,10 +44,11 @@ global:
   # Laptop dev needs the Authentik test identities and legacy tenant seeding the production
   # default (values.yaml) turns off.
   provisionTestIdentities: true
-  # CSR round-10 #3: ingress-nginx reaches the API from a pod IP in kind's pod CIDR (the tigera
-  # operator sizes Calico's pool from kubeadm's podSubnet, kind's default 10.244.0.0/16), and its
-  # defaults replace X-Forwarded-For with the address it saw. NetworkPolicy admits only the
-  # ingress-nginx namespace from pod IPs on 8080.
+  # CSR round-10 #3, round 12 §4.5: the edge gateway's pod reaches the API from a pod IP in kind's
+  # pod CIDR (the tigera operator sizes Calico's pool from kubeadm's podSubnet, kind's default
+  # 10.244.0.0/16), and through the mesh the API still sees that address. The gateway appends the
+  # client address it saw to X-Forwarded-For, as its last entry. NetworkPolicy admits only the
+  # gateway's namespace (iverson-edge) from pod IPs on 8080.
   trustedProxies:
     cidrs: ["10.244.0.0/16"]
     hops: 1
