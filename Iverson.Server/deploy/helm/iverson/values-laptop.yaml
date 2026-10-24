@@ -6,11 +6,14 @@
 # PRODUCTION defaults (postgres 8 CPU x2, qdrant 8, ollama 8) unless the laptop sizing
 # is restated here. The CI harness passes exactly one -f per overlay.
 #
-# Capacity: 250+250+250+250+250+100+100+50+200 = 1.7 CPU of requests; system + operators
-# measured ~2.0; metrics-server ~0.1; Istio at kind's requests (deploy/kind/istio: istiod 100m,
-# ztunnel 50m, istio-cni 25m, the edge gateway 50m) ~0.225, in place of ingress-nginx's 100m.
-# Total ~3.9 of 4.0 (~98%), an estimate: re-measure with `kubectl top` on a 4-CPU host after
-# deploying.
+# Capacity (measured on kind 2026-10-24 on a 4-CPU / 9 GB host, with Istio ambient and its
+# gateway): the release requests 1.43 CPU and 4.6 GiB (Ollama included); Istio's istiod, ztunnel,
+# istio-cni and gateway 0.23 CPU and 0.4 GiB; Calico, the operators, metrics-server and kube-system
+# 1.55 CPU and 1.0 GiB. Total 3.21 of 4.0 allocatable CPU (80%) of requests;
+# `kubectl top node` showed 0.87 CPU in use once the release settled. Re-measure with
+# `kubectl describe node` and `kubectl top` after deploying.
+# The measured pods ran without Strimzi's entity operator and TEI: the full laptop profile, with both,
+# saturated a 4-CPU host's 6.5 GB kind node at install, so these numbers are of the profile without them.
 #
 # kind has no load balancer: the edge gateway's namespace (iverson-edge) is admitted by namespace.
 # clusterCidrs must still list at least one range (see values.yaml's networkPolicy comment), so it
