@@ -39,9 +39,9 @@ ingress:
   tlsSecretName: ""
   # CSR round-11 #5: the cloud edge rate limit on the login path, from the Terraform output of the
   # same name (docs/runbooks/csr11-identity-plane.md). templates/ingress.yaml refuses an empty value
-  # for its className's cloud: alb needs wafAclArn (authentik_waf_acl_arn), gce needs securityPolicy
-  # (authentik_security_policy_name), azure-application-gateway needs wafPolicyId
-  # (authentik_waf_policy_id).
+  # for its className's cloud: alb needs wafAclArn (authentik_waf_acl_arn), azure-application-gateway
+  # needs wafPolicyId (authentik_waf_policy_id). On GCP the GKE Gateway's GCPBackendPolicy carries
+  # securityPolicy (authentik_security_policy_name), which the parent's _validate.tpl requires there.
   wafAclArn: ""
   securityPolicy: ""
   wafPolicyId: ""

@@ -68,6 +68,11 @@ are already plain maps one level down, so extract each (defaulting a missing/dis
 subchart to an empty dict) before digging into it.
 */}}
 {{- $ingressBlocks := dict "api.ingress" (dig "ingress" dict (default dict .Values.api)) "authentik.ingress" (dig "ingress" dict (default dict .Values.authentik)) "adminUi.ingress" (dig "ingress" dict (default dict .Values.adminUi)) }}
+{{- /* CSR round 12 §4.5: the GKE Gateway serves admin-api's certificate too; its own Ingress template,
+   which checks it elsewhere, does not render there. */}}
+{{- if and (eq (dig "gateway" "class" "" .Values.global) "gke-l7-global-external-managed") (dig "adminConsoleEnabled" false (default dict .Values.api)) }}
+{{- $_ := set $ingressBlocks "api.adminApiIngress" (dig "adminApiIngress" dict (default dict .Values.api)) }}
+{{- end }}
 {{- range $label, $ing := $ingressBlocks }}
 {{- range $k, $v := (dig "annotations" dict $ing) }}
 {{- if and (kindIs "string" $v) (regexMatch $placeholderRe $v) }}
@@ -116,13 +121,29 @@ they behave identically under `helm template` and a real install/upgrade.
 {{- end }}
 {{- end }}
 {{- /*
-CSR round 12 §4.5: the edge. global.gateway.class is empty (each Ingress's own class) or istio (kind
-and laptop: the Istio Gateway deploy/kind/edge-gateway.yaml creates). Its HTTPS listener serves
-api.ingress.tlsSecretName, which the chart's ReferenceGrant lets it read.
+CSR round 12 §4.5: the edge. global.gateway.class is empty (each Ingress's own class), istio (kind
+and laptop: the Istio Gateway deploy/kind/edge-gateway.yaml creates), or
+gke-l7-global-external-managed (GCP: templates/gateway-gke.yaml). The Istio Gateway's HTTPS listener
+serves api.ingress.tlsSecretName, which the chart's ReferenceGrant lets it read. The GKE Gateway needs
+the static address Terraform reserves (output gateway_address_name), the Cloud Armor policy
+(authentik_security_policy_name) and a certificate for each host it serves.
 */}}
 {{- $gatewayClass := dig "gateway" "class" "" .Values.global }}
-{{- if not (has $gatewayClass (list "" "istio")) }}
-{{- fail (printf "global.gateway.class %q is not one this chart renders: \"\" (each Ingress's own class) or \"istio\"" $gatewayClass) }}
+{{- if not (has $gatewayClass (list "" "istio" "gke-l7-global-external-managed")) }}
+{{- fail (printf "global.gateway.class %q is not one this chart renders: \"\" (each Ingress's own class), \"istio\" or \"gke-l7-global-external-managed\"" $gatewayClass) }}
+{{- end }}
+{{- if eq $gatewayClass "gke-l7-global-external-managed" }}
+{{- if not (dig "gateway" "addressName" "" .Values.global) }}
+{{- fail "global.gateway.addressName must be set with global.gateway.class gke-l7-global-external-managed: copy it from the Terraform output gateway_address_name (the Gateway's static address)" }}
+{{- end }}
+{{- if not (dig "ingress" "securityPolicy" "" (default dict .Values.authentik)) }}
+{{- fail "authentik.ingress.securityPolicy must be set with global.gateway.class gke-l7-global-external-managed: copy it from the Terraform output authentik_security_policy_name (docs/runbooks/csr11-identity-plane.md). Without it the public login has no edge rate limit (CSR round-11 #5)." }}
+{{- end }}
+{{- range $label, $secret := dict "api.ingress" (dig "ingress" "tlsSecretName" "" (default dict .Values.api)) "authentik.ingress" (dig "ingress" "tlsSecretName" "" (default dict .Values.authentik)) "api.adminApiIngress" (ternary (dig "adminApiIngress" "tlsSecretName" "" (default dict $.Values.api)) "unused" (dig "adminConsoleEnabled" false (default dict $.Values.api))) }}
+{{- if not $secret }}
+{{- fail (printf "%s.tlsSecretName must be set with global.gateway.class gke-l7-global-external-managed: the GKE Gateway's HTTPS listener for that host serves it" $label) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- if and (eq $gatewayClass "istio") (not (dig "ingress" "tlsSecretName" "" (default dict .Values.api))) }}
 {{- fail "global.gateway.class istio needs api.ingress.tlsSecretName: the edge certificate the gateway's HTTPS listener serves (deploy/kind/edge-gateway.yaml), which the chart's ReferenceGrant names" }}

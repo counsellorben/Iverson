@@ -86,15 +86,15 @@ CSR round-11 #4: whether the edge reaches a pod over TLS ("backendTls"). Called 
 the api and Authentik subcharts and by the parent's Prometheus config; prints "true" or nothing.
 CSR round 12 §4.5: a gateway (global.gateway.class) re-encrypts to the pod and verifies its certificate
 (BackendTLSPolicy), so the class of the Ingress it replaces no longer matters. Otherwise from the
-Ingress class: alb and gce encrypt to any backend certificate. Application Gateway verifies it, so it
-needs the chart CA installed as a trusted root first: true only once the root's name is set. Any other
+Ingress class: alb encrypts to any backend certificate. Application Gateway verifies it, so it needs
+the chart CA installed as a trusted root first: true only once the root's name is set. Any other
 class gets no backend-protocol settings from this chart, so its edge would keep speaking plaintext to
 a TLS port: false, and the hop stays as before.
 */}}
 {{- define "iverson.backendTls" -}}
 {{- if .gatewayClass -}}
 true
-{{- else if has .className (list "alb" "gce") -}}
+{{- else if eq .className "alb" -}}
 true
 {{- else if and (eq .className "azure-application-gateway") .trustedRoot -}}
 true
@@ -105,20 +105,19 @@ true
 CSR round-11 #4, #6: the Ingress annotations this chart sets per class, as YAML for `fromYaml`;
 callers merge them over the profile's own annotations, so a key appears once and the chart's value
 wins. Argument: (dict "className" "backendTls" "grpc" "trustedRoot" "host" "probePort" "probePath").
-- Port 80, on every call: gce turns HTTP off; Application Gateway answers it only with a redirect.
+- Port 80, on every call: Application Gateway answers it only with a redirect.
 - backendTls (iverson.backendTls of the pod behind the Ingress) sets the edge → pod protocol and,
   where the health check does not follow it, the health check: on alb the protocol, and the path
   except for gRPC (ALB's gRPC check has its own default); on Application Gateway the trusted root,
   the host name the pod certificate carries (host), and the probe port and path.
 - grpc marks the API's gRPC Ingress.
-CSR round 12 §4.5: there is no nginx branch. kind's edge is the Istio gateway, whose routes carry what
-the nginx annotations did (templates/gateway-istio.yaml).
+CSR round 12 §4.5: there is no nginx or gce branch. kind's edge is the Istio gateway and GCP's the GKE
+Gateway, whose routes and policies carry what those annotations did (templates/gateway-istio.yaml,
+templates/gateway-gke.yaml).
 */}}
 {{- define "iverson.edgeAnnotations" -}}
 {{- $a := dict -}}
-{{- if eq .className "gce" -}}
-{{- $_ := set $a "kubernetes.io/ingress.allow-http" "false" -}}
-{{- else if eq .className "azure-application-gateway" -}}
+{{- if eq .className "azure-application-gateway" -}}
 {{- $_ := set $a "appgw.ingress.kubernetes.io/ssl-redirect" "true" -}}
 {{- end -}}
 {{- if .backendTls -}}
@@ -152,6 +151,8 @@ Istio generates for the Gateway (<name>-istio).
 {{- define "iverson.refuseRetiredIngressClass" -}}
 {{- if eq .className "nginx" -}}
 {{- fail (printf "%s.className %q is no longer served (CSR round 12 §4.5): ingress-nginx is not installed, and an nginx Ingress would reach the TLS pods in plaintext. Set global.gateway.class istio, whose routes replace the Ingresses." .label .className) -}}
+{{- else if eq .className "gce" -}}
+{{- fail (printf "%s.className %q is no longer served (CSR round 12 §4.5): the chart no longer renders the GCE Ingress settings. Set global.gateway.class gke-l7-global-external-managed, whose Gateway and routes replace the Ingresses." .label .className) -}}
 {{- end -}}
 {{- end -}}
 

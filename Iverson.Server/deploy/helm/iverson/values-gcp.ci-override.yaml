@@ -2,6 +2,8 @@ admission:
   operatorGroups: ["iverson-operators@iverson-ci-test.example.org"]
 global:
   ingressHost: "iverson-ci-test.example.org"
+  gateway:
+    addressName: "iverson-gateway"
   # CSR round 12 §2.4: a cloud render fails with no operator subject; CI renders with a dummy one.
   operatorSubjects:
     - "ci-dummy-operator-subject"

@@ -1,6 +1,6 @@
 # GCP GKE overlay — StorageClass names and node-pool labels match modules/operators
 # and modules/cluster-gcp's fixed naming exactly (see Tasks 2 and 5 of this plan).
-# No separate ingress controller to install — GKE's built-in GCE ingress class is used directly.
+# The edge is a GKE Gateway (global.gateway, templates/gateway-gke.yaml): no ingress controller to install.
 
 # GCLB and its health checks connect straight to pod IPs from Google's fixed ranges
 # (container-native load balancing). The node subnet is not needed: the kubelet's probes
@@ -28,6 +28,12 @@ global:
   trustedProxies:
     cidrs: ["130.211.0.0/22", "35.191.0.0/16"]
     hops: 2
+  # CSR round 12 §4.5: a GKE Gateway (global external Application Load Balancer) replaces the four GCE
+  # Ingresses, and verifies the api's and Authentik's pod certificates. addressName is the Terraform
+  # output gateway_address_name (the Gateway's static address); the render fails while it is empty.
+  gateway:
+    class: gke-l7-global-external-managed
+    addressName: ""
 
 postgres:
   storageClassName: "iverson-postgres"
@@ -103,21 +109,15 @@ api:
   image:
     repository: "ghcr.io/counsellorben/iverson-api"
   ingress:
-    className: "gce"
     annotations: {}
-    # The gRPC paths on this Ingress still 400 here — AGIC/GCE need their own
-    # gRPC-passthrough configuration, not yet done. See
-    # docs/specs/2026-09-24-api-ingress-nginx-grpc-design.md.
-    # GCE ingress terminates TLS from a standard Kubernetes Secret
-    # referenced via the Ingress's tls: block, same as Azure above — replace
-    # with a real cert-manager-issued Secret name for the real host before
-    # applying.
+    # The GKE Gateway's HTTPS listener for the main host serves this Secret (with
+    # adminUi.ingress.tlsSecretName) — replace with a real cert-manager-issued Secret
+    # name for the real host before applying.
     tlsSecretName: "iverson-api-tls"
   adminApiIngress:
-    className: "gce"
     annotations: {}
     # A NEW Secret, distinct from iverson-api-tls above — its SAN must cover
-    # admin-api.iverson.example.com, a different hostname, or the GCE ingress's TLS
+    # admin-api.iverson.example.com, a different hostname, or the Gateway's TLS
     # handshake fails on a name mismatch. Replace with a real cert-manager-issued
     # Secret name for the real host before applying.
     tlsSecretName: "iverson-admin-api-tls"
@@ -169,25 +169,22 @@ authentik:
   server:
     replicas: 2
   ingress:
-    className: "gce"
-    # GCE ingress terminates TLS from a standard Kubernetes Secret
-    # referenced via the Ingress's tls: block, same as Azure above — replace
-    # with a real cert-manager-issued Secret name for the real host before
+    # The GKE Gateway's HTTPS listener for authentik.<host> serves this Secret —
+    # replace with a real cert-manager-issued Secret name for the real host before
     # applying.
     tlsSecretName: "iverson-authentik-tls"
-    # CSR round-11 #5: Terraform output authentik_security_policy_name (docs/runbooks/csr11-identity-plane.md).
+    # CSR round-11 #5: Terraform output authentik_security_policy_name (docs/runbooks/csr11-identity-plane.md),
+    # attached to the Authentik backend by the Gateway's GCPBackendPolicy.
     securityPolicy: ""
 
 adminUi:
   image:
     repository: "ghcr.io/counsellorben/iverson-admin-ui"   # published with the api image
   ingress:
-    className: "gce"
     annotations: {}
-    # GCE ingress terminates TLS from a standard Kubernetes Secret
-    # referenced via the Ingress's tls: block, same as Azure above — replace
-    # with a real cert-manager-issued Secret name for the real host before
-    # applying.
+    # Served for the main host by the GKE Gateway's HTTPS listener, with
+    # api.ingress.tlsSecretName — replace with a real cert-manager-issued Secret
+    # name for the real host before applying.
     tlsSecretName: "iverson-admin-ui-tls"
 
 jaeger:

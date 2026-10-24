@@ -83,3 +83,11 @@ output "storage_class_names" { value = module.operators.storage_class_names }
 # Copy into values-gcp.yaml's authentik.serviceAccountIssuer (docs/runbooks/csr11-identity-plane.md §7).
 output "service_account_issuer" { value = module.cluster.service_account_issuer }
 output "kubeconfig_command" { value = "gcloud container clusters get-credentials ${module.cluster.cluster_name} --region ${var.region} --project ${var.project_id}" }
+
+# CSR round 12 §4.5: the static address of the chart's GKE Gateway (a global external Application Load
+# Balancer). Copy the output into values-gcp.yaml's global.gateway.addressName.
+resource "google_compute_global_address" "gateway" {
+  name = "${var.cluster_name}-gateway"
+}
+
+output "gateway_address_name" { value = google_compute_global_address.gateway.name }

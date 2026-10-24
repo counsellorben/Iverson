@@ -199,6 +199,12 @@ resource "google_container_cluster" "this" {
     }
   }
 
+  # CSR round 12 §4.5: the Gateway API, which the chart's GKE Gateway (class
+  # gke-l7-global-external-managed) and its routes and policies need. GKE manages the CRDs.
+  gateway_api_config {
+    channel = "CHANNEL_STANDARD"
+  }
+
   resource_labels = {
     app = "iverson"
   }

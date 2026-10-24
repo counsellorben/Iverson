@@ -1,0 +1,186 @@
+{{- if eq (dig "gateway" "class" "" .Values.global) "gke-l7-global-external-managed" }}
+{{- /*
+CSR round 12 §4.5: GCP's edge, a GKE Gateway (global external Application Load Balancer) in the release
+namespace, replacing the four GCE Ingresses with the same hosts and paths:
+- one HTTPS listener per host, serving the TLS Secrets the Ingress blocks name, on the static address
+  Terraform reserves (global.gateway.addressName); no port-80 listener, so HTTP is off;
+- HTTPRoutes only (this class supports no GRPCRoute): gRPC reaches the API's 8080 because that Service
+  port's appProtocol is HTTP2, and the HTTPS ports carry appProtocol HTTPS;
+- a BackendTLSPolicy for the API and Authentik Services, so the load balancer verifies each pod's
+  certificate against the chart's CA (<release>-api-ca, <release>-authentik-ca) and host name. admin-ui
+  stays plaintext from the edge, as on every profile: it serves static files;
+- the Cloud Armor policy on Authentik's backend (GCPBackendPolicy), and the health checks the GCE
+  Ingresses took from the readiness probes (HealthCheckPolicy). admin-ui's default check (HTTP / on its
+  serving port) is the one its Ingress had.
+*/}}
+{{- $mainSecrets := list .Values.api.ingress.tlsSecretName }}
+{{- if and .Values.adminUi.enabled .Values.adminUi.ingress.tlsSecretName }}
+{{- $mainSecrets = append $mainSecrets .Values.adminUi.ingress.tlsSecretName | uniq }}
+{{- end }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ .Release.Name }}-edge
+spec:
+  gatewayClassName: gke-l7-global-external-managed
+  addresses:
+    - { type: NamedAddress, value: {{ .Values.global.gateway.addressName | quote }} }
+  listeners:
+    - name: main
+      hostname: {{ .Values.global.ingressHost | quote }}
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          {{- range $mainSecrets }}
+          - { kind: Secret, name: {{ . }} }
+          {{- end }}
+    {{- if .Values.api.adminConsoleEnabled }}
+    - name: admin-api
+      hostname: {{ printf "admin-api.%s" .Values.global.ingressHost | quote }}
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - { kind: Secret, name: {{ .Values.api.adminApiIngress.tlsSecretName }} }
+    {{- end }}
+    - name: authentik
+      hostname: {{ printf "authentik.%s" .Values.global.ingressHost | quote }}
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - { kind: Secret, name: {{ .Values.authentik.ingress.tlsSecretName }} }
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}-api
+spec:
+  parentRefs:
+    - { name: {{ .Release.Name }}-edge, sectionName: main }
+  hostnames: [{{ .Values.global.ingressHost | quote }}]
+  rules:
+    - matches:
+        {{- range list "ObjectMappingService" "ObjectPersistenceService" "ObjectRetrievalService" "ObjectSearchService" "TenantLifecycleGrpcService" "TenantAdminGrpcService" }}
+        - path: { type: PathPrefix, value: /iverson.{{ . }} }
+        {{- end }}
+      backendRefs:
+        - { name: {{ .Release.Name }}-api, port: 8080 }
+{{- if .Values.api.adminConsoleEnabled }}
+---
+# admin-api.<host>: only /admin, /health and /v1/traces, on the API's 8081.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}-admin-api
+spec:
+  parentRefs:
+    - { name: {{ .Release.Name }}-edge, sectionName: admin-api }
+  hostnames: [{{ printf "admin-api.%s" .Values.global.ingressHost | quote }}]
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /admin }
+        - path: { type: PathPrefix, value: /health }
+        - path: { type: PathPrefix, value: /v1/traces }
+      backendRefs:
+        - { name: {{ .Release.Name }}-api, port: 8081 }
+{{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}-authentik
+spec:
+  parentRefs:
+    - { name: {{ .Release.Name }}-edge, sectionName: authentik }
+  hostnames: [{{ printf "authentik.%s" .Values.global.ingressHost | quote }}]
+  rules:
+    - backendRefs:
+        - { name: {{ .Release.Name }}-authentik, port: 9080 }
+{{- if .Values.adminUi.enabled }}
+---
+# The console under /admin on the main host; the prefix is stripped before the request reaches admin-ui
+# (the GCE Ingress could not strip it).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}-admin-ui
+spec:
+  parentRefs:
+    - { name: {{ .Release.Name }}-edge, sectionName: main }
+  hostnames: [{{ .Values.global.ingressHost | quote }}]
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /admin }
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path: { type: ReplacePrefixMatch, replacePrefixMatch: / }
+      backendRefs:
+        - { name: {{ .Release.Name }}-admin-ui, port: 8080 }
+{{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: {{ .Release.Name }}-api
+spec:
+  targetRefs:
+    - { group: "", kind: Service, name: {{ .Release.Name }}-api }
+  validation:
+    hostname: {{ .Release.Name }}-api
+    caCertificateRefs:
+      - { group: "", kind: ConfigMap, name: {{ .Release.Name }}-api-ca }
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: {{ .Release.Name }}-authentik
+spec:
+  targetRefs:
+    - { group: "", kind: Service, name: {{ .Release.Name }}-authentik }
+  validation:
+    hostname: {{ .Release.Name }}-authentik
+    caCertificateRefs:
+      - { group: "", kind: ConfigMap, name: {{ .Release.Name }}-authentik-ca }
+---
+# CSR round-11 #5: Cloud Armor's rate limit on the login path (Terraform's authentik_security_policy_name),
+# on Authentik's backend only. timeoutSec is the load balancer's default backend timeout, stated.
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: {{ .Release.Name }}-authentik
+spec:
+  default:
+    securityPolicy: {{ .Values.authentik.ingress.securityPolicy | quote }}
+    timeoutSec: 30
+  targetRef: { group: "", kind: Service, name: {{ .Release.Name }}-authentik }
+---
+# The public listener's liveness path, over HTTPS (Authentik's / redirects).
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: {{ .Release.Name }}-authentik
+spec:
+  default:
+    config:
+      type: HTTPS
+      httpsHealthCheck: { port: 9080, requestPath: /-/health/live/ }
+  targetRef: { group: "", kind: Service, name: {{ .Release.Name }}-authentik }
+---
+# The API's readiness check on its HTTP/1.1 port, for both of its backends (8080 speaks only HTTP/2).
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: {{ .Release.Name }}-api
+spec:
+  default:
+    config:
+      type: HTTPS
+      httpsHealthCheck: { port: 8081, requestPath: /health }
+  targetRef: { group: "", kind: Service, name: {{ .Release.Name }}-api }
+{{- end }}

@@ -41,10 +41,9 @@
 {{- end }}
 {{- end }}
 {{- /* CSR round-11 #4, #6: one Kestrel serves 8080 and 8081, so this Ingress follows the API pod's
-   backendTls (keyed on api.ingress) and must be able to reach it over TLS. On gce the protocol comes
-   from the api Service's app-protocols, which follows api.ingress.className. */}}
+   backendTls (keyed on api.ingress) and must be able to reach it over TLS. */}}
 {{- $backendTls := eq (include "api.backendTls" .) "true" }}
-{{- if and $backendTls (or (ne (include "iverson.backendTls" (dict "className" .Values.adminApiIngress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true") (and (eq .Values.adminApiIngress.className "gce") (ne .Values.ingress.className "gce"))) }}
+{{- if and $backendTls (ne (include "iverson.backendTls" (dict "className" .Values.adminApiIngress.className "trustedRoot" .Values.ingress.appgwTrustedRootCertificate)) "true") }}
 {{- fail (printf "api.adminApiIngress.className %q cannot reach the API over TLS, which api.ingress.className %q turns on (CSR round-11 #4): give both API Ingresses the same class" .Values.adminApiIngress.className .Values.ingress.className) }}
 {{- end }}
 {{- $edge := include "iverson.edgeAnnotations" (dict "className" .Values.adminApiIngress.className "backendTls" $backendTls "grpc" false "trustedRoot" .Values.ingress.appgwTrustedRootCertificate "host" (printf "%s-api" .Release.Name) "probePort" 8081 "probePath" "/health") | fromYaml }}
