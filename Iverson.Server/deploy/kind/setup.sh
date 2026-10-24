@@ -189,5 +189,5 @@ helm upgrade --install metrics-server metrics-server \
   --wait
 
 echo "All operators installed."
-echo "Next: deploy/kind/build-and-load-image.sh to build+load the app image, then helm upgrade --install --wait iverson . -f values-local.yaml -n iverson (--wait: the post-upgrade StarRocks role revoke then runs once the new pods are ready, though a previous-release pod may still be running or terminating; see docs/runbooks/csr12-server.md §1)"
+echo "Next: deploy/kind/build-and-load-image.sh to build+load the app image, then helm upgrade --install --wait iverson . -f values-local.yaml -n iverson --kube-as-user=kubernetes-admin --kube-as-group=kubeadm:cluster-admins --kube-as-group=iverson-operators (the kube-as flags: CSR round 12's admission policy admits only the iverson-operators group to install or change the api, see docs/runbooks/operators-group.md; --wait: the post-upgrade StarRocks role revoke then runs once the new pods are ready, though a previous-release pod may still be running or terminating; see docs/runbooks/csr12-server.md §1)"
 echo "Note: TEI and Ollama run model images with their weights baked in. Before installing the chart, build and load them: deploy/kind/build-and-load-image.sh 0.1.0 iverson --model-images (add --values <overlay> to match the overlay you install)."

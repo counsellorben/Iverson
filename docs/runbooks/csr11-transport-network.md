@@ -1,5 +1,7 @@
 # CSR Round-11 Transport and Network — Operator Runbook
 
+> **CSR round 12 §3.1.** Commands written `kubectl $OPS …` or `helm … $HOPS` run as the operators group: set `OPS` and `HOPS` as `docs/runbooks/operators-group.md` §1 says (both empty on a cloud).
+
 **Why:** the hops that carried passwords, tokens and tenant data in plaintext inside the cluster are
 now encrypted. The edge reaches the API and Authentik's public listener over TLS, StarRocks clients
 verify the FE's certificate, and Authentik verifies Postgres's. Redis is gone (Authentik no longer
@@ -95,7 +97,7 @@ The API's ports 8080 (gRPC) and 8081 (admin, health, metrics) now serve only TLS
 certificate named `<release>-api`. Through a port-forward, verify that name:
 
 ```bash
-kubectl -n <ns> port-forward svc/<release>-api 8081:8081 &
+kubectl $OPS -n <ns> port-forward svc/<release>-api 8081:8081 &
 kubectl -n <ns> get secret <release>-api-internal-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > api-ca.pem
 curl --cacert api-ca.pem --connect-to <release>-api:8081:127.0.0.1:8081 https://<release>-api:8081/health
 ```

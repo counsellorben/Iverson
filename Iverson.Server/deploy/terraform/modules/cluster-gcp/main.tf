@@ -157,6 +157,12 @@ resource "google_container_cluster" "this" {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
 
+  # CSR round 12 §3.1: Google Groups for RBAC, so the operators' Google Group (values-gcp.yaml's
+  # admission.operatorGroups, a member of this group) reaches the API server in the request's groups.
+  authenticator_groups_config {
+    security_group = var.rbac_security_group
+  }
+
   database_encryption {
     state    = "ENCRYPTED"
     key_name = google_kms_crypto_key.gke_secrets.id

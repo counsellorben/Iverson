@@ -30,6 +30,9 @@ variable "master_authorized_networks" {
   type = list(object({ cidr_block = string, display_name = string }))
 }
 
+# CSR round 12 §3.1: gke-security-groups@<your domain> (cluster-gcp's rbac_security_group); no default.
+variable "rbac_security_group" { type = string }
+
 provider "google" {
   project = var.project_id
   region  = var.region
@@ -41,6 +44,7 @@ module "cluster" {
   cluster_name               = var.cluster_name
   region                     = var.region
   master_authorized_networks = var.master_authorized_networks
+  rbac_security_group        = var.rbac_security_group
 }
 
 data "google_client_config" "default" {}

@@ -124,7 +124,8 @@ public class AdminAutomationCredentialsTests
 
         var act = () => creds.GetTokenAsync();
 
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*kubectl create token*");
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*kubectl create token*as a member of the operators group (docs/runbooks/operators-group.md)*");
     }
 
     [Theory]
@@ -142,7 +143,7 @@ public class AdminAutomationCredentialsTests
             var act = () => creds.GetTokenAsync();
 
             await act.Should().ThrowAsync<InvalidOperationException>()
-                .WithMessage("*IVERSON_CLIENT_ASSERTION_FILE*empty*");
+                .WithMessage("*IVERSON_CLIENT_ASSERTION_FILE*empty*as a member of the operators group (docs/runbooks/operators-group.md)*");
             endpoint.Requests.Should().BeEmpty();
         }
         finally

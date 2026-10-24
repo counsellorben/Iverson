@@ -1,5 +1,7 @@
 # Operator Access Onboarding
 
+> **CSR round 12 §3.1.** Commands written `kubectl $OPS …` or `helm … $HOPS` run as the operators group: set `OPS` and `HOPS` as `docs/runbooks/operators-group.md` §1 says (both empty on a cloud).
+
 **Why:** the API grants Operator (the `/admin/*` HTTP endpoints, the console's operator cards and the
 TenantLifecycle RPCs) through `OperatorAuthorizationPolicy`
 (`Iverson.Server/Iverson.Api/OperatorAuthorizationPolicy.cs`), not through an Authentik group. Since CSR
@@ -40,14 +42,14 @@ is up, onboard the first operator with the steps below and replace that entry wi
 
 1. Create the account as the break-glass admin, `iverson-breakglass`, over the in-cluster route
    (`docs/runbooks/csr11-identity-plane.md` §3; `akadmin` is deactivated since CSR round 11): run
-   `kubectl -n <ns> port-forward svc/<release>-authentik 9000:9000`, open
+   `kubectl $OPS -n <ns> port-forward svc/<release>-authentik 9000:9000` (as the operators group, `docs/runbooks/operators-group.md` §1), open
    `http://localhost:9000/if/admin/`, then Directory → Users → Create. An operator needs no group.
 2. Mint a one-hour recovery link for the account in the worker. A link carries the host it was requested
    on, so this asks with the public Authentik host (`authentik.<global.ingressHost>`); on a cloud profile
    keep `secure=True`, on kind (`global.externalScheme: http`) set `secure=False`:
 
    ```bash
-   kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c '
+   kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c '
    from django.test import RequestFactory
    from rest_framework.request import Request
    from authentik.brands.utils import get_brand_for_request
@@ -67,7 +69,7 @@ is up, onboard the first operator with the steps below and replace that entry wi
 3. Read the account's `sub` (Authentik's `uid` for it):
 
    ```bash
-   kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c '
+   kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c '
    from authentik.core.models import User
    print(User.objects.get(username="<operator username>").uid)'
    ```
@@ -80,10 +82,11 @@ is up, onboard the first operator with the steps below and replace that entry wi
        - "<the printed uid>"
    ```
 
-   Then `helm upgrade` the release with that file. The api pods roll, because their template changes, and
+   Then `helm upgrade … $HOPS` the release with that file, as the operators group
+   (`docs/runbooks/operators-group.md` §1). The api pods roll, because their template changes, and
    take the new list. Authentik's console sign-in policy changes when the worker re-applies the
    service-clients blueprint; apply it at once instead of waiting for that:
-   `kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak apply_blueprint custom/service-clients/service-clients.yaml`.
+   `kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak apply_blueprint custom/service-clients/service-clients.yaml`.
 5. Have the operator sign in to the console and confirm `GET /admin/console/roles` answers
    `"operator": true` for their token (see `docs/runbooks/grpc-admin-auth-cutover.md`'s "Known gap"
    section for the equivalent check during a cutover deploy).
@@ -103,13 +106,13 @@ Admin-automation keeps Operator through its `admin` scope, and tenant admins kee
 2. Print every operator's new `sub` at once:
 
    ```bash
-   kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c '
+   kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c '
    from authentik.core.models import User
    for u in User.objects.filter(username__in=["<operator 1>", "<operator 2>"]):
        print(u.username, u.uid)'
    ```
 
-3. Replace `global.operatorSubjects` with exactly the printed values, then `helm upgrade` and apply
+3. Replace `global.operatorSubjects` with exactly the printed values, then `helm upgrade … $HOPS` (as the operators group) and apply
    the service-clients blueprint as in step 4 above.
 
 ## Related

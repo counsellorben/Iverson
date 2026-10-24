@@ -342,12 +342,15 @@ jsonpath='{...env[*].value}'` shows the var as empty.
 **Two separate traps here:**
 1. `.value` in the Pod spec **never** shows a `secretKeyRef`-resolved value — only a literal
    `value:` field. The pod's *actual* resolved environment only exists inside the running container.
-   Check it with `kubectl exec <pod> -- printenv`, not `kubectl get pod -o jsonpath`.
+   Check it with `kubectl exec <pod> -- printenv`, not `kubectl get pod -o jsonpath`. An api, worker,
+   Authentik or Postgres pod admits the exec only for the operators group (`kubectl $OPS exec`,
+   `docs/runbooks/operators-group.md`).
 2. Even checked correctly, `secretKeyRef` values are resolved **once, at pod creation** — Kubernetes
    does not live-update a running container's environment when the backing Secret's data changes
    later. If a Deployment's pods were created before a Secret's value converged to its final state
    (e.g. Helm's two-pass `lookup`-guard pattern), you need `kubectl rollout restart deployment/<name>`
-   to pick up the current Secret content.
+   to pick up the current Secret content (for the api, `kubectl $OPS rollout restart`, as the
+   operators group).
 
 ### 5.3 A live smoke-test script's own curl command uses the wrong HTTP verb
 

@@ -25,6 +25,16 @@ variable "master_authorized_networks" {
   }
 }
 
+# CSR round 12 §3.1: Google Groups for RBAC needs the domain's gke-security-groups@<domain> group, whose
+# member groups (the operators' group among them) reach the API server as request groups. No default.
+variable "rbac_security_group" {
+  type = string
+  validation {
+    condition     = can(regex("^gke-security-groups@", var.rbac_security_group))
+    error_message = "rbac_security_group must be the gke-security-groups@<your domain> group Google Groups for RBAC requires."
+  }
+}
+
 variable "postgres_machine_type" {
   type    = string
   default = "n2-highmem-8"

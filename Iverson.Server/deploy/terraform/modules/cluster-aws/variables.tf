@@ -31,6 +31,17 @@ variable "api_public_access_cidrs" {
   }
 }
 
+# CSR round 12 §3.1: the IAM roles of the operators, each given the Kubernetes group iverson-operators
+# (the chart's admission.operatorGroups) and cluster admin through an access entry. No default, and
+# never the Terraform caller's own role, which EKS gives its own entry.
+variable "operator_role_arns" {
+  type = list(string)
+  validation {
+    condition     = length(var.operator_role_arns) > 0 && alltrue([for arn in var.operator_role_arns : can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/", arn))])
+    error_message = "operator_role_arns must list at least one IAM role ARN: only the operators group may change the api's workloads or mint its tokens."
+  }
+}
+
 variable "postgres_instance_type" {
   type    = string
   default = "r7i.2xlarge"

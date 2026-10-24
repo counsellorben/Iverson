@@ -8,6 +8,12 @@ networkPolicy:
   # The API Server VNet Integration subnet (modules/cluster-azure).
   apiServerCidrs: ["10.1.17.0/28"]
 
+# CSR round 12 §3.1: the object IDs of the Entra admin group(s), as in Terraform's
+# cluster_admin_group_object_ids (output admission_operator_groups). Set before deploying: the render
+# fails while the list is empty.
+admission:
+  operatorGroups: []
+
 global:
   ingressHost: "iverson.example.com"
   prometheusEnabled: true   # single source of truth — see values.yaml's comment on this flag

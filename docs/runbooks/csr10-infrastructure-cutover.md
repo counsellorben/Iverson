@@ -1,5 +1,7 @@
 # CSR Round-10 Infrastructure and Supply Chain — Cutover Runbook
 
+> **CSR round 12 §3.1.** Commands written `kubectl $OPS …` or `helm … $HOPS` run as the operators group: set `OPS` and `HOPS` as `docs/runbooks/operators-group.md` §1 says (both empty on a cloud).
+
 **Why:** this change tightens cluster network policy, pulls model weights from pre-built images
 instead of at pod start, moves AKS and the Terraform state account to Entra-only access, and
 pins build inputs. Several steps are one-way or need an ordering that a plain `helm upgrade` or
@@ -94,7 +96,7 @@ kubectl -n <ns> delete pvc -l app=<release>-tei-<slug>
 kubectl -n <ns> get pvc -o name \
   | grep -E '/(ollama-data-<release>-ollama|tei-data-<release>-tei-<slug>)-[0-9]+$' \
   | xargs -r kubectl -n <ns> delete
-helm upgrade <release> Iverson.Server/deploy/helm/iverson -f <values-file> -n <ns>
+helm upgrade <release> Iverson.Server/deploy/helm/iverson -f <values-file> -n <ns> $HOPS
 ```
 
 Expected: the PVCs (`ollama-data-<release>-ollama-0`, `tei-data-<release>-tei-<slug>-0`) are
@@ -111,7 +113,7 @@ Network policy now scopes DNS and API-server egress. Before declaring the deploy
 cloud:
 
 ```bash
-kubectl -n <ns> exec deploy/<release>-api -- getent hosts kubernetes.default
+kubectl $OPS -n <ns> exec deploy/<release>-api -- getent hosts kubernetes.default
 kubectl -n <ns> get cluster.postgresql.cnpg.io <release>-postgres
 kubectl -n <ns> get pods     # Kafka broker pods
 kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes
@@ -120,7 +122,7 @@ kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes
 Expected:
 
 - `kubernetes.default` resolves. If the image has no `getent`, run it from a debug container
-  sharing the pod (`kubectl debug`).
+  sharing the pod (`kubectl $OPS debug --profile=baseline`).
 - The CNPG cluster reports a healthy phase.
 - The Kafka broker pods are Ready.
 - The EndpointSlice address falls inside the profile's `networkPolicy.apiServerCidrs`. On GKE this
@@ -220,7 +222,7 @@ The API now authenticates to Authentik's admin API with its own Kubernetes servi
 3. Apply both blueprints in the new worker container:
 
    ```bash
-   kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- \
+   kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- \
      ak apply_blueprint custom/service-clients/service-clients.yaml custom/orchestrator-federation.yaml
    ```
 

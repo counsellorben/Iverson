@@ -21,8 +21,8 @@ def fakes(monkeypatch):
     seen = {"secrets": []}
 
     class NoPortForward:
-        def __init__(self, *args):
-            pass
+        def __init__(self, *args, **kwargs):
+            seen["port_forward"] = kwargs
 
         def __enter__(self):
             return self
@@ -89,6 +89,33 @@ def test_kind_names_the_secret_as_the_password_source_without_the_value(monkeypa
     err = capsys.readouterr().err
     assert "password source: Secret iverson-authentik-smoke-test-user" in err
     assert "from-iverson-authentik-smoke-test-user" not in err
+
+
+def test_kind_port_forwards_as_the_operators_group(monkeypatch, fakes):
+    # CSR round 12 §3.1: the admission policy admits a port-forward into an Authentik pod only for the
+    # operators group, so the kind target impersonates it in addition to the admin's own group.
+    monkeypatch.setenv(ENV, "env-pw")
+    assert main_with(monkeypatch, "--target", "kind") == 0
+    assert fakes["port_forward"]["impersonation"] == [
+        "--as=kubernetes-admin",
+        "--as-group=kubeadm:cluster-admins",
+        "--as-group=iverson-operators",
+    ]
+
+
+def test_the_port_forward_command_carries_the_impersonation_before_the_verb():
+    pf = mint.PortForward("iverson", "iverson-authentik", 19000, impersonation=mint.KIND_OPERATOR_IMPERSONATION)
+    assert pf.argv() == [
+        "kubectl",
+        "--as=kubernetes-admin",
+        "--as-group=kubeadm:cluster-admins",
+        "--as-group=iverson-operators",
+        "port-forward",
+        "-n",
+        "iverson",
+        "svc/iverson-authentik",
+        "19000:9000",
+    ]
 
 
 def test_there_is_no_password_flag(monkeypatch, fakes):

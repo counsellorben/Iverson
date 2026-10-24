@@ -1,5 +1,7 @@
 # CSR Round-12 Server — Operator Runbook
 
+> **CSR round 12 §3.1.** Commands written `kubectl $OPS …` or `helm … $HOPS` run as the operators group: set `OPS` and `HOPS` as `docs/runbooks/operators-group.md` §1 says (both empty on a cloud).
+
 **Why:** on Postgres, the api no longer holds an owner, BYPASSRLS or DDL credential, and every StarRocks data connection carries one tenant's role.
 - **Postgres.** The api logs in as `iverson_api`: a member of `iverson_runtime`, not the owner, with no BYPASSRLS, no `iverson_maintenance` and no DDL.
 - **StarRocks.** Every data connection logs in as its tenant's own login, `iverson_t_<suffix>`, which holds only that tenant's role. `iverson_app` keeps only `OPERATE ON SYSTEM`, for `/health` and the readiness probes.
@@ -62,8 +64,9 @@
 Postgres:
 
 ```bash
-kubectl cnpg psql <release>-postgres -n <ns> -- -d iverson -c '\du iverson_api' -c '\drg iverson_api'
-kubectl cnpg psql <release>-postgres -n <ns> -- -d iverson -tA -c "SELECT
+PRIMARY="$(kubectl -n <ns> get cluster.postgresql.cnpg.io <release>-postgres -o jsonpath='{.status.currentPrimary}')"
+kubectl $OPS -n <ns> exec "$PRIMARY" -c postgres -- psql -U postgres -d iverson -c '\du iverson_api' -c '\drg iverson_api'
+kubectl $OPS -n <ns> exec "$PRIMARY" -c postgres -- psql -U postgres -d iverson -tA -c "SELECT
   has_database_privilege('iverson_api', 'iverson', 'CONNECT'),
   has_table_privilege('iverson_api', '\"IversonReconciliationQueue\"', 'INSERT'),
   has_column_privilege('iverson_api', '\"IversonReconciliationQueue\"', 'Payload', 'SELECT'),
@@ -108,7 +111,8 @@ On compose, iverson-worker starts first, and iverson-api waits until the worker'
 1. **List the recorded tenants.** Every provisioned tenant has a row:
 
    ```bash
-   kubectl cnpg psql <release>-postgres -n <ns> -- -d iverson -tA -c 'SELECT "TenantId" FROM "IversonStarRocksTenants" ORDER BY 1' > tenants.txt
+   PRIMARY="$(kubectl -n <ns> get cluster.postgresql.cnpg.io <release>-postgres -o jsonpath='{.status.currentPrimary}')"
+   kubectl $OPS -n <ns> exec "$PRIMARY" -c postgres -- psql -U postgres -d iverson -tA -c 'SELECT "TenantId" FROM "IversonStarRocksTenants" ORDER BY 1' > tenants.txt
    ```
 
 2. **Derive each login's name and password from the current key.** The name is `iverson_t_` plus the same 25-digit fingerprint as the tenant's role name: the first 16 bytes of SHA-256 over the tenant id, read big-endian, written as 25 base-36 digits. The password is the lower-case hex HMAC-SHA256 of `starrocks-tenant:<tenantId>` under the key's UTF-8 bytes. This prints one statement per tenant:

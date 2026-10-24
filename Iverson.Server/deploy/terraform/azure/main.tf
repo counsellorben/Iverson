@@ -118,4 +118,7 @@ output "storage_class_names" { value = module.operators.storage_class_names }
 output "service_account_issuer" { value = module.cluster.service_account_issuer }
 # Copy into values-azure.yaml's authentik.ingress.wafPolicyId (docs/runbooks/csr11-identity-plane.md).
 output "authentik_waf_policy_id" { value = module.cluster.authentik_waf_policy_id }
+# CSR round 12 §3.1: copy into values-azure.yaml's admission.operatorGroups. The admin group(s) are the
+# operators group: Entra puts their object IDs in the request's groups.
+output "admission_operator_groups" { value = var.cluster_admin_group_object_ids }
 output "kubeconfig_command" { value = "az aks get-credentials --name ${module.cluster.cluster_name} --resource-group ${var.cluster_name}-rg" }

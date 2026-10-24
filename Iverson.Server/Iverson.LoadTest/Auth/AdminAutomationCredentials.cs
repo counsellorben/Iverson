@@ -109,13 +109,14 @@ public sealed class AdminAutomationCredentials : IDisposable
                 throw new InvalidOperationException(
                     $"IVERSON_CLIENT_ASSERTION_FILE names '{AssertionFile}', which does not exist. Mint a token with " +
                     "`kubectl create token <release>-admin-automation --audience iverson-authentik-admin-automation " +
-                    "--duration 10m` and write it there.");
+                    "--duration 10m`, as a member of the operators group (docs/runbooks/operators-group.md), " +
+                    "and write it there.");
             var assertion = File.ReadAllText(AssertionFile).Trim();
             if (assertion.Length == 0)
                 throw new InvalidOperationException(
                     $"IVERSON_CLIENT_ASSERTION_FILE names '{AssertionFile}', which is empty. Mint a token into it with " +
                     "`kubectl create token <release>-admin-automation --audience iverson-authentik-admin-automation " +
-                    "--duration 10m`.");
+                    "--duration 10m`, as a member of the operators group (docs/runbooks/operators-group.md).");
             request.ClientAssertion = new ClientAssertion
             {
                 Type = JwtBearerAssertionType,

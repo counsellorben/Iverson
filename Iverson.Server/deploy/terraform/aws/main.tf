@@ -26,6 +26,9 @@ variable "cluster_name" {
 # applying this root module must supply the real allow-list.
 variable "api_public_access_cidrs" { type = list(string) }
 
+# CSR round 12 §3.1: the operators' IAM roles (cluster-aws's operator_role_arns); no default.
+variable "operator_role_arns" { type = list(string) }
+
 provider "aws" {
   region = var.region
 }
@@ -35,6 +38,7 @@ module "cluster" {
   cluster_name            = var.cluster_name
   region                  = var.region
   api_public_access_cidrs = var.api_public_access_cidrs
+  operator_role_arns      = var.operator_role_arns
 }
 
 data "aws_eks_cluster_auth" "this" {

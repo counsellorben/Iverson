@@ -11,6 +11,11 @@ networkPolicy:
   # CNI network-policy agent matches pod egress before the Service address is rewritten.
   apiServerCidrs: ["10.0.0.0/20", "10.0.16.0/20", "10.0.128.0/20", "10.0.144.0/20", "10.100.0.1/32", "172.20.0.1/32"]
 
+# CSR round 12 §3.1: the Kubernetes group modules/cluster-aws's access entries give the operator IAM roles
+# (operator_role_arns), with AmazonEKSClusterAdminPolicy at cluster scope.
+admission:
+  operatorGroups: ["iverson-operators"]
+
 global:
   ingressHost: "iverson.example.com"
   prometheusEnabled: true   # single source of truth — see values.yaml's comment on this flag

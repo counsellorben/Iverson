@@ -10,6 +10,12 @@ networkPolicy:
   # modules/cluster-gcp's master_ipv4_cidr_block (private cluster internal endpoint).
   apiServerCidrs: ["172.16.0.0/28"]
 
+# CSR round 12 §3.1: the operators' Google Group (its email address), a member of the
+# gke-security-groups group Terraform's rbac_security_group names (Google Groups for RBAC). Set before
+# deploying: the render fails while the list is empty.
+admission:
+  operatorGroups: []
+
 global:
   ingressHost: "iverson.example.com"
   prometheusEnabled: true   # single source of truth — see values.yaml's comment on this flag

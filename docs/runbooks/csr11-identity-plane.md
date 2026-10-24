@@ -1,5 +1,7 @@
 # CSR Round-11 Identity Plane — Operator Runbook
 
+> **CSR round 12 §3.1.** Commands written `kubectl $OPS …` or `helm … $HOPS` run as the operators group: set `OPS` and `HOPS` as `docs/runbooks/operators-group.md` §1 says (both empty on a cloud).
+
 **Why:** this change makes Authentik record the real client address and throttle failed logins. It
 enrols a second factor during recovery, refuses superusers on the public listener, and replaces the
 `akadmin` password with a named break-glass admin. Admin-automation callers authenticate with a
@@ -53,7 +55,7 @@ whole file.
    `service-clients.yaml` retitles (up to 5 minutes):
 
    ```bash
-   ok=no; for i in $(seq 1 30); do [ "$(kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c "from authentik.flows.models import Flow; from authentik.stages.authenticator_totp.models import AuthenticatorTOTPStage; print(Flow.objects.filter(slug='default-authentication-flow').count(), AuthenticatorTOTPStage.objects.filter(name='default-authenticator-totp-setup').count(), Flow.objects.filter(slug='initial-setup').count())" 2>/dev/null | tail -1)" = "1 1 1" ] && { ok=yes; break; }; sleep 10; done; echo "stock objects present: $ok"
+   ok=no; for i in $(seq 1 30); do [ "$(kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c "from authentik.flows.models import Flow; from authentik.stages.authenticator_totp.models import AuthenticatorTOTPStage; print(Flow.objects.filter(slug='default-authentication-flow').count(), AuthenticatorTOTPStage.objects.filter(name='default-authenticator-totp-setup').count(), Flow.objects.filter(slug='initial-setup').count())" 2>/dev/null | tail -1)" = "1 1 1" ] && { ok=yes; break; }; sleep 10; done; echo "stock objects present: $ok"
    ```
 
    Continue when it prints `yes`. If it prints `no`, Authentik's own blueprints have not applied yet:
@@ -61,9 +63,9 @@ whole file.
 3. Apply:
 
    ```bash
-   kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- \
+   kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- \
      ak apply_blueprint custom/recovery-flow.yaml custom/reputation.yaml
-   kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- \
+   kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- \
      ak apply_blueprint custom/superusers.yaml custom/orchestrator-federation.yaml \
        custom/service-clients/service-clients.yaml custom/service-clients/admin-automation.yaml \
        custom/initial-setup.yaml
@@ -80,12 +82,12 @@ whole file.
 `iverson-breakglass`, which has no password until you activate it. Superusers are refused on the
 public listener, at login and in recovery, so everything here uses the in-cluster route.
 
-1. Forward the in-cluster listener: `kubectl -n <ns> port-forward svc/<release>-authentik 9000:9000`.
+1. Forward the in-cluster listener: `kubectl $OPS -n <ns> port-forward svc/<release>-authentik 9000:9000`.
 2. Generate a recovery link in the worker. This builds the same link as the admin API's user
    recovery action; it is valid for one hour and one use:
 
    ```bash
-   kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c '
+   kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c '
    from django.test import RequestFactory
    from rest_framework.request import Request
    from authentik.brands.utils import get_brand_for_request
@@ -116,7 +118,7 @@ ServiceAccount, with audience `iverson-authentik-admin-automation` and a lifetim
 Its former client secret stops working at the upgrade. The token buys a 1-hour Operator token.
 
 ```bash
-kubectl -n <ns> create token <release>-admin-automation --audience iverson-authentik-admin-automation \
+kubectl $OPS -n <ns> create token <release>-admin-automation --audience iverson-authentik-admin-automation \
   --duration 10m > /path/to/sa-token
 export IVERSON_CLIENT_ID="$(kubectl -n <ns> get secret <release>-authentik-admin-automation-client -o jsonpath='{.data.client-id}' | base64 -d)"
 export IVERSON_CLIENT_ASSERTION_FILE=/path/to/sa-token
@@ -169,7 +171,7 @@ address reaches −50.
 To clear rows before they expire, delete them in the worker, which needs no admin session:
 
 ```bash
-kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c '
+kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c '
 from authentik.policies.reputation.models import Reputation
 print(Reputation.objects.filter(ip="<address>").delete())'
 ```

@@ -125,7 +125,7 @@ a real deployment.
 
 **Steps (kind/Helm):** `docs/runbooks/operator-access-onboarding.md`. Create the account in the admin
 interface over the in-cluster route, send it a recovery link (the operator sets a password and enrols
-TOTP there), read its `sub`, add the `sub` to `global.operatorSubjects`, and `helm upgrade`.
+TOTP there), read its `sub`, add the `sub` to `global.operatorSubjects`, and `helm upgrade` as the operators group (`docs/runbooks/operators-group.md`).
 
 **Steps (compose):**
 
@@ -515,7 +515,8 @@ gotchas in detail:
   Host-header/issuer-claim mismatch trap when minting tokens through
   `kubectl port-forward` (`localhost:9000` on compose is also accepted since the
   identity-plane change, but forcing the Host header still works), why `kubectl get pod -o jsonpath` never shows
-  secret-resolved env values (use `kubectl exec ... -- printenv` instead),
+  secret-resolved env values (use `kubectl exec ... -- printenv` instead; for an api, worker,
+  Authentik or Postgres pod as the operators group, `docs/runbooks/operators-group.md`),
   and a wrong-HTTP-verb trap that looks like an auth failure but is actually
   a routing miss.
 

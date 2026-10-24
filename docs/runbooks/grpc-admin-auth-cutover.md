@@ -1,5 +1,7 @@
 # gRPC + Admin Auth — First-Install / Cutover Runbook
 
+> **CSR round 12 §3.1.** Commands written `kubectl $OPS …` or `helm … $HOPS` run as the operators group: set `OPS` and `HOPS` as `docs/runbooks/operators-group.md` §1 says (both empty on a cloud).
+
 **Why:** authentication is a hard cutover the moment this ships — there is no permissive/warn-only
 rollout window (see `docs/superpowers/plans/2026-07-11-grpc-and-admin-authentication-implementation-plan.md`'s
 Global Constraints). Every existing caller must already hold a valid token before this deploys.
@@ -48,7 +50,7 @@ covers directly.)
 A single `helm upgrade --install` now converges on the first pass:
 
 ```bash
-helm upgrade --install iverson . -f values-<env>.yaml -n iverson --create-namespace
+helm upgrade --install iverson . -f values-<env>.yaml -n iverson --create-namespace $HOPS
 ```
 
 Note: the upgrade moves the Authentik Ingress to Service port 9080 immediately, while the old
@@ -63,7 +65,7 @@ something's broken:
 
 ```bash
 LOADTEST_SECRET_ID=$(kubectl -n <ns> get secret <release>-authentik-loadtest-client -o jsonpath='{.data.client-id}' | base64 -d)
-kubectl -n <ns> exec deploy/<release>-authentik-worker -- env EXPECTED_CLIENT_ID="$LOADTEST_SECRET_ID" ak shell -c "
+kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -- env EXPECTED_CLIENT_ID="$LOADTEST_SECRET_ID" ak shell -c "
 import os
 from authentik.providers.oauth2.models import OAuth2Provider
 print('matches secret:', OAuth2Provider.objects.get(name='iverson-loadtest').client_id == os.environ['EXPECTED_CLIENT_ID'])
@@ -88,7 +90,7 @@ those Secrets is rotated by hand after the `iverson-api` Deployment's pods alrea
 the Secret's content alone is not enough:
 
 ```bash
-kubectl -n <ns> rollout restart deployment/<release>-api
+kubectl $OPS -n <ns> rollout restart deployment/<release>-api
 ```
 
 ## Known gap: the human/browser OIDC path has no automated verification

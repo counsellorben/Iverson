@@ -87,6 +87,14 @@ MAX_TOTP_ATTEMPTS = 4
 CACHE_DIR = os.path.expanduser("~/.cache/iverson")
 # CSR round-11 #19: the password is read from the environment, never from argv.
 PASSWORD_ENV = "IVERSON_ACTING_USER_PASSWORD"
+# CSR round 12 §3.1: a port-forward into a <release>-authentik-* pod is admitted only for the operators
+# group. kind's kubeconfig user is kubernetes-admin in kubeadm:cluster-admins; impersonating it with both
+# groups keeps its own rights and adds the one the admission policy admits (docs/runbooks/operators-group.md).
+KIND_OPERATOR_IMPERSONATION = [
+    "--as=kubernetes-admin",
+    "--as-group=kubeadm:cluster-admins",
+    "--as-group=iverson-operators",
+]
 
 
 def log(msg):
@@ -401,24 +409,29 @@ class PortForward:
     `with` block, waiting for the local port to accept connections before
     yielding control."""
 
-    def __init__(self, namespace: str, service: str, local_port: int, remote_port: int = 9000):
+    def __init__(self, namespace: str, service: str, local_port: int, remote_port: int = 9000, impersonation=()):
         self.namespace = namespace
         self.service = service
         self.local_port = local_port
         self.remote_port = remote_port
+        self.impersonation = list(impersonation)
         self.proc = None
 
+    def argv(self) -> list:
+        return [
+            "kubectl",
+            *self.impersonation,
+            "port-forward",
+            "-n",
+            self.namespace,
+            f"svc/{self.service}",
+            f"{self.local_port}:{self.remote_port}",
+        ]
+
     def __enter__(self):
-        log(f"starting: kubectl port-forward -n {self.namespace} svc/{self.service} {self.local_port}:{self.remote_port}")
+        log(f"starting: {' '.join(self.argv())}")
         self.proc = subprocess.Popen(
-            [
-                "kubectl",
-                "port-forward",
-                "-n",
-                self.namespace,
-                f"svc/{self.service}",
-                f"{self.local_port}:{self.remote_port}",
-            ],
+            self.argv(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -491,7 +504,7 @@ def main() -> int:
 
     # target == kind
     authentik_service = f"{args.release}-authentik"
-    with PortForward(args.namespace, authentik_service, args.kind_local_port):
+    with PortForward(args.namespace, authentik_service, args.kind_local_port, impersonation=KIND_OPERATOR_IMPERSONATION):
         base_url = args.base_url or f"http://localhost:{args.kind_local_port}"
         host_header = args.host_header if args.host_header is not None else f"{authentik_service}:9000"
         client_id = args.client_id or kubectl_get_secret_value(

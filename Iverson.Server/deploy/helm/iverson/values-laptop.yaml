@@ -19,6 +19,11 @@ networkPolicy:
   # 10.89.0.0/16); the control plane serves on 6443.
   apiServerCidrs: ["172.18.0.0/16", "10.89.0.0/16"]
 
+# CSR round 12 §3.1: kind's operators group. kind's kubeconfig user is not in it, so deploy/kind/setup.sh's
+# printed install command and the runbooks impersonate it (docs/runbooks/operators-group.md §1).
+admission:
+  operatorGroups: ["iverson-operators"]
+
 global:
   engagementEnabled: false   # no StarRocks: vendor sizes FE at 8 CPU/16GB
   tracingEnabled: false      # no jaeger

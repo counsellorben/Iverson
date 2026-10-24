@@ -275,7 +275,50 @@ resource "aws_eks_cluster" "this" {
 
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
+  # CSR round 12 §3.1: access entries (below) need an API authentication mode; a cluster created through
+  # the EKS API defaults to CONFIG_MAP. The provider sends the bootstrap flag as false when it is left
+  # unset in this block, which would drop the Terraform caller's own cluster access that the root's
+  # kubernetes and helm providers use, so it is set explicitly. It is ForceNew: a second plan must show
+  # no change to this resource.
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
+  }
+
   depends_on = [aws_iam_role_policy_attachment.cluster_policy]
+}
+
+# CSR round 12 §3.1: the operators group. The chart's admission policy admits token minting, exec,
+# port-forward and protected workload changes only for members of admission.operatorGroups
+# (values-aws.yaml: iverson-operators). Each operator IAM role gets that Kubernetes group through its
+# access entry, and AmazonEKSClusterAdminPolicy at cluster scope, because a group grants nothing without
+# an RBAC binding and the chart adds none; cluster scope, because operators run the helm upgrade, which
+# writes cluster-scoped objects (the admission policy and its binding, Authentik's TokenReview
+# ClusterRole and binding). The Terraform caller is not one of them: EKS creates its entry, and an IAM
+# principal can be in one access entry only.
+locals {
+  operators_kubernetes_group = "iverson-operators"
+}
+
+resource "aws_eks_access_entry" "operators" {
+  for_each          = toset(var.operator_role_arns)
+  cluster_name      = aws_eks_cluster.this.name
+  principal_arn     = each.value
+  kubernetes_groups = [local.operators_kubernetes_group]
+  type              = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "operators" {
+  for_each      = toset(var.operator_role_arns)
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = each.value
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.operators]
 }
 
 # OIDC provider for IRSA (IAM Roles for Service Accounts) — lets specific
