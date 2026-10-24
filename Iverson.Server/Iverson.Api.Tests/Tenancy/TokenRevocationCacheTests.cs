@@ -46,10 +46,18 @@ public class TokenRevocationCacheTests
         (await _sut.IsRevokedAsync("revoked-sub", RevokedAt)).Should().BeTrue();
     }
 
+    // CSR round 12 §2.3: revoked_at is Postgres's clock and iat is Authentik's, so a token counts as
+    // revoked up to 5 s after revoked_at. A login more than 5 s after the revocation is accepted.
     [Fact]
-    public async Task IsRevokedAsync_IssuedAfterRevocation_IsNotRevoked()
+    public async Task IsRevokedAsync_IssuedMoreThanFiveSecondsAfterRevocation_IsNotRevoked()
     {
-        (await _sut.IsRevokedAsync("revoked-sub", RevokedAt.AddSeconds(1))).Should().BeFalse();
+        (await _sut.IsRevokedAsync("revoked-sub", RevokedAt.AddSeconds(6))).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task IsRevokedAsync_IssuedFiveSecondsAfterRevocation_IsRevoked()
+    {
+        (await _sut.IsRevokedAsync("revoked-sub", RevokedAt.AddSeconds(5))).Should().BeTrue();
     }
 
     [Fact]

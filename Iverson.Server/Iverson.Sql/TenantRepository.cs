@@ -4,11 +4,14 @@ public sealed class TenantRepository(
     string tableName,
     IRecordStoreQueryExecutor sql) : ITenantRepository
 {
+    // CSR round 12 §2.3: every write below notifies the api replicas in its own statement
+    // (AuthInvalidation), once per row it writes. A seed that inserts nothing notifies nothing.
     public Task InsertAsync(string id, string displayName, string status) =>
         sql.ExecuteAsync(
             $"""
             INSERT INTO "{tableName}" ("Id", "DisplayName", "Status", "CreatedAt")
             VALUES (@Id, @DisplayName, @Status, @CreatedAt)
+            {AuthInvalidation.ReturningTenantStatusNotification}
             """,
             new { Id = id, DisplayName = displayName, Status = status, CreatedAt = DateTimeOffset.UtcNow });
 
@@ -18,6 +21,7 @@ public sealed class TenantRepository(
             INSERT INTO "{tableName}" ("Id", "DisplayName", "Status", "CreatedAt")
             VALUES (@Id, @DisplayName, @Status, @CreatedAt)
             ON CONFLICT ("Id") DO NOTHING
+            {AuthInvalidation.ReturningTenantStatusNotification}
             """,
             new { Id = id, DisplayName = displayName, Status = status, CreatedAt = DateTimeOffset.UtcNow });
 
@@ -32,16 +36,17 @@ public sealed class TenantRepository(
 
     public Task UpdateStatusAsync(string id, string status) =>
         sql.ExecuteAsync(
-            $"""UPDATE "{tableName}" SET "Status" = @Status WHERE "Id" = @Id""",
+            $"""UPDATE "{tableName}" SET "Status" = @Status WHERE "Id" = @Id {AuthInvalidation.ReturningTenantStatusNotification}""",
             new { Id = id, Status = status });
 
+    // The RETURNING clause leaves the affected-row count the UPDATE's own.
     public async Task<bool> UpdateStatusUnlessDeletedAsync(string id, string status) =>
         await sql.ExecuteAsync(
-            $"""UPDATE "{tableName}" SET "Status" = @Status WHERE "Id" = @Id AND "Status" <> 'deleted'""",
+            $"""UPDATE "{tableName}" SET "Status" = @Status WHERE "Id" = @Id AND "Status" <> 'deleted' {AuthInvalidation.ReturningTenantStatusNotification}""",
             new { Id = id, Status = status }) > 0;
 
     public Task DeleteAsync(string id) =>
         sql.ExecuteAsync(
-            $"""DELETE FROM "{tableName}" WHERE "Id" = @Id""",
+            $"""DELETE FROM "{tableName}" WHERE "Id" = @Id {AuthInvalidation.ReturningTenantStatusNotification}""",
             new { Id = id });
 }

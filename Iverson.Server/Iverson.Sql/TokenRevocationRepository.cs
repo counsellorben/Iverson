@@ -18,13 +18,15 @@ public sealed class TokenRevocationRepository(IRecordStoreQueryExecutor sql) : I
             )
             """));
 
+    // CSR round 12 §2.3: notifies the api replicas in the same statement (AuthInvalidation).
     public Task RevokeAsync(string sub) =>
         sql.ExecuteAsync(
-            """
+            $"""
             INSERT INTO iverson_token_revocations (sub, revoked_at)
             VALUES (@Sub, now())
             ON CONFLICT (sub) DO UPDATE
                 SET revoked_at = EXCLUDED.revoked_at
+            {AuthInvalidation.ReturningTokenRevocationNotification}
             """,
             new { Sub = sub });
 

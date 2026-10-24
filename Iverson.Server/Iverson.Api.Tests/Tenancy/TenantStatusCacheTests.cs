@@ -119,4 +119,40 @@ public class TenantStatusCacheTests
         await _repository.Received(2).GetAsync("tenant-e");
         await _repository.Received(1).GetAsync("tenant-f");
     }
+
+    // CSR round 12 §2.3: the auth-invalidation listener drops every tenant's status on each notification.
+    [Fact]
+    public async Task InvalidateAll_EveryTenantReadsTheRepositoryAgain()
+    {
+        _repository
+            .GetAsync(Arg.Any<string>())
+            .Returns(ci => new TenantRow(ci.Arg<string>(), "Tenant", "active", DateTime.UtcNow));
+
+        await _sut.GetStatusAsync("tenant-g");
+        await _sut.GetStatusAsync("tenant-h");
+        _sut.InvalidateAll();
+        await _sut.GetStatusAsync("tenant-g");
+        await _sut.GetStatusAsync("tenant-h");
+
+        await _repository.Received(2).GetAsync("tenant-g");
+        await _repository.Received(2).GetAsync("tenant-h");
+    }
+
+    // A read that started before the invalidation may have seen the status the change replaced. It still
+    // answers its own caller, but no later read is served from it.
+    [Fact]
+    public async Task InvalidateAll_DuringARepositoryRead_TheReadsResultIsNotServedAfterwards()
+    {
+        var pending = new TaskCompletionSource<TenantRow?>();
+        _repository.GetAsync("tenant-i").Returns(
+            pending.Task,
+            Task.FromResult<TenantRow?>(new TenantRow("tenant-i", "Tenant I", "suspended", DateTime.UtcNow)));
+
+        var inFlight = _sut.GetStatusAsync("tenant-i");
+        _sut.InvalidateAll();
+        pending.SetResult(new TenantRow("tenant-i", "Tenant I", "active", DateTime.UtcNow));
+
+        (await inFlight).Should().Be("active");
+        (await _sut.GetStatusAsync("tenant-i")).Should().Be("suspended");
+    }
 }

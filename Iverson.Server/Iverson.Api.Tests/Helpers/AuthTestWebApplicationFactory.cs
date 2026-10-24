@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace Iverson.Api.Tests.Helpers;
 
@@ -56,6 +57,13 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
         Environment.SetEnvironmentVariable("Qdrant__ApiKey", "test-auth-pipeline-signing-key-0123456789abcdef");
     }
 
+    /// <summary>
+    /// Whether Program.cs registered the auth-invalidation listener in this host (CSR round 12 §2.3). The
+    /// host removes it again, so no test host dials the Postgres that appsettings.Development.json names;
+    /// this records that the api role had registered it.
+    /// </summary>
+    public bool AuthInvalidationListenerWasRegistered { get; private set; }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         // The ConsoleClient policy's audience (/v1/traces). A test overrides it the same way, via
@@ -90,6 +98,15 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<IDlqRepository>();
             services.AddSingleton<IDlqRepository, NoOpDlqRepository>();
+
+            var listener = services.SingleOrDefault(d =>
+                d.ServiceType == typeof(IHostedService)
+                && d.ImplementationType == typeof(Iverson.Api.Tenancy.AuthInvalidationListener));
+            if (listener is not null)
+            {
+                services.Remove(listener);
+                AuthInvalidationListenerWasRegistered = true;
+            }
 
             services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
             {

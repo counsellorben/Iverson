@@ -40,6 +40,8 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
         });
 
         public void Invalidate(string tenantId) { }
+
+        public void InvalidateAll() { }
     }
 
     private sealed class FakeJaegerHandler : HttpMessageHandler

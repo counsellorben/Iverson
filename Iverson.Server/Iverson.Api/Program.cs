@@ -75,7 +75,7 @@ builder.Services.AddOpenTelemetry()
         }))
     .WithMetrics(metrics => metrics
         .SetResourceBuilder(resource)
-        .AddMeter("Iverson.Events", Iverson.Api.Reconciliation.ReconciliationTelemetry.MeterName)
+        .AddMeter("Iverson.Events", Iverson.Api.Reconciliation.ReconciliationTelemetry.MeterName, Iverson.Api.Tenancy.AuthInvalidationListener.MeterName)
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
         .AddPrometheusExporter());
@@ -99,6 +99,8 @@ builder.Services.AddGrpc(options =>
 {
     options.Interceptors.Add<RateLimitInterceptor>();
     options.Interceptors.Add<ActingUserInterceptor>();
+    // CSR round 12 §2.3: after ActingUserInterceptor, which has set the acting user by the time this runs.
+    options.Interceptors.Add<StreamRevalidationInterceptor>();
 });
 
 // CSR finding #7 (round 7): per-principal rate limit for the /v1/traces relay — 60/min per
@@ -548,6 +550,12 @@ if (workloadRole == "worker")
 // the identical SchemaRegistry cache-coherence gap worker has — RegisterSchema only updates
 // the calling process's own in-memory copy.
 builder.Services.AddHostedService<Iverson.Api.Schema.SchemaRefreshWorker>();
+
+// CSR round 12 §2.3: each api replica hears every revocation and tenant-status write, by any replica or by
+// the worker, and drops its caches within seconds instead of on their 30 s TTL. The worker serves no
+// tenant traffic, so it keeps the TTL alone.
+if (workloadRole == "api")
+    builder.Services.AddHostedService<Iverson.Api.Tenancy.AuthInvalidationListener>();
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
@@ -1072,24 +1080,21 @@ public partial class Program
 
     /// <summary>
     /// CSR round-10 #11: both JwtBearer schemes' <c>OnTokenValidated</c>. Refuses a token whose
-    /// <c>sub</c> was revoked (a removed user, or a demoted tenant admin) at or after its
-    /// <c>iat</c>; a token with no <c>iat</c> cannot show it came later, so it is refused too.
+    /// <c>sub</c> was revoked (a removed user, or a demoted tenant admin) after, or less than 5 s
+    /// before, its <c>iat</c> (the clock-skew margin, CSR round 12 §2.3); a token with no <c>iat</c>
+    /// cannot show it came later, so it is refused too.
     /// The default scheme then answers 401 / Unauthenticated, and the ActingUser scheme's callers
     /// treat the failed result as an invalid acting-user token. Service clients' subs are never
     /// revoked, so they always pass.
     /// </summary>
     internal static async Task RejectRevokedTokenAsync(TokenValidatedContext context)
     {
-        var sub = context.Principal?.FindFirst("sub")?.Value;
-        if (sub is null)
+        if (context.Principal is null)
             return;
 
-        DateTimeOffset? issuedAt = long.TryParse(context.Principal!.FindFirst("iat")?.Value, out var iat)
-            ? DateTimeOffset.FromUnixTimeSeconds(iat)
-            : null;
-
+        // The same check StreamRevalidationInterceptor runs before every streamed message.
         var revocations = context.HttpContext.RequestServices.GetRequiredService<Iverson.Api.Tenancy.ITokenRevocationCache>();
-        if (await revocations.IsRevokedAsync(sub, issuedAt, context.HttpContext.RequestAborted))
+        if (await Iverson.Api.Tenancy.TokenRevocationCheck.IsRevokedAsync(revocations, context.Principal, context.HttpContext.RequestAborted))
             context.Fail("Token has been revoked.");
     }
 

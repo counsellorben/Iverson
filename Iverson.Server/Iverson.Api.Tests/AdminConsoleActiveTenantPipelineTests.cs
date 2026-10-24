@@ -53,6 +53,8 @@ public class AdminConsoleActiveTenantPipelineTests : IClassFixture<AdminConsoleT
         });
 
         public void Invalidate(string tenantId) { }
+
+        public void InvalidateAll() { }
     }
 
     private static string Token(string? tenantId)
