@@ -50,12 +50,13 @@ Identity. The service credentials come from the same env vars as Iverson.Agents 
 IVERSON_CLIENT_SCOPE -- /home/ben/iverson-benchmark-data/bench-env.sh exports all five). The
 service token is minted by this script itself with a `client_credentials` POST (urllib, not
 IversonClientCredentials -- see mint_service_token), sent with header Host: IVERSON_ACTING_USER_HOST_HEADER
-(default authentik-server:9000): Authentik stamps the JWT's `iss` from the request's Host header
+when that is set (no default): Authentik stamps the JWT's `iss` from the request's Host header
 (same mechanism deploy/scripts/mint_acting_user_token.py's docstring and
 Iverson.LoadTest/Program.cs's MintClientCredentialsTokenAsync document), and the SDK's own
-IversonClientCredentials path cannot set that header, so a token it mints carries
-iss=http://localhost:9000/. Forcing the in-cluster Host name still works and is what this script
-does; compose also accepts iss=http://localhost:9000/ since the identity-plane change. The API
+IversonClientCredentials path cannot set that header. Compose needs no override since CSR round 12
+§4.6: its token endpoint is https://localhost:9443/application/o/token/ (trust the compose CA with
+SSL_CERT_FILE, and GRPC_DEFAULT_SSL_ROOTS_FILE_PATH for the gRPC channel), and the API accepts
+iss=https://localhost:9443/. The API
 accepts a token whose issuer is one of its configured issuers: the internal issuer, the external
 one, or the metadata issuer. Minting through any other host gives an issuer it rejects (401),
 before authorization is evaluated. The service token is re-minted at
@@ -131,7 +132,6 @@ SERVICE_TOKEN_REFRESH_MARGIN_SECONDS = 300      # re-mint expires_in - this many
 BYPASS_USERNAME = "iverson-loadtest-bypass-user"
 BYPASS_PASSWORD_ENV = "IVERSON_ACTING_USER_BYPASS_PASSWORD"
 ACTING_USER_HOST_HEADER_ENV = "IVERSON_ACTING_USER_HOST_HEADER"
-DEFAULT_ACTING_USER_HOST_HEADER = "authentik-server:9000"
 CORPORA = "/home/ben/repositories/iverson-benchmark-corpora"
 DEFAULT_KEYMAP = f"{CORPORA}/freshstack-2048-2026-09-07/keymap.json"
 DEFAULT_QUERIES = f"{CORPORA}/freshstack-2048-2026-09-07/beir/queries.jsonl"
@@ -217,16 +217,19 @@ def mint_service_token(client_id, client_secret, token_endpoint, scope, host_hea
     rather than through IversonClientCredentials/IversonClient, because the SDK's token path cannot
     set a Host header and Authentik stamps the JWT's `iss` from the request's Host (module docstring
     "Identity"). Sends `grant_type=client_credentials`, `client_id`, `client_secret`, and `scope`
-    when truthy, with header `Host: host_header`. Aborts loudly (sys.exit), WITHOUT printing the
+    when truthy, and the header `Host: host_header` when that is set. Aborts loudly (sys.exit), WITHOUT printing the
     secret or the token, on anything but a 200 response carrying an access_token and a positive
     expires_in. Returns (token, expires_in). `urlopen` is injected so tests need no network."""
     params = {"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret}
     if scope:
         params["scope"] = scope
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    if host_header:
+        headers["Host"] = host_header
     request = urllib.request.Request(
         token_endpoint,
         data=urllib.parse.urlencode(params).encode("utf-8"),
-        headers={"Content-Type": "application/x-www-form-urlencoded", "Host": host_header},
+        headers=headers,
         method="POST")
     try:
         response = urlopen(request, timeout=30)
@@ -655,7 +658,7 @@ def connect(session):
     IversonClient/IversonClientCredentials path, this never mints a token itself with an
     unconfigurable Host header -- session.service_token()/acting_user_token() do that (see
     mint_service_token, TokenSession)."""
-    url = urlsplit(os.environ.get("IVERSON_GRPC_URL", "http://localhost:8080"))
+    url = urlsplit(os.environ.get("IVERSON_GRPC_URL", "https://localhost:8080"))
     if url.scheme not in ("http", "https"):
         sys.exit(f"IVERSON_GRPC_URL must start with http:// or https://, got {url.geturl()!r}")
     host = url.hostname or "localhost"
@@ -685,7 +688,7 @@ def mint_service_token_from_env():
     return mint_service_token(
         require_env("IVERSON_CLIENT_ID"), require_env("IVERSON_CLIENT_SECRET"),
         require_env("IVERSON_TOKEN_ENDPOINT"), os.environ.get("IVERSON_CLIENT_SCOPE"),
-        os.environ.get(ACTING_USER_HOST_HEADER_ENV, DEFAULT_ACTING_USER_HOST_HEADER))
+        os.environ.get(ACTING_USER_HOST_HEADER_ENV))
 
 
 class Context:
@@ -856,7 +859,7 @@ def build_arg_parser():
         p.add_argument("--baseline", required=True, help="<label>.chunks.trec whose candidates are scored")
         p.add_argument("--keymap", default=DEFAULT_KEYMAP, help="Iverson GUID -> BEIR doc id")
         p.add_argument("--queries", default=DEFAULT_QUERIES, help="BEIR queries.jsonl (the text benchmark-query sends)")
-        p.add_argument("--build-url", default=os.environ.get("IVERSON_HTTP_URL", "http://localhost:8082") + "/build")
+        p.add_argument("--build-url", default=os.environ.get("IVERSON_HTTP_URL", "https://localhost:8082") + "/build")
         p.add_argument("--username", default=BYPASS_USERNAME, help="the acting user to mint a token for")
         if name == "probe-a":
             p.add_argument("--query-id", default=None, help="default: the lowest query id")

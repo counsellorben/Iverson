@@ -33,14 +33,18 @@ if (flags.Target is not ("containers" or "kind"))
 var needsTenantAndSchema = command is "seed" or "write-path" or "read-path" or "all"
     or "benchmark-ingest" or "benchmark-query";
 
-var grpcUrl       = Env("IVERSON_GRPC_URL",        "http://localhost:8080");
+var grpcUrl       = Env("IVERSON_GRPC_URL",        "https://localhost:8080");
 var tokenEndpoint = Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT");
 var postgresCs   = Env("IVERSON_POSTGRES_CS",     "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
-var starRocksCs  = Env("IVERSON_STARROCKS_CS",    "Server=127.0.0.1;Port=9030;Database=iverson;Uid=root;Pwd=;");
+// CSR round 12 §4.6: compose's FE certificate names `starrocks` and `localhost`, not 127.0.0.1.
+// MySqlConnector's default SslMode (Preferred) negotiates TLS with it.
+var starRocksCs  = Env("IVERSON_STARROCKS_CS",    "Server=localhost;Port=9030;Database=iverson;Uid=root;Pwd=;");
 var kafkaBoots   = Env("IVERSON_KAFKA_BOOTSTRAP", "localhost:9092");
-var httpUrl      = Env("IVERSON_HTTP_URL",        "http://localhost:8082");
+var httpUrl      = Env("IVERSON_HTTP_URL",        "https://localhost:8082");
 var actingUserToken = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_TOKEN");
-var actingUserHostHeader = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_HOST_HEADER") ?? "authentik-server:9000";
+// CSR round 12 §4.6: no Host override unless one is set. Compose publishes Authentik as
+// https://localhost:9443, whose issuer the API accepts; kind sets the in-cluster name.
+var actingUserHostHeader = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_HOST_HEADER");
 // Compose-fixed defaults; kind requires an explicit override (client_id and redirect_uri are
 // randomly-generated/ingress-derived per Helm release for kind — see the blueprint templates).
 var actingUserClientId    = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_CLIENT_ID")    ?? "dev-iverson-loadtest-human-client-id";
@@ -108,11 +112,12 @@ if (flags.Target == "kind" && string.IsNullOrWhiteSpace(kafkaOptions.SecurityPro
     return 1;
 }
 
-// HostHeader reuses the same Authentik host as the acting-user flow (same instance) — see
-// IversonClientCredentials.HostHeader's doc comment for why this is required: Authentik's
-// issuer_mode:global stamps the JWT's `iss` claim from the request's Host header, so a client
-// reaching the host-exposed port as localhost mints a token the API rejects on issuer validation.
-// A client secret (compose) or, on Helm, a service-account token file (CSR round-11 #9).
+// HostHeader reuses the acting-user flow's Host override (same instance), when one is set — see
+// IversonClientCredentials.HostHeader's doc comment: Authentik's issuer_mode:global stamps the
+// JWT's `iss` claim from the request's Host header, so a client reaching Authentik under a name the
+// API does not accept as an issuer needs one. Compose needs none since CSR round 12 §4.6: the API
+// accepts https://localhost:9443/. A client secret (compose) or, on Helm, a service-account token
+// file (CSR round-11 #9).
 using var adminAutomation = AdminAutomationCredentials.FromEnvironment(
     Environment.GetEnvironmentVariable, actingUserHostHeader);
 

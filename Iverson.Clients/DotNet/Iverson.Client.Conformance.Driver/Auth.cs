@@ -29,11 +29,16 @@ public static class Auth
         string actingToken,
         string? serviceToken = null)
     {
+        // CSR round 12 §4.6: the scheme picks the transport. https:// dials TLS, verifying the
+        // server against the system roots, which SSL_CERT_FILE points at the compose CA; http://
+        // dials plaintext h2c, the accepted local dev/test model.
+        var tls = grpcUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+        var transport = tls ? ChannelCredentials.SecureSsl : ChannelCredentials.Insecure;
         var options = new GrpcChannelOptions
         {
             // Without this, CallCredentials are silently dropped over a plaintext h2c channel —
             // no exception, no Authorization header. Same reason AddIversonClient sets it.
-            UnsafeUseInsecureChannelCallCredentials = true,
+            UnsafeUseInsecureChannelCallCredentials = !tls,
         };
 
         // A pre-minted service token wins over the client-credentials trio. Authentik stamps the
@@ -49,7 +54,7 @@ public static class Auth
                 metadata.Add("Authorization", $"Bearer {serviceToken}");
                 return Task.CompletedTask;
             });
-            options.Credentials = ChannelCredentials.Create(ChannelCredentials.Insecure, staticCredentials);
+            options.Credentials = ChannelCredentials.Create(transport, staticCredentials);
         }
         else if (!string.IsNullOrEmpty(clientId) &&
             !string.IsNullOrEmpty(clientSecret) &&
@@ -62,7 +67,7 @@ public static class Auth
                 metadata.Add("Authorization", $"Bearer {token}");
             });
 
-            options.Credentials = ChannelCredentials.Create(ChannelCredentials.Insecure, callCredentials);
+            options.Credentials = ChannelCredentials.Create(transport, callCredentials);
         }
 
         var channel = GrpcChannel.ForAddress(grpcUrl, options);

@@ -340,6 +340,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./deploy/prometheus/prometheus.local.yml:/etc/prometheus/prometheus.yml:ro
+      - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/prometheus/compose-ca.crt, read_only: true }
       - prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"

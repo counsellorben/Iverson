@@ -14,21 +14,17 @@ piped straight into a file/variable, e.g.:
         > /tmp/acting-user-token.txt
 
 Two deployment targets are supported, since they differ in base URL,
-client_id, and both require a Host-header override so Authentik's
-per-request issuer-claim derivation matches what the API validates against
-(see docs/runbooks/kind-cluster-troubleshooting.md, section 5.1). Contrary
-to this script's original design assumption, this was confirmed live to
-affect docker-compose too, not just kind: Authentik derives the OIDC `iss`
-claim from the *request's* Host header on every request, including
-"issuer_mode: global" providers -- a token minted by curling
-localhost:9000 from the host machine gets `iss: http://localhost:9000/`,
-but iverson-api's own OIDC discovery fetch (using its configured Authority)
-resolves the docker-network service hostname and gets a different `iss`.
-Both targets force a matching Host header to avoid this.
+client_id and Host header. Authentik derives the OIDC `iss` claim from the
+*request's* Host header on every request, including "issuer_mode: global"
+providers (see docs/runbooks/kind-cluster-troubleshooting.md, section 5.1),
+so the client must reach Authentik under a name whose issuer the API
+accepts.
 
-  compose  Talks to http://localhost:9000 directly, with the Host header
-           forced to `authentik-server:9000` (the docker-compose service
-           name iverson-api's Authority is configured with). client_id
+  compose  Talks to https://localhost:9443, the published authentik-tls-proxy
+           (CSR round 12 §4.6), with no Host override: the API accepts the
+           issuer https://localhost:9443/ (Authentication__ExternalIssuer).
+           Trust the compose CA with
+           SSL_CERT_FILE=Iverson.Server/deploy/compose-tls/ca.crt. client_id
            defaults to the fixed dev value provisioned in
            charts/authentik/blueprints/compose-only/service-clients.yaml.
 
@@ -75,7 +71,7 @@ from http.cookiejar import CookieJar
 
 DEFAULT_USERNAME = "iverson-acting-user-smoke-test"
 DEFAULT_COMPOSE_CLIENT_ID = "dev-iverson-loadtest-human-client-id"
-DEFAULT_COMPOSE_BASE_URL = "http://localhost:9000"
+DEFAULT_COMPOSE_BASE_URL = "https://localhost:9443"
 DEFAULT_COMPOSE_REDIRECT_URI = "http://localhost/placeholder-callback"
 DEFAULT_KIND_REDIRECT_URI = "https://iverson.local/placeholder-callback"
 DEFAULT_FLOW_SLUG = "default-authentication-flow"
@@ -481,14 +477,12 @@ def main() -> int:
 
     if args.target == "compose":
         base_url = args.base_url or DEFAULT_COMPOSE_BASE_URL
-        # Confirmed live: even docker-compose needs this. Authentik derives the OIDC `iss`
-        # claim from the *request's* Host header (see kind-cluster-troubleshooting.md section
-        # 5.1) -- a token minted by curling localhost:9000 from the host machine gets
-        # `iss: http://localhost:9000/`, but iverson-api's own OIDC discovery fetch (using its
-        # configured Authority, http://authentik-server:9000/...) resolves the in-container
-        # service hostname and gets `iss: http://authentik-server:9000/` instead. Without this
-        # override the mismatch causes a bare 401 with no useful server-side log line.
-        host_header = args.host_header if args.host_header is not None else "authentik-server:9000"
+        # CSR round 12 §4.6: no Host override unless --host-header gives one. Authentik derives
+        # the OIDC `iss` claim from the request's Host header (kind-cluster-troubleshooting.md
+        # section 5.1), and compose's API accepts the issuer https://localhost:9443/ that the
+        # default base URL yields. Forcing `authentik-server:9000` through the tls-proxy would
+        # yield https://authentik-server:9000/, which the API rejects with a bare 401.
+        host_header = args.host_header
         client_id = args.client_id or DEFAULT_COMPOSE_CLIENT_ID
         password = os.environ.get(PASSWORD_ENV)
         if not password:

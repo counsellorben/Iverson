@@ -75,3 +75,20 @@ func TestOptionalNeverReadsTheEnvironmentForANonSecretFlag(t *testing.T) {
 		t.Errorf("got %q, want empty", got)
 	}
 }
+
+// CSR round 12 §4.6: the harness passes --grpc as scheme://host:port. An https:// endpoint must be
+// dialled with TLS, or the plaintext dial fails against the compose API's TLS listener before any
+// call; a bare host:port stays plaintext.
+func TestGrpcUsesTLSFollowsTheScheme(t *testing.T) {
+	cases := map[string]bool{
+		"https://localhost:8080": true,
+		"HTTPS://localhost:8080": true,
+		"http://localhost:8080":  false,
+		"localhost:8080":         false,
+	}
+	for addr, want := range cases {
+		if got := grpcUsesTLS(addr); got != want {
+			t.Errorf("grpcUsesTLS(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}

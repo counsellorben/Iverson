@@ -339,6 +339,13 @@ class _DriverActingUserAuthPlugin(grpc.AuthMetadataPlugin):
             callback(None, exc)
 
 
+def parse_grpc_address(grpc_addr: str) -> tuple[str, int, bool]:
+    """(host, port, use_tls) from --grpc. The harness sends `scheme://host:port`; a bare
+    `host:port` is accepted too. Only `https://` selects TLS (CSR round 12 §4.6)."""
+    parsed = urlsplit(grpc_addr if "//" in grpc_addr else f"//{grpc_addr}")
+    return parsed.hostname or "localhost", parsed.port or 5000, parsed.scheme == "https"
+
+
 def build_driver_channel(
     host: str,
     port: int,
@@ -347,6 +354,7 @@ def build_driver_channel(
     token_endpoint: Optional[str],
     acting_token: Optional[str],
     service_token: Optional[str] = None,
+    use_tls: bool = False,
 ) -> grpc.Channel:
     """Builds the driver's single channel, carrying both identities, from public `grpc` API only.
 
@@ -372,12 +380,14 @@ def build_driver_channel(
     if acting_token:
         call_creds.append(grpc.metadata_call_credentials(_DriverActingUserAuthPlugin(acting_token)))
 
+    # CSR round 12 §4.6: `use_tls` (an https:// --grpc) dials TLS, verifying the server against
+    # grpcio's roots, which GRPC_DEFAULT_SSL_ROOTS_FILE_PATH points at the compose CA. Otherwise the
+    # channel stays plaintext h2c, with local_channel_credentials() as the required base.
     if not call_creds:
-        return grpc.insecure_channel(address)
+        return grpc.secure_channel(address, grpc.ssl_channel_credentials()) if use_tls else grpc.insecure_channel(address)
 
-    channel_creds = grpc.composite_channel_credentials(
-        grpc.local_channel_credentials(), *call_creds
-    )
+    base_creds = grpc.ssl_channel_credentials() if use_tls else grpc.local_channel_credentials()
+    channel_creds = grpc.composite_channel_credentials(base_creds, *call_creds)
     return grpc.secure_channel(address, channel_creds)
 
 
@@ -492,9 +502,7 @@ def main(argv: List[str]) -> int:
     type_hint = args.optional("--type")
 
     grpc_addr = args.require("--grpc")
-    parsed = urlsplit(grpc_addr if "//" in grpc_addr else f"//{grpc_addr}")
-    host = parsed.hostname or "localhost"
-    port = parsed.port or 5000
+    host, port, use_tls = parse_grpc_address(grpc_addr)
 
     client_id = args.optional("--client-id")
     client_secret = args.optional("--client-secret")
@@ -513,6 +521,7 @@ def main(argv: List[str]) -> int:
     # `IversonClient.coordinator` constructs it.
     channel = build_driver_channel(
         host, port, client_id, client_secret, token_endpoint, acting_token, service_token,
+        use_tls=use_tls,
     )
 
     def coordinator(entity_class: type) -> EntityCoordinator:
@@ -973,6 +982,7 @@ def main(argv: List[str]) -> int:
         wrong_acting_token = args.optional("--wrong-acting-token")
         wrong_channel = build_driver_channel(
             host, port, client_id, client_secret, token_endpoint, wrong_acting_token, service_token,
+            use_tls=use_tls,
         )
         try:
             # The update payload's tenant value no longer affects the outcome on THIS leg. It USED to: the

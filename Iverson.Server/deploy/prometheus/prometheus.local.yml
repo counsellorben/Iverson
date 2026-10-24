@@ -1,9 +1,18 @@
 global:
   scrape_interval: 30s
+# CSR round 12: the api and the worker serve /metrics on 8082 (§3.3), over TLS from the compose
+# certificate, which names iverson-api and iverson-worker (§4.6). docker-compose.yml mounts the
+# compose CA at the ca_file path.
 scrape_configs:
   - job_name: iverson-api
+    scheme: https
+    tls_config:
+      ca_file: /etc/prometheus/compose-ca.crt
     static_configs:
       - targets: ["iverson-api:8082"]
   - job_name: iverson-worker
+    scheme: https
+    tls_config:
+      ca_file: /etc/prometheus/compose-ca.crt
     static_configs:
       - targets: ["iverson-worker:8082"]

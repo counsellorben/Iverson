@@ -12,7 +12,7 @@ from tests.test_session import PolicyDoc
 
 def test_endpoint_scheme_selects_tls_and_default_port(monkeypatch):
     monkeypatch.delenv("IVERSON_GRPC_URL", raising=False)
-    assert cli._endpoint() == ("localhost", 8080, False)
+    assert cli._endpoint() == ("localhost", 8080, True)
     monkeypatch.setenv("IVERSON_GRPC_URL", "https://iverson.example.com")
     assert cli._endpoint() == ("iverson.example.com", 443, True)
     monkeypatch.setenv("IVERSON_GRPC_URL", "http://api:9090")

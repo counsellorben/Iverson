@@ -29,10 +29,12 @@ def _credentials() -> IversonClientCredentials:
 def _endpoint() -> tuple[str, int, bool]:
     """(host, port, use_tls) from IVERSON_GRPC_URL.
 
-    The scheme decides TLS: `https://` connects with TLS (default port 443); `http://` — the
-    default, `http://localhost:8080`, matching the compose stack's plaintext h2c listener —
-    connects without it. Anything other than localhost should be `https://`."""
-    url = urlsplit(os.environ.get("IVERSON_GRPC_URL", "http://localhost:8080"))
+    The scheme decides TLS: `https://` connects with TLS (default port 443); `http://` connects
+    without it. The default, `https://localhost:8080`, is the compose stack's API, which serves
+    TLS from the compose CA since CSR round 12 §4.6 (trust it with GRPC_DEFAULT_SSL_ROOTS_FILE_PATH,
+    and point SSL_CERT_FILE at a bundle holding both the system roots and that CA: the Anthropic
+    client loads only that file). Anything other than localhost should be `https://`."""
+    url = urlsplit(os.environ.get("IVERSON_GRPC_URL", "https://localhost:8080"))
     if url.scheme not in ("http", "https"):
         raise ValueError(f"IVERSON_GRPC_URL must start with http:// or https://, got {url.geturl()!r}")
     return url.hostname or "localhost", url.port or (443 if url.scheme == "https" else 8080), url.scheme == "https"
@@ -106,9 +108,9 @@ def _run(argv: list[str] | None) -> int:
     client = anthropic.Anthropic()
     # IversonClient refuses to send credentials over plaintext without an opt-in, which covers two
     # legs: the gRPC channel (plaintext unless https://) and the token endpoint (plaintext unless
-    # https). Opt in only when every plaintext leg stays on this machine — the compose stack's
-    # defaults, http://localhost:8080 and a localhost token endpoint. A plaintext leg to any other
-    # host keeps the SDK's refusal.
+    # https). Opt in only when every plaintext leg stays on this machine — an http://localhost
+    # gRPC URL and a localhost token endpoint. A plaintext leg to any other host keeps the SDK's
+    # refusal.
     token_url = urlsplit(creds.token_endpoint)
     allow_insecure = (tls or _is_loopback(host)) and (
         token_url.scheme == "https" or _is_loopback(token_url.hostname))

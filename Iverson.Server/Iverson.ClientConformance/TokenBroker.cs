@@ -48,7 +48,7 @@ public sealed class TokenBroker : IDisposable
         var clientScope = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SCOPE");
         _clientCredentials = clientId is not null && clientSecret is not null && tokenEndpoint is not null
             ? new IversonClientCredentials(clientId, clientSecret, tokenEndpoint, clientScope,
-                HostHeader: Env("IVERSON_ACTING_USER_HOST_HEADER", "authentik-server:9000"))
+                HostHeader: Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_HOST_HEADER"))
             : null;
 
         _tenantId = Env("IVERSON_LOADTEST_TENANT_ID", "iverson-loadtest-dynamic");
@@ -57,7 +57,9 @@ public sealed class TokenBroker : IDisposable
         var actingUserRedirectUri = Env("IVERSON_ACTING_USER_REDIRECT_URI", "http://localhost/placeholder-callback");
         var actingUserBypassUsername = Env("IVERSON_ACTING_USER_BYPASS_USERNAME", "iverson-loadtest-bypass-user");
         var actingUserBypassPassword = RequireEnv("IVERSON_ACTING_USER_BYPASS_PASSWORD");
-        var actingUserHostHeader = Env("IVERSON_ACTING_USER_HOST_HEADER", "authentik-server:9000");
+        // CSR round 12 §4.6: no Host override unless one is set. Compose publishes Authentik as
+        // https://localhost:9443, whose issuer the API accepts (Authentication__ExternalIssuer).
+        var actingUserHostHeader = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_HOST_HEADER");
         var actingUserBaseUrl = DeriveAuthentikBaseUrl(tokenEndpoint);
         // Compose is the only target this task supports; a "kind" target would need the same
         // cache-path vocabulary mapping LoadTest's Program.cs does ("containers"/"kind" ->

@@ -43,7 +43,8 @@ public class CredentialEndpointsTests
         CredentialEndpoints.IsLoopback(url).Should().Be(expected);
 
     [Theory]
-    [InlineData(null, "http://localhost:9000")]
+    // CSR round 12 §4.6: compose publishes Authentik only through authentik-tls-proxy on 9443.
+    [InlineData(null, "https://localhost:9443")]
     [InlineData("https://iverson-authentik:8443/application/o/token/", "https://iverson-authentik:8443")]
     public void AuthentikBaseUrl_IsTheTokenEndpointWithoutItsPath(string? tokenEndpoint, string expected) =>
         CredentialEndpoints.AuthentikBaseUrl(tokenEndpoint).Should().Be(expected);
