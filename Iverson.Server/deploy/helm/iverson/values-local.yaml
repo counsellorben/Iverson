@@ -11,9 +11,9 @@
 # certificate would otherwise trigger on their shared iverson.local host.
 # global.externalScheme is untouched, still "http".
 
-# kind has no load balancer: ingress-nginx is admitted by namespace. clusterCidrs must still
-# list at least one range (see values.yaml's networkPolicy comment), so it names kind's docker
-# network, which nothing else needs.
+# kind has no load balancer: the edge gateway's namespace (iverson-edge) is admitted by namespace.
+# clusterCidrs must still list at least one range (see values.yaml's networkPolicy comment), so it
+# names kind's docker network, which nothing else needs.
 networkPolicy:
   clusterCidrs: ["172.18.0.0/16"]
   # kind's node network under docker (172.18.0.0/16) and podman (its default pool,
@@ -50,6 +50,9 @@ global:
   trustedProxies:
     cidrs: ["10.244.0.0/16"]
     hops: 1
+  # CSR round 12 §4.5: the Istio Gateway in iverson-edge (deploy/kind/edge-gateway.yaml) is the edge.
+  gateway:
+    class: istio
 
 postgres:
   instances: 1

@@ -93,14 +93,16 @@ jobs:
             Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy \
             | kubeconform -kubernetes-version 1.35.0 -summary
 
-      # The operator-namespace policy chart renders only NetworkPolicies: kind's set, and the clouds'
-      # (kind=false) with the same addresses. No -ignore-missing-schemas, as above.
+      # The operator-namespace policy chart renders NetworkPolicies, kind's set and the clouds' (kind=false)
+      # with the same addresses, and the CNPG operator's PeerAuthentication (CSR round 12 §4.1), an Istio
+      # kind kubeconform has no schema for: that kind alone is skipped, so a missing schema for anything
+      # else still fails.
       - name: helm template | kubeconform the operator-namespace policy chart
         run: |
           set -e
           C=Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies
-          helm template operator-namespace-policies "$C" -f "$C/values-kind.yaml" | kubeconform -kubernetes-version 1.35.0 -summary
-          helm template operator-namespace-policies "$C" -f "$C/values-kind.yaml" --set kind=false | kubeconform -kubernetes-version 1.35.0 -summary
+          helm template operator-namespace-policies "$C" -f "$C/values-kind.yaml" | kubeconform -kubernetes-version 1.35.0 -summary -skip PeerAuthentication
+          helm template operator-namespace-policies "$C" -f "$C/values-kind.yaml" --set kind=false --set cnpgWebhookPermissive=true | kubeconform -kubernetes-version 1.35.0 -summary -skip PeerAuthentication
 
   security-audit:
     runs-on: ubuntu-latest

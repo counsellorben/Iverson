@@ -6,6 +6,9 @@ spec:
   starRocksFeSpec:
     image: {{ .Values.fe.image | quote }}
     replicas: {{ .Values.fe.replicas }}
+    # CSR round 12 §4.2: a mesh identity of its own (serviceaccounts.yaml), which the FE's and BE's
+    # AuthorizationPolicies name; under `default` it would be indistinguishable from any other pod.
+    serviceAccount: {{ .Release.Name }}-starrocks-fe
     requests:
       cpu: {{ .Values.fe.resources.requests.cpu | quote }}
       memory: {{ .Values.fe.resources.requests.memory | quote }}
@@ -78,6 +81,8 @@ spec:
   starRocksBeSpec:
     image: {{ .Values.be.image | quote }}
     replicas: {{ .Values.be.replicas }}
+    # CSR round 12 §4.2: see starRocksFeSpec.serviceAccount.
+    serviceAccount: {{ .Release.Name }}-starrocks-be
     requests:
       cpu: {{ .Values.be.resources.requests.cpu | quote }}
       memory: {{ .Values.be.resources.requests.memory | quote }}

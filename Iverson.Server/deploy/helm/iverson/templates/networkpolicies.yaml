@@ -32,18 +32,22 @@
 {{- end }}
 {{- end }}
 {{- /*
-CSR round-11 #18: the ingress-nginx namespace is admitted only where the Ingress fronting the
-port is served by ingress-nginx (className "nginx"); every other class reaches the pod from
-clusterCidrs alone. Each rule is gated on the className of the Ingress that targets its port:
-API 8080 by api.ingress, API 8081 by api.adminApiIngress, admin-ui 8080 by adminUi.ingress,
-Authentik 9080 by authentik.ingress (Prometheus's 8082 rule has no Ingress and no class). A
-rule's `from` list never becomes empty: clusterCidrs is non-empty (refused above otherwise), so
-dropping the namespace peer narrows the rule instead of turning it into an allow-all.
+CSR round 12 §4.2. Where the edge is the Istio gateway (global.gateway.class istio: kind and laptop),
+its namespace is admitted on the edge ports (API 8080 and 8081, admin-ui 8080, Authentik 9080); every
+other profile reaches those ports from clusterCidrs alone. A rule's `from` list never becomes empty:
+clusterCidrs is non-empty (refused above otherwise).
+
+Every rule that lists ports also lists 15008, to the same peers: in the ambient mesh an enrolled
+pod's traffic travels as HBONE to <destination>:15008, so both the sender's egress and the receiver's
+ingress see that port. Inside the mesh NetworkPolicy therefore keeps pod-pair scoping but not port
+scoping; templates/mesh-policies.yaml restores port scoping with an AuthorizationPolicy per workload
+that mirrors the ingress rules here, so a peer added or a port changed here is changed there too.
+
+Every probed pod's ingress admits 169.254.7.127/32, the address istio-cni gives kubelet probes, on
+its probe ports. Calico's iptables dataplane admits probes without it (they are filtered before the
+SNAT), but Istio asks for it wherever NetworkPolicy is enforced, and the cloud CNIs are untested.
 */}}
-{{- $nginxApi := eq (dig "ingress" "className" "" (default dict .Values.api)) "nginx" }}
-{{- $nginxAdminApi := eq (dig "adminApiIngress" "className" "" (default dict .Values.api)) "nginx" }}
-{{- $nginxAdminUi := eq (dig "ingress" "className" "" (default dict .Values.adminUi)) "nginx" }}
-{{- $nginxAuthentik := eq (dig "ingress" "className" "" (default dict .Values.authentik)) "nginx" }}
+{{- $meshEdge := eq (include "iverson.meshEdge" .) "true" }}
 # Default-deny: nothing in the namespace can talk to anything else unless a
 # more specific policy below explicitly allows it.
 apiVersion: networking.k8s.io/v1
@@ -54,10 +58,10 @@ spec:
   podSelector: {}
   policyTypes: ["Ingress", "Egress"]
 ---
-# api is reachable from outside the namespace two ways: through ingress-nginx
-# (local/laptop, where it runs as an in-cluster namespace) or from the address ranges
+# api is reachable from outside the namespace two ways: through the Istio gateway's namespace
+# (local/laptop, global.gateway.class istio) or from the address ranges
 # `.Values.networkPolicy.clusterCidrs` lists for the profile: the ranges the platform's
-# load balancer connects from (AWS/Azure/GCP have no ingress-nginx namespace). An empty
+# load balancer connects from (AWS/Azure/GCP have no gateway namespace). An empty
 # list is refused near the top of this file, since it would render an ingress rule that
 # matches every source. The kubelet's readiness/liveness probes need no rule: traffic from
 # the node a pod runs on is always admitted. Port 8082 admits Prometheus alone: it serves
@@ -71,10 +75,12 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-api }
   policyTypes: ["Ingress"]
   ingress:
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]   # kubelet probes under the mesh (see the top of this file)
+      ports: [{ protocol: TCP, port: 8081 }, { protocol: TCP, port: 15008 }]
     - from:
-        {{- if $nginxApi }}
+        {{- if $meshEdge }}
         - namespaceSelector:
-            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+            matchLabels: { kubernetes.io/metadata.name: {{ include "iverson.edgeGatewayNamespace" . }} }
         {{- end }}
         {{- range .Values.networkPolicy.clusterCidrs }}
         - ipBlock: { cidr: {{ . }} }
@@ -84,10 +90,11 @@ spec:
         {{- end }}
       ports:
         - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 15008 }
     - from:
-        {{- if $nginxAdminApi }}
+        {{- if $meshEdge }}
         - namespaceSelector:
-            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+            matchLabels: { kubernetes.io/metadata.name: {{ include "iverson.edgeGatewayNamespace" . }} }
         {{- end }}
         {{- range .Values.networkPolicy.clusterCidrs }}
         - ipBlock: { cidr: {{ . }} }
@@ -97,10 +104,12 @@ spec:
         {{- end }}
       ports:
         - { protocol: TCP, port: 8081 }
+        - { protocol: TCP, port: 15008 }
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } }
       ports:
         - { protocol: TCP, port: 8082 }
+        - { protocol: TCP, port: 15008 }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -112,37 +121,36 @@ spec:
   policyTypes: ["Egress"]
   egress:
     - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]
-      ports: [{ protocol: TCP, port: 5432 }]
+      ports: [{ protocol: TCP, port: 5432 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]
-      ports: [{ protocol: TCP, port: 9093 }]
+      ports: [{ protocol: TCP, port: 9093 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { app.starrocks.ownerreference/name: {{ .Release.Name }}-starrocks-fe } } }]
                # clients only ever talk to FE's query port, never BE directly — see the
                # starrocks-egress/-ingress note below on why this isn't app.starrocks.io/cluster.
-      ports: [{ protocol: TCP, port: 9030 }]
+      ports: [{ protocol: TCP, port: 9030 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]
-      ports: [{ protocol: TCP, port: 6334 }]
+      ports: [{ protocol: TCP, port: 6334 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { iverson.io/component: tei } } }]
-      ports: [{ protocol: TCP, port: 8080 }]
+      ports: [{ protocol: TCP, port: 8080 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-ollama } } }]
-      ports: [{ protocol: TCP, port: 11434 }]
+      ports: [{ protocol: TCP, port: 11434 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-jaeger } } }]
-      ports: [{ protocol: TCP, port: 4317 }, { protocol: TCP, port: 4318 }]
+      ports: [{ protocol: TCP, port: 4317 }, { protocol: TCP, port: 4318 }, { protocol: TCP, port: 15008 }]
     # CSR round-10 #5: the API reaches Authentik only on the tls-proxy sidecar's 8443.
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-authentik-server } } }]
-      ports: [{ protocol: TCP, port: 8443 }]
+      ports: [{ protocol: TCP, port: 8443 }, { protocol: TCP, port: 15008 }]
 {{- if .Values.global.prometheusEnabled }}
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } } }]
                # api queries Prometheus's own HTTP API (not the /metrics scrape port) to
                # serve live status on the admin console landing page.
-      ports: [{ protocol: TCP, port: 9090 }]
+      ports: [{ protocol: TCP, port: 9090 }, { protocol: TCP, port: 15008 }]
 {{- end }}
     {{- include "iverson.dnsEgress" . | nindent 4 }}
 ---
 # worker is the Kafka-consumer/background-processing counterpart to api (same image,
 # WORKLOAD_ROLE=worker) — it needs the same datastore/backing-service egress as api,
-# minus the ingress-nginx/health-probe ingress rules (it serves no inbound client
-# traffic, so the default-deny above already covers it correctly with no ingress
-# policy of its own).
+# minus the edge's ingress rules (it serves no inbound client traffic; worker-ingress
+# below admits only Prometheus and the probes).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -153,19 +161,19 @@ spec:
   policyTypes: ["Egress"]
   egress:
     - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]
-      ports: [{ protocol: TCP, port: 5432 }]
+      ports: [{ protocol: TCP, port: 5432 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]
-      ports: [{ protocol: TCP, port: 9093 }]
+      ports: [{ protocol: TCP, port: 9093 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { app.starrocks.ownerreference/name: {{ .Release.Name }}-starrocks-fe } } }]
-      ports: [{ protocol: TCP, port: 9030 }]
+      ports: [{ protocol: TCP, port: 9030 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]
-      ports: [{ protocol: TCP, port: 6334 }]
+      ports: [{ protocol: TCP, port: 6334 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { iverson.io/component: tei } } }]
-      ports: [{ protocol: TCP, port: 8080 }]
+      ports: [{ protocol: TCP, port: 8080 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-ollama } } }]
-      ports: [{ protocol: TCP, port: 11434 }]
+      ports: [{ protocol: TCP, port: 11434 }, { protocol: TCP, port: 15008 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-jaeger } } }]
-      ports: [{ protocol: TCP, port: 4317 }]
+      ports: [{ protocol: TCP, port: 4317 }, { protocol: TCP, port: 15008 }]
     {{- include "iverson.dnsEgress" . | nindent 4 }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -177,9 +185,11 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-worker }
   policyTypes: ["Ingress"]
   ingress:
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]   # kubelet probes under the mesh (see the top of this file)
+      ports: [{ protocol: TCP, port: 8081 }, { protocol: TCP, port: 15008 }]
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } }
-      ports: [{ protocol: TCP, port: 8082 }]
+      ports: [{ protocol: TCP, port: 8082 }, { protocol: TCP, port: 15008 }]
 ---
 # Every datastore/backing-service component: ingress only from api (and, where noted,
 # worker), on its own port. None of them need to initiate egress beyond DNS + their own
@@ -209,7 +219,19 @@ spec:
                # to postgres on 5432, but that's only half of a NetworkPolicy: without a
                # matching ingress rule here too, postgres never accepts the connection — same
                # asymmetry as the starrocks create-user job's ingress/egress pairing.
-      ports: [{ protocol: TCP, port: 5432 }]
+      ports: [{ protocol: TCP, port: 5432 }, { protocol: TCP, port: 15008 }]
+    # CSR round 12 §4.3 #1: the CNPG operator reads each instance's status port (8000); without it
+    # the Cluster reports "Instance Status Extraction Error".
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: cnpg-system } }
+          podSelector: { matchLabels: { app.kubernetes.io/name: cloudnative-pg } }
+      ports: [{ protocol: TCP, port: 8000 }, { protocol: TCP, port: 5432 }, { protocol: TCP, port: 15008 }]
+    # CSR round 12 §4.3 #4: the instances themselves. A standby streams from the primary (5432) and
+    # the instances call each other's status port (8000), so the rule lists no ports; without it a
+    # standby can neither stream nor be cloned, while CNPG still reports the Cluster healthy.
+    - from: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]   # kubelet probes under the mesh (see the top of this file)
+      ports: [{ protocol: TCP, port: 8000 }, { protocol: TCP, port: 15008 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -227,7 +249,7 @@ spec:
   egress:
     {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]   # streaming replication
-      ports: [{ protocol: TCP, port: 5432 }]
+      ports: [{ protocol: TCP, port: 5432 }, { protocol: TCP, port: 15008 }]
     # Kubernetes API server: CNPG's instance manager (baked into the postgres image, not a
     # sidecar) calls it directly to sync Cluster status; without it the Cluster never leaves
     # "Setting up primary".
@@ -259,7 +281,7 @@ spec:
                # NetworkPolicies are additive, so a pod gets through if either admits it; without
                # this entry and those peers, worker's TCP SYN to the broker never gets past the
                # network policy regardless of having valid credentials.
-      ports: [{ protocol: TCP, port: 9093 }]
+      ports: [{ protocol: TCP, port: 9093 }, { protocol: TCP, port: 15008 }]
     - from: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]   # broker/controller peers
     # CSR round 12 §3.2: the Strimzi cluster-operator (namespace kafka, as modules/operators and
     # deploy/kind/setup.sh install it) reconciles the brokers on the control-plane (9090) and
@@ -269,7 +291,7 @@ spec:
     - from:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kafka } }
           podSelector: { matchLabels: { strimzi.io/kind: cluster-operator } }
-      ports: [{ protocol: TCP, port: 9090 }, { protocol: TCP, port: 9091 }, { protocol: TCP, port: 8443 }]
+      ports: [{ protocol: TCP, port: 9090 }, { protocol: TCP, port: 9091 }, { protocol: TCP, port: 8443 }, { protocol: TCP, port: 15008 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -292,7 +314,7 @@ spec:
                # strimzi.io/cluster label) talks to the bootstrap service's
                # tcp-replication listener on 9091 to fetch cluster metadata — without it,
                # its AdminClient never gets past "Timed out waiting to send the call".
-      ports: [{ protocol: TCP, port: 9091 }, { protocol: TCP, port: 9093 }]
+      ports: [{ protocol: TCP, port: 9091 }, { protocol: TCP, port: 9093 }, { protocol: TCP, port: 15008 }]
     # Kubernetes API server: the broker resolves ${strimziSecretName:...} config placeholders
     # through Strimzi's KubernetesSecretConfigProvider at startup; without it the broker
     # crash-loops before storage format/listener startup.
@@ -332,13 +354,17 @@ spec:
                # postgres ingress/egress pairing above. Missing this caused mysql's TCP
                # connect to FE to time out (errno 110) instead of erroring cleanly, which
                # the job's own `2>/dev/null` then hid as an infinite "waiting for FE...".
-      ports: [{ protocol: TCP, port: 9030 }]
+      ports: [{ protocol: TCP, port: 9030 }, { protocol: TCP, port: 15008 }]
     - from:   # FE/BE peers
         - podSelector:
             matchExpressions:
               - key: app.starrocks.ownerreference/name
                 operator: In
                 values: ["{{ .Release.Name }}-starrocks-fe", "{{ .Release.Name }}-starrocks-be"]
+    # Kubelet probes under the mesh (see the top of this file): the operator probes FE on its
+    # http_port (8030) and BE on its webserver_port (8040).
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]
+      ports: [{ protocol: TCP, port: 8030 }, { protocol: TCP, port: 8040 }, { protocol: TCP, port: 15008 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -380,6 +406,7 @@ spec:
         - { protocol: TCP, port: 8060 }
         - { protocol: TCP, port: 9050 }
         - { protocol: TCP, port: 9060 }
+        - { protocol: TCP, port: 15008 }
 ---
 # The post-install/post-upgrade create-user Job (charts/starrocks/templates/job-create-user.yaml)
 # runs as a plain Job pod, not part of the StarRocksCluster CR — it only carries `job-name`,
@@ -405,7 +432,7 @@ spec:
                # the create-user job's `mysql -h <fe-service>` call only ever reaches FE, never
                # BE — see the starrocks-egress note above on app.starrocks.io/cluster vs the
                # operator's real app.starrocks.ownerreference/name label.
-      ports: [{ protocol: TCP, port: 9030 }]
+      ports: [{ protocol: TCP, port: 9030 }, { protocol: TCP, port: 15008 }]
 ---
 # The post-install/post-upgrade revoke-cross-db Job
 # (charts/authentik/templates/job-revoke-cross-db.yaml) runs as a plain Job pod, not part of
@@ -430,7 +457,7 @@ spec:
   egress:
     {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]
-      ports: [{ protocol: TCP, port: 5432 }]
+      ports: [{ protocol: TCP, port: 5432 }, { protocol: TCP, port: 15008 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -441,12 +468,14 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-qdrant }
   policyTypes: ["Ingress"]
   ingress:
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]   # kubelet probes under the mesh (see the top of this file)
+      ports: [{ protocol: TCP, port: 6333 }, { protocol: TCP, port: 15008 }]
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
-      ports: [{ protocol: TCP, port: 6334 }]
+      ports: [{ protocol: TCP, port: 6334 }, { protocol: TCP, port: 15008 }]
     - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]   # Raft peers
-      ports: [{ protocol: TCP, port: 6335 }]
+      ports: [{ protocol: TCP, port: 6335 }, { protocol: TCP, port: 15008 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -459,7 +488,7 @@ spec:
   egress:
     {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]   # Raft peers
-      ports: [{ protocol: TCP, port: 6335 }]
+      ports: [{ protocol: TCP, port: 6335 }, { protocol: TCP, port: 15008 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -470,10 +499,12 @@ spec:
     matchLabels: { iverson.io/component: tei }
   policyTypes: ["Ingress"]
   ingress:
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]   # kubelet probes under the mesh (see the top of this file)
+      ports: [{ protocol: TCP, port: 8080 }, { protocol: TCP, port: 15008 }]
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
-      ports: [{ protocol: TCP, port: 8080 }]
+      ports: [{ protocol: TCP, port: 8080 }, { protocol: TCP, port: 15008 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -495,10 +526,12 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-ollama }
   policyTypes: ["Ingress"]
   ingress:
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]   # kubelet probes under the mesh (see the top of this file)
+      ports: [{ protocol: TCP, port: 11434 }, { protocol: TCP, port: 15008 }]
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
-      ports: [{ protocol: TCP, port: 11434 }]
+      ports: [{ protocol: TCP, port: 11434 }, { protocol: TCP, port: 15008 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -512,8 +545,8 @@ spec:
   egress: []
 ---
 {{- if .Values.adminUi.enabled }}
-# admin-ui is a static nginx server reachable from outside the namespace through
-# ingress-nginx (local/laptop) or the profile's load balancer (`clusterCidrs`), on 8080.
+# admin-ui is a static nginx server reachable from outside the namespace through the
+# Istio gateway (local/laptop) or the profile's load balancer (`clusterCidrs`), on 8080.
 # Its kubelet probes need no rule (node traffic is always admitted). It needs no egress
 # rule of its own (the browser calls the API/Authentik directly, not this pod), so the
 # default-deny-all egress posture above is correct and sufficient.
@@ -526,10 +559,12 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-admin-ui }
   policyTypes: ["Ingress"]
   ingress:
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]   # kubelet probes under the mesh (see the top of this file)
+      ports: [{ protocol: TCP, port: 8080 }, { protocol: TCP, port: 15008 }]
     - from:
-        {{- if $nginxAdminUi }}
+        {{- if $meshEdge }}
         - namespaceSelector:
-            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+            matchLabels: { kubernetes.io/metadata.name: {{ include "iverson.edgeGatewayNamespace" . }} }
         {{- end }}
         {{- range .Values.networkPolicy.clusterCidrs }}
         - ipBlock: { cidr: {{ . }} }
@@ -539,6 +574,7 @@ spec:
         {{- end }}
       ports:
         - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 15008 }
 {{- end }}
 {{- if .Values.global.tracingEnabled }}
 ---
@@ -551,10 +587,12 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-jaeger }
   policyTypes: ["Ingress"]
   ingress:
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]   # kubelet probes under the mesh (see the top of this file)
+      ports: [{ protocol: TCP, port: 14269 }, { protocol: TCP, port: 15008 }]
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
-      ports: [{ protocol: TCP, port: 4317 }, { protocol: TCP, port: 4318 }]
+      ports: [{ protocol: TCP, port: 4317 }, { protocol: TCP, port: 4318 }, { protocol: TCP, port: 15008 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -582,7 +620,7 @@ spec:
     - to:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
-      ports: [{ protocol: TCP, port: 8082 }]
+      ports: [{ protocol: TCP, port: 8082 }, { protocol: TCP, port: 15008 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -593,12 +631,14 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-prometheus }
   policyTypes: ["Ingress"]
   ingress:
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]   # kubelet probes under the mesh (see the top of this file)
+      ports: [{ protocol: TCP, port: 9090 }, { protocol: TCP, port: 15008 }]
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
                # api's own query path into Prometheus's HTTP API (the api-egress rule's
                # counterpart) — for the admin console landing page's live status. The
                # kubelet's /-/ready probe needs no rule: node traffic is always admitted.
-      ports: [{ protocol: TCP, port: 9090 }]
+      ports: [{ protocol: TCP, port: 9090 }, { protocol: TCP, port: 15008 }]
 {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -610,17 +650,19 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-authentik-server }
   policyTypes: ["Ingress"]
   ingress:
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]   # kubelet probes under the mesh (see the top of this file)
+      ports: [{ protocol: TCP, port: 9000 }, { protocol: TCP, port: 9080 }, { protocol: TCP, port: 15008 }]
     # CSR round-10 #5: the API reaches Authentik only on the tls-proxy sidecar's 8443.
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
-      ports: [{ protocol: TCP, port: 8443 }]
+      ports: [{ protocol: TCP, port: 8443 }, { protocol: TCP, port: 15008 }]
     # CSR round-10 #4: the tls-proxy sidecar's public listener, which the Authentik Ingress targets.
     # Port 9000 has no rule: its only callers are the kubelet (node traffic is always admitted),
     # the sidecar over loopback and `kubectl port-forward`, none of which NetworkPolicy filters.
     - from:
-        {{- if $nginxAuthentik }}
+        {{- if $meshEdge }}
         - namespaceSelector:
-            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+            matchLabels: { kubernetes.io/metadata.name: {{ include "iverson.edgeGatewayNamespace" . }} }
         {{- end }}
         {{- range .Values.networkPolicy.clusterCidrs }}
         - ipBlock: { cidr: {{ . }} }
@@ -628,7 +670,7 @@ spec:
         {{- range .Values.networkPolicy.nodeSubnetFallback }}
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
-      ports: [{ protocol: TCP, port: 9080 }]
+      ports: [{ protocol: TCP, port: 9080 }, { protocol: TCP, port: 15008 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -644,7 +686,7 @@ spec:
   egress:
     {{- include "iverson.dnsEgress" . | nindent 4 }}
     - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]
-      ports: [{ protocol: TCP, port: 5432 }]
+      ports: [{ protocol: TCP, port: 5432 }, { protocol: TCP, port: 15008 }]
 ---
 # CSR round-10 #4 (C2): the worker's JWKS relay reads the cluster's service-account keys from the API
 # server. CSR round-12 §2.6: the server's tokenreview-relay creates TokenReviews there.

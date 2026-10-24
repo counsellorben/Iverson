@@ -132,6 +132,11 @@ global:
   trustedProxies:
     cidrs: []
     hops: 1
+  # CSR round 12 §4.5: the edge in front of the api, Authentik and admin-ui. "istio" (kind and laptop):
+  # the Istio Gateway deploy/kind/setup.sh creates in namespace iverson-edge, a mesh client, for which
+  # the chart renders routes instead of Ingresses. Empty (AWS, Azure): each Ingress's own className.
+  gateway:
+    class: ""
   # CSR round 12 §2.4: the `sub` of every human operator on this install. A `sub` is Authentik's
   # per-install hash of the user, so it is read from the Authentik admin API or a first token
   # (docs/runbooks/operator-access-onboarding.md), and a recreated Authentik database changes

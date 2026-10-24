@@ -59,7 +59,7 @@ first-deploy fallback: any destination on 53.
 {{- else -}}
 - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }, podSelector: { matchLabels: { k8s-app: kube-dns } } }]   # DNS
 {{- end }}
-  ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+  ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }, { protocol: TCP, port: 15008 }]
 {{- end -}}
 
 {{/*
@@ -77,7 +77,7 @@ networkPolicy.apiServerAnyDestination is the first-deploy fallback: any destinat
   - ipBlock: { cidr: {{ . }} }
   {{- end }}
 {{- end }}
-  ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 6443 }]
+  ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 6443 }, { protocol: TCP, port: 15008 }]
 {{- end -}}
 
 {{/*
@@ -135,5 +135,28 @@ wins. Argument: (dict "className" "backendTls" "grpc" "trustedRoot" "host" "prob
 {{- $_ := set $a "appgw.ingress.kubernetes.io/health-probe-path" .probePath -}}
 {{- end -}}
 {{- end -}}
-{{- toYaml $a -}}
+{{- end -}}
+
+{{/*
+CSR round 12 §4.5: kind's edge, the Istio Gateway that deploy/kind/edge-gateway.yaml creates (setup.sh,
+setup.ps1). meshEdge prints "true" where global.gateway.class is istio: the edge is then a mesh client,
+so it reaches the release over mutual TLS as the principal edgeGatewayPrincipal, the service account
+Istio generates for the Gateway (<name>-istio).
+*/}}
+{{- define "iverson.meshEdge" -}}
+{{- if eq (dig "gateway" "class" "" .Values.global) "istio" -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{- define "iverson.edgeGatewayNamespace" -}}
+iverson-edge
+{{- end -}}
+
+{{- define "iverson.edgeGatewayName" -}}
+edge
+{{- end -}}
+
+{{- define "iverson.edgeGatewayPrincipal" -}}
+cluster.local/ns/{{ include "iverson.edgeGatewayNamespace" . }}/sa/{{ include "iverson.edgeGatewayName" . }}-istio
 {{- end -}}

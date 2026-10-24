@@ -307,10 +307,14 @@ resource "helm_release" "operator_namespace_policies" {
   namespace = "kube-system"
   values = [yamlencode({
     apiServerCidrs = var.api_server_cidrs
+    # CSR round 12 §4.1: the CNPG operator's webhook port 9443 is PERMISSIVE on the clouds, whose API
+    # server is outside the mesh (templates/peerauthentication-cnpg.yaml).
+    cnpgWebhookPermissive = true
   })]
 
   depends_on = [
     kubernetes_namespace.istio_system,
+    helm_release.istio_base,
     helm_release.cloudnative_pg,
     helm_release.strimzi,
     helm_release.starrocks_operator,
