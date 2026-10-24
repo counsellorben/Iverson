@@ -29,6 +29,10 @@ server:
   replicas: 1
 nodeSelector: {}
 bootstrapEmail: "admin@iverson.local"
+# CSR round-12 §2.6: the `iss` of this cluster's service-account tokens. Both workload pins (the
+# orchestrator's and admin-automation's) compare it byte for byte, and the render fails while it
+# is empty: every overlay sets it.
+serviceAccountIssuer: ""
 ingress:
   className: "nginx"
   annotations: {}

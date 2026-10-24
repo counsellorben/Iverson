@@ -4,5 +4,6 @@ global:
   operatorSubjects:
     - "ci-dummy-operator-subject"
 authentik:
+  serviceAccountIssuer: "https://eastus.oic.prod-aks.azure.com/00000000-0000-0000-0000-000000000000/00000000-0000-0000-0000-000000000000/"
   ingress:
     wafPolicyId: "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/iverson-rg/providers/Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/iverson-waf-authentik"

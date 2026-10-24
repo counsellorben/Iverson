@@ -2,6 +2,9 @@ output "cluster_name" { value = aws_eks_cluster.this.name }
 output "cluster_endpoint" { value = aws_eks_cluster.this.endpoint }
 output "cluster_ca_certificate" { value = aws_eks_cluster.this.certificate_authority[0].data }
 
+# CSR round-12 §2.6: the iss of this cluster's service-account tokens (authentik.serviceAccountIssuer).
+output "service_account_issuer" { value = aws_eks_cluster.this.identity[0].oidc[0].issuer }
+
 output "lb_controller_irsa_role_arn" {
   value = aws_iam_role.lb_controller_irsa.arn
 }

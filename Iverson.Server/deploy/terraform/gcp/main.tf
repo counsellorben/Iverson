@@ -75,4 +75,6 @@ module "operators" {
 output "cluster_name" { value = module.cluster.cluster_name }
 output "node_pool_labels" { value = module.cluster.node_pool_labels }
 output "storage_class_names" { value = module.operators.storage_class_names }
+# Copy into values-gcp.yaml's authentik.serviceAccountIssuer (docs/runbooks/csr11-identity-plane.md §7).
+output "service_account_issuer" { value = module.cluster.service_account_issuer }
 output "kubeconfig_command" { value = "gcloud container clusters get-credentials ${module.cluster.cluster_name} --region ${var.region} --project ${var.project_id}" }

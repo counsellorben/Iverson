@@ -165,6 +165,10 @@ authentik:
       limits: { cpu: "500m", memory: "1Gi", ephemeral-storage: "1Gi" }
   nodeSelector: {}
   bootstrapEmail: "admin@iverson.example.com"
+  # CSR round-12 §2.6: the iss of this cluster's service-account tokens, which both workload pins
+  # compare byte for byte. Terraform output service_account_issuer (modules/cluster-aws); the render fails
+  # while it is empty.
+  serviceAccountIssuer: ""
   # CSR round-12 §2.1: two server pods, with a PodDisruptionBudget and host anti-affinity.
   server:
     replicas: 2

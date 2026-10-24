@@ -143,6 +143,39 @@ spec:
             - name: postgres-tls
               mountPath: /etc/postgres-tls
               readOnly: true
+        # CSR round-12 §2.6: the orchestrator pin's TokenReview (orchestrator-federation.yaml) goes to the
+        # Kubernetes API through this loopback relay, the worker's jwks-relay pattern. A native sidecar on
+        # its own projected token, which the ClusterRole in clusterrole-tokenreview.yaml lets create
+        # tokenreviews and nothing else. It forwards only POSTs to the tokenreviews path. No --www and no
+        # startup probe: the server never waits on it, and a missing relay refuses the exchange.
+        - name: tokenreview-relay
+          image: {{ .Values.jwksRelay.image | quote }}
+          restartPolicy: Always
+          args:
+            - proxy
+            - --address=127.0.0.1
+            - --port=8001
+            - --accept-paths=^/apis/authentication.k8s.io/v1/tokenreviews$
+            - --reject-methods=^(GET|PUT|PATCH|DELETE)$
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests:
+              cpu: {{ .Values.resources.jwksRelay.requests.cpu | quote }}
+              memory: {{ .Values.resources.jwksRelay.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.jwksRelay.requests "ephemeral-storage" | quote }}
+            limits:
+              cpu: {{ .Values.resources.jwksRelay.limits.cpu | quote }}
+              memory: {{ .Values.resources.jwksRelay.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.jwksRelay.limits "ephemeral-storage" | quote }}
+          volumeMounts:
+            - name: tokenreview-relay-credential
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
       containers:
         - name: server
           image: {{ .Values.image | quote }}
@@ -269,6 +302,12 @@ spec:
                 path: tls.key
         - name: tls-proxy-tmp
           emptyDir: {}
+        - name: tokenreview-relay-credential
+          projected:
+            sources:
+              - serviceAccountToken: { path: token, expirationSeconds: 3600 }
+              - configMap: { name: kube-root-ca.crt, items: [{ key: ca.crt, path: ca.crt }] }
+              - downwardAPI: { items: [{ path: namespace, fieldRef: { fieldPath: metadata.namespace } }] }
         - name: postgres-tls
           secret:
             secretName: {{ .Release.Name }}-postgres-ca

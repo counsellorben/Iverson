@@ -5,6 +5,10 @@ output "cluster_name" { value = azurerm_kubernetes_cluster.this.name }
 output "host" { value = azurerm_kubernetes_cluster.this.kube_config[0].host }
 output "cluster_ca_certificate" { value = azurerm_kubernetes_cluster.this.kube_config[0].cluster_ca_certificate }
 
+# CSR round-12 §2.6: the iss of this cluster's service-account tokens (authentik.serviceAccountIssuer).
+# It ends with "/", and the pins compare it byte for byte.
+output "service_account_issuer" { value = azurerm_kubernetes_cluster.this.oidc_issuer_url }
+
 output "node_pool_labels" {
   value = { for k, v in local.extra_pools : v.label => "iverson.io/node-pool=${v.label}" }
 }

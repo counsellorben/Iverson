@@ -9,6 +9,7 @@ data:
    rolling upgrade and never follow a host change. Only recovery-flow.yaml is rewritten; every other
    blueprint is emitted unchanged. */}}
 {{- $consoleUrl := printf "%s://%s/admin/" .Values.global.externalScheme .Values.global.ingressHost }}
+{{- $issuer := include "authentik.serviceAccountIssuer" . }}
 {{- range $path, $bytes := .Files.Glob "blueprints/*.yaml" }}
   {{ base $path }}: |
 {{- $content := $.Files.Get $path }}
@@ -85,7 +86,8 @@ data:
       # the user, so no exchange can create it (one created that way has an expiry and no group).
       # CSR round-11 #7: it also bounds the token's lifetime to 600 s, which with Authentik's expiry
       # check bounds its usable age, and requires the kubelet's pod binding, which `kubectl create
-      # token` without a bound pod lacks.
+      # token` without a bound pod lacks. CSR round-12 §2.6: the issuer must be exactly this cluster's
+      # service-account issuer (authentik.serviceAccountIssuer).
       - id: orchestrator-workload
         model: authentik_policies_expression.expressionpolicy
         identifiers:
@@ -100,7 +102,8 @@ data:
             k8s = jwt.get("kubernetes.io") or {}
             user = ak_user_by(username="iverson-admin-orchestrator-workload")
             return (
-                jwt.get("sub") == "system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-api"
+                jwt.get("iss") == "{{ $issuer }}"
+                and jwt.get("sub") == "system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-api"
                 and "iverson-authentik-orchestrator" in auds
                 and isinstance(iat, int) and isinstance(exp, int)
                 and exp - iat <= 600
@@ -123,11 +126,51 @@ data:
           policy: !KeyOf orchestrator-workload
           target: !KeyOf orchestrator-app
           order: 0
+      # CSR round-12 §2.6: the Kubernetes API reviews the presented token itself, through the server
+      # pod's tokenreview-relay (deployment-server.yaml). A token whose pod is gone is then refused once
+      # the API server's token cache lets it go (about 10-12 s), not only when the token expires. It
+      # keys on the federated exchange (oauth_jwt) and reads the raw assertion from the token request's
+      # form body: request.user is anonymous on a first exchange. Any failure refuses: no relay, a
+      # timeout, a status outside 2xx (a review answers 201), or a review that is not authenticated as
+      # the api's service account.
+      - id: orchestrator-tokenreview
+        model: authentik_policies_expression.expressionpolicy
+        identifiers:
+          name: iverson-admin-orchestrator-tokenreview
+        attrs:
+          expression: |
+            try:
+                if not request.context.get("oauth_jwt"):
+                    return False
+                assertion = request.http_request.POST["client_assertion"]
+                response = requests.post(
+                    "http://127.0.0.1:8001/apis/authentication.k8s.io/v1/tokenreviews",
+                    json={
+                        "apiVersion": "authentication.k8s.io/v1",
+                        "kind": "TokenReview",
+                        "spec": {"token": assertion, "audiences": ["iverson-authentik-orchestrator"]},
+                    },
+                    timeout=2,
+                )
+                if not 200 <= response.status_code < 300:
+                    return False
+                status = response.json().get("status") or {}
+                return (
+                    status.get("authenticated") is True
+                    and (status.get("user") or {}).get("username") == "system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-api"
+                )
+            except Exception:
+                return False
       - model: authentik_policies.policybinding
         identifiers:
           policy: !KeyOf orchestrator-in-cluster-only
           target: !KeyOf orchestrator-app
           order: 1
+      - model: authentik_policies.policybinding
+        identifiers:
+          policy: !KeyOf orchestrator-tokenreview
+          target: !KeyOf orchestrator-app
+          order: 2
   {{- /* CSR round-11 #9: Helm only. Compose and the Api.Tests fixture mount blueprints/, keep akadmin
      and log in with it, and the fixture's OrchestratorGroup_IsNotASuperuserGroup forbids a superuser
      group in the service-clients blueprints. The deny bindings !Find flows other files define

@@ -147,6 +147,8 @@ prometheus:
     limits: { cpu: "500m", memory: "512Mi" }
 
 authentik:
+  # CSR round-12 §2.6: the iss of kind's service-account tokens, which both workload pins compare.
+  serviceAccountIssuer: "https://kubernetes.default.svc.cluster.local"
   resources:
     server:
       requests: { cpu: "100m", memory: "256Mi", ephemeral-storage: "256Mi" }

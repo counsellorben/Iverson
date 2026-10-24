@@ -612,14 +612,17 @@ spec:
       ports: [{ protocol: TCP, port: 5432 }]
 ---
 # CSR round-10 #4 (C2): the worker's JWKS relay reads the cluster's service-account keys from the API
-# server. The server pods get no API-server egress.
+# server. CSR round-12 §2.6: the server's tokenreview-relay creates TokenReviews there.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ .Release.Name }}-authentik-worker-apiserver-egress
+  name: {{ .Release.Name }}-authentik-apiserver-egress
 spec:
   podSelector:
-    matchLabels: { app: {{ .Release.Name }}-authentik-worker }
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["{{ .Release.Name }}-authentik-server", "{{ .Release.Name }}-authentik-worker"]
   policyTypes: ["Egress"]
   egress:
     {{- include "iverson.apiServerEgress" . | nindent 4 }}

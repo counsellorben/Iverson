@@ -4,5 +4,6 @@ global:
   operatorSubjects:
     - "ci-dummy-operator-subject"
 authentik:
+  serviceAccountIssuer: "https://container.googleapis.com/v1/projects/iverson-ci/locations/us-east1/clusters/iverson"
   ingress:
     securityPolicy: "iverson-authentik-login"

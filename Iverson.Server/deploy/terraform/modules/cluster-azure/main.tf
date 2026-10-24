@@ -208,6 +208,10 @@ resource "azurerm_kubernetes_cluster" "this" {
 
   role_based_access_control_enabled = true
 
+  # CSR round-12 §2.6: the service-account issuer, which the Authentik workload pins compare
+  # (output service_account_issuer). It cannot be disabled once enabled.
+  oidc_issuer_enabled = true
+
   # CSR round-10 #6: no local accounts, so no static cluster-admin certificate exists to copy
   # out of state. `managed = true` is mandatory in azurerm 3.x for AKS-managed Entra integration.
   local_account_disabled = true

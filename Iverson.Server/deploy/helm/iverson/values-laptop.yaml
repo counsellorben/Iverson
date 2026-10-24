@@ -108,6 +108,8 @@ worker:
   hpa: { minReplicas: 1, maxReplicas: 2, targetCPUUtilization: 70 }
 
 authentik:
+  # CSR round-12 §2.6: the iss of kind's service-account tokens, which both workload pins compare.
+  serviceAccountIssuer: "https://kubernetes.default.svc.cluster.local"
   resources:
     server:
       requests: { cpu: "100m", memory: "256Mi", ephemeral-storage: "256Mi" }

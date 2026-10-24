@@ -19,19 +19,36 @@ namespace Iverson.Api.Tests.Tenancy;
 public sealed class AuthentikOrchestratorFederationBlueprintTests
 {
     private const string HelmSubject = "system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-api";
+    // CSR round 12 §2.6: both pins compare iss with the release's authentik.serviceAccountIssuer.
+    private const string HelmIssuer = "{{ $issuer }}";
     private const string WorkloadUser = "iverson-admin-orchestrator-workload";
+
+    /// <summary>The issuer the live fact's assertions carry; <see cref="PinPolicyExpression"/> renders the pin with it.</summary>
+    internal const string FixtureIssuer = "https://kubernetes.default.svc.cluster.local";
 
     private static string TemplatePath(string name) =>
         Path.Combine(AuthentikOrchestratorRoleBlueprintTests.AuthentikChartDirectory(), "templates", name);
 
     // ---- helpers shared with the live fact ----------------------------------------------------
 
-    /// <summary>The shipped pin policy expression, with the Helm subject replaced by <paramref name="subject"/>.</summary>
+    /// <summary>
+    /// The shipped pin policy expression, with the Helm subject replaced by <paramref name="subject"/> and the
+    /// Helm issuer by <see cref="FixtureIssuer"/>.
+    /// </summary>
     internal static string PinPolicyExpression(string subject)
     {
         var expression = EntryExpression(FederationEntry("name: iverson-admin-orchestrator-workload"));
         expression.Should().Contain(HelmSubject, "the shipped pin carries the Helm-templated subject");
-        return expression.Replace(HelmSubject, subject);
+        expression.Should().Contain(HelmIssuer, "the shipped pin carries the Helm-templated issuer");
+        return expression.Replace(HelmSubject, subject).Replace(HelmIssuer, FixtureIssuer);
+    }
+
+    /// <summary>The shipped TokenReview policy expression, with the Helm username replaced by <paramref name="username"/>.</summary>
+    internal static string TokenReviewPolicyExpression(string username)
+    {
+        var expression = EntryExpression(FederationEntry("name: iverson-admin-orchestrator-tokenreview"));
+        expression.Should().Contain(HelmSubject, "the shipped review pins the Helm-templated service account");
+        return expression.Replace(HelmSubject, username);
     }
 
     /// <summary>The shipped in-cluster-only marker policy expression.</summary>
@@ -58,28 +75,31 @@ public sealed class AuthentikOrchestratorFederationBlueprintTests
     }
 
     [Fact]
-    public void OrchestratorApp_HasExactlyThePinAndMarkerBindings_InOrder()
+    public void OrchestratorApp_HasExactlyThePinMarkerAndTokenReviewBindings_InOrder()
     {
         var bindings = FederationEntries()
             .Where(e => e.Any(l => l.Trim() == "model: authentik_policies.policybinding"))
             .ToList();
 
-        bindings.Should().HaveCount(2);
+        bindings.Should().HaveCount(3);
         foreach (var binding in bindings)
             binding.Select(l => l.Trim()).Should().Contain("target: !KeyOf orchestrator-app");
 
         Has(bindings, "policy: !KeyOf orchestrator-workload", "order: 0").Should().BeTrue("the pin is order 0");
         Has(bindings, "policy: !KeyOf orchestrator-in-cluster-only", "order: 1").Should().BeTrue("the marker is order 1");
+        Has(bindings, "policy: !KeyOf orchestrator-tokenreview", "order: 2").Should().BeTrue("the TokenReview is order 2");
 
         static bool Has(List<List<string>> all, string policy, string order) =>
             all.Count(b => b.Select(l => l.Trim()).Contains(policy) && b.Select(l => l.Trim()).Contains(order)) == 1;
     }
 
     [Fact]
-    public void PinExpression_PinsSubjectAudienceLifetimePodAndGroupGate()
+    public void PinExpression_PinsIssuerSubjectAudienceLifetimePodAndGroupGate()
     {
         var pin = PinPolicyExpression("SUBJECT");
 
+        // CSR round 12 §2.6: a token from another issuer is refused.
+        pin.Should().Contain($"jwt.get(\"iss\") == \"{FixtureIssuer}\"");
         pin.Should().Contain("jwt.get(\"sub\") == \"SUBJECT\"");
         pin.Should().Contain("\"iverson-authentik-orchestrator\" in auds");
         pin.Should().Contain("ak_is_group_member(user, name=\"iverson-admin-orchestrators\")");
@@ -91,6 +111,32 @@ public sealed class AuthentikOrchestratorFederationBlueprintTests
         // The Helm form must still pin the API's own service account.
         EntryExpression(FederationEntry("name: iverson-admin-orchestrator-workload"))
             .Should().Contain($"jwt.get(\"sub\") == \"{HelmSubject}\"");
+    }
+
+    [Fact]
+    public void TokenReviewExpression_ReviewsTheRawAssertion_AndRefusesEveryFailure()
+    {
+        // CSR round 12 §2.6: the Kubernetes API, not the token's own claims, says whether its pod still exists.
+        var review = TokenReviewPolicyExpression("USERNAME");
+
+        review.TrimStart().Should().StartWith("try:", "every step, the form read included, is inside the try");
+        review.Should().Contain("if not request.context.get(\"oauth_jwt\"):");
+        review.Should().Contain("assertion = request.http_request.POST[\"client_assertion\"]");
+        review.Should().Contain("\"http://127.0.0.1:8001/apis/authentication.k8s.io/v1/tokenreviews\"");
+        review.Should().Contain("\"spec\": {\"token\": assertion, \"audiences\": [\"iverson-authentik-orchestrator\"]}");
+        review.Should().Contain("timeout=2,");
+        review.Should().Contain("if not 200 <= response.status_code < 300:");
+        review.Should().Contain("status.get(\"authenticated\") is True");
+        review.Should().Contain("(status.get(\"user\") or {}).get(\"username\") == \"USERNAME\"");
+        review.Should().Contain("except Exception:\n    return False");
+    }
+
+    [Fact]
+    public void AdminAutomationPin_ComparesTheIssuer()
+    {
+        var entry = ServiceClientEntries().Single(e => e.Any(l => l.Trim() == "name: iverson-admin-automation-workload"));
+        EntryExpression(entry).Should().Contain($"jwt.get(\"iss\") == \"{HelmIssuer}\"",
+            "CSR round 12 §2.6: the admin-automation pin compares the issuer too");
     }
 
     [Fact]
