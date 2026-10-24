@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-21-csr-round12-platform-implementation-plan.md, T8 S3
 // Source: Iverson.Server/deploy/helm/iverson/charts/authentik/templates/configmap-tls-proxy.yaml the :9080 server block's locations (72–115)
-// Replay base: 7c4d86687b557e7e33a52c30cc07e6728dfb4622
+// Replay base: 0c82f27cfa35fbee2e3255b1d65937a0def814d2
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-21-csr-round12-platform-implementation-plan/configmap-tls-proxy.public-locations.dfy
 
 // ---------------------------------------------------------------------------------------------
@@ -36,8 +36,6 @@ const WsClient: seq<Byte> := [47, 119, 115, 47, 99, 108, 105, 101, 110, 116, 47]
 const HealthLive: seq<Byte> := [47, 45, 47, 104, 101, 97, 108, 116, 104, 47, 108, 105, 118, 101, 47]
 // '/-/health/ready/'
 const HealthReady: seq<Byte> := [47, 45, 47, 104, 101, 97, 108, 116, 104, 47, 114, 101, 97, 100, 121, 47]
-// '\n'
-const Newline: seq<Byte> := [10]
 // '/static/'
 const StaticPrefix: seq<Byte> := [47, 115, 116, 97, 116, 105, 99, 47]
 // '/media/'
@@ -83,12 +81,12 @@ function AllowedSlugs(): set<seq<Byte>>
 
 // ---------------------------------------------------------------------------------------------
 // Library boundary: the one regex location (yaml:89),
-//   ~ ^/(if/flow|api/v3/flows/executor)/(<five slugs>)/$
-// axiomatised with PCRE's default `$`, which also matches before a final newline.
+//   ~ ^/(if/flow|api/v3/flows/executor)/(<five slugs>)/\z
+// axiomatised with PCRE's `\z`, which matches only at the very end of the subject.
 // ---------------------------------------------------------------------------------------------
 
 predicate FlowRegexMatches(uri: seq<Byte>)
-  ensures FlowRegexMatches(uri) <==> exists a, s :: (a == IfFlow || a == Executor) && s in AllowedSlugs() && (uri == a + s + Slash || uri == a + s + Slash + Newline)
+  ensures FlowRegexMatches(uri) <==> exists a, s :: (a == IfFlow || a == Executor) && s in AllowedSlugs() && uri == a + s + Slash
 
 // ---------------------------------------------------------------------------------------------
 // Transliteration of the :9080 server block's locations (yaml:89–114). nginx selects a location
@@ -184,10 +182,9 @@ lemma RegexNeedsHead(uri: seq<Byte>, i: nat)
   ensures !FlowRegexMatches(uri)
 {
   forall a, s | (a == IfFlow || a == Executor) && s in AllowedSlugs()
-    ensures uri != a + s + Slash && uri != a + s + Slash + Newline
+    ensures uri != a + s + Slash
   {
     assert (a + s + Slash)[i] == a[i];
-    assert (a + s + Slash + Newline)[i] == a[i];
   }
 }
 
@@ -198,19 +195,17 @@ lemma RegexRefusesInitialSetup(a0: seq<Byte>, suffix: seq<Byte>)
 {
   var uri := a0 + InitialSetup + suffix;
   forall a, s | (a == IfFlow || a == Executor) && s in AllowedSlugs()
-    ensures uri != a + s + Slash && uri != a + s + Slash + Newline
+    ensures uri != a + s + Slash
   {
     SlugFacts(s);
     var v := a + s + Slash;
-    var w := a + s + Slash + Newline;
     if a != a0 {
       assert a[1] != a0[1];
-      assert v[1] == a[1] && w[1] == a[1] && uri[1] == a0[1];
+      assert v[1] == a[1] && uri[1] == a0[1];
     } else {
       var n := |a0|;
       assert uri[n] == 105 && uri[n + 1] == 110;
       assert v[n] == s[0] && v[n + 1] == s[1];
-      assert w[n] == s[0] && w[n + 1] == s[1];
     }
   }
 }
@@ -244,6 +239,21 @@ lemma NotExactSlashApi(uri: seq<Byte>)
   NeqAt(uri, OAuthToken, 3); NeqAt(uri, OAuthUserinfo, 3); NeqAt(uri, OAuthRevoke, 3);
   NeqAt(uri, OAuthEndSession, 3); NeqAt(uri, OAuthJwks, 3); NeqAt(uri, OAuthDiscovery, 3);
   NeqAt(uri, HealthLive, 1);
+}
+
+// A URI whose byte 1 is 'a' and that is no Executor + s + Slash (s allowed) never matches the regex.
+lemma RegexOnApiIsExecutor(uri: seq<Byte>)
+  requires |uri| >= 2 && uri[1] == 97
+  requires !(exists s :: s in AllowedSlugs() && uri == Executor + s + Slash)
+  ensures !FlowRegexMatches(uri)
+{
+  forall a, s | (a == IfFlow || a == Executor) && s in AllowedSlugs()
+    ensures uri != a + s + Slash
+  {
+    if a == IfFlow {
+      assert (a + s + Slash)[1] == 105;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -315,12 +325,12 @@ lemma P4_AllowedFlowsForwarded(slug: seq<Byte>)
   ensures Route(IfFlow + slug + Slash) == Forward && Route(Executor + slug + Slash) == Forward
 {
   var u1 := IfFlow + slug + Slash;
-  assert (IfFlow == IfFlow || IfFlow == Executor) && slug in AllowedSlugs() && (u1 == IfFlow + slug + Slash || u1 == IfFlow + slug + Slash + Newline);
+  assert (IfFlow == IfFlow || IfFlow == Executor) && slug in AllowedSlugs() && u1 == IfFlow + slug + Slash;
   assert FlowRegexMatches(u1);
   assert u1 != Root by { assert |u1| > 1; }
 
   var u2 := Executor + slug + Slash;
-  assert (Executor == IfFlow || Executor == Executor) && slug in AllowedSlugs() && (u2 == Executor + slug + Slash || u2 == Executor + slug + Slash + Newline);
+  assert (Executor == IfFlow || Executor == Executor) && slug in AllowedSlugs() && u2 == Executor + slug + Slash;
   assert FlowRegexMatches(u2);
   assert u2 != Root by { assert |u2| > 1; }
 }
@@ -336,32 +346,9 @@ lemma P5_OtherApiRefused(path: seq<Byte>)
   RouteNonExact(path);
   assert path[1] != StaticPrefix[1] && path[1] != MediaPrefix[1];
   assert LongestPrefixOutcome(path) == NotFound;
-  // Remaining case: FlowRegexMatches(path). The precondition excludes only `Executor + s + Slash`;
-  // the regex's `$` also accepts `Executor + s + Slash + Newline` (see P5_Counterexample).
-}
-
-// The P5 counterexample: "/api/v3/flows/executor/default-authentication-flow/\n" satisfies both
-// of P5's preconditions, and Route forwards it.
-lemma P5_Counterexample()
-  ensures var path := Executor + SlugDefaultAuthenticationFlow + Slash + Newline;
-          |path| >= 5 && path[..5] == ApiPrefix
-          && !(exists s :: s in AllowedSlugs() && path == Executor + s + Slash)
-          && Route(path) == Forward
-{
-  var path := Executor + SlugDefaultAuthenticationFlow + Slash + Newline;
-  assert path[..5] == ApiPrefix;
-  forall s | s in AllowedSlugs() ensures path != Executor + s + Slash {
-    // The last byte of Executor + s + Slash is '/' (47); path's last byte is '\n' (10).
-    if |path| == |Executor + s + Slash| {
-      NeqAt(path, Executor + s + Slash, |Executor + s + Slash| - 1);
-    }
-  }
-  assert (Executor == IfFlow || Executor == Executor) && SlugDefaultAuthenticationFlow in AllowedSlugs()
-    && (path == Executor + SlugDefaultAuthenticationFlow + Slash || path == Executor + SlugDefaultAuthenticationFlow + Slash + Newline);
-  assert FlowRegexMatches(path);
-  assert path[1] == 97 && path[3] == 105;
-  NotExactSlashApi(path);
-  RouteNonExact(path);
+  // Regex case: a match is IfFlow + s + Slash (excluded by path[1] == 'a') or
+  // Executor + s + Slash (excluded by the second precondition).
+  RegexOnApiIsExecutor(path);
 }
 
 // Citation: "`/ws/client/`, with WebSocket upgrade headers." (§2.7 line 211); "`= /-/health/live/`, for the GCP health check." (line 213); plan check `check_t8.py` (T8 S1: `/ws/client/` and `/-/health/live/` in `allowed`, `/-/health/ready/` in `refused`)

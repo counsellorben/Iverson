@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-21-csr-round12-platform-implementation-plan.md, T14 S4 (4d), T16 S3 (3c), T17 S5 (5e–5h), T20 S3 (3f–3i)
 // Source: Iverson.Server/deploy/kind/setup.ps1 the kind version gate (3–9), the --only parser (43–51), Add-AmbientLabels (96–110), the dispatch (144–152)
-// Replay base: 7c4d86687b557e7e33a52c30cc07e6728dfb4622
+// Replay base: 0c82f27cfa35fbee2e3255b1d65937a0def814d2
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-21-csr-round12-platform-implementation-plan/setup.ps1.guards.dfy
 
 // ===================== Shared vocabulary =====================
@@ -28,7 +28,7 @@ function CaseFold(s: CsString): CsString
 function VersionParse(s: CsString): Option<(int, int, int)>
   ensures IsDottedTriple(s) ==> VersionParse(s) == Some(TripleOf(s))
 
-// ===================== Modelled library: .NET regex \s, PowerShell -split, TrimStart =====================
+// ===================== Modelled library: .NET regex \s, PowerShell -split, TrimStart, -eq =====================
 
 // .NET Regex `\s`: [\f\n\r\t\v\x85\p{Z}] (Zs, Zl, Zp).
 predicate IsWs(c: char)
@@ -99,11 +99,17 @@ function TrimStartChar(s: CsString, ch: char): CsString
   if |s| > 0 && s[0] == ch then TrimStartChar(s[1..], ch) else s
 }
 
-// PowerShell -contains with strings: each element compared with -eq (invariant, case-insensitive).
+// PowerShell string -eq: invariant-culture, case-insensitive (the approved CaseFold).
+predicate EqPs(x: CsString, y: CsString)
+{
+  CaseFold(x) == CaseFold(y)
+}
+
+// PowerShell `$arr -contains $v` (and `$v -in $arr`) with strings: each element compared with -eq.
 function ContainsPs(arr: seq<CsString>, v: CsString): bool
   decreases |arr|
 {
-  if arr == [] then false else CaseFold(arr[0]) == CaseFold(v) || ContainsPs(arr[1..], v)
+  if arr == [] then false else EqPs(arr[0], v) || ContainsPs(arr[1..], v)
 }
 
 // ===================== Property vocabulary =====================
@@ -220,25 +226,6 @@ function KindGatePs(kindVersionOutput: CsString): GateOutcome
 // NoArmMatchedExit0: line 151 reached with no arm run (added: the switch has no default arm).
 datatype DispatchPs = FullInstallPs | RunPhasePs(p: CsString) | UsageThrown | NoArmMatchedExit0
 
-// .NET Regex '^--?only$' under PowerShell -match's RegexOptions.IgnoreCase. '$' (no Multiline)
-// matches at the end or before a final '\n'. o, n, l and y have no case equivalents beyond ASCII.
-predicate OnlyWordCI(w: seq<char>)
-{
-  |w| == 4 && (w[0] == 'o' || w[0] == 'O') && (w[1] == 'n' || w[1] == 'N')
-  && (w[2] == 'l' || w[2] == 'L') && (w[3] == 'y' || w[3] == 'Y')
-}
-
-predicate OnlyFlagCore(t: seq<char>)
-{
-  (|t| == 5 && t[0] == '-' && OnlyWordCI(t[1..]))
-  || (|t| == 6 && t[0] == '-' && t[1] == '-' && OnlyWordCI(t[2..]))
-}
-
-predicate MatchesOnlyRegex(s: seq<char>)
-{
-  OnlyFlagCore(s) || (|s| > 0 && s[|s| - 1] == '\n' && OnlyFlagCore(s[..|s| - 1]))
-}
-
 // setup.ps1 43–51, then 144–152 / 154–244
 function ParseAndDispatchPs(args: seq<CsString>): DispatchPs
 {
@@ -247,8 +234,8 @@ function ParseAndDispatchPs(args: seq<CsString>): DispatchPs
   // 44: $Only = ""
   // 45: if ($args.Count -gt 0)
   if |args| > 0 then
-    // 46: $args.Count -ne 2 -or $args[0] -notmatch '^--?only$' -or $Phases -notcontains $args[1]   (-or short-circuits)
-    if |args| != 2 || !MatchesOnlyRegex(args[0]) || !ContainsPs(phases, args[1]) then
+    // 46: $args.Count -ne 2 -or $args[0] -notin @('--only', '-only') -or $Phases -notcontains $args[1]   (-or short-circuits)
+    if |args| != 2 || !ContainsPs(["--only", "-only"], args[0]) || !ContainsPs(phases, args[1]) then
       UsageThrown   // 47: throw "usage: …"
     else
       DispatchOnlyPs(args[1])   // 49: $Only = $args[1]
@@ -262,10 +249,10 @@ function DispatchOnlyPs(only: CsString): DispatchPs
   // 144: if ($Only)   (an empty string is false)
   if only != "" then
     // 145–150: switch ($Only), case-insensitive -eq per arm; every matching arm runs
-    var istio := CaseFold(only) == CaseFold("istio");                 // 146: Install-Istio
-    var opns := CaseFold(only) == CaseFold("operator-namespaces");    // 147: Install-OperatorNamespacePolicies
-    var amb := CaseFold(only) == CaseFold("ambient-labels");          // 148: Add-AmbientLabels
-    var gw := CaseFold(only) == CaseFold("gateway");                  // 149: New-EdgeGateway
+    var istio := EqPs(only, "istio");                 // 146: Install-Istio
+    var opns := EqPs(only, "operator-namespaces");    // 147: Install-OperatorNamespacePolicies
+    var amb := EqPs(only, "ambient-labels");          // 148: Add-AmbientLabels
+    var gw := EqPs(only, "gateway");                  // 149: New-EdgeGateway
     if istio || opns || amb || gw then RunPhasePs(only) else NoArmMatchedExit0   // 151: exit 0
   else
     FullInstallPs   // 154–244
@@ -482,28 +469,6 @@ lemma ContainsPlain(arr: seq<CsString>, v: CsString)
   }
 }
 
-// The concrete input behind P2's failure: a trailing newline on the flag passes `-notmatch '^--?only$'`.
-lemma P2_Witness_TrailingNewline()
-  ensures ParseAndDispatchPs(["--only\n", "istio"]) == RunPhasePs("istio")
-  ensures CaseFold("--only\n") != CaseFold("--only") && CaseFold("--only\n") != CaseFold("-only")
-{
-  var f: CsString := "--only\n";
-  assert NoUpper(f);
-  CaseFoldPlain(f);
-  var g: CsString := "--only";
-  assert NoUpper(g);
-  CaseFoldPlain(g);
-  var h: CsString := "-only";
-  assert NoUpper(h);
-  CaseFoldPlain(h);
-  assert f[..|f| - 1] == "--only";
-  assert f[..|f| - 1][2..] == "only";
-  assert MatchesOnlyRegex(f);
-  assert ContainsPs(PhasesPs(), "istio");
-}
-
-// Attribution check for P2's failure: for an ASCII flag with no trailing '\n', the code meets P2's
-// right-hand side, so the trailing newline is the only ASCII input that separates them.
 lemma ContainsExists(arr: seq<CsString>, v: CsString)
   ensures ContainsPs(arr, v) <==> exists p :: p in arr && CaseFold(p) == CaseFold(v)
   decreases |arr|
@@ -514,70 +479,31 @@ lemma ContainsExists(arr: seq<CsString>, v: CsString)
   }
 }
 
-lemma AsciiLowerEq(s: seq<char>, t: seq<char>)
-  requires NoUpper(t)
-  ensures AsciiLower(s) == t <==> (|s| == |t| && forall i :: 0 <= i < |s| ==> AsciiLower(s)[i] == t[i])
+// `-notin @('--only', '-only')` is the negation of a two-element -eq scan.
+lemma OnlyFlagFold(s: CsString)
+  ensures ContainsPs(["--only", "-only"], s) <==> (CaseFold(s) == CaseFold("--only") || CaseFold(s) == CaseFold("-only"))
 {
+  var arr: seq<CsString> := ["--only", "-only"];
+  assert arr[1..] == ["-only"];
+  assert arr[1..][1..] == [];
 }
 
-lemma RegexVsFold(s: CsString)
-  requires IsAscii(s) && (|s| == 0 || s[|s| - 1] != '\n')
-  ensures MatchesOnlyRegex(s) <==> (CaseFold(s) == CaseFold("--only") || CaseFold(s) == CaseFold("-only"))
+// No phase name folds to the fold of "", so a phase that -contains admits is non-empty.
+lemma PhaseNonEmpty(v: CsString)
+  requires ContainsPs(PhasesPs(), v)
+  ensures v != ""
 {
-  var g: CsString := "--only";
-  var h: CsString := "-only";
-  assert NoUpper(g);
-  assert NoUpper(h);
-  CaseFoldPlain(g);
-  CaseFoldPlain(h);
-  var L := AsciiLower(s);
-  assert CaseFold(s) == L;
-  AsciiLowerEq(s, g);
-  AsciiLowerEq(s, h);
-  if |s| == 6 {
-    assert (L == g) <==> (s[0] == '-' && s[1] == '-' && OnlyWordCI(s[2..])) by {
-      assert L[0] == '-' <==> s[0] == '-';
-      assert L[1] == '-' <==> s[1] == '-';
-      assert L[2] == 'o' <==> (s[2] == 'o' || s[2] == 'O');
-      assert L[3] == 'n' <==> (s[3] == 'n' || s[3] == 'N');
-      assert L[4] == 'l' <==> (s[4] == 'l' || s[4] == 'L');
-      assert L[5] == 'y' <==> (s[5] == 'y' || s[5] == 'Y');
-    }
-  } else if |s| == 5 {
-    assert (L == h) <==> (s[0] == '-' && OnlyWordCI(s[1..])) by {
-      assert L[0] == '-' <==> s[0] == '-';
-      assert L[1] == 'o' <==> (s[1] == 'o' || s[1] == 'O');
-      assert L[2] == 'n' <==> (s[2] == 'n' || s[2] == 'N');
-      assert L[3] == 'l' <==> (s[3] == 'l' || s[3] == 'L');
-      assert L[4] == 'y' <==> (s[4] == 'y' || s[4] == 'Y');
-    }
+  ContainsExists(PhasesPs(), v);
+  var e: CsString := "";
+  assert NoUpper(e);
+  CaseFoldPlain(e);
+  var ps := PhasesPs();
+  forall i | 0 <= i < |ps| ensures CaseFold(ps[i]) == ps[i] && ps[i] != "" {
+    assert NoUpper(ps[i]);
+    CaseFoldPlain(ps[i]);
   }
-}
-
-lemma P2_HoldsWithoutTrailingNewline(args: seq<CsString>)
-  requires |args| == 2 ==> IsAscii(args[0]) && (|args[0]| == 0 || args[0][|args[0]| - 1] != '\n')
-  ensures ParseAndDispatchPs(args) == (if args == [] then FullInstallPs
-                                       else if |args| == 2 && (CaseFold(args[0]) == CaseFold("--only") || CaseFold(args[0]) == CaseFold("-only"))
-                                               && (exists p :: p in PhasesPs() && CaseFold(p) == CaseFold(args[1]))
-                                       then RunPhasePs(args[1]) else UsageThrown)
-{
-  if |args| == 2 {
-    RegexVsFold(args[0]);
-    ContainsExists(PhasesPs(), args[1]);
-    if ContainsPs(PhasesPs(), args[1]) && MatchesOnlyRegex(args[0]) {
-      var e: CsString := "";
-      assert NoUpper(e);
-      CaseFoldPlain(e);
-      var ps := PhasesPs();
-      forall i | 0 <= i < |ps| ensures CaseFold(ps[i]) == ps[i] && ps[i] != "" {
-        assert NoUpper(ps[i]);
-        CaseFoldPlain(ps[i]);
-      }
-      var q :| q in ps && CaseFold(q) == CaseFold(args[1]);
-      assert CaseFold(args[1]) != CaseFold(e);
-      assert args[1] != e;
-    }
-  }
+  var q :| q in ps && CaseFold(q) == CaseFold(v);
+  assert CaseFold(v) != CaseFold(e);
 }
 
 // ===================== Properties =====================
@@ -638,7 +564,13 @@ lemma P2_OnlyRunsOnePhase(args: seq<CsString>)
                                                && (exists p :: p in PhasesPs() && CaseFold(p) == CaseFold(args[1]))
                                        then RunPhasePs(args[1]) else UsageThrown)
 {
-  // Fails: P2_Witness_TrailingNewline gives args = ["--only\n", "istio"], which the code runs as phase istio.
+  if |args| == 2 {
+    OnlyFlagFold(args[0]);
+    ContainsExists(PhasesPs(), args[1]);
+    if ContainsPs(PhasesPs(), args[1]) {
+      PhaseNonEmpty(args[1]);
+    }
+  }
 }
 
 // Citation: "On kind they are labelled only after the chart's 15008 rules exist (§5)" (§4.1 line 344); **Expected:** (T14 S4) "mirrors the bash block line for line"

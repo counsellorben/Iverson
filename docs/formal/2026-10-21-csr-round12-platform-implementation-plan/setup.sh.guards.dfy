@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-21-csr-round12-platform-implementation-plan.md, T14 S4 (4d), T16 S3 (3c), T17 S5 (5a–5d), T20 S3 (3d–3e)
 // Source: Iverson.Server/deploy/kind/setup.sh the kind version gate (4–11), the --only parser (44–52), ambient_enroll (106–115), the --only dispatch (136–140)
-// Replay base: 7c4d86687b557e7e33a52c30cc07e6728dfb4622
+// Replay base: 0c82f27cfa35fbee2e3255b1d65937a0def814d2
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-21-csr-round12-platform-implementation-plan/setup.sh.guards.dfy
 
 // ---------------------------------------------------------------------------------------------
@@ -257,13 +257,25 @@ function CallFunction(name: seq<Byte>): Dispatch
   else OtherExit(127)
 }
 
+// bash `[[ x == *[[:space:]]* ]]`: x holds a byte of the POSIX/C-locale space class
+// (tab, newline, vertical tab, form feed, carriage return, space).
+predicate IsSpaceClass(b: Byte)
+{
+  (9 <= b <= 13) || b == SP
+}
+
+predicate HasSpaceClass(x: seq<Byte>)
+{
+  exists i :: 0 <= i < |x| && IsSpaceClass(x[i])
+}
+
 function ParseAndDispatch(args: seq<seq<Byte>>): Dispatch
 {
   // 45: ONLY=""
   // 46: if [ "$#" -gt 0 ]; then
   if |args| > 0 then
-    // 47: if [ "$#" -ne 2 ] || [ "$1" != "--only" ] || [[ " $PHASES " != *" $2 "* ]]; then
-    if |args| != 2 || args[0] != OnlyFlag || !Occurs(Pad(PHASES), Pad(args[1])) then
+    // 47: if [ "$#" -ne 2 ] || [ "$1" != "--only" ] || [[ "$2" == *[[:space:]]* || " $PHASES " != *" $2 "* ]]; then
+    if |args| != 2 || args[0] != OnlyFlag || HasSpaceClass(args[1]) || !Occurs(Pad(PHASES), Pad(args[1])) then
       UsageExit2                       // 48–49: echo "usage: …" >&2; exit 2
     else
       DispatchOnly(args[1])            // 51: ONLY="$2"
@@ -560,7 +572,7 @@ lemma StripSame(x: seq<Byte>, lit: seq<Byte>)
 
 // " w " occurs in " s " exactly when w is one of s's single-space tokens.
 lemma PadOccursIffToken(s: seq<Byte>, w: seq<Byte>)
-  requires |w| > 0 && SP !in w
+  requires SP !in w
   ensures Occurs(Pad(s), Pad(w)) <==> w in Tokens(s)
   decreases |s|
 {
@@ -621,6 +633,18 @@ lemma PadOccursIffToken(s: seq<Byte>, w: seq<Byte>)
   }
 }
 
+lemma PhasesAreTokens()
+  ensures Tokens(PHASES) == Phases()
+{
+  assert SP !in ISTIO && SP !in OPNS && SP !in AMB && SP !in GW;
+  assert PHASES == ISTIO + [SP] + (OPNS + [SP] + (AMB + [SP] + GW));
+  SplitOnCons(ISTIO, OPNS + [SP] + (AMB + [SP] + GW), SP);
+  assert OPNS + [SP] + (AMB + [SP] + GW) == OPNS + [SP] + (AMB + [SP] + GW);
+  SplitOnCons(OPNS, AMB + [SP] + GW, SP);
+  SplitOnCons(AMB, GW, SP);
+  SplitOnNone(GW, SP);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Properties (frozen).
 // ---------------------------------------------------------------------------------------------
@@ -669,9 +693,12 @@ lemma P2_OnlyRunsOnePhase(args: seq<seq<Byte>>)
       assert OccursAt(PP, Pad(w), 41);
       assert ReplaceAll(w, DASH, US) == GW;
     }
-  } else if |args| == 2 && args[0] == OnlyFlag && Occurs(Pad(PHASES), Pad(args[1])) {
-    // The failing case: " $2 " occurs in " $PHASES " but $2 is not one phase name (two or more adjacent
-    // phase names joined by a space, e.g. "ambient-labels gateway"); see P2_Witness: OtherExit(127).
+  } else if |args| == 2 && args[0] == OnlyFlag && !HasSpaceClass(args[1]) {
+    var w := args[1];
+    assert SP !in w;
+    PhasesAreTokens();
+    PadOccursIffToken(PHASES, w);
+    assert !Occurs(Pad(PHASES), Pad(w));
   } else {
   }
 }
@@ -686,19 +713,3 @@ lemma P3_EnrolOnlyWith15008(policyNames: seq<Byte>, ports: seq<Byte>)
   PadOccursIffToken(ports, Fifteen008);
 }
 
-// ---------------------------------------------------------------------------------------------
-// P2 counterexample, proved on the transliteration: `setup.sh --only "ambient-labels gateway"`.
-// ---------------------------------------------------------------------------------------------
-lemma P2_Witness()
-  ensures var args := [OnlyFlag, AMB + [SP] + GW];
-          args[1] !in Phases() &&
-          ParseAndDispatch(args) == OtherExit(127)
-{
-  var w := AMB + [SP] + GW;
-  var PP := Pad(PHASES);
-  assert PP == [SP] + ISTIO + [SP] + OPNS + [SP] + AMB + [SP] + GW + [SP];
-  assert PP[26..26 + |Pad(w)|] == Pad(w);
-  assert OccursAt(PP, Pad(w), 26);
-  assert |w| == 22;
-  assert |PHASE_PREFIX + ReplaceAll(w, DASH, US)| == 28;
-}
