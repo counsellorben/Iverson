@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Claims;
 using System.Text;
 using FluentAssertions;
 using Iverson.Api.Tests.Helpers;
@@ -191,5 +192,37 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
             last = await client.PostAsync("/v1/traces", content);
         }
         last!.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
+    }
+
+    // CSR round 12 §2.2: besides each caller's 60/min, every caller shares one ceiling of 600/min.
+    // Ten callers spend 60 each; the eleventh caller's first request is refused although its own
+    // budget is untouched. The tokens carry tenant-admins, the role §2.2's ConsoleAdmin admits.
+    [Fact]
+    public async Task The_601st_request_within_a_minute_across_all_callers_is_rejected()
+    {
+        var jaegerHandler = new FakeJaegerHandler();
+        var client = _baseFactory.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+                services.AddHttpClient("JaegerOtlpHttp").ConfigurePrimaryHttpMessageHandler(() => jaegerHandler)))
+            .CreateClient();
+
+        async Task<HttpStatusCode> PostAs(string subject)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/traces")
+            {
+                Content = new ByteArrayContent(Encoding.UTF8.GetBytes("""{"resourceSpans":[]}"""))
+            };
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", TestJwtFactory.CreateToken(
+                AuthTestWebApplicationFactory.ConsoleAudience, subject, extraClaims: [new Claim("groups", "tenant-admins")]));
+            using var response = await client.SendAsync(request);
+            return response.StatusCode;
+        }
+
+        for (var caller = 0; caller < 10; caller++)
+            for (var i = 0; i < 60; i++)
+                (await PostAs($"traces-ceiling-caller-{caller}")).Should().Be(HttpStatusCode.Accepted);
+
+        (await PostAs("traces-ceiling-caller-10")).Should().Be(HttpStatusCode.TooManyRequests);
+        jaegerHandler.CallCount.Should().Be(600);
     }
 }

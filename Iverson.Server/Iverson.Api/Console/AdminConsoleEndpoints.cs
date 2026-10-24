@@ -54,6 +54,7 @@ public static class AdminConsoleEndpoints
     {
         app.MapGet($"{RoutePrefix}/tenants", GetTenantsAsync)
             .WithName("AdminConsoleTenants")
+            .RequireRateLimiting("admin")
             .RequireAuthorization("Operator")
             .AddEndpointFilter<ActiveTenantEndpointFilter>();
 
@@ -70,16 +71,19 @@ public static class AdminConsoleEndpoints
         // are defence-in-depth against a future change to that fallback, and nothing more.
         app.MapGet($"{RoutePrefix}/schema", GetSchema)
             .WithName("AdminConsoleSchema")
+            .RequireRateLimiting("admin")
             .RequireAuthorization()
             .AddEndpointFilter<ActiveTenantEndpointFilter>();
 
         app.MapGet($"{RoutePrefix}/data-volume", GetDataVolumeAsync)
             .WithName("AdminConsoleDataVolume")
+            .RequireRateLimiting("admin")
             .RequireAuthorization()
             .AddEndpointFilter<ActiveTenantEndpointFilter>();
 
         app.MapGet($"{RoutePrefix}/qdrant", GetQdrantAsync)
             .WithName("AdminConsoleQdrant")
+            .RequireRateLimiting("admin")
             .RequireAuthorization("Operator")
             .AddEndpointFilter<ActiveTenantEndpointFilter>();
 

@@ -103,7 +103,8 @@ builder.Services.AddGrpc(options =>
 
 // CSR finding #7 (round 7): per-principal rate limit for the /v1/traces relay — 60/min per
 // "sub" claim, sliding window. The gRPC entity API's own per-principal limit is enforced by
-// RateLimitInterceptor (registered above); this policy covers the one HTTP (non-gRPC) endpoint.
+// RateLimitInterceptor (registered above). These named policies cover the HTTP (non-gRPC)
+// endpoints: "traces" the relay, "admin" the Operator admin routes (CSR round 12 §2.1).
 builder.Services.AddRateLimiter(options =>
 {
     // 429 Too Many Requests is the semantically correct rejection status for a rate limit
@@ -118,12 +119,39 @@ builder.Services.AddRateLimiter(options =>
             .LogWarning("[RateLimit] Rejected {Path}", ctx.HttpContext.Request.Path.ToString().SanitizeForLog());
         return ValueTask.CompletedTask;
     };
+    // CSR round 12 §2.2: besides each caller's 60/min, every caller's requests share one ceiling of
+    // 600/min, so the relay as a whole is bounded however many callers there are. A request takes
+    // the caller's permit first, then the shared one (SharedCeilingRateLimiter).
+    var tracesCeiling = new SlidingWindowRateLimiter(new SlidingWindowRateLimiterOptions
+    {
+        PermitLimit = 600,
+        Window = TimeSpan.FromMinutes(1),
+        SegmentsPerWindow = 6,
+        QueueLimit = 0
+    });
     options.AddPolicy("traces", ctx =>
+        RateLimitPartition.Get(
+            ctx.User.FindFirst("sub")?.Value ?? "anon",
+            _ => new SharedCeilingRateLimiter(
+                new SlidingWindowRateLimiter(new SlidingWindowRateLimiterOptions
+                {
+                    PermitLimit = 60,
+                    Window = TimeSpan.FromMinutes(1),
+                    SegmentsPerWindow = 6,
+                    QueueLimit = 0
+                }),
+                tracesCeiling)));
+
+    // CSR round 12 §2.1: the Operator HTTP admin routes (/admin/reconcile/{type}, /admin/dlq, its
+    // replay, and every /admin/console/* route) share one bucket of 30 per minute per caller.
+    // Every admin-automation caller is one user, so automation shares one bucket. /health is not an
+    // admin route.
+    options.AddPolicy("admin", ctx =>
         RateLimitPartition.GetSlidingWindowLimiter(
             ctx.User.FindFirst("sub")?.Value ?? "anon",
             _ => new SlidingWindowRateLimiterOptions
             {
-                PermitLimit = 60,
+                PermitLimit = 30,
                 Window = TimeSpan.FromMinutes(1),
                 SegmentsPerWindow = 6,
                 QueueLimit = 0
@@ -537,6 +565,8 @@ preAuthOptions.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string
 // the real per-sub policy, which has no "sub" claim to key on this early): the real 60/min budget
 // stays enforced by the unchanged post-auth limiter below.
 preAuthOptions.AddPolicy("traces", _ => RateLimitPartition.GetNoLimiter<string>("unlimited"));
+// The same for "admin" (CSR round 12 §2.1): its 30/min per-sub budget is the post-auth one.
+preAuthOptions.AddPolicy("admin", _ => RateLimitPartition.GetNoLimiter<string>("unlimited"));
 
 app.Use(ListenerPortGateAsync);
 app.UseRateLimiter(preAuthOptions);
@@ -670,7 +700,7 @@ app.MapPost("/admin/reconcile/{typeName}", async (
         () => audit.AdminOperation(httpContext.User, "Reconcile", typeName),
         result => Results.Ok(new { reconciledCount = result.Count, typeName }),
         httpContext.RequestAborted);
-}).WithName("Reconcile").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
+}).WithName("Reconcile").RequireRateLimiting("admin").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
 {
@@ -706,7 +736,7 @@ app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantS
     var visible = rows.Where(r => r.TenantId == actingTenantId || (r.TenantId is null && isOperator));
     audit.AdminOperation(httpContext.User, "ListDlq", null);
     return Results.Ok(visible);
-}).WithName("ListDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
+}).WithName("ListDlq").RequireRateLimiting("admin").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, Iverson.Api.PrivilegedRequests.PrivilegedRequestClient privileged, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
 {
@@ -753,7 +783,7 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, Iverso
         () => audit.AdminOperation(httpContext.User, "ReplayDlq", id.ToString()),
         _ => Results.Ok(new { replayed = true, id, topic = row.SourceTopic }),
         httpContext.RequestAborted);
-}).WithName("ReplayDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
+}).WithName("ReplayDlq").RequireRateLimiting("admin").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 // The admin console's four read-only JSON endpoints, under the same /admin prefix and — for
 // three of the four — the same Operator policy as the routes above. /admin/console/schema and
