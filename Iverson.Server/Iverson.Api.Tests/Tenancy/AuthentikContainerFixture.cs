@@ -40,7 +40,8 @@ namespace Iverson.Api.Tests.Tenancy;
 /// </summary>
 public sealed class AuthentikContainerFixture : IAsyncLifetime
 {
-    private const string AuthentikImage = "ghcr.io/goauthentik/server:2026.5.3"; // pinned to match docker-compose.yml / the Helm chart's default
+    // CSR round 12 §2.7: the digest docker-compose.yml pins; the Helm chart runs the same 2026.8.4 tag.
+    private const string AuthentikImage = "ghcr.io/goauthentik/server:2026.8.4@sha256:e7226ae116dac5aa0a5643803e735b010038f492c401e08e16b3bf1ac54c090c";
 
     /// <summary>
     /// Blueprint path (relative to Authentik's blueprints dir) of the service-clients blueprint
@@ -98,8 +99,14 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
     /// <summary>Base URL of the running Authentik instance, reachable from the test host.</summary>
     public string BaseUrl { get; private set; } = null!;
 
-    /// <summary>The API bootstrap token (superuser-equivalent), for constructing an <see cref="Iverson.Api.Tenancy.IdpAdminClient"/> against this instance.</summary>
-    public string AdminToken => BootstrapToken;
+    /// <summary>
+    /// A superuser API token, for constructing an <see cref="Iverson.Api.Tenancy.IdpAdminClient"/> against this instance
+    /// and arranging test state. Not the bootstrap token: the fixture applies the shipped superusers.yaml, which
+    /// deactivates <c>akadmin</c>, and Authentik then refuses akadmin's token (see <see cref="CreateTestAdminAsync"/>).
+    /// </summary>
+    public string AdminToken => TestAdminToken;
+
+    private static readonly string TestAdminToken = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
 
     /// <summary>
     /// The API token of the LEAST-PRIVILEGED <c>iverson-admin-orchestrator</c> service identity —
@@ -131,6 +138,12 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
 
         await WaitForRecoveryFlowBlueprintAsync();
         await EnsureServiceClientsBlueprintAppliedAsync();
+        await CreateTestAdminAsync();
+        await ImportBlueprintAsync(ShippedSuperusersBlueprint());
+        // The worker's own first apply of reputation.yaml can run before the stock login flow it binds, or
+        // recovery-flow.yaml's throttle stage and policy, exist, and is then retried only by the next hourly
+        // discovery. Apply the shipped file now (recovery-flow.yaml has applied: the wait above needs it).
+        await ImportBlueprintAsync(await File.ReadAllTextAsync(Path.Combine(BlueprintsDirectory(), "reputation.yaml")));
     }
 
     public async Task DisposeAsync()
@@ -365,12 +378,13 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
     /// assertion that an account WITH a second factor cannot complete the recovery flow without
     /// presenting it.
     /// <para>
-    /// This goes through <c>ak shell</c> rather than the REST API on purpose, and it is the one
-    /// place this fixture reaches past Authentik's public API: Authentik 2026.5.3 exposes no way
-    /// to enrol a device ON BEHALF OF another user. <c>TOTPDeviceSerializer.user</c> is
-    /// <c>read_only</c> (so neither the admin device endpoints nor a blueprint entry can set it),
-    /// and <c>POST /api/v3/authenticators/admin/totp/</c> answers 405 in any case — checked
-    /// against the running image, not assumed. The only API-shaped alternative would be to drive
+    /// This goes through <c>ak shell</c> rather than the REST API on purpose, as does
+    /// <see cref="CreateTestAdminAsync"/>; they are the two places this fixture reaches past
+    /// Authentik's public API. Authentik 2026.8.4 exposes no way to enrol a device ON BEHALF OF
+    /// another user: <c>TOTPDeviceSerializer.user</c> is <c>read_only</c>, so neither the admin
+    /// device endpoint (<c>/api/v3/authenticators/admin/totp/</c>, a full model viewset in
+    /// 2026.8.4) nor a blueprint entry can set the device's owner
+    /// (<c>stages/authenticator_totp/api.py</c>). The only API-shaped alternative would be to drive
     /// the whole interactive TOTP-setup flow, which tests the setup flow rather than the thing
     /// under test here.
     /// </para>
@@ -391,6 +405,73 @@ public sealed class AuthentikContainerFixture : IAsyncLifetime
             throw new InvalidOperationException(
                 $"Failed to enrol a TOTP device for '{username}' (exit {result.ExitCode}).\n" +
                 $"stdout: {Truncate(result.Stdout)}\nstderr: {Truncate(result.Stderr)}");
+    }
+
+    /// <summary>
+    /// Creates <c>iverson-test-admin</c> in <c>authentik Admins</c> with an API token whose key is
+    /// <see cref="TestAdminToken"/>, through <c>ak shell</c> like <see cref="EnrollTotpDeviceAsync"/>. The
+    /// bootstrap token belongs to <c>akadmin</c>, which the shipped superusers.yaml deactivates; this
+    /// token outlives that. <c>expiring</c> is off because Authentik rotates an expiring API token's key
+    /// when it is saved.
+    /// </summary>
+    private async Task CreateTestAdminAsync()
+    {
+        var script =
+            "from authentik.core.models import Group, Token, TokenIntents, User\n" +
+            "u, _ = User.objects.get_or_create(username='iverson-test-admin', defaults={'name': 'Iverson test admin'})\n" +
+            "u.groups.add(Group.objects.get(name='authentik Admins'))\n" +
+            "Token.objects.update_or_create(identifier='iverson-test-admin-token', defaults={'user': u, " +
+            $"'intent': TokenIntents.INTENT_API, 'key': '{TestAdminToken}', 'expiring': False}})\n" +
+            "print('ADMIN-READY', u.pk)\n";
+
+        var result = await _authentikServer.ExecAsync(["ak", "shell", "-c", script]);
+        if (result.ExitCode != 0 || !result.Stdout.Contains("ADMIN-READY"))
+            throw new InvalidOperationException(
+                $"Failed to create the fixture's superuser token (exit {result.ExitCode}).\n" +
+                $"stdout: {Truncate(result.Stdout)}\nstderr: {Truncate(result.Stderr)}");
+    }
+
+    /// <summary>
+    /// Applies blueprint text synchronously through <c>POST /api/v3/managed/blueprints/import/</c>, as
+    /// <see cref="AdminToken"/>, and fails unless Authentik reports that every entry applied.
+    /// </summary>
+    public async Task ImportBlueprintAsync(string content)
+    {
+        using var client = new HttpClient { BaseAddress = new Uri(BaseUrl) };
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AdminToken);
+        using var form = new MultipartFormDataContent
+        {
+            { new ByteArrayContent(Encoding.UTF8.GetBytes(content)), "file", "blueprint.yaml" }
+        };
+        using var response = await client.PostAsync("/api/v3/managed/blueprints/import/", form);
+        var body = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Blueprint import failed (HTTP {(int)response.StatusCode}): {Truncate(body)}");
+        using var doc = JsonDocument.Parse(body);
+        if (!doc.RootElement.GetProperty("success").GetBoolean())
+            throw new InvalidOperationException($"Blueprint import did not apply: {Truncate(body)}");
+    }
+
+    /// <summary>
+    /// CSR round 12 §2.7: the <c>superusers.yaml</c> block of <c>templates/blueprints-configmap.yaml</c>,
+    /// dedented. Helm ships it rendered into the blueprints ConfigMap, not under <c>blueprints/</c>, so
+    /// this fixture's mount never sees it; applying the shipped text runs the facts against the
+    /// deployed superuser refusal, with <c>akadmin</c> inactive as on a Helm install.
+    /// </summary>
+    private static string ShippedSuperusersBlueprint()
+    {
+        var path = Path.Combine(Path.GetDirectoryName(BlueprintsDirectory())!, "templates", "blueprints-configmap.yaml");
+        var lines = File.ReadAllLines(path);
+        var key = Array.IndexOf(lines, "  superusers.yaml: |");
+        if (key < 0)
+            throw new InvalidOperationException($"'{path}' no longer carries superusers.yaml.");
+        var text = string.Join('\n', lines.Skip(key + 1)
+            .TakeWhile(line => line.Trim().Length == 0 || line.StartsWith("    ", StringComparison.Ordinal))
+            .Select(line => line.Length >= 4 ? line[4..] : "")) + "\n";
+        if (text.Contains("{{", StringComparison.Ordinal))
+            throw new InvalidOperationException("superusers.yaml now carries Helm templating; render it before applying it here.");
+        return text;
     }
 
     private static string Truncate(string? value) =>

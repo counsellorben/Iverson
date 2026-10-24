@@ -186,6 +186,22 @@ entries:
     attrs:
       name: iverson-api
       provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-oidc-default]]
+  # CSR round-12 §2.2: only admins sign in to the console: tenant-admins members and, on compose,
+  # members of the dev-only operators group (Helm reads the operator list instead, in
+  # templates/secret-service-clients.yaml's copy after iverson-api). Everyone else gets "Permission
+  # denied" at authorize.
+  - model: authentik_policies_expression.expressionpolicy
+    id: console-admins
+    identifiers:
+      name: iverson-console-admins
+    attrs:
+      expression: |
+        return ak_is_group_member(request.user, name="tenant-admins") or ak_is_group_member(request.user, name="operators")
+  - model: authentik_policies.policybinding
+    identifiers:
+      policy: !KeyOf console-admins
+      target: !Find [authentik_core.application, [slug, iverson-api]]
+      order: 0
   - model: authentik_brands.brand
     identifiers:
       domain: authentik-default
@@ -294,7 +310,9 @@ entries:
     identifiers:
       name: iverson-loadtest-bypass
     attrs: {}
-  # Idempotent duplicate of ../operators-group.yaml: the synchronous import must not depend on worker discovery order. Do not dedupe.
+  # Compose only (CSR round-12 §2.4): the dev-only Operator fallback, which docker-compose.yml turns on
+  # with Authorization:OperatorGroupFallback=operators, and the console sign-in policy below reads.
+  # Helm marks this group absent (templates/blueprints-configmap.yaml).
   - model: authentik_core.group
     identifiers:
       name: operators
@@ -317,10 +335,6 @@ entries:
         # Authentik UI step. Never blueprinted for a deployment overlay -- see
         # docs/runbooks/operator-access-onboarding.md.
         - !Find [authentik_core.group, [name, operators]]
-  - model: authentik_core.group
-    identifiers:
-      name: tenant-admins
-    attrs: {}
   # CSR round-3 finding #1 remediation: this file is a hand-maintained mirror of the Helm
   # template at ../../templates/secret-service-clients.yaml (rendered, with the
   # dev-only static credentials substituted for Helm's generated ones — finding #15 later
@@ -347,6 +361,17 @@ entries:
         - authentik_core.add_user
         - authentik_core.view_user
         - authentik_core.view_group
+  # CSR round-12 §2.4: as in the Helm template, the role may add and remove members of the
+  # tenant-admins group object and of no other, and this entry stays after the role entry.
+  - model: authentik_core.group
+    identifiers:
+      name: tenant-admins
+    attrs: {}
+    permissions:
+      - permission: authentik_core.add_user_to_group
+        role: !Find [authentik_rbac.role, [name, iverson-admin-orchestrator]]
+      - permission: authentik_core.remove_user_from_group
+        role: !Find [authentik_rbac.role, [name, iverson-admin-orchestrator]]
   - model: authentik_rbac.initialpermissions
     identifiers:
       name: iverson-admin-orchestrator-created-users

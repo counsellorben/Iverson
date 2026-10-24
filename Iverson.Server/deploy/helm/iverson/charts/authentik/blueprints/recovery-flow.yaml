@@ -53,6 +53,55 @@ entries:
       designation: recovery
       authentication: require_unauthenticated
 
+  # CSR round-12 §2.5: the login throttle. It is defined here, in the document that creates
+  # iverson-recovery, so this flow never exists without it (§6, a gate in its target's document: this
+  # file applies as a whole or not at all). reputation.yaml binds the same stage to the stock login flow.
+  # True when the attempt must be refused, by either rule, for the client address Authentik records:
+  # - pair: the rows whose identifier is the pending user's username or email sum to -5 or less;
+  # - address: the negative rows sum to -50 or less. Each row is floored at -5, so this needs failures
+  #   against at least ten identifiers; fewer accounts are stopped by the pair rule first.
+  # A failed identification, password or MFA code lowers its row and a successful login raises it,
+  # each by one and within -5..+5 (an unknown username scores at identification too). A row expires
+  # an hour after it is created (AUTHENTIK_REPUTATION__EXPIRY).
+  - id: login-throttle
+    model: authentik_policies_expression.expressionpolicy
+    identifiers:
+      name: iverson-login-throttle
+    attrs:
+      expression: |
+        from django.db.models import Sum
+        from authentik.policies.reputation.models import Reputation
+        ip = str(ak_client_ip)
+        user = request.user
+        identifiers = [i for i in (getattr(user, "username", None), getattr(user, "email", None)) if i]
+        pair = Reputation.objects.filter(ip=ip, identifier__in=identifiers).aggregate(total=Sum("score"))["total"] or 0
+        address = Reputation.objects.filter(ip=ip, score__lt=0).aggregate(total=Sum("score"))["total"] or 0
+        return pair <= -5 or address <= -50
+  - id: login-throttled
+    model: authentik_stages_deny.denystage
+    identifiers:
+      name: iverson-login-throttled
+    attrs:
+      deny_message: Too many failed attempts. Try again later.
+  # A deny stage runs only when its policy passes. Evaluated when the stage is reached
+  # (evaluate_on_plan false, re_evaluate_policies true), so it sees the pending user. First, before any
+  # prompt, device or password write. Stage-level, not flow-level: a recovery link carries a pre-built
+  # plan, which skips flow-level policies.
+  - id: recovery-throttle-binding
+    model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf flow
+      stage: !KeyOf login-throttled
+    attrs:
+      order: 0
+      evaluate_on_plan: false
+      re_evaluate_policies: true
+  - model: authentik_policies.policybinding
+    identifiers:
+      policy: !KeyOf login-throttle
+      target: !KeyOf recovery-throttle-binding
+      order: 0
+
   - id: prompt-field-password
     model: authentik_stages_prompt.prompt
     identifiers:
@@ -133,8 +182,8 @@ entries:
       name: iverson-recovery-user-login
 
   # Stage chain: prompt (1) -> MFA validation or TOTP enrolment (2) -> user_write (3) -> user_login (4)
-  # -> redirect to the console (5). Order 0 is left for the Helm-only refusal of superusers on the
-  # public listener (templates/blueprints-configmap.yaml, superusers.yaml).
+  # -> redirect to the console (5). Order 0 holds the login throttle (above) and, on Helm, the refusal
+  # of superusers on the public listener (templates/blueprints-configmap.yaml, superusers.yaml).
   #
   # `order` lives in attrs, NOT in identifiers (authentik's own default blueprints put it in
   # identifiers, but they only ever APPEND stages at sparse orders). Inserting the MFA stage

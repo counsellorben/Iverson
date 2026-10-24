@@ -6,6 +6,9 @@ entries:
     identifiers:
       name: default-authentication-mfa-validation
     attrs:
+      # A user with no device enrols one at first login, which the dev profiles' scripted identities
+      # rely on. CSR round-12 §2.5: Helm renders deny here where global.provisionTestIdentities is
+      # false (templates/blueprints-configmap.yaml), so there a user with no device is refused.
       not_configured_action: configure
       device_classes:
         - totp

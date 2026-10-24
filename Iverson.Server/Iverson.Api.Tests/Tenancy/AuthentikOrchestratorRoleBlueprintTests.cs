@@ -108,6 +108,36 @@ public sealed class AuthentikOrchestratorRoleBlueprintTests
     }
 
     /// <summary>
+    /// CSR round 12 §2.4: the orchestrator role may add and remove members of the tenant-admins group object,
+    /// and of no other, in both carriers. The entry must come after the role entry: on a fresh install the
+    /// importer resolves the role when it reaches the entry and skips the grant, without error, while the role
+    /// does not exist yet (Verified assumption 73). The live fixture applies the compose copy more than once, so
+    /// only this check catches the order.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(BlueprintFiles))]
+    public void TenantAdminsGroup_GrantsTheOrchestratorRoleTheMembershipVerbs_AfterTheRoleEntry(string blueprintPath)
+    {
+        var lines = File.ReadAllLines(blueprintPath).Select(line => line.Trim()).ToArray();
+        var role = Array.IndexOf(lines, "name: iverson-admin-orchestrator");
+        var group = Array.IndexOf(lines, "name: tenant-admins");
+        role.Should().BeGreaterThanOrEqualTo(0);
+        group.Should().BeGreaterThan(role, $"'{Path.GetFileName(blueprintPath)}' must declare tenant-admins after the role entry");
+        lines.Count(line => line == "name: tenant-admins").Should().Be(1);
+
+        const string roleRef = "role: !Find [authentik_rbac.role, [name, iverson-admin-orchestrator]]";
+        lines.Skip(group + 1).TakeWhile(line => !line.StartsWith("- model:", StringComparison.Ordinal))
+            .Where(line => line.Length > 0 && !line.StartsWith('#'))
+            .Should().Equal(
+                "attrs: {}",
+                "permissions:",
+                "- permission: authentik_core.add_user_to_group",
+                roleRef,
+                "- permission: authentik_core.remove_user_from_group",
+                roleRef);
+    }
+
+    /// <summary>
     /// Collects the items of a YAML list that follows <paramref name="listKey"/>, which in turn
     /// follows <paramref name="anchor"/>. Indentation-insensitive (the two files nest the same
     /// entries at different depths, since one is embedded in a Helm Secret's stringData), which is

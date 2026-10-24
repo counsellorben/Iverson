@@ -384,6 +384,9 @@ services:
       # 127.0.0.2, the source address the tls-proxy sharing this network namespace binds
       # (deploy/compose-tls-proxy.conf). Any other peer is untrusted and recorded as itself.
       AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS: "127.0.0.2/32"
+      # CSR round-12 §2.5: a reputation row expires an hour after it is created; the login throttle
+      # (blueprints/recovery-flow.yaml) sums only live rows.
+      AUTHENTIK_REPUTATION__EXPIRY: "3600"
     ports:
       - "127.0.0.1:9000:9000"
     volumes:
@@ -426,6 +429,9 @@ services:
       IVERSON_ADMIN_ORCHESTRATOR_TOKEN: ${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
       # CSR round-10 #4/#16: where the recovery flow sends an invitee (recovery-flow.yaml's !Env).
       IVERSON_CONSOLE_URL: http://localhost:5173/
+      # CSR round-12 §2.5: a reputation row expires an hour after it is created; the login throttle
+      # (blueprints/recovery-flow.yaml) sums only live rows.
+      AUTHENTIK_REPUTATION__EXPIRY: "3600"
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
     depends_on:
