@@ -519,8 +519,9 @@ resource "aws_eks_addon" "vpc_cni" {
   cluster_name = aws_eks_cluster.this.name
   addon_name   = "vpc-cni"
   # Must stay compatible with the pinned var.kubernetes_version (currently
-  # "1.30") — bump deliberately alongside that variable, don't let it float.
-  addon_version = "v1.18.5-eksbuild.1"
+  # "1.35") — bump deliberately alongside that variable, don't let it float.
+  # CSR round 12 §3.6: the latest EKS-type version AWS lists for 1.35 (user guide, "Amazon VPC CNI versions").
+  addon_version = "v1.23.1-eksbuild.1"
   configuration_values = jsonencode({
     enableNetworkPolicy = "true"
   })
@@ -543,8 +544,10 @@ resource "aws_eks_addon" "ebs_csi" {
   cluster_name = aws_eks_cluster.this.name
   addon_name   = "aws-ebs-csi-driver"
   # Must stay compatible with the pinned var.kubernetes_version (currently
-  # "1.30") — bump deliberately alongside that variable, don't let it float.
-  addon_version               = "v1.37.0-eksbuild.1"
+  # "1.35") — bump deliberately alongside that variable, don't let it float.
+  # CSR round 12 §3.6: AWS publishes no per-version table for this add-on; the first deploy confirms the
+  # pin with `aws eks describe-addon-versions --addon-name aws-ebs-csi-driver --kubernetes-version 1.35`.
+  addon_version               = "v1.66.1-eksbuild.1"
   service_account_role_arn    = aws_iam_role.ebs_csi_irsa.arn
   depends_on                  = [aws_iam_role_policy_attachment.ebs_csi_irsa]
   resolve_conflicts_on_create = "OVERWRITE"
@@ -564,9 +567,10 @@ locals {
   }
 }
 
-# /dev/xvda is the root device of the EKS-optimized AL2 x86_64 AMI that
-# these node groups take (they set no ami_type and the cluster pins
-# kubernetes_version 1.30) — naming a different device here would silently
+# /dev/xvda is the root device of the EKS-optimized AL2023 x86_64 AMI that
+# these node groups take (ami_type AL2023_x86_64_STANDARD below; EKS publishes
+# no AL2 AMI for Kubernetes 1.33 and later, and the cluster pins
+# kubernetes_version 1.35) — naming a different device here would silently
 # ADD a second volume instead of encrypting the root, leaving the root
 # volume this task exists to encrypt untouched. volume_size must be set
 # here rather than via the node group's disk_size argument: EKS rejects a
@@ -607,6 +611,9 @@ resource "aws_eks_node_group" "pools" {
   node_role_arn   = aws_iam_role.node.arn
   subnet_ids      = aws_subnet.private[*].id
   instance_types  = [each.value.instance_type]
+  # CSR round 12 §3.6: EKS publishes no AL2 AMI for 1.33 and later; AL2023 keeps the /dev/xvda root
+  # device the launch template encrypts.
+  ami_type = "AL2023_x86_64_STANDARD"
 
   launch_template {
     id      = aws_launch_template.pools[each.key].id

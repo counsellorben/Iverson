@@ -10,7 +10,7 @@ variable "location" {
 
 variable "kubernetes_version" {
   type    = string
-  default = "1.30"
+  default = "1.35"
 }
 
 # No default — same rationale as cluster-aws's api_public_access_cidrs:

@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# CSR round 12 §3.6: kind-config.yaml pins kindest/node:v1.35.8, which was run with kind v0.33.0; an older
+# kind is refused before anything touches the cluster.
+KIND_MIN=v0.33.0
+KIND_VERSION="$(kind version | awk '{ print $2 }')"
+if [ "$(printf '%s\n%s\n' "$KIND_MIN" "${KIND_VERSION%%-*}" | sort -V | head -n 1)" != "$KIND_MIN" ]; then
+  echo "kind $KIND_VERSION is older than $KIND_MIN, the version kind-config.yaml's node image was run with; install kind $KIND_MIN or later and recreate the cluster" >&2
+  exit 1
+fi
+
 # If your `docker` CLI is actually podman (podman-docker shim) or you set
 # KIND_EXPERIMENTAL_PROVIDER=podman directly, podman's default PidsLimit (2048) on the
 # kind node container becomes the *entire* node's pids budget, which systemd then divides

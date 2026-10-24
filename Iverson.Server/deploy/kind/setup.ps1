@@ -1,5 +1,13 @@
 $ErrorActionPreference = "Stop"
 
+# CSR round 12 §3.6: kind-config.yaml pins kindest/node:v1.35.8, which was run with kind v0.33.0; an older
+# kind is refused before anything touches the cluster.
+$KindMin = [version]"0.33.0"
+$KindVersion = ("$(kind version)" -split '\s+')[1]
+if ([version](($KindVersion.TrimStart('v') -split '-')[0]) -lt $KindMin) {
+  throw "kind $KindVersion is older than v$KindMin, the version kind-config.yaml's node image was run with; install kind v$KindMin or later and recreate the cluster"
+}
+
 # If running with KIND_EXPERIMENTAL_PROVIDER=podman (e.g. podman on WSL2), podman's default
 # PidsLimit (2048) on the kind node container becomes the *entire* node's pids budget, which
 # systemd then divides across every pod/container cgroup inside it — StarRocks BE alone needs

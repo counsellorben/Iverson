@@ -10,7 +10,7 @@ variable "region" {
 
 variable "kubernetes_version" {
   type    = string
-  default = "1.30"
+  default = "1.35"
 }
 
 variable "vpc_cidr" {
