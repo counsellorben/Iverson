@@ -1,6 +1,7 @@
 import { getJson } from "./client";
 import type { ApiFetcher } from "./client";
 import type {
+  ConsoleRolesResponse,
   DataVolumeResponse,
   HealthResponse,
   MetricsResponse,
@@ -10,7 +11,7 @@ import type {
 } from "./types";
 
 /**
- * The console's six read endpoints, one typed fetcher each, in the shape
+ * The console's seven read endpoints, one typed fetcher each, in the shape
  * `usePolledResource` drives.
  *
  * These are module-level constants on purpose: a widget can pass one straight to the hook
@@ -24,20 +25,17 @@ import type {
 export const CONSOLE_ROUTE_PREFIX = "/admin/console";
 
 /**
- * Operator-gated: a cross-tenant enumeration. A non-Operator gets `kind: "forbidden"` with a
- * null `error` — the server's 403 carries no body. UNTIL AN OPERATOR IS ONBOARDED, this is the
- * outcome every human gets: the `operators` Authentik group exists and its claim is wired
- * through, but membership is a deliberate one-time manual step (not blueprinted, to avoid
- * hardcoding a privilege escalation) — see
- * `docs/runbooks/operator-access-onboarding.md`. Render it as "not authorized", not as a
- * request failure.
+ * Operator-gated: a cross-tenant enumeration. A caller who is not an Operator gets
+ * `kind: "forbidden"` with a null `error` — the server's 403 carries no body. The landing page
+ * shows this card to Operators only (CSR round 12 §2.2), so a 403 here means the caller's roles
+ * changed after the console read them. Render it as "not authorized", not as a request failure.
  */
 export const fetchTenants: ApiFetcher<TenantsResponse> = (token, signal) =>
   getJson<TenantsResponse>(`${CONSOLE_ROUTE_PREFIX}/tenants`, token, signal);
 
 /**
- * Authenticated, not Operator-gated: it filters per-row and per-field internally. Check
- * `withheldTypeCount` before rendering an empty catalog as "no types".
+ * ConsoleAdmin (an Operator or a tenant admin): within that it filters per row and per field.
+ * Check `withheldTypeCount` before rendering an empty catalog as "no types".
  */
 export const fetchSchema: ApiFetcher<SchemaCatalogResponse> = (token, signal) =>
   getJson<SchemaCatalogResponse>(`${CONSOLE_ROUTE_PREFIX}/schema`, token, signal);
@@ -55,13 +53,13 @@ export const fetchDataVolume: ApiFetcher<DataVolumeResponse> = (token, signal) =
 
 /**
  * Operator-gated: collection names are tenant-scoped, so enumerating them is cross-tenant.
- * Answers `kind: "forbidden"` for every human today — see {@link fetchTenants}.
+ * A caller who is not an Operator gets `kind: "forbidden"` — see {@link fetchTenants}.
  */
 export const fetchQdrant: ApiFetcher<QdrantResponse> = (token, signal) =>
   getJson<QdrantResponse>(`${CONSOLE_ROUTE_PREFIX}/qdrant`, token, signal);
 
 /**
- * Operator-gated, so `kind: "forbidden"` for every human today — see {@link fetchTenants}.
+ * Operator-gated: a caller who is not an Operator gets `kind: "forbidden"` — see {@link fetchTenants}.
  * Otherwise answers 503 with `reason` `"notDeployed"` (Prometheus is not installed in
  * this profile — a supported configuration) or `"unreachable"` (installed but not
  * answering); both arrive as `kind: "problem"` with the reason lifted out. Individual metric
@@ -84,3 +82,12 @@ export const fetchMetrics: ApiFetcher<MetricsResponse> = (token, signal) =>
  */
 export const fetchHealth: ApiFetcher<HealthResponse> = (token, signal) =>
   getJson<HealthResponse>("/health", token, signal, { bodyBearingStatuses: [503] });
+
+/**
+ * The caller's console roles (CSR round 12 §2.2). Any console token gets an answer, a user with
+ * neither role included (`{ operator: false, tenantAdmin: false }`); there is no active-tenant
+ * filter, because an operator carries no `tenant_id`. `RolesProvider` reads it once per session
+ * token, and every route guard and the sidebar render from that one answer.
+ */
+export const fetchRoles: ApiFetcher<ConsoleRolesResponse> = (token, signal) =>
+  getJson<ConsoleRolesResponse>(`${CONSOLE_ROUTE_PREFIX}/roles`, token, signal);

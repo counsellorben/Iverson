@@ -156,9 +156,9 @@ describe("QdrantCollectionsWidget", () => {
     expect(card()).not.toHaveTextContent("NaN");
   });
 
-  it("renders the 403 every human gets today as an authorization answer, not a fault", async () => {
-    // Operator-gated, and nobody satisfies the Operator policy today (Design 4d). A red
-    // "request failed" card here would send an operator debugging a working Qdrant.
+  it("renders a 403 as an authorization answer, not a fault", async () => {
+    // Operator-gated. A red "request failed" card here would send an operator debugging a
+    // working Qdrant.
     fetchQdrantMock.mockResolvedValue({ kind: "forbidden", status: 403, error: null });
 
     render(<QdrantCollectionsWidget accessToken={TOKEN} />);

@@ -61,7 +61,7 @@ export function metricsUnavailable(reason: string): ApiResult<MetricsResponse> {
   };
 }
 
-/** What every human gets from this endpoint today: an Operator-gated 403 with no body. */
+/** What a caller who is not an Operator gets from this endpoint: a 403 with no body. */
 export function metricsForbidden(): ApiResult<MetricsResponse> {
   return { kind: "forbidden", status: 403, error: null };
 }

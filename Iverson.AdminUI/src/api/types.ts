@@ -28,7 +28,7 @@ export interface TenantsResponse {
   tenants: TenantSummary[];
 }
 
-// ── /admin/console/schema (authenticated) ─────────────────────────────────────
+// ── /admin/console/schema (ConsoleAdmin: Operator or tenant admin) ────────────
 
 export type RelationKind = "OneToOne" | "OneToMany" | "ManyToOne" | "ManyToMany";
 
@@ -58,7 +58,7 @@ export interface SchemaCatalogResponse {
   withheldTypeCount: number;
 }
 
-// ── /admin/console/data-volume (authenticated) ────────────────────────────────
+// ── /admin/console/data-volume (ConsoleAdmin: Operator or tenant admin) ───────
 
 /**
  * One counted type. `status` is always `"counted"` as the endpoint is written — a denied
@@ -149,6 +149,17 @@ export interface QdrantResponse {
    * who got a 200 is entitled to all of them.
    */
   unreadableCollectionCount: number;
+}
+
+// ── /admin/console/roles (any console token) ──────────────────────────────────
+
+/**
+ * The caller's console roles, computed by the server with the functions behind its own `Operator` and
+ * `TenantAdmin` policies (CSR round 12 §2.2), so the console's guards and the server agree.
+ */
+export interface ConsoleRolesResponse {
+  operator: boolean;
+  tenantAdmin: boolean;
 }
 
 // ── /health (anonymous, also served on the admin-api host) ────────────────────

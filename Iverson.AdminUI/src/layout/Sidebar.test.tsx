@@ -1,99 +1,72 @@
 import { render, screen } from "@testing-library/react";
 import { BrowserRouter } from "react-router";
-import { describe, it, expect, vi } from "vitest";
-
-const useAuthMock = vi.fn();
-
-vi.mock("react-oidc-context", () => ({
-  useAuth: () => useAuthMock(),
-}));
-
+import { describe, it, expect } from "vitest";
+import { ConsoleRolesContext } from "../auth/roles";
+import type { ConsoleRoleState } from "../auth/roles";
 import { Sidebar } from "./Sidebar";
 
-function renderSidebar(groups: string[]) {
-  renderSidebarWithClaim(groups);
-}
-
-/**
- * Widened to `unknown` because the `groups` claim is not typed as an array anywhere — an OIDC
- * profile claim is `unknown`, and the tests below need to feed the sidebar shapes other than a
- * string array to pin how it reads membership.
- */
-function renderSidebarWithClaim(groups: unknown) {
-  useAuthMock.mockReturnValue({
-    user: {
-      profile: {
-        groups,
-      },
-    },
-  });
-
-  render(
-    <BrowserRouter>
-      <Sidebar />
-    </BrowserRouter>
+function renderSidebar(state: ConsoleRoleState) {
+  return render(
+    <ConsoleRolesContext.Provider value={state}>
+      <BrowserRouter>
+        <Sidebar />
+      </BrowserRouter>
+    </ConsoleRolesContext.Provider>
   );
 }
 
+function ready(operator: boolean, tenantAdmin: boolean): ConsoleRoleState {
+  return { status: "ready", roles: { operator, tenantAdmin } };
+}
+
+const CHECKING: ConsoleRoleState = { status: "checking" };
+const UNAVAILABLE: ConsoleRoleState = {
+  status: "unavailable",
+  failure: { kind: "failed", status: null, message: "network down" },
+};
+
 describe("Sidebar", () => {
-  it("renders Performance and Storage links unconditionally (operator only)", () => {
-    renderSidebar(["operators"]);
+  it("offers Tenants, and not Tenant Admin, to an operator", () => {
+    renderSidebar(ready(true, false));
 
-    expect(screen.getByRole("link", { name: "Performance" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Storage" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Tenants" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Tenant Admin" })).not.toBeInTheDocument();
   });
 
-  it("renders Performance and Storage links unconditionally (tenant-admin only)", () => {
-    renderSidebar(["tenant-admins"]);
+  it("offers Tenant Admin, and not Tenants, to a tenant admin", () => {
+    renderSidebar(ready(false, true));
 
-    expect(screen.getByRole("link", { name: "Performance" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Storage" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Tenants" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Tenant Admin" })).toBeInTheDocument();
   });
 
-  it("renders all links when user has both roles", () => {
-    renderSidebar(["operators", "tenant-admins"]);
+  it("offers both to a caller with both roles", () => {
+    renderSidebar(ready(true, true));
 
-    expect(screen.getByRole("link", { name: "Performance" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Storage" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Tenants" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Tenant Admin" })).toBeInTheDocument();
   });
 
-  it("renders only Performance and Storage links when user has neither role", () => {
-    renderSidebar([]);
-
-    expect(screen.getByRole("link", { name: "Performance" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Storage" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Tenants" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Tenant Admin" })).not.toBeInTheDocument();
-  });
-
-  it("does not offer Tenants to a member of a group that merely CONTAINS 'operators'", () => {
-    // The sidebar shares its membership check with the RequireGroup route guard, so this is
-    // the same escalation pinned in both places: substring matching would show a nav item to a
-    // member of `non-operators`. A hidden link and a blocked route must agree.
-    renderSidebar(["non-operators", "non-tenant-admins"]);
+  it("offers neither to a signed-in user with neither role", () => {
+    renderSidebar(ready(false, false));
 
     expect(screen.queryByRole("link", { name: "Tenants" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Tenant Admin" })).not.toBeInTheDocument();
   });
 
-  it("reads whole names out of a space-joined claim string, not substrings of it", () => {
-    renderSidebarWithClaim("non-operators tenant-admins");
-
-    expect(screen.queryByRole("link", { name: "Tenants" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Tenant Admin" })).toBeInTheDocument();
+  it("offers no privileged link while the roles are being read, or when they could not be read", () => {
+    for (const state of [CHECKING, UNAVAILABLE]) {
+      const { unmount } = renderSidebar(state);
+      expect(screen.queryByRole("link", { name: "Tenants" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "Tenant Admin" })).not.toBeInTheDocument();
+      unmount();
+    }
   });
 
-  it("offers no privileged link when the groups claim is missing entirely", () => {
-    renderSidebarWithClaim(undefined);
+  it("no longer links the removed Performance and Storage pages", () => {
+    renderSidebar(ready(true, true));
 
-    expect(screen.getByRole("link", { name: "Performance" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Tenants" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Tenant Admin" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Performance" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Storage" })).not.toBeInTheDocument();
   });
 });

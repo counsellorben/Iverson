@@ -80,9 +80,9 @@ describe("TenantRosterWidget", () => {
   });
 
   it("renders a 403 as an explicit not-authorized state, not as an error", async () => {
-    // This is what EVERY human gets today: the endpoint is Operator-gated and nobody
-    // satisfies the Operator policy in the deployment (Design 4d). The 403 also carries no
-    // body, so there is nothing to read out of it but the status.
+    // The endpoint is Operator-gated. The landing page shows this card to Operators only, but a
+    // caller's roles can change mid-session. The 403 also carries no body, so there is nothing to
+    // read out of it but the status.
     fetchTenantsMock.mockResolvedValue({ kind: "forbidden", status: 403, error: null });
 
     render(<TenantRosterWidget accessToken={TOKEN} />);
