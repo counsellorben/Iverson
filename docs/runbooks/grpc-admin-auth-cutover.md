@@ -13,8 +13,9 @@ There is no grace period. Confirm before deploying:
 - Every service/automation caller (loadtest, webtest, admin-automation, and any future caller) has its
   `client_id`/`client_secret` and is wired to fetch a token via its SDK's `IversonClientCredentials`
   (or per-language equivalent) — not just deployed with the old unauthenticated call construction.
-- Any human operator who needs `/admin/*` access is already a member of Authentik's `operators` Group
-  (Task 10 Step 9 — this part has no automated coverage; see below).
+- Any human operator who needs `/admin/*` access has their `sub` on the release's operator list,
+  `global.operatorSubjects` (`docs/runbooks/operator-access-onboarding.md` — this part has no automated
+  coverage; see below).
 
 ## FIXED (CSR round-3 finding #15): a fresh install no longer needs a two-pass `helm upgrade`
 
@@ -92,14 +93,13 @@ kubectl -n <ns> rollout restart deployment/<release>-api
 
 ## Known gap: the human/browser OIDC path has no automated verification
 
-The interactive Authorization Code + PKCE + MFA flow a human operator uses to log in and pick up the
-`operators` group membership can't be scripted meaningfully. After any deploy where operator access
-matters, manually confirm:
-1. Log into Authentik's UI as the operator.
-2. Add the operator's user to the `operators` Group (if not already a member).
-3. Complete a browser-based OIDC login against the `iverson-api` application.
-4. Confirm the resulting token's `groups` claim contains `operators` and that it's accepted on
-   `/admin/*`.
+The interactive Authorization Code + PKCE + MFA flow a human operator uses to sign in to the console
+can't be scripted meaningfully. After any deploy where operator access matters, manually confirm:
+1. The operator's `sub` is on `global.operatorSubjects`, the api pods have rolled with it, and
+   service-clients blueprint has been re-applied (`docs/runbooks/csr11-identity-plane.md` §2).
+2. Complete a browser-based OIDC login against the `iverson-api` application (the console).
+3. Confirm `GET /admin/console/roles` answers `"operator": true` for the resulting token and that
+   `/admin/*` accepts it.
 
 ## Related
 

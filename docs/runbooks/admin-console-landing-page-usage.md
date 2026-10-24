@@ -16,15 +16,20 @@ Two **independent** requirements. Most of the confusion about this console comes
 satisfying one and not the other, because each fails differently and neither failure
 looks like a misconfiguration.
 
-### Requirement A — membership in the `operators` group
+### Requirement A — a console role: Operator or tenant admin
 
-`OperatorAuthorizationPolicy` gates three of the nine widgets — the tenant roster, the
-metrics band, and Qdrant collections — on a token whose `groups` claim contains
-`operators`.
+Only admins sign in to the console (CSR round 12). Authentik's sign-in policy on the
+`iverson-api` application admits the operators and the members of `tenant-admins`, and
+refuses everyone else with "Permission denied" before the console loads. An operator is a
+principal whose `sub` is on the release's operator list, `global.operatorSubjects` (on
+compose, a member of the dev-only `operators` group). The console reads the caller's roles
+from `GET /admin/console/roles` and shows the cards those roles allow: the tenant roster, the
+metrics band and Qdrant collections need Operator; the schema catalog and data volume need
+either role.
 
-**Without it:** those widgets render an explicit "not authorized" card. Not an error, not
-an empty list. That is designed behaviour, so a non-operator seeing refusals is correct
-output rather than a fault.
+**Without either role:** the sign-in stops at Authentik's "Permission denied". **A tenant
+admin who is not an operator** sees no tenant roster, metrics band or Qdrant card. That is
+designed behaviour, not a fault.
 
 ### Requirement B — a `tenant_id` user attribute
 
@@ -41,8 +46,8 @@ type.
 **Without it:** the schema catalog and the data-volume list both come back empty — *even
 for a full operator*. Types registered with no owning tenant are counted as withheld or
 denied; every tenant-owned type is absent altogether, so there may be no "not shown" line
-either. The page looks broken while behaving exactly as specified. Group membership does
-not rescue this; the two requirements are orthogonal.
+either. The page looks broken while behaving exactly as specified. A role does not
+rescue this; the two requirements are orthogonal.
 
 > A `tenant_id` that does not match a provisioned tenant is not an error either. The
 > store has no database to address, so counts render as a legitimate `0`.
@@ -51,7 +56,8 @@ not rescue this; the two requirements are orthogonal.
 
 | | Unlocks | Failure mode if missing |
 |---|---|---|
-| `operators` group | tenant roster, metrics band, Qdrant | three "not authorized" cards |
+| Operator or `tenant-admins` member | sign-in; schema catalog, data volume | Authentik refuses the sign-in |
+| Operator (operator list; compose: `operators`) | tenant roster, metrics band, Qdrant | those three cards are not shown |
 | `tenant_id` attribute | schema catalog, data volume | empty catalog and data volume |
 
 ---
@@ -85,25 +91,23 @@ localhost. It is never valid in a shared, CI, or production environment.
    tenant_id: your-tenant-id
    ```
    This is Requirement B. Skipping it produces the empty-catalog symptom above.
-5. **Directory → Groups → `operators` → add the user.** The group already exists — it is
-   blueprinted; do not create a second one. This is Requirement A.
+5. **Directory → Groups → `operators` → add the user.** The group exists on compose only,
+   as the dev-only Operator fallback; do not create a second one. This is Requirement A.
 
 ---
 
 ## 3. Kind / Helm
 
-The `operators` group is created automatically by a blueprint. **Membership is
-deliberately not blueprinted for any deployment** — who holds operator rights is an
-operational decision, and seeding it into version-controlled config would be a
-privilege-escalation defect.
+No Authentik group grants Operator on Helm. An operator is a subject on the release's
+operator list, `global.operatorSubjects`, and who is on it is an operational decision kept in
+the profile's values file. A tenant admin is a member of `tenant-admins`, which `CreateTenant`
+and `SetTenantAdmin` manage.
 
-1. Sign in to Authentik as the break-glass admin, `iverson-breakglass`, over the in-cluster route
-   (`docs/runbooks/csr11-identity-plane.md` §3; `akadmin` is deactivated since CSR round 11).
-2. **Directory → Users → Create**, or locate the existing account.
-3. Add the `tenant_id` attribute, as in step 2b.4 above.
-4. **Directory → Groups → `operators` → add the user.**
-5. Have them complete a browser login and confirm the resulting token's `groups` claim
-   contains `operators` (see §6).
+1. Onboard the operator as
+   [`operator-access-onboarding.md`](operator-access-onboarding.md) describes: the account, a
+   recovery link, its `sub`, and a `helm upgrade`.
+2. Add the `tenant_id` attribute, as in step 2b.4 above.
+3. Have them sign in to the console and confirm their roles (see §6).
 
 ### Creating a tenant to point `tenant_id` at
 
@@ -182,11 +186,13 @@ zero; types you may not see are reported separately as a count, never as a zero 
 
 ## 6. Verifying you got it right
 
-The quickest check is the token itself. After logging in, open browser devtools →
-Application → Session Storage, find the `oidc.user:` entry, and decode the `id_token`
-payload (any JWT decoder, or `atob` on the middle segment). You want:
+The quickest check is the console's own: after logging in, open browser devtools → Network
+and read the response to `GET /admin/console/roles`, `{"operator": …, "tenantAdmin": …}` —
+Requirement A. Then find the `oidc.user:` entry in Application → Session Storage and decode
+the `id_token` payload (any JWT decoder, or `atob` on the middle segment). You want:
 
-- `"groups": ["operators", ...]` — Requirement A
+- `"sub"` on `global.operatorSubjects` (an operator), or `"groups"` containing `tenant-admins`
+  (a tenant admin) — Requirement A
 - `"tenant_id": "..."` — Requirement B, and **not** null
 
 If `groups` is absent entirely rather than empty, the console is not requesting the scope
@@ -199,7 +205,8 @@ repo, so an absence points at a modified blueprint.
 
 | Symptom | Cause |
 |---|---|
-| Three cards say "not authorized" | Requirement A — the user is not in `operators`. |
+| Sign-in stops at "Permission denied" | Requirement A — the user is neither an operator nor a member of `tenant-admins`. |
+| No tenant roster, metrics band or Qdrant card | The user is a tenant admin but not an operator; those cards need Operator. |
 | Schema catalog **and** data volume both empty although types are registered | Requirement B — no `tenant_id` attribute. This happens to full operators too. |
 | Every card sits on a spinner | The access token never arrived. Cards distinguish "waiting for session" from "loading", so a permanent spinner usually means the OIDC flow did not complete. |
 | Metrics band says Prometheus is not deployed | `global.prometheusEnabled` is false for that profile — `values-laptop.yaml` disables it deliberately. Reported distinctly from "deployed but unreachable". |
@@ -216,5 +223,5 @@ repo, so an absence points at a modified blueprint.
 - [`operator-access-onboarding.md`](operator-access-onboarding.md) — operator rights as an
   ongoing operational task
 - [`grpc-admin-auth-cutover.md`](grpc-admin-auth-cutover.md) — the deploy-time precondition
-  that operators are group members before a cutover ships
+  that operators are on the operator list before a cutover ships
 - `docs/user-management-and-security.md` — the fuller identity reference

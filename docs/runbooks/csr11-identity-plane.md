@@ -39,7 +39,8 @@ other hosts run it in Detection.
 
 Authentik re-applies a blueprint whose file changed, through a file watcher and an hourly
 schedule. On a fresh install, its first automatic apply can also run before the stock login flow
-exists, which fails `reputation.yaml` and `superusers.yaml` until the hourly re-apply. To have
+exists, which fails `reputation.yaml` and `superusers.yaml` until the hourly re-apply
+(`reputation.yaml` also waits for `recovery-flow.yaml`, which defines the throttle it binds). To have
 everything in force at once, apply the files yourself after the install or upgrade, static files
 first. `superusers.yaml` refers to flows defined in them, and a missing referent fails the
 whole file.
@@ -64,7 +65,8 @@ whole file.
      ak apply_blueprint custom/recovery-flow.yaml custom/reputation.yaml
    kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- \
      ak apply_blueprint custom/superusers.yaml custom/orchestrator-federation.yaml \
-       custom/service-clients/service-clients.yaml custom/service-clients/admin-automation.yaml
+       custom/service-clients/service-clients.yaml custom/service-clients/admin-automation.yaml \
+       custom/initial-setup.yaml
    ```
 
    Each command exits non-zero if a blueprint fails. On a worker at the laptop profile's memory limits the command can be killed for memory (exit 137); re-running it is safe because applying a blueprint is idempotent. `admin-automation.yaml` and
@@ -132,24 +134,48 @@ caller of its own sends the token as a `client_credentials` request with
 
 ## 5. Login throttling
 
-Authentik refuses a client address, before it asks for a username, once its failed attempts sum to
-five. A failed password costs one and a failed MFA code two, and successful logins do not offset
-failures. The address is the one Authentik records: the client itself on every profile, selected
-from the load balancer's `X-Forwarded-For` by `global.trustedProxies`. A shared NAT can therefore be
-refused for up to 24 hours, counted from the first failure.
+Authentik keeps one reputation row per (client address, identifier), floored at −5 and capped at +5. A
+wrong password lowers its row by one, a wrong MFA code by two, and an unknown username by two per attempt
+(its identification scores too); a successful login raises the username's row by one. Since CSR round 12
+(`blueprints/recovery-flow.yaml`, bound to the login flow by `reputation.yaml`) a new login plan is refused, after the username is entered and before any
+password is asked, when either rule holds for the address:
 
-The in-cluster route is one shared address: every `kubectl port-forward` caller (operators, the
-break-glass admin, LoadTest on Helm) reaches Authentik from it, so five login failures there refuse
-the in-cluster login route for all of them. The way back in is a §3 recovery link, which still signs
-the admin in because only `default-authentication-flow` is throttled; then clear the scores as below.
+- **pair:** that address's rows for the username, or the account's email, sum to −5 or less;
+- **address:** that address's failing rows, across every identifier, sum to −50 or less.
 
-To clear an address before then, delete its scores in the admin interface (in-cluster, §3) or with
-the API:
+So five wrong passwords for an account, one per plan, refuse its next plan, and an unknown username's
+third plan is refused. Each sign-in by the account's owner from the same address allows one more failure
+before the refusal. The address rule needs failures against at least ten identifiers, so a shared NAT is
+not refused because one account failed; failures concentrated on fewer accounts meet the pair rule first.
+The rules refuse new plans, not attempts inside a plan: there the password stage ends a plan after five
+wrong passwords when the plan started with the pair at 0, and on the cloud profiles the edge rate limit
+(§1) bounds the rest.
+
+The same check runs first in the recovery flow, so a recovery link is refused too while its account's
+pair or its address is over a limit. A link minted before this throttle was installed skips it until
+it expires.
+
+A row expires an hour after it is created (`AUTHENTIK_REPUTATION__EXPIRY=3600`, install-wide), whether
+by a failure or a successful login, and a cleanup that runs every five minutes removes expired rows;
+until it runs, new failures for that pair are not counted. The address is the one Authentik records:
+the client itself, selected from the load balancer's `X-Forwarded-For` by `global.trustedProxies`.
+
+The in-cluster route is one shared address: only the tls-proxy (connecting from 127.0.0.2) is trusted,
+so every `kubectl port-forward` caller (operators, the break-glass admin, LoadTest on Helm) is recorded
+as `::ffff:127.0.0.1`. Five failures for one username there refuse that username's logins and recovery
+links through the in-cluster route for up to an hour; other usernames are refused only once the shared
+address reaches −50.
+
+To clear rows before they expire, delete them in the worker, which needs no admin session:
 
 ```bash
-curl -s -H "Authorization: Bearer <admin token>" "http://localhost:9000/api/v3/policies/reputation/scores/?ip=<address>"
-curl -s -X DELETE -H "Authorization: Bearer <admin token>" "http://localhost:9000/api/v3/policies/reputation/scores/<pk>/"   # pk from the listing
+kubectl -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c '
+from authentik.policies.reputation.models import Reputation
+print(Reputation.objects.filter(ip="<address>").delete())'
 ```
+
+Add `identifier="<username>"` to the filter to clear one pair only. The admin API lists and deletes the
+same rows at `/api/v3/policies/reputation/scores/`.
 
 ## 6. Namespace access
 
@@ -158,3 +184,46 @@ those tokens or run code as those accounts in the release namespace can obtain t
 Restrict these verbs in the release namespace to the deploy identity: create on `pods`,
 `pods/exec` and `serviceaccounts/token`. Check a principal with
 `kubectl auth can-i create serviceaccounts/token -n <ns> --as <user>`.
+
+## 7. Service-account issuer
+
+Both workload pins, the orchestrator's (`orchestrator-federation.yaml`) and admin-automation's
+(`admin-automation.yaml`), compare a token's `iss` byte for byte with `authentik.serviceAccountIssuer`,
+and the render fails while it is empty.
+
+| Profile | Value of `authentik.serviceAccountIssuer` |
+|---|---|
+| kind (local, laptop) | `https://kubernetes.default.svc.cluster.local`, set in the overlay |
+| AWS | Terraform output `service_account_issuer`: the EKS OIDC issuer |
+| Azure | Terraform output `service_account_issuer`: the AKS OIDC issuer, which ends with `/` |
+| GCP | Terraform output `service_account_issuer`, computed from the project, location and cluster name |
+
+Copy the output into `values-<cloud>.yaml` as for §1 (`terraform output -raw service_account_issuer`).
+On AKS, `oidc_issuer_enabled = true` turns the issuer on; it cannot be turned off afterwards. Google does
+not document the GKE format, so at first deploy compare the value with the `issuer` in
+`kubectl get --raw /.well-known/openid-configuration`.
+
+## 8. Rotating `AUTHENTIK_SECRET_KEY`
+
+The key signs Authentik's cookies, its signed file URLs, and the embedded outpost's and metrics' bearer.
+It encrypts no database field, and issued OAuth tokens are signed with the providers' certificate, so
+they stay valid. Rotating it ends every browser session and every flow in progress. Pods holding
+different keys reject each other's cookies, so the server pods and the worker restart together, with a
+short outage of the login pages.
+
+1. Replace the Secret's value (the chart keeps an existing `secret-key` on upgrade):
+
+   ```bash
+   NEW_KEY="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 50)"
+   kubectl -n <ns> patch secret <release>-authentik-app --type merge \
+     -p "{\"data\":{\"secret-key\":\"$(printf %s "$NEW_KEY" | base64 -w0)\"}}"
+   unset NEW_KEY
+   ```
+
+2. Delete every Authentik pod at once, so that none keeps the old key, and wait for the new ones:
+
+   ```bash
+   kubectl -n <ns> delete pod -l 'app in (<release>-authentik-server,<release>-authentik-worker)'
+   kubectl -n <ns> rollout status deploy/<release>-authentik-worker
+   kubectl -n <ns> rollout status deploy/<release>-authentik-server
+   ```
