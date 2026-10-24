@@ -240,6 +240,11 @@ spec:
             - name: Jaeger__OtlpHttpUrl
               value: "http://{{ .Release.Name }}-jaeger:4318"
             {{- end }}
+            {{- if eq .Values.global.externalScheme "https" }}
+            # CSR round 12 §4.4: Kestrel sends Strict-Transport-Security on HTTPS responses (Program.cs).
+            - name: Hsts__Enabled
+              value: "true"
+            {{- end }}
             {{- if .Values.adminConsoleEnabled }}
             - name: AdminConsole__Origin
               value: "{{ .Values.global.externalScheme }}://{{ .Values.global.ingressHost }}"

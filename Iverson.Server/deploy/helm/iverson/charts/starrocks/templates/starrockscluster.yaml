@@ -74,6 +74,15 @@ spec:
     configMapInfo:
       configMapName: {{ .Release.Name }}-starrocks-fe-config
       resolveKey: fe.conf
+    # CSR round 12 §4.3 #3: the FE and BE entrypoints call `mysql -u root` (pod-0 discovery, joining as
+    # a follower, registering a backend) and send no password, and mysql reads MYSQL_PWD. With it they
+    # log in with root's password from their first start; without it a restarted pod is refused once
+    # the create-user Job has set that password, and crash-loops. MYSQL_PWD must always equal root's
+    # live password: change root-password only after `SET PASSWORD` has set the new value. An FE-0
+    # rebuilt without metadata whose login is refused takes itself for a new cluster.
+    feEnvVars:
+      - name: MYSQL_PWD
+        valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-app, key: root-password } }
     nodeSelector:
       {{- toYaml .Values.fe.nodeSelector | nindent 6 }}
     tolerations:
@@ -94,6 +103,10 @@ spec:
         storageClassName: {{ .Values.storageClassName | quote }}
         storageSize: {{ .Values.be.storageSize | quote }}
         mountPath: /opt/starrocks/be/storage
+    # CSR round 12 §4.3 #3: see starRocksFeSpec.feEnvVars.
+    beEnvVars:
+      - name: MYSQL_PWD
+        valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-app, key: root-password } }
     nodeSelector:
       {{- toYaml .Values.be.nodeSelector | nindent 6 }}
     tolerations:

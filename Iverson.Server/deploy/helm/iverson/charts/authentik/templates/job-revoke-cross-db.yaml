@@ -50,9 +50,18 @@ spec:
               value: "iverson"
             - name: HOME
               value: "/tmp"
+            # CSR round 12 §4.4: TLS that verifies the server's certificate and host name against
+            # CNPG's CA, as Authentik's own connection to the same host does.
+            - name: PGSSLMODE
+              value: "verify-full"
+            - name: PGSSLROOTCERT
+              value: "/etc/postgres-tls/ca.crt"
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: postgres-tls
+              mountPath: /etc/postgres-tls
+              readOnly: true
           command: ["sh", "-c"]
           args:
             - |
@@ -99,3 +108,10 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        # Only ca.crt: <release>-postgres-ca also holds the CA's private key.
+        - name: postgres-tls
+          secret:
+            secretName: {{ .Release.Name }}-postgres-ca
+            items:
+              - key: ca.crt
+                path: ca.crt

@@ -1,8 +1,8 @@
 {{- /*
 CSR round 11 #4: FE's fe.conf. The FE entrypoint links this file over the image's own fe.conf, so it
-must be complete: everything above the CSR line is conf/fe.conf of StarRocks 4.1.1 verbatim (the file
-the fe-ubuntu:4.1.1 image ships), with trailing spaces trimmed from three comment lines. When the FE
-image is bumped, replace that part with the new tag's conf/fe.conf.
+must be complete: everything above the CSR line is conf/fe.conf of StarRocks 4.1.6 verbatim (the file
+the fe-ubuntu:4.1.6 image ships; 4.1.1's is identical), with trailing spaces trimmed from three comment
+lines. When the FE image is bumped, replace that part with the new tag's conf/fe.conf.
 The operator also reads this file to learn the FE ports (http_port, rpc_port, query_port,
 edit_log_port).
 */}}
@@ -81,8 +81,11 @@ data:
     # qe_slow_log_ms = 5000
 
     # CSR round 11 #4: serve TLS on the MySQL port from the keystore the FE pod's init container
-    # builds (starrockscluster.yaml). ssl_force_secure_transport stays false: the FE and BE
-    # entrypoint scripts connect with plain mysql.
+    # builds (starrockscluster.yaml).
     ssl_keystore_location = {{ include "starrocks.feKeystorePath" . }}
     ssl_keystore_password = {{ include "starrocks.feKeystorePassword" . }}
     ssl_key_password = {{ include "starrocks.feKeystorePassword" . }}
+    # CSR round 12 §4.4: refuse any login that does not use TLS. The FE and BE entrypoints' plain
+    # `mysql` calls negotiate TLS by default (MySQL 8 client, ssl-mode PREFERRED), and every client the
+    # chart configures requires it. FE reads this only at start: an upgrade restarts the FE.
+    ssl_force_secure_transport = true

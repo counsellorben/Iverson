@@ -160,6 +160,21 @@ builder.Services.AddRateLimiter(options =>
             }));
 });
 
+// ── HSTS ───────────────────────────────────────────────────────────────────────
+// CSR round 12 §4.4: the chart sets Hsts:Enabled where global.externalScheme is https. Browsers are
+// then told to reach this host only over HTTPS for a year, subdomains included (no preload). ASP.NET
+// writes the header only on HTTPS requests and never for localhost, so it stays silent where the
+// edge → pod hop is plaintext.
+var hstsEnabled = cfg.GetValue("Hsts:Enabled", false);
+if (hstsEnabled)
+{
+    builder.Services.AddHsts(options =>
+    {
+        options.MaxAge = TimeSpan.FromDays(365);
+        options.IncludeSubDomains = true;
+    });
+}
+
 // ── CORS (admin console) ────────────────────────────────────────────────────────
 // The admin console is served from the shared iverson.local-style hostname while this
 // API answers on the dedicated admin-api hostname (Task 4) — the browser's fetch calls
@@ -595,6 +610,8 @@ preAuthOptions.AddPolicy("admin", _ => RateLimitPartition.GetNoLimiter<string>("
 
 app.Use(ListenerPortGateAsync);
 app.UseRateLimiter(preAuthOptions);
+if (hstsEnabled)
+    app.UseHsts();
 app.UseHttpsRedirection();
 
 // Must run before UseAuthentication: a cross-origin preflight OPTIONS carries no
