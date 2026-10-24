@@ -7,8 +7,10 @@
 # is restated here. The CI harness passes exactly one -f per overlay.
 #
 # Capacity: 250+250+250+250+250+100+100+50+200 = 1.7 CPU of requests; system + operators
-# measured ~2.0; metrics-server ~0.1. Total ~3.8 of 4.0 (~95%). Margin is thin — roughly
-# 200m. Re-measure with `kubectl top` after deploying.
+# measured ~2.0; metrics-server ~0.1; Istio at kind's requests (deploy/kind/istio: istiod 100m,
+# ztunnel 50m, istio-cni 25m, the edge gateway 50m) ~0.225, in place of ingress-nginx's 100m.
+# Total ~3.9 of 4.0 (~98%), an estimate: re-measure with `kubectl top` on a 4-CPU host after
+# deploying.
 #
 # kind has no load balancer: ingress-nginx is admitted by namespace. clusterCidrs must still
 # list at least one range (see values.yaml's networkPolicy comment), so it names kind's docker

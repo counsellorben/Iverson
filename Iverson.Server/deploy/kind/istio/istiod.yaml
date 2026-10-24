@@ -1,0 +1,20 @@
+# CSR round 12 §4.1: istiod on kind (local and laptop share one install, deploy/kind/setup.sh and
+# setup.ps1). The chart's default request (500m / 2048Mi) does not fit the laptop profile's 4-CPU /
+# 9 GB host, and the chart sets no limits, so a smaller request reserves less without throttling.
+# The autoscaler is off: it scales on CPU as a percentage of the request, so a lower request would add
+# replicas instead of reserving less; off, the chart renders replicas: 1 and no HorizontalPodAutoscaler.
+# global.proxy.resources sizes the edge gateway's pod (deploy/kind/edge-gateway.yaml), which istiod
+# generates from this release's kube-gateway template. Re-measured in the kind run: change these four
+# numbers and values-laptop.yaml's capacity comment together.
+profile: ambient
+autoscaleEnabled: false
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+global:
+  proxy:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi

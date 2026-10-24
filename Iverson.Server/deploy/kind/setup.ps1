@@ -40,13 +40,41 @@ $StarRocksOperatorVersion = Get-OperatorVersion "operator"
 # <phase>` runs that phase alone. Each phase is a function below; the fresh install calls them in the
 # same order, after the operators. The script declares no parameters, so PowerShell hands both words to
 # $args ("-only" is accepted too).
-$Phases = @("operator-namespaces")
+$Phases = @("istio", "operator-namespaces", "ambient-labels")
 $Only = ""
 if ($args.Count -gt 0) {
   if ($args.Count -ne 2 -or $args[0] -notin @('--only', '-only') -or $Phases -notcontains $args[1]) {
     throw "usage: setup.ps1 [--only <phase>]   (phases: $($Phases -join ' '))"
   }
   $Only = $args[1]
+}
+
+function Install-Istio {
+  Write-Host "Installing the Gateway API CRDs and Istio 1.31.2 (ambient)..."
+  # CSR round 12 §4.1: Istio ambient carries every in-cluster hop over mutual TLS. Its charts are vendored
+  # where the cloud Terraform installs them from (terraform/modules/operators/charts/istio; the source
+  # tarball and its SHA-256 are in vendor-istio-charts.sh there). kind installs them with the smaller
+  # requests in deploy/kind/istio/, so the laptop profile still fits its 4-CPU host. The Gateway API
+  # standard CRDs carry kind's edge Gateway and the chart's routes; nothing else installs them on kind.
+  # istio-cni chains itself into Calico's CNI configuration, so Calico comes first.
+  $IstioCharts = Join-Path $PSScriptRoot "../terraform/modules/operators/charts/istio"
+  $IstioValues = Join-Path $PSScriptRoot "istio"
+  kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.3/standard-install.yaml
+  helm upgrade --install istio-base (Join-Path $IstioCharts "base") `
+    --namespace istio-system --create-namespace `
+    --wait
+  helm upgrade --install istiod (Join-Path $IstioCharts "istio-discovery") `
+    --namespace istio-system `
+    -f (Join-Path $IstioValues "istiod.yaml") `
+    --wait
+  helm upgrade --install istio-cni (Join-Path $IstioCharts "istio-cni") `
+    --namespace istio-system `
+    -f (Join-Path $IstioValues "istio-cni.yaml") `
+    --wait
+  helm upgrade --install ztunnel (Join-Path $IstioCharts "ztunnel") `
+    --namespace istio-system `
+    -f (Join-Path $IstioValues "ztunnel.yaml") `
+    --wait
 }
 
 function Install-OperatorNamespacePolicies {
@@ -65,9 +93,28 @@ function Install-OperatorNamespacePolicies {
     --wait
 }
 
+function Add-AmbientLabels {
+  Write-Host "Enrolling iverson, cnpg-system, kafka and starrocks in the ambient mesh..."
+  # CSR round 12 §4.1, §5: the four namespaces are labelled together. An enrolled pod's egress leaves on
+  # the HBONE port 15008, so a release whose NetworkPolicies do not list 15008 loses every hop once its
+  # namespace is enrolled. They are labelled when namespace iverson has no NetworkPolicy yet (a fresh
+  # cluster: the chart brings its 15008 rules with its first install) or when its policies already list
+  # 15008 (the release was upgraded first). Otherwise nothing is labelled, and the upgrade order applies:
+  # helm upgrade the release, then run `--only ambient-labels`. Running pods are captured without a restart.
+  $Policies = kubectl get networkpolicy -n iverson -o name
+  $Ports = "$(kubectl get networkpolicy -n iverson -o jsonpath='{..port}')" -split '\s+'
+  if ($Policies -and -not ($Ports -contains '15008')) {
+    Write-Host "Not enrolled: the NetworkPolicies in namespace iverson do not list port 15008 yet. Run the release's helm upgrade first, then run this script with --only ambient-labels."
+  } else {
+    kubectl label namespace iverson cnpg-system kafka starrocks istio.io/dataplane-mode=ambient --overwrite
+  }
+}
+
 if ($Only) {
   switch ($Only) {
+    "istio" { Install-Istio }
     "operator-namespaces" { Install-OperatorNamespacePolicies }
+    "ambient-labels" { Add-AmbientLabels }
   }
   exit 0
 }
@@ -167,7 +214,9 @@ helm upgrade --install metrics-server metrics-server `
   --set 'args={--kubelet-insecure-tls}' `
   --wait
 
+Install-Istio
 Install-OperatorNamespacePolicies
+Add-AmbientLabels
 
 Write-Host "All operators installed."
 Write-Host "Next: deploy/kind/build-and-load-image.ps1 to build+load the app image, then helm upgrade --install --wait iverson . -f values-local.yaml -n iverson --kube-as-user=kubernetes-admin --kube-as-group=kubeadm:cluster-admins --kube-as-group=iverson-operators (the kube-as flags: CSR round 12's admission policy admits only the iverson-operators group to install or change the api, see docs/runbooks/operators-group.md; --wait: the post-upgrade StarRocks role revoke then runs once the new pods are ready, though a previous-release pod may still be running or terminating; see docs/runbooks/csr12-server.md §1)"

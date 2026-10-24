@@ -21,8 +21,116 @@ resource "kubernetes_namespace" "iverson" {
     name = "iverson"
     labels = {
       "pod-security.kubernetes.io/enforce" = "baseline"
+      # CSR round 12 §4.1: enrolled in the Istio ambient mesh from creation, so every release pod
+      # starts enrolled; the chart renders its 15008 (HBONE) rules with its first install.
+      "istio.io/dataplane-mode" = "ambient"
     }
   }
+}
+
+# CSR round 12 §4.1: the operator namespaces, enrolled in the mesh with iverson (all four together).
+# Terraform creates them, rather than each helm_release's create_namespace, so they carry the label
+# before any operator pod starts.
+resource "kubernetes_namespace" "cnpg_system" {
+  metadata {
+    name   = "cnpg-system"
+    labels = { "istio.io/dataplane-mode" = "ambient" }
+  }
+}
+
+resource "kubernetes_namespace" "kafka" {
+  metadata {
+    name   = "kafka"
+    labels = { "istio.io/dataplane-mode" = "ambient" }
+  }
+}
+
+resource "kubernetes_namespace" "starrocks" {
+  metadata {
+    name   = "starrocks"
+    labels = { "istio.io/dataplane-mode" = "ambient" }
+  }
+}
+
+# CSR round 12 §4.1: Istio 1.31.2 ambient (base, istiod, istio-cni, ztunnel), installed from the charts
+# vendored under charts/istio (see vendor-istio-charts.sh there for the source tarball and its SHA-256),
+# with the charts' default requests. deploy/kind/setup.sh and setup.ps1 install the same four. On GKE,
+# global.platform=gke selects the charts' GKE profile, which adds the ResourceQuota GKE requires for
+# the node-critical istio-cni and ztunnel pods outside kube-system. The ztunnel and istio-cni default
+# tolerations already admit the datastore pools' NoSchedule taints. They install into istio-system,
+# kubernetes_namespace.istio_system below, which the operator-namespace policy chart also governs.
+locals {
+  istio_platform = var.cloud == "gcp" ? ["gke"] : []
+}
+
+resource "helm_release" "istio_base" {
+  name      = "istio-base"
+  chart     = "${path.module}/charts/istio/base"
+  namespace = kubernetes_namespace.istio_system.metadata[0].name
+
+  dynamic "set" {
+    for_each = local.istio_platform
+    content {
+      name  = "global.platform"
+      value = set.value
+    }
+  }
+}
+
+resource "helm_release" "istiod" {
+  name      = "istiod"
+  chart     = "${path.module}/charts/istio/istio-discovery"
+  namespace = kubernetes_namespace.istio_system.metadata[0].name
+
+  set {
+    name  = "profile"
+    value = "ambient"
+  }
+  dynamic "set" {
+    for_each = local.istio_platform
+    content {
+      name  = "global.platform"
+      value = set.value
+    }
+  }
+
+  depends_on = [helm_release.istio_base]
+}
+
+resource "helm_release" "istio_cni" {
+  name      = "istio-cni"
+  chart     = "${path.module}/charts/istio/istio-cni"
+  namespace = kubernetes_namespace.istio_system.metadata[0].name
+
+  set {
+    name  = "profile"
+    value = "ambient"
+  }
+  dynamic "set" {
+    for_each = local.istio_platform
+    content {
+      name  = "global.platform"
+      value = set.value
+    }
+  }
+
+  depends_on = [helm_release.istiod]
+}
+
+resource "helm_release" "ztunnel" {
+  name      = "ztunnel"
+  chart     = "${path.module}/charts/istio/ztunnel"
+  namespace = kubernetes_namespace.istio_system.metadata[0].name
+
+  dynamic "set" {
+    for_each = local.istio_platform
+    content {
+      name  = "global.platform"
+      value = set.value
+    }
+  }
+
+  depends_on = [helm_release.istio_cni]
 }
 
 # CSR round 12 §3.4: the operator-namespace policy chart (below) governs istio-system, which must exist
@@ -34,12 +142,11 @@ resource "kubernetes_namespace" "istio_system" {
 }
 
 resource "helm_release" "cloudnative_pg" {
-  name             = "cnpg"
-  repository       = local.operator_charts["cloudnative-pg"].repository
-  chart            = "cloudnative-pg"
-  version          = local.operator_charts["cloudnative-pg"].version
-  namespace        = "cnpg-system"
-  create_namespace = true
+  name       = "cnpg"
+  repository = local.operator_charts["cloudnative-pg"].repository
+  chart      = "cloudnative-pg"
+  version    = local.operator_charts["cloudnative-pg"].version
+  namespace  = kubernetes_namespace.cnpg_system.metadata[0].name
 }
 
 resource "helm_release" "strimzi" {
@@ -50,9 +157,8 @@ resource "helm_release" "strimzi" {
   # pinned operator version and their feature-gate flags were removed
   # entirely — setting them crashes the operator with "Unknown feature gate".
   # Both behaviors are already the default.
-  version          = local.operator_charts["strimzi-kafka-operator"].version
-  namespace        = "kafka"
-  create_namespace = true
+  version   = local.operator_charts["strimzi-kafka-operator"].version
+  namespace = kubernetes_namespace.kafka.metadata[0].name
 
   # By default the operator only watches its own release namespace ("kafka"),
   # but the app chart's Kafka/KafkaNodePool/KafkaUser CRs are installed into
@@ -72,10 +178,9 @@ resource "helm_release" "starrocks_operator" {
   # The chart is published under the key "operator" in this repo's
   # index.yaml, not "kube-starrocks-operator" — confirmed live against
   # https://starrocks.github.io/starrocks-kubernetes-operator/index.yaml.
-  chart            = "operator"
-  version          = local.operator_charts["operator"].version
-  namespace        = "starrocks"
-  create_namespace = true
+  chart     = "operator"
+  version   = local.operator_charts["operator"].version
+  namespace = kubernetes_namespace.starrocks.metadata[0].name
 }
 
 # AWS-only: cluster-autoscaler and the AWS Load Balancer Controller (ALB ingress).
@@ -195,7 +300,7 @@ resource "kubernetes_storage_class" "prometheus" {
 
 # CSR round 12 §3.4 (#16): default-deny with explicit allows in cnpg-system, kafka, starrocks and
 # istio-system. The same chart serves kind (deploy/kind/setup.sh, values-kind.yaml). Each namespace must
-# exist first: the operator releases create theirs, and istio-system is created above.
+# exist first: Terraform creates each of them above (cnpg-system, kafka and starrocks enrolled in the mesh).
 resource "helm_release" "operator_namespace_policies" {
   name      = "operator-namespace-policies"
   chart     = "${path.module}/charts/operator-namespace-policies"

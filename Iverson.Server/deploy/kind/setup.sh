@@ -41,7 +41,7 @@ STARROCKS_OPERATOR_VERSION=$(operator_version operator)
 # upgrade runs the platform steps one at a time (docs/runbooks/csr12-platform.md §3): `setup.sh --only
 # <phase>` runs that phase alone. Each phase is a function below; the fresh install calls them in the
 # same order, after the operators.
-PHASES="operator-namespaces"
+PHASES="istio operator-namespaces ambient-labels"
 ONLY=""
 if [ "$#" -gt 0 ]; then
   if [ "$#" -ne 2 ] || [ "$1" != "--only" ] || [[ "$2" == *[[:space:]]* || " $PHASES " != *" $2 "* ]]; then
@@ -50,6 +50,35 @@ if [ "$#" -gt 0 ]; then
   fi
   ONLY="$2"
 fi
+
+phase_istio() {
+  echo "Installing the Gateway API CRDs and Istio 1.31.2 (ambient)..."
+  # CSR round 12 §4.1: Istio ambient carries every in-cluster hop over mutual TLS. Its charts are vendored
+  # where the cloud Terraform installs them from (terraform/modules/operators/charts/istio; the source
+  # tarball and its SHA-256 are in vendor-istio-charts.sh there). kind installs them with the smaller
+  # requests in deploy/kind/istio/, so the laptop profile still fits its 4-CPU host. The Gateway API
+  # standard CRDs carry kind's edge Gateway and the chart's routes; nothing else installs them on kind.
+  # istio-cni chains itself into Calico's CNI configuration, so Calico comes first.
+  local charts values
+  charts="$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform/modules/operators/charts/istio" && pwd)"
+  values="$(cd "$(dirname "${BASH_SOURCE[0]}")/istio" && pwd)"
+  kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.3/standard-install.yaml
+  helm upgrade --install istio-base "$charts/base" \
+    --namespace istio-system --create-namespace \
+    --wait
+  helm upgrade --install istiod "$charts/istio-discovery" \
+    --namespace istio-system \
+    -f "$values/istiod.yaml" \
+    --wait
+  helm upgrade --install istio-cni "$charts/istio-cni" \
+    --namespace istio-system \
+    -f "$values/istio-cni.yaml" \
+    --wait
+  helm upgrade --install ztunnel "$charts/ztunnel" \
+    --namespace istio-system \
+    -f "$values/ztunnel.yaml" \
+    --wait
+}
 
 phase_operator_namespaces() {
   echo "Installing the operator-namespace NetworkPolicies (CSR round 12 §3.4)..."
@@ -66,6 +95,28 @@ phase_operator_namespaces() {
     --namespace kube-system \
     -f "$policies/values-kind.yaml" \
     --wait
+}
+
+# CSR round 12 §4.1, §5: the four namespaces are labelled together. An enrolled pod's egress leaves on
+# the HBONE port 15008, so a release whose NetworkPolicies do not list 15008 loses every hop once its
+# namespace is enrolled. They are labelled when namespace iverson has no NetworkPolicy yet (a fresh
+# cluster: the chart brings its 15008 rules with its first install) or when its policies already list
+# 15008 (the release was upgraded first). Otherwise nothing is labelled, and the upgrade order applies:
+# helm upgrade the release, then run `--only ambient-labels`. Running pods are captured without a restart.
+ambient_enroll() {
+  local policies ports
+  policies="$(kubectl get networkpolicy -n iverson -o name)"
+  ports=" $(kubectl get networkpolicy -n iverson -o jsonpath='{..port}') "
+  if [ -n "$policies" ] && [ "${ports#* 15008 }" = "$ports" ]; then
+    echo "Not enrolled: the NetworkPolicies in namespace iverson do not list port 15008 yet. Run the release's helm upgrade first, then run this script with --only ambient-labels."
+    return 0
+  fi
+  kubectl label namespace iverson cnpg-system kafka starrocks istio.io/dataplane-mode=ambient --overwrite
+}
+
+phase_ambient_labels() {
+  echo "Enrolling iverson, cnpg-system, kafka and starrocks in the ambient mesh..."
+  ambient_enroll
 }
 
 if [ -n "$ONLY" ]; then
@@ -233,7 +284,9 @@ helm upgrade --install metrics-server metrics-server \
   --set 'args={--kubelet-insecure-tls}' \
   --wait
 
+phase_istio
 phase_operator_namespaces
+phase_ambient_labels
 
 echo "All operators installed."
 echo "Next: deploy/kind/build-and-load-image.sh to build+load the app image, then helm upgrade --install --wait iverson . -f values-local.yaml -n iverson --kube-as-user=kubernetes-admin --kube-as-group=kubeadm:cluster-admins --kube-as-group=iverson-operators (the kube-as flags: CSR round 12's admission policy admits only the iverson-operators group to install or change the api, see docs/runbooks/operators-group.md; --wait: the post-upgrade StarRocks role revoke then runs once the new pods are ready, though a previous-release pod may still be running or terminating; see docs/runbooks/csr12-server.md §1)"
