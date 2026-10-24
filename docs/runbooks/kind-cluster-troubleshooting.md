@@ -93,8 +93,8 @@ kube-proxy's Service DNAT**. A rule written against a Service's declared port (e
 the `kubernetes` Service) never matches once the packet's destination port has already been
 rewritten to the real backend port — on kind/kubeadm-style self-hosted control planes the real
 apiserver port is **6443**, not 443. Confirmed to generalize beyond just the `kubernetes` Service
-(`cnpg-webhook-service` :443→:9443, `ingress-nginx-controller-admission` :443→:8443 hit the same
-pattern).
+(`cnpg-webhook-service` :443→:9443, and before CSR round 12 replaced ingress-nginx with an Istio
+gateway, `ingress-nginx-controller-admission` :443→:8443, hit the same pattern).
 
 **Fix:** allow both the Service port and the real backend port wherever a rule targets a Service by
 its external port, especially the Kubernetes API server (this affected both
@@ -321,11 +321,11 @@ that is not loopback (CSR round-11 #15), so point it at the TLS listeners and tr
 - `IVERSON_TOKEN_ENDPOINT=https://<release>-authentik:8443/application/o/token/`, set explicitly:
   its default is loopback, and LoadTest derives the Authentik base URL from it. Authentik's
   tls-proxy serves 8443 from the `<release>-authentik-internal-tls` Secret.
-- `IVERSON_ACTING_USER_HOST_HEADER=<release>-authentik:8443`. LoadTest sets this Host on every
-  Authentik request (default `authentik-server:9000`), so the in-cluster name does not reach
-  Authentik by itself. Authentik stamps the token's `iss` from it, and the API accepts the issuer
-  it reads from its own 8443 metadata, `https://<release>-authentik:8443/…`. .NET also checks the
-  8443 certificate against this Host. With any other Host, one of the two checks fails.
+- Leave `IVERSON_ACTING_USER_HOST_HEADER` unset. Since CSR round 12 LoadTest sends no Host override
+  unless it is set, so Authentik sees the token endpoint's own host, `<release>-authentik:8443`, and
+  stamps the token's `iss` from it; the API accepts that issuer, which it reads from its own 8443
+  metadata (`https://<release>-authentik:8443/…`), and .NET checks the 8443 certificate against the
+  same name. Any other Host fails one of the two checks.
 - Trust both chart CAs: collect them in one file in the pod and point `SSL_CERT_FILE` at it.
   ```bash
   for s in <release>-api-internal-tls <release>-authentik-internal-tls; do
@@ -403,7 +403,7 @@ few minutes on the Authentik side — a `docker compose up` dependency-wait givi
 already in use` for a service whose compose port mapping you didn't think was in conflict.
 
 **Root cause:** kind's own control-plane container has its own host port mapping (e.g. `kind-config.
-yaml`'s `extraPortMappings`, commonly 8080/8443 for its built-in ingress) — if docker-compose's
+yaml`'s `extraPortMappings`, 8080/8443 for its edge gateway) — if docker-compose's
 `iverson-api` service *also* wants host port 8080, the two environments collide even though they're
 otherwise fully independent stacks.
 

@@ -7,8 +7,12 @@ production traffic goes through — via a native Authentik OAuth2 client, not mo
 
 ## Prerequisites
 
-- The Iverson API running and reachable at `IVERSON_GRPC_URL` (default `http://localhost:8080`)
+- The Iverson API running and reachable at `IVERSON_GRPC_URL` (default `https://localhost:8080`)
   — e.g. `dotnet run` in `Iverson.Api`, or `docker compose up iverson-api`.
+- For the compose stack, the compose CA trusted: since CSR round 12 its API, Authentik, Postgres,
+  StarRocks and Qdrant serve TLS from `Iverson.Server/deploy/compose-tls/ca.crt`. Point
+  `SSL_CERT_FILE` at a bundle of the system roots plus that file
+  (`docs/runbooks/csr12-platform.md` §4).
 - Postgres and StarRocks reachable at `IVERSON_POSTGRES_CS` / `IVERSON_STARROCKS_CS`.
 - Authentik reachable (for acting-user token minting) — required by every command except
   `clear-data` and `--help`. On first use per identity this performs a TOTP+PKCE login flow;
@@ -135,7 +139,7 @@ a given cache scope pays the full login-flow cost.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `IVERSON_ACTING_USER_HOST_HEADER` | `authentik-server:9000` | Wire-level `Host` header for the flow-executor's HTTP requests |
+| `IVERSON_ACTING_USER_HOST_HEADER` | unset (no override) | Wire-level `Host` header for the flow-executor's and the client-credentials token requests. Compose needs none since CSR round 12: its Authentik is `https://localhost:9443`, whose issuer the API accepts. Set it only where the API does not accept the issuer of the host LoadTest dials |
 | `IVERSON_ACTING_USER_CLIENT_ID` | `dev-iverson-loadtest-human-client-id` | Compose-fixed; **kind requires an override** — kind's client_id is Helm-random, not fixed |
 | `IVERSON_ACTING_USER_REDIRECT_URI` | `http://localhost/placeholder-callback` | Compose-fixed; **kind requires an override** — kind's redirect_uri is ingress-derived |
 | `IVERSON_ACTING_USER_USERNAME` / `_PASSWORD` | `iverson-acting-user-smoke-test` / dev password | Regular identity credentials |
@@ -163,15 +167,15 @@ are missing.
 
 | Variable | Default |
 |---|---|
-| `IVERSON_GRPC_URL` | `http://localhost:8080` (a non-loopback URL must be `https://`; LoadTest refuses to start otherwise) |
-| `IVERSON_HTTP_URL` | `http://localhost:8081` (used by `benchmark-query` to fetch `/build` for run attribution) |
+| `IVERSON_GRPC_URL` | `https://localhost:8080` (a non-loopback URL must be `https://`; LoadTest refuses to start otherwise) |
+| `IVERSON_HTTP_URL` | `https://localhost:8082` (used by `benchmark-query` to fetch `/build` for run attribution; `/build` moved to the metrics listener in CSR round 12) |
 | `IVERSON_CLIENT_ID` / `IVERSON_CLIENT_SECRET` / `IVERSON_TOKEN_ENDPOINT` | unset (client-credentials auth for the gRPC client itself; optional). `IVERSON_TOKEN_ENDPOINT` must be `https://` or loopback; LoadTest refuses to start otherwise |
 | `IVERSON_CLIENT_ASSERTION_FILE` | unset (a file holding a `<release>-admin-automation` ServiceAccount token; when set, it replaces `IVERSON_CLIENT_SECRET` and is sent as a jwt-bearer client assertion, re-read on every token request — the Helm path, `docs/runbooks/csr11-identity-plane.md`) |
 | `IVERSON_CLIENT_SCOPE` | unset (optional space-separated scope list for the `client_credentials` token request above, e.g. `"schema_admin tenant_id_loadtest"` — must match the scopes bound to whichever OIDC provider `IVERSON_CLIENT_ID` names) |
 | `IVERSON_LOADTEST_TENANT_ID` | `iverson-loadtest-dynamic` (only used when `IVERSON_CLIENT_ID` etc. are set — provisioned via `TenantLifecycleGrpcService.CreateTenant` if not already registered) |
 | `IVERSON_LOADTEST_TENANT_ADMIN_USERNAME` / `_EMAIL` / `_PASSWORD` | the tenant-admin login LoadTest mints and uses as the data-plane gRPC channel's credential. `_USERNAME` and `_EMAIL` have dev-only defaults. `_PASSWORD` has no default and is required by `seed`, `write-path`, `read-path`, `all`, `benchmark-ingest` and `benchmark-query`: choose it yourself. When LoadTest creates the tenant, it sets `_PASSWORD` as that admin's password through CreateTenant's one-time recovery link and enrols its TOTP device there and logs the admin in at once to verify the account, so the value must pass Authentik's recovery password policy (at least 8 characters, zxcvbn score ≥ 2). Changing it after the tenant exists has no effect. |
 | `IVERSON_POSTGRES_CS` | `Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson` |
-| `IVERSON_STARROCKS_CS` | `Server=127.0.0.1;Port=9030;Database=iverson;Uid=root;Pwd=;` |
+| `IVERSON_STARROCKS_CS` | `Server=localhost;Port=9030;Database=iverson;Uid=root;Pwd=;` (the compose FE's certificate names `localhost`, not `127.0.0.1`; MySqlConnector's default `SslMode` negotiates TLS with it) |
 | `IVERSON_KAFKA_BOOTSTRAP` | `localhost:9092` |
 
 ## Output

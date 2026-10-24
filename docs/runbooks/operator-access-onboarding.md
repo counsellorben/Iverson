@@ -24,7 +24,7 @@ API logs a warning at startup), and compose's copy of the console sign-in policy
 do — `blueprints/compose-only/service-clients.yaml` seeds `iverson-loadtest-bypass-user` into
 `operators` at blueprint-apply time, so that identity already satisfies the policy for local
 admin-console testing. To grant a different local user access, add them to `operators` (Directory →
-Groups) in the admin UI of the compose Authentik instance (`http://localhost:9000`, bootstrap login
+Groups) in the admin UI of the compose Authentik instance (`https://localhost:9443`, bootstrap login
 `admin@iverson.local` / the `AUTHENTIK_BOOTSTRAP_PASSWORD` value in `Iverson.Server/.env`).
 
 ## Kind / production

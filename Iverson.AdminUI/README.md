@@ -21,8 +21,11 @@ Iverson.Api.
   ```
 
   (or `dotnet run` from `Iverson.Server/Iverson.Launcher`). This brings up
-  Authentik at `http://localhost:9000` and the API at `http://localhost:8081`,
-  matching the defaults in `.env.development`.
+  Authentik at `https://localhost:9443` and the API at `https://localhost:8081`,
+  matching the defaults in `.env.development`. Both serve TLS from the compose CA
+  (`Iverson.Server/deploy/compose-tls/ca.crt`, written by
+  `scripts/generate-compose-secrets.sh`): import it into your browser's or your
+  operating system's trusted roots first (`docs/runbooks/csr12-platform.md` §4).
 - At least one admin to log in with: an operator, or a member of `tenant-admins`. Authentik
   refuses everyone else at sign-in. See [Creating a human user and granting operator access](../docs/user-management-and-security.md#creating-a-human-user-and-granting-operator-access)
   if you don't have one yet. (Bootstrap admin login for compose:
@@ -55,8 +58,8 @@ with defaults for the docker-compose target:
 
 ```
 VITE_OIDC_CLIENT_ID=dev-iverson-human-oidc-client-id
-VITE_OIDC_AUTHORITY=http://localhost:9000/application/o/iverson-api/
-VITE_API_BASE_URL=http://localhost:8081
+VITE_OIDC_AUTHORITY=https://localhost:9443/application/o/iverson-api/
+VITE_API_BASE_URL=https://localhost:8081
 ```
 
 To point at a different target (e.g. a local kind cluster), copy these into

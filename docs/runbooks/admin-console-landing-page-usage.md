@@ -83,7 +83,7 @@ localhost. It is never valid in a shared, CI, or production environment.
 1. Bring the stack up: `cd Iverson.Server && docker compose up -d`. Wait for
    `authentik-server` to become healthy — blueprints apply at startup and login will not
    work before then.
-2. Open Authentik at <http://localhost:9000> and sign in as
+2. Open Authentik at <https://localhost:9443> (your browser must trust the compose CA; see §4) and sign in as
    `admin@iverson.local` / the `AUTHENTIK_BOOTSTRAP_PASSWORD` value in `Iverson.Server/.env`.
 3. **Directory → Users → Create.** Set a username, name, and password.
 4. **Set the tenant attribute.** Edit the user, and in the **Attributes** field (YAML) add:
@@ -139,12 +139,18 @@ Open <http://localhost:5173/>.
 | Variable | Value |
 |---|---|
 | `VITE_OIDC_CLIENT_ID` | `dev-iverson-human-oidc-client-id` |
-| `VITE_OIDC_AUTHORITY` | `http://localhost:9000/application/o/iverson-api/` |
-| `VITE_API_BASE_URL` | `http://localhost:8081` |
+| `VITE_OIDC_AUTHORITY` | `https://localhost:9443/application/o/iverson-api/` |
+| `VITE_API_BASE_URL` | `https://localhost:8081` |
 
-**That port matters.** 8080 is `Protocols: Http2` — h2c only — and a browser cannot speak
-cleartext HTTP/2, so a console pointed at 8080 fails every request. The operational
+**That port matters.** 8080 is `Protocols: Http2`, the gRPC listener, and a browser's
+`fetch` cannot use it, so a console pointed at 8080 fails every request. The operational
 endpoints answer only on 8081 by design.
+
+**Trust the compose CA first.** Since CSR round 12 the compose API and Authentik serve HTTPS
+from a per-checkout CA, `Iverson.Server/deploy/compose-tls/ca.crt`, which
+`scripts/generate-compose-secrets.sh` writes. Import it into your browser's or your operating
+system's trusted roots, and again whenever the script rewrites it; otherwise every request
+fails certificate verification before the console can report anything.
 
 Login redirects to Authentik and returns via `http://localhost:5173/callback`. That URI
 and the root are registered on the `iverson-oidc-default` provider; changing the dev-server
@@ -153,8 +159,11 @@ port means registering the new URIs in the blueprint.
 ### Kind — resolve three hostnames first
 
 ```
-<ingress-controller-ip>  iverson.local admin-api.iverson.local authentik.iverson.local
+127.0.0.1  iverson.local admin-api.iverson.local authentik.iverson.local
 ```
+
+kind's edge gateway (in `iverson-edge` since CSR round 12) takes the node's ports 80 and 443,
+which `kind-config.yaml` publishes on the host's loopback as 8080 and 8443.
 
 - `iverson.local` — the console
 - `admin-api.iverson.local` — the API's dedicated host, which the console's browser-side

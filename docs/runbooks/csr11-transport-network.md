@@ -9,6 +9,11 @@ uses it). GCP no longer serves HTTP on port 80, and Azure redirects it. The `ing
 NetworkPolicy peer exists only where an nginx Ingress fronts the pod, and an any-destination
 fallback needs an explicit acknowledgement. Compose is unchanged apart from Redis.
 
+**Since CSR round 12** (`docs/runbooks/csr12-platform.md`): kind's edge is an Istio gateway in the
+`iverson-edge` namespace, so the kind NetworkPolicy peer is `iverson-edge`, not `ingress-nginx`; GCP's
+edge is GKE Gateway; every in-cluster hop is also mutually authenticated by Istio ambient; and compose
+serves TLS on its authentication-carrying hops.
+
 ## 1. What the upgrade does
 
 One `helm upgrade` switches each hop. The API pods and the Authentik server pod restart with TLS

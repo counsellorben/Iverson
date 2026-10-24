@@ -198,7 +198,7 @@ Two grant types are used, matching the two kinds of caller:
 # The loadtest client secret is randomly generated per docker-compose stack by
 # scripts/generate-compose-secrets.sh (CSR round-4 finding #8) — read it out of
 # Iverson.Server/.env's IVERSON_LOADTEST_CLIENT_SECRET.
-curl -s -X POST http://localhost:9000/application/o/token/ \
+curl -s --cacert Iverson.Server/deploy/compose-tls/ca.crt -X POST https://localhost:9443/application/o/token/ \
   -d grant_type=client_credentials \
   -d client_id=dev-iverson-loadtest-client-id \
   -d client_secret="$(grep IVERSON_LOADTEST_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)"
@@ -216,7 +216,7 @@ the token request itself also sends `scope=`:
 ```bash
 # The admin-automation client secret is likewise randomly generated per stack — read it out of
 # Iverson.Server/.env's IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET.
-curl -s -X POST http://localhost:9000/application/o/token/ \
+curl -s --cacert Iverson.Server/deploy/compose-tls/ca.crt -X POST https://localhost:9443/application/o/token/ \
   -d grant_type=client_credentials \
   -d client_id=dev-iverson-admin-automation-client-id \
   -d client_secret="$(grep IVERSON_ADMIN_AUTOMATION_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)" \
@@ -237,14 +237,14 @@ admin dashboard), which initiates the `iverson-oidc-default` Application's
 Authorization Code flow; Authentik handles the login UI itself.
 
 > **kind prerequisite:** the browser needs to resolve **three** hostnames to
-> the ingress controller's IP — `iverson.local` (the admin UI),
+> `127.0.0.1`, where kind's edge gateway listens (CSR round 12) — `iverson.local` (the admin UI),
 > `admin-api.iverson.local` (the API's dedicated host, which the admin UI's
 > own browser-side fetch calls target directly over CORS), and
 > `authentik.iverson.local` (Authentik's own login pages, which the browser
 > is full-page-redirected to and back from during the flow above). Add all
 > three to `/etc/hosts`, e.g.:
 > ```
-> <ingress-controller-ip>  iverson.local admin-api.iverson.local authentik.iverson.local
+> 127.0.0.1  iverson.local admin-api.iverson.local authentik.iverson.local
 > ```
 > Missing the `authentik.iverson.local` entry fails silently from the UI's
 > perspective — the redirect to Authentik just can't resolve, with no error
@@ -260,8 +260,10 @@ programmatically:
 # The password comes from IVERSON_ACTING_USER_PASSWORD, never from the command line (CSR round-11
 # #19). --target compose requires it: Authentik's dev-only smoke-test password is randomly
 # generated per docker-compose stack by scripts/generate-compose-secrets.sh (CSR round-4 finding
-# #8) — read it out of Iverson.Server/.env's IVERSON_SMOKE_TEST_PASSWORD.
+# #8) — read it out of Iverson.Server/.env's IVERSON_SMOKE_TEST_PASSWORD. Compose's Authentik serves
+# TLS from the compose CA (CSR round 12), which urllib trusts through SSL_CERT_FILE.
 IVERSON_ACTING_USER_PASSWORD="$(grep IVERSON_SMOKE_TEST_PASSWORD Iverson.Server/.env | cut -d= -f2)" \
+  SSL_CERT_FILE=Iverson.Server/deploy/compose-tls/ca.crt \
   python3 Iverson.Server/deploy/scripts/mint_acting_user_token.py --target compose
 python3 Iverson.Server/deploy/scripts/mint_acting_user_token.py --target kind
 ```
@@ -290,12 +292,12 @@ Full CLI:
 ```
 
 The `--target` flag matters because compose and kind differ in base URL,
-`client_id`, and (a live-verified gotcha, not initially expected) **both**
-targets use a forced `Host` header — Authentik derives the `iss` claim from
-the *request's* Host header, so a token minted by hitting `localhost:9000`
-directly gets a different `iss` than what `iverson-api`'s own OIDC discovery
-resolves internally (compose also accepts `iss=http://localhost:9000/` since
-CSR round-10's identity-plane change; kind does not). See [Troubleshooting](#troubleshooting).
+`client_id` and `Host` header. Authentik derives the `iss` claim from the
+*request's* Host header. Compose's base URL is `https://localhost:9443`, the
+published `authentik-tls-proxy` (CSR round 12), whose issuer
+`https://localhost:9443/` the compose API accepts, so compose sends no Host
+override; kind forces `<release>-authentik:9000`, the in-cluster name,
+through its port-forward. See [Troubleshooting](#troubleshooting).
 
 ---
 
@@ -307,21 +309,31 @@ the client, and the SDK fetches/caches the token itself (refreshing shortly
 before expiry) and attaches `Authorization: Bearer <token>` to every RPC via
 that language's native gRPC call-credentials mechanism.
 
+The snippets run inside the compose network. Since CSR round 12 the compose API
+(`iverson-api:8080`) and Authentik's `authentik-tls-proxy` (`authentik-server:8443`)
+serve TLS from the per-checkout compose CA, `Iverson.Server/deploy/compose-tls/ca.crt`, so
+each client trusts that file through its runtime's standard setting: `SSL_CERT_FILE`
+(.NET, Go, and Python's token request), `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` (Python's
+grpcio), `NODE_EXTRA_CA_CERTS` (Node), or a PKCS12 truststore passed with
+`-Djavax.net.ssl.trustStore` (Java). The API accepts the issuer
+`https://authentik-server:8443/` that those token requests produce.
+
 **.NET** (`Iverson.Clients/DotNet/Iverson.Client.Core/`):
 ```csharp
 // IVERSON_LOADTEST_CLIENT_SECRET is randomly generated per docker-compose stack by
 // scripts/generate-compose-secrets.sh (CSR round-4 finding #8) — read from Iverson.Server/.env,
 // e.g. export IVERSON_LOADTEST_CLIENT_SECRET=$(grep IVERSON_LOADTEST_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)
 services.AddIversonClient(
-    grpcEndpoint: "http://iverson-api:8080",
+    grpcEndpoint: "https://iverson-api:8080",
     credentials: new IversonClientCredentials(
         "dev-iverson-loadtest-client-id",
         Environment.GetEnvironmentVariable("IVERSON_LOADTEST_CLIENT_SECRET")!,
-        "http://authentik-server:9000/application/o/token/"));
+        "https://authentik-server:8443/application/o/token/"));
 ```
-Note: requires `UnsafeUseInsecureChannelCallCredentials = true` internally
-(already handled by `AddIversonClient`) — without it, grpc-dotnet silently
-drops the header over plaintext h2c.
+Note: an `https://` endpoint gives a TLS channel, which needs no opt-in. Only a
+plaintext `http://` (h2c) endpoint needs `UnsafeUseInsecureChannelCallCredentials`,
+which `AddIversonClient` sets when passed `allowInsecureChannelCallCredentials: true`;
+without it grpc-dotnet silently drops the header.
 
 **Go** (`Iverson.Clients/Go/iverson/`):
 ```go
@@ -330,10 +342,10 @@ drops the header over plaintext h2c.
 creds := &iverson.OAuth2ClientCredentials{
     ClientID: "dev-iverson-loadtest-client-id",
     ClientSecret: os.Getenv("IVERSON_LOADTEST_CLIENT_SECRET"),
-    TokenEndpoint: "http://authentik-server:9000/application/o/token/",
+    TokenEndpoint: "https://authentik-server:8443/application/o/token/",
 }
 client, _ := iverson.NewIversonClient("iverson-api:8080",
-    grpc.WithTransportCredentials(insecure.NewCredentials()),
+    grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})),
     grpc.WithPerRPCCredentials(creds))
 ```
 
@@ -344,10 +356,10 @@ client, _ := iverson.NewIversonClient("iverson-api:8080",
 CallCredentials creds = new OAuth2ClientCredentials(
     "dev-iverson-loadtest-client-id",
     System.getenv("IVERSON_LOADTEST_CLIENT_SECRET"),
-    "http://authentik-server:9000/application/o/token/");
+    "https://authentik-server:8443/application/o/token/");
 try (IversonClient client = new IversonClient("iverson-api", 8080, creds)) { ... }
 ```
-No special insecure-channel opt-in needed (unlike .NET).
+This constructor dials TLS; only `IversonClient.plaintext(…)` dials h2c.
 
 **Python** (`Iverson.Clients/Python/`):
 ```python
@@ -361,11 +373,12 @@ client = IversonClient(
     credentials=IversonClientCredentials(
         "dev-iverson-loadtest-client-id",
         os.environ["IVERSON_LOADTEST_CLIENT_SECRET"],
-        "http://authentik-server:9000/application/o/token/"))
+        "https://authentik-server:8443/application/o/token/"))
 ```
-Plain `insecure_channel` + call credentials is rejected outright by grpcio;
-the SDK internally composes `local_channel_credentials()` with the call
-credentials to work around this.
+`use_tls` defaults to `True`, so this dials TLS. With `use_tls=False` (a
+plaintext listener) grpcio rejects a plain `insecure_channel` with call
+credentials outright, and the SDK composes `local_channel_credentials()` with
+the call credentials instead.
 
 **TypeScript** (`Iverson.Clients/TypeScript/`):
 ```ts
@@ -376,8 +389,8 @@ import { createOAuth2ClientCredentials, IversonClient } from '@iverson/client';
 const creds = createOAuth2ClientCredentials(
   'dev-iverson-loadtest-client-id',
   process.env.IVERSON_LOADTEST_CLIENT_SECRET!,
-  'http://authentik-server:9000/application/o/token/');
-const client = new IversonClient('iverson-api', 8080, false, creds);
+  'https://authentik-server:8443/application/o/token/');
+const client = new IversonClient('iverson-api', 8080, true, creds);
 ```
 > **Known gap:** `createOAuth2ClientCredentials` is not currently re-exported
 > from the package's public barrel (`src/index.ts`) — until that's fixed,
@@ -513,8 +526,8 @@ gotchas in detail:
   verification procedure.
 - **`docs/runbooks/kind-cluster-troubleshooting.md`** §5.1–§5.3 — the
   Host-header/issuer-claim mismatch trap when minting tokens through
-  `kubectl port-forward` (`localhost:9000` on compose is also accepted since the
-  identity-plane change, but forcing the Host header still works), why `kubectl get pod -o jsonpath` never shows
+  `kubectl port-forward` (compose needs no Host override since CSR round 12: its
+  `https://localhost:9443` issuer is accepted), why `kubectl get pod -o jsonpath` never shows
   secret-resolved env values (use `kubectl exec ... -- printenv` instead; for an api, worker,
   Authentik or Postgres pod as the operators group, `docs/runbooks/operators-group.md`),
   and a wrong-HTTP-verb trap that looks like an auth failure but is actually

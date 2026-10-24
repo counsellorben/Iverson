@@ -4,7 +4,7 @@
 
 **Why:** on Postgres, the api no longer holds an owner, BYPASSRLS or DDL credential, and every StarRocks data connection carries one tenant's role.
 - **Postgres.** The api logs in as `iverson_api`: a member of `iverson_runtime`, not the owner, with no BYPASSRLS, no `iverson_maintenance` and no DDL.
-- **StarRocks.** Every data connection logs in as its tenant's own login, `iverson_t_<suffix>`, which holds only that tenant's role. `iverson_app` keeps only `OPERATE ON SYSTEM`, for `/health` and the readiness probes.
+- **StarRocks.** Every data connection logs in as its tenant's own login, `iverson_t_<suffix>`, which holds only that tenant's role. `iverson_app` holds no direct privilege since CSR round 12 Platform (`docs/runbooks/csr12-platform.md`): `/health` and the readiness probes run `SELECT * FROM TABLE(generate_series(1,2))`, which needs none, and the deploy hooks revoke `OPERATE ON SYSTEM`.
 - **The worker.** The owner, maintenance and provisioning credentials stay with the worker and the deploy hooks. The worker also runs the privileged request-driven work: RegisterSchema's DDL and registry write, `/admin/reconcile/{type}` and DLQ replay.
 - **What does not change (spec §10, accepted).** The api mounts the StarRocks tenant key, from which every tenant's StarRocks password can be derived. Its Postgres login sets `app.tenant_id` itself, and row-level security keys on that setting, so it too reaches every tenant's Postgres rows. The worker keeps the owner, BYPASSRLS and provisioning rights. A compromised api or worker process can therefore still reach every tenant. This is inherent to a single multi-tenant service.
 
@@ -41,6 +41,7 @@
    | `_iverson_schema` | `SELECT` |
    | `IversonPrivilegedRequests` | `INSERT`, `SELECT`, `UPDATE ("Status")` |
    | `IversonStarRocksTenants` | `SELECT` |
+   | `IversonInviteQuota` | `SELECT`, `INSERT`, `UPDATE` |
 
    A worker that starts before CNPG has created `iverson_api` waits up to a minute for the role, then fails its startup and is restarted. It succeeds once the role exists.
 4. **The api connects as `iverson_api` and runs no DDL.**
@@ -87,7 +88,7 @@ mysql -h 127.0.0.1 -P 9030 -u root -p --ssl-mode=REQUIRED -e "SHOW GRANTS FOR 'i
 ```
 
 Expected:
-- `iverson_app` holds `OPERATE ON SYSTEM`, and no role other than `public`.
+- `iverson_app` holds no privilege and no role other than `public` (CSR round 12 Platform revokes `OPERATE ON SYSTEM`).
 - `SHOW USERS` lists `'iverson_t_<suffix>'@'%'` for each tenant that has written since the upgrade.
 
 Compose:
