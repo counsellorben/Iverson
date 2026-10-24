@@ -1,5 +1,8 @@
 global:
   ingressHost: "iverson-ci-test.example.org"
+  # CSR round 12 §2.4: a cloud render fails with no operator subject; CI renders with a dummy one.
+  operatorSubjects:
+    - "ci-dummy-operator-subject"
 authentik:
   ingress:
     securityPolicy: "iverson-authentik-login"

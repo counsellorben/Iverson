@@ -118,6 +118,14 @@ global:
   trustedProxies:
     cidrs: []
     hops: 1
+  # CSR round 12 §2.4: the `sub` of every human operator on this install. A `sub` is Authentik's
+  # per-install hash of the user, so it is read from the Authentik admin API or a first token
+  # (docs/runbooks/operator-access-onboarding.md), and a recreated Authentik database changes
+  # every one. The api grants Operator to these subjects (charts/api renders them as
+  # Authorization__OperatorSubjects__N). Empty is allowed on kind and laptop, where
+  # admin-automation still has Operator; charts/api fails the render while it is empty on an
+  # https (cloud) profile.
+  operatorSubjects: []
 
 postgres:
   enabled: true

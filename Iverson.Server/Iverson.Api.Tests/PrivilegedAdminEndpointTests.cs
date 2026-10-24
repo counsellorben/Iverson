@@ -66,10 +66,10 @@ public class PrivilegedAdminEndpointTests : IClassFixture<AuthTestWebApplication
     private static HttpRequestMessage OperatorPost(string path)
     {
         var serviceToken = TestJwtFactory.CreateToken(
-            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
+            "test-service-audience", AuthTestWebApplicationFactory.OperatorSubject);
         var actingUserToken = TestJwtFactory.CreateToken(
-            "test-actinguser-audience", "test-user",
-            extraClaims: [new Claim("tenant_id", ActiveTenant), new Claim("groups", "operators")]);
+            "test-actinguser-audience", AuthTestWebApplicationFactory.ActingOperatorSubject,
+            extraClaims: [new Claim("tenant_id", ActiveTenant)]);
 
         var request = new HttpRequestMessage(HttpMethod.Post, path);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", serviceToken);

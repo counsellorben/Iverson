@@ -256,14 +256,12 @@ builder.Services.AddAuthorization(options =>
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
+    // CSR round 12 §2.4: Operator comes from the install's operator list (see OperatorSubjects), read at
+    // each decision as ConsoleClient reads its audience, not from the groups claim.
     options.AddPolicy("Operator", policy => policy.RequireAssertion(context =>
-        OperatorAuthorizationPolicy.IsSatisfiedBy(
-            context.User.FindAll("groups").Select(c => c.Value),
-            context.User.FindFirst("scope")?.Value)));
+        OperatorAuthorizationPolicy.IsSatisfiedBy(context.User, OperatorSubjects.FromConfiguration(cfg))));
     options.AddPolicy("SchemaAdmin", policy => policy.RequireAssertion(context =>
-        SchemaAdminAuthorizationPolicy.IsSatisfiedBy(
-            context.User.FindAll("groups").Select(c => c.Value),
-            context.User.FindFirst("scope")?.Value)));
+        SchemaAdminAuthorizationPolicy.IsSatisfiedBy(context.User, OperatorSubjects.FromConfiguration(cfg))));
     options.AddPolicy("TenantAdmin", policy => policy.RequireAssertion(context =>
         TenantAdminAuthorizationPolicy.IsSatisfiedBy(
             context.User.FindAll("groups").Select(c => c.Value))));
@@ -273,6 +271,10 @@ builder.Services.AddAuthorization(options =>
         ConsoleClientAuthorizationPolicy.IsSatisfiedBy(
             context.User.FindAll("aud").Select(c => c.Value),
             cfg["Authentication:ConsoleAudience"])));
+    // CSR round 12 §2.2: the console is for admins only. /v1/traces and the console's schema and
+    // data-volume reads require Operator or TenantAdmin.
+    options.AddPolicy("ConsoleAdmin", policy => policy.RequireAssertion(context =>
+        ConsoleAdminAuthorizationPolicy.IsSatisfiedBy(context.User, OperatorSubjects.FromConfiguration(cfg))));
 });
 
 builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, AuditingAuthorizationMiddlewareResultHandler>();
@@ -457,6 +459,9 @@ builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>(
 // Development, and the Development test hosts register their own clients.
 var authentikAdminClient = builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName, client =>
 {
+    // CSR round 12 §2.1: a hung Authentik must not hold an admin RPC for HttpClient's 100 s default. The
+    // orchestrator token exchange runs inside the same SendAsync, so this bounds it too.
+    client.Timeout = TimeSpan.FromSeconds(10);
     if (cfg["Authentik:BaseUrl"] is { Length: > 0 } authentikBaseUrl)
         client.BaseAddress = new Uri(authentikBaseUrl);
     var adminToken = cfg["Authentik:AdminToken"];
@@ -549,6 +554,13 @@ var app = builder.Build();
 // CSR round-10 #5: outside Development the api role reaches Authentik only over TLS, trusting only
 // the CA the deployment mounts.
 Iverson.Api.Tenancy.AuthentikTrust.ValidateStartup(app.Configuration, workloadRole, app.Environment);
+// CSR round 12 §2.4: compose's dev-only group fallback. Only docker-compose.yml sets it, and the chart never
+// renders it; say so loudly if it is ever set anywhere else.
+if (OperatorSubjects.FromConfiguration(app.Configuration).GroupFallback is { } operatorGroupFallback)
+    app.Logger.LogWarning(
+        "Authorization:OperatorGroupFallback is set: every member of the '{OperatorGroup}' group is an Operator. "
+        + "Only the compose development stack sets this.",
+        operatorGroupFallback);
 app.MapPrometheusScrapingEndpoint().AllowAnonymous().WithMetadata(new RequireListenerPort(8081));
 
 if (app.Environment.IsDevelopment())
@@ -684,9 +696,7 @@ app.MapPost("/admin/reconcile/{typeName}", async (
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
         return Results.Unauthorized();
 
-    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(
-        actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
-        actingUserResult.Principal.FindFirst("scope")?.Value);
+    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(actingUserResult.Principal, OperatorSubjects.FromConfiguration(cfg));
     if (!isOperator)
         return Results.Forbid();
 
@@ -711,9 +721,7 @@ app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantS
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
         return Results.Unauthorized();
 
-    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(
-        actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
-        actingUserResult.Principal.FindFirst("scope")?.Value);
+    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(actingUserResult.Principal, OperatorSubjects.FromConfiguration(cfg));
     var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
 
     // CSR round 11 #21: an acting user whose tenant is not active is refused, as on the gRPC
@@ -747,9 +755,7 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, Iverso
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
         return Results.Unauthorized();
 
-    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(
-        actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
-        actingUserResult.Principal.FindFirst("scope")?.Value);
+    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(actingUserResult.Principal, OperatorSubjects.FromConfiguration(cfg));
     var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
 
     // Same inactive-tenant refusal and audit as /admin/dlq (see comment there), BEFORE the row fetch.
@@ -788,10 +794,9 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, Iverso
         httpContext.RequestAborted);
 }).WithName("ReplayDlq").RequireRateLimiting("admin").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
-// The admin console's four read-only JSON endpoints, under the same /admin prefix and — for
-// three of the four — the same Operator policy as the routes above. /admin/console/schema and
-// /admin/console/data-volume are authenticated-only on purpose and pass HttpContext.User to
-// their readers; see AdminConsoleEndpoints for why neither may be normalised to Operator.
+// The admin console's read-only JSON endpoints, under the same /admin prefix. /tenants and /qdrant
+// carry the Operator policy, as the routes above do; /schema and /data-volume require ConsoleAdmin and
+// pass HttpContext.User to their readers; /roles answers the caller's console roles (CSR round 12 §2.2).
 app.MapAdminConsoleEndpoints();
 
 // The console's fifth endpoint, Operator-gated like /tenants and /qdrant above — a Prometheus
@@ -887,9 +892,10 @@ if (workloadRole == "api")
 
     // Relays the admin-ui browser's OTel Web SDK spans to Jaeger's OTLP/HTTP endpoint.
     // Served by the API so the browser never needs Jaeger's own network address, and limited to
-    // tokens the console's own OIDC client issued (the ConsoleClient policy, CSR round-10 #13),
-    // so only signed-in admin-ui sessions can write traces through it — not service clients or
-    // acting-user tokens.
+    // tokens the console's own OIDC client issued (the ConsoleClient policy, CSR round-10 #13) to
+    // an Operator or a tenant admin (the ConsoleAdmin policy, CSR round 12 §2.2), so only admins'
+    // console sessions can write traces through it — not service clients, acting-user tokens or a
+    // signed-in user with neither role.
     // Body is relayed byte-for-byte (StreamContent straight from the request body), so this
     // must not attempt to parse or re-serialize it. The endpoint's only consumer is the
     // admin UI's browser OTel SDK, whose JsonTraceSerializer hardcodes
@@ -941,7 +947,7 @@ if (workloadRole == "api")
         using var response = await client.PostAsync("/v1/traces", content);
         ctx.Response.StatusCode = (int)response.StatusCode;
         await response.Content.CopyToAsync(ctx.Response.Body);
-    }).RequireAuthorization("ConsoleClient")
+    }).RequireAuthorization("ConsoleClient", "ConsoleAdmin")
         // CSR round 11 #21: the console token's tenant must be active; no tenant_id passes.
         .AddEndpointFilter<ActiveTenantEndpointFilter>()
         .RequireRateLimiting("traces")

@@ -7,6 +7,15 @@
 {{- fail "global.trustedProxies.cidrs contains a blank entry; every entry must be a CIDR" }}
 {{- end }}
 {{- end }}
+{{- $operatorSubjects := dig "operatorSubjects" (list) .Values.global }}
+{{- if and (not $operatorSubjects) (eq (dig "externalScheme" "http" .Values.global) "https") }}
+{{- fail "global.operatorSubjects must list at least one operator's sub on an https (cloud) profile: the api grants Operator only to the subjects listed there (docs/runbooks/operator-access-onboarding.md)" }}
+{{- end }}
+{{- range $operatorSubjects }}
+{{- if not (trim .) }}
+{{- fail "global.operatorSubjects contains a blank entry; every entry must be an operator's sub" }}
+{{- end }}
+{{- end }}
 {{- $backendTls := eq (include "api.backendTls" .) "true" }}
 apiVersion: v1
 kind: ServiceAccount
@@ -159,6 +168,11 @@ spec:
             {{- end }}
             - name: RateLimiting__TrustedProxies__Hops
               value: {{ dig "trustedProxies" "hops" 1 .Values.global | quote }}
+            # CSR round 12 §2.4: the subjects the api grants Operator (global.operatorSubjects).
+            {{- range $i, $subject := $operatorSubjects }}
+            - name: Authorization__OperatorSubjects__{{ $i }}
+              value: {{ $subject | quote }}
+            {{- end }}
             - name: Authentication__Authority
               value: "http://{{ .Release.Name }}-authentik:9000/application/o/iverson-api/"
             - name: Authentication__ExternalIssuer

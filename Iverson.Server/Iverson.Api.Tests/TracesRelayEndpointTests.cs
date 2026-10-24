@@ -37,13 +37,17 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
         }
     }
 
+    // A tenant admin's console role: /v1/traces requires ConsoleAdmin (CSR round 12 §2.2).
+    private static readonly Claim[] TenantAdminClaims = [new Claim("groups", "tenant-admins")];
+
     // The token's audience defaults to the console's, the only one /v1/traces accepts (CSR
-    // round-10 #13). configuredConsoleAudience, when given, replaces the factory's
-    // Authentication:ConsoleAudience.
+    // round-10 #13), and its claims to a tenant admin's. configuredConsoleAudience, when given,
+    // replaces the factory's Authentication:ConsoleAudience.
     private (HttpClient Client, FakeJaegerHandler JaegerHandler) CreateAuthenticatedClient(
         string subject = "trace-relay-test-user",
         string audience = AuthTestWebApplicationFactory.ConsoleAudience,
-        string? configuredConsoleAudience = null)
+        string? configuredConsoleAudience = null,
+        Claim[]? claims = null)
     {
         var jaegerHandler = new FakeJaegerHandler();
         var factory = _baseFactory.WithWebHostBuilder(builder =>
@@ -64,8 +68,40 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
 
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", TestJwtFactory.CreateToken(audience, subject));
+            new AuthenticationHeaderValue("Bearer",
+                TestJwtFactory.CreateToken(audience, subject, extraClaims: claims ?? TenantAdminClaims));
         return (client, jaegerHandler);
+    }
+
+    // CSR round 12 §2.2: only admins post traces. A console token of a signed-in user with neither
+    // role is the console's own audience, so ConsoleClient alone admitted it.
+    [Fact]
+    public async Task PostTraces_ConsoleTokenOfAUserWithNeitherRole_Returns403_AndIsNeverForwarded()
+    {
+        var (client, jaegerHandler) = CreateAuthenticatedClient(subject: "trace-relay-ordinary-user", claims: []);
+
+        using var content = new ByteArrayContent(Encoding.UTF8.GetBytes("""{"resourceSpans":[]}"""));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        var response = await client.PostAsync("/v1/traces", content);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        jaegerHandler.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task PostTraces_ConsoleTokenOfAListedOperator_IsAccepted()
+    {
+        var (client, jaegerHandler) = CreateAuthenticatedClient(
+            subject: AuthTestWebApplicationFactory.HumanOperatorSubject, claims: []);
+
+        using var content = new ByteArrayContent(Encoding.UTF8.GetBytes("""{"resourceSpans":[]}"""));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        var response = await client.PostAsync("/v1/traces", content);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        jaegerHandler.CallCount.Should().Be(1);
     }
 
     [Fact]

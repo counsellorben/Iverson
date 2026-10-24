@@ -71,12 +71,27 @@ public class TenantLifecycleGrpcServiceAuthorizationPipelineTests : IClassFixtur
     }
 
     [Fact]
-    public async Task ListTenants_AuthenticatedWithOperatorsGroup_PassesAuthorizationGateAndReturnsResponse()
+    public async Task ListTenants_OperatorsGroupWithoutTheComposeFallback_ThrowsPermissionDenied()
+    {
+        // CSR round 12 §2.4: the orchestrator can write group memberships, so no group yields Operator
+        // where Authorization:OperatorGroupFallback is unset (every Helm install).
+        var token = TestJwtFactory.CreateToken(
+            "test-service-audience",
+            "groups-only-operator",
+            extraClaims: [new Claim("groups", "operators")]);
+
+        var ex = await TryListTenantsAsync(Headers(token));
+
+        ex.Should().NotBeNull();
+        ex!.StatusCode.Should().Be(StatusCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task ListTenants_SubjectOnTheOperatorList_PassesAuthorizationGateAndReturnsResponse()
     {
         var token = TestJwtFactory.CreateToken(
             "test-service-audience",
-            "human-operator",
-            extraClaims: [new Claim("groups", "operators")]);
+            AuthTestWebApplicationFactory.HumanOperatorSubject);
 
         var ex = await TryListTenantsAsync(Headers(token));
 

@@ -65,7 +65,7 @@ def jwt(claims):
     return f"eyJhbGciOiJub25lIn0.{body}.sig"
 
 
-BYPASS_TOKEN = jwt({"sub": "sub-123", "tenant_id": "tenant_bypass", "groups": ["iverson-loadtest-bypass", "operators"]})
+BYPASS_TOKEN = jwt({"sub": "sub-123", "tenant_id": "tenant_bypass", "groups": ["iverson-loadtest-bypass"]})
 
 SIM_RE = re.compile(r"^SIMILARITY\(Utterance, '((?:[^']|'')*)'\)(?: > (.+))?$")
 
@@ -355,7 +355,7 @@ def test_acting_identity_reads_the_bypass_users_claims():
 
 @pytest.mark.parametrize("claims", [
     {"sub": "s", "tenant_id": "tenant_smoke_test", "groups": ["iverson-loadtest-bypass"]},
-    {"sub": "s", "tenant_id": "tenant_bypass", "groups": ["operators"]},
+    {"sub": "s", "tenant_id": "tenant_bypass", "groups": ["tenant-admins"]},
     {"tenant_id": "tenant_bypass", "groups": ["iverson-loadtest-bypass"]},
 ])
 def test_any_other_acting_identity_aborts(claims):

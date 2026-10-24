@@ -561,6 +561,11 @@ services:
       # and is reachable from api at its compose service name and its own query port 9090 --
       # without this, the endpoint reports "notDeployed" even though Prometheus is running.
       - Prometheus__BaseUrl=http://prometheus:9090
+      # CSR round 12 §2.4: compose's dev operator (iverson-loadtest-bypass-user) gets its sub only at
+      # first database init, so no static operator list can name it. This dev-only fallback keeps the
+      # compose blueprints' operators group an Operator; the api warns at startup while it is set, and
+      # the Helm chart never sets it.
+      - Authorization__OperatorGroupFallback=operators
     volumes:
       - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/iverson/authentik-ca/ca.crt, read_only: true }
     # A TCP connect to 8080 says Kestrel is listening, and that is all this healthcheck claims.

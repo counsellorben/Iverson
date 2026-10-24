@@ -1,17 +1,19 @@
+using System.Security.Claims;
+
 namespace Iverson.Api;
 
 public static class SchemaAdminAuthorizationPolicy
 {
-    // Narrower than OperatorAuthorizationPolicy: operators already have this right (they're
-    // more trusted than schema registration requires, so no separate scope needed for them),
-    // but automation callers get it via a dedicated `schema_admin` scope rather than the
-    // broader `admin` scope — reusing `admin` here would also grant those callers
-    // /admin/dlq and /admin/reconcile access, which is more than schema registration needs.
-    public static bool IsSatisfiedBy(IEnumerable<string> groupClaims, string? scopeClaim)
+    // Operator implies SchemaAdmin (CSR round 12 §2.4): the operator list, the `admin` scope and compose's
+    // group fallback all satisfy it, through the one Operator function. Automation that should register
+    // schemas without becoming an Operator gets the narrower `schema_admin` scope instead, which would not
+    // also grant /admin/dlq and /admin/reconcile.
+    public static bool IsSatisfiedBy(ClaimsPrincipal principal, OperatorSubjects operatorSubjects)
     {
-        if (groupClaims.Contains("operators"))
+        if (OperatorAuthorizationPolicy.IsSatisfiedBy(principal, operatorSubjects))
             return true;
 
-        return scopeClaim is not null && scopeClaim.Split(' ', StringSplitOptions.RemoveEmptyEntries).Contains("schema_admin");
+        return principal.FindFirst("scope")?.Value is { } scope
+            && scope.Split(' ', StringSplitOptions.RemoveEmptyEntries).Contains("schema_admin");
     }
 }

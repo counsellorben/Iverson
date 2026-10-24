@@ -75,7 +75,8 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
 
     private static Task<HttpResponseMessage> PostTracesAsync(HttpClient client, string? tenantId)
     {
-        var claims = new List<Claim>();
+        // A tenant admin's console token: /v1/traces requires a console role (CSR round 12 §2.2).
+        var claims = new List<Claim> { new("groups", "tenant-admins") };
         if (tenantId is not null)
             claims.Add(new Claim("tenant_id", tenantId));
         var request = new HttpRequestMessage(HttpMethod.Post, "/v1/traces")
@@ -91,11 +92,12 @@ public class InactiveTenantHttpEndpointTests : IClassFixture<AuthTestWebApplicat
     private static HttpRequestMessage DlqRequest(HttpMethod method, string path, string? actingTenantId)
     {
         var serviceToken = TestJwtFactory.CreateToken(
-            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
-        var actingClaims = new List<Claim> { new("groups", "operators") };
+            "test-service-audience", AuthTestWebApplicationFactory.OperatorSubject);
+        var actingClaims = new List<Claim>();
         if (actingTenantId is not null)
             actingClaims.Add(new Claim("tenant_id", actingTenantId));
-        var actingUserToken = TestJwtFactory.CreateToken("test-actinguser-audience", "test-user", extraClaims: actingClaims);
+        var actingUserToken = TestJwtFactory.CreateToken(
+            "test-actinguser-audience", AuthTestWebApplicationFactory.ActingOperatorSubject, extraClaims: actingClaims);
 
         var request = new HttpRequestMessage(method, path);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", serviceToken);

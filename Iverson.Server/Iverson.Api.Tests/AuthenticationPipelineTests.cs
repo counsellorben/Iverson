@@ -77,11 +77,10 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
     {
         // Regression test: /admin/dlq used to only check the Operator policy against whichever
         // principal authenticated under the default scheme, so a valid service-to-service token
-        // with an "operators" group claim would have satisfied RequireAuthorization("Operator")
-        // and returned 200 with no acting-user context at all. The endpoint must also require a
+        // of an Operator would have satisfied RequireAuthorization("Operator") and returned 200
+        // with no acting-user context at all. The endpoint must also require a
         // separately-authenticated "ActingUser" token before it does anything else.
-        var token = TestJwtFactory.CreateToken(
-            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
+        var token = TestJwtFactory.CreateToken("test-service-audience", AuthTestWebApplicationFactory.OperatorSubject);
 
         using var request = new HttpRequestMessage(HttpMethod.Get, "/admin/dlq");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -95,7 +94,7 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
     public async Task ServiceTokenOnly_PostAdminReconcile_Returns401()
     {
         var token = TestJwtFactory.CreateToken(
-            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
+            "test-service-audience", AuthTestWebApplicationFactory.OperatorSubject);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/admin/reconcile/SomeType");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -119,10 +118,10 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         })).CreateClient();
 
         var serviceToken = TestJwtFactory.CreateToken(
-            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
+            "test-service-audience", AuthTestWebApplicationFactory.OperatorSubject);
         var actingUserToken = TestJwtFactory.CreateToken(
-            "test-actinguser-audience", "test-user",
-            extraClaims: [new Claim("tenant_id", "tenant-a"), new Claim("groups", "operators")]);
+            "test-actinguser-audience", AuthTestWebApplicationFactory.ActingOperatorSubject,
+            extraClaims: [new Claim("tenant_id", "tenant-a")]);
 
         using var request = new HttpRequestMessage(HttpMethod.Get, "/admin/dlq");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", serviceToken);
@@ -156,10 +155,10 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         })).CreateClient();
 
         var serviceToken = TestJwtFactory.CreateToken(
-            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
+            "test-service-audience", AuthTestWebApplicationFactory.OperatorSubject);
         var actingUserToken = TestJwtFactory.CreateToken(
-            "test-actinguser-audience", "test-user",
-            extraClaims: [new Claim("tenant_id", "tenant-a"), new Claim("groups", "operators")]);
+            "test-actinguser-audience", AuthTestWebApplicationFactory.ActingOperatorSubject,
+            extraClaims: [new Claim("tenant_id", "tenant-a")]);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/admin/reconcile/SomeType");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", serviceToken);
@@ -176,14 +175,14 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         // Round-4 whole-branch review finding: `r.TenantId == actingTenantId` is `null == null`
         // (true) for every untenanted row when the acting user's tenant_id claim is absent,
         // bypassing the isOperator gate entirely. An acting user with neither a tenant_id claim
-        // nor operator group membership must be rejected outright, not silently handed every
+        // nor Operator must be rejected outright, not silently handed every
         // untenanted row. This is observable even against the no-op DLQ repository (always empty):
         // before the fix this request returned 200 OK; after the fix, it must never reach the
         // repository at all.
         var serviceToken = TestJwtFactory.CreateToken(
-            "test-service-audience", "test-operator", extraClaims: [new Claim("groups", "operators")]);
+            "test-service-audience", AuthTestWebApplicationFactory.OperatorSubject);
         var actingUserToken = TestJwtFactory.CreateToken(
-            "test-actinguser-audience", "test-user"); // no tenant_id claim, no operator group
+            "test-actinguser-audience", "test-user"); // no tenant_id claim, not an Operator
 
         using var request = new HttpRequestMessage(HttpMethod.Get, "/admin/dlq");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", serviceToken);
@@ -192,6 +191,75 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
         var response = await _client.SendAsync(request);
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    // ── CSR round 12 §2.4: Operator at the three acting-user sites ─────────────────────────
+    // /admin/reconcile, /admin/dlq and /admin/dlq/{id}/replay decide Operator for the ACTING user by
+    // hand, with the Operator policy's own function. An acting user with no tenant_id gets through only
+    // as an Operator, so each site answers 403 for one that is not, and passes one on the operator list.
+
+    public static TheoryData<string, string> ActingUserSites() => new()
+    {
+        { "GET",  "/admin/dlq" },
+        { "POST", "/admin/reconcile/SomeType" },
+        { "POST", $"/admin/dlq/{Guid.Empty}/replay" },
+    };
+
+    // The reconcile runs in the worker (CSR round 12 §5.2), which this host does not run, so the request
+    // queue answers as the worker does for a type it does not know. The DLQ is the base host's empty fake.
+    private HttpClient ClientWithAQueueThatKnowsNoType()
+    {
+        var requests = Substitute.For<IPrivilegedRequestRepository>();
+        requests.GetAsync(Arg.Any<Guid>()).Returns(new PrivilegedRequestRow(
+            Guid.Empty, "ReconcileType", "{}", PrivilegedRequestStatus.Failed,
+            new Iverson.Api.PrivilegedRequests.PrivilegedRequestResult(
+                global::Grpc.Core.StatusCode.NotFound, "No schema registered for 'SomeType'").ToJson()));
+        return _factory.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<IPrivilegedRequestRepository>();
+            services.AddSingleton(requests);
+        })).CreateClient();
+    }
+
+    private static HttpRequestMessage ActingUserRequest(string method, string path, string actingSubject, params Claim[] actingClaims)
+    {
+        var request = new HttpRequestMessage(new HttpMethod(method), path);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer",
+            TestJwtFactory.CreateToken("test-service-audience", AuthTestWebApplicationFactory.OperatorSubject));
+        request.Headers.Add("x-acting-user-authorization",
+            $"Bearer {TestJwtFactory.CreateToken("test-actinguser-audience", actingSubject, extraClaims: actingClaims)}");
+        return request;
+    }
+
+    [Theory]
+    [MemberData(nameof(ActingUserSites))]
+    public async Task ActingUserOnTheOperatorList_WithNoTenant_IsAnOperator_AtEveryActingUserSite(string method, string path)
+    {
+        var response = await ClientWithAQueueThatKnowsNoType().SendAsync(
+            ActingUserRequest(method, path, AuthTestWebApplicationFactory.ActingOperatorSubject));
+
+        // Past the Operator decision: the DLQ list answers (empty), and the reconcile and the replay reach
+        // their lookups, which find nothing.
+        response.StatusCode.Should().Be(method == "GET" ? HttpStatusCode.OK : HttpStatusCode.NotFound);
+    }
+
+    [Theory]
+    [MemberData(nameof(ActingUserSites))]
+    public async Task ActingUserInTheOperatorsGroupOnly_IsNotAnOperator_AtEveryActingUserSite(string method, string path)
+    {
+        var response = await ClientWithAQueueThatKnowsNoType().SendAsync(
+            ActingUserRequest(method, path, "test-groups-only-user", new Claim("groups", "operators")));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    // CSR round 12 §2.1: a hung Authentik must not hold an admin RPC for HttpClient's 100 s default.
+    [Fact]
+    public void TheAuthentikAdminClient_TimesOutAfterTenSeconds()
+    {
+        var clients = _factory.Services.GetRequiredService<IHttpClientFactory>();
+
+        clients.CreateClient(IdpAdminClient.HttpClientName).Timeout.Should().Be(TimeSpan.FromSeconds(10));
     }
 
     [Fact]
