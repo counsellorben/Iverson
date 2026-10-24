@@ -518,7 +518,7 @@ def probe_decision(per_candidate_means, whole_corpus_calls):
 # ── Build identity ──────────────────────────────────────────────────────────────────────
 
 def fetch_build(url):
-    """GET /build (anonymous, listener 8081) -> composite; any failure aborts, like benchmark-query."""
+    """GET /build (anonymous, listener 8082) -> composite; any failure aborts, like benchmark-query."""
     try:
         with urllib.request.urlopen(url, timeout=30) as response:
             body = json.load(response)
@@ -856,7 +856,7 @@ def build_arg_parser():
         p.add_argument("--baseline", required=True, help="<label>.chunks.trec whose candidates are scored")
         p.add_argument("--keymap", default=DEFAULT_KEYMAP, help="Iverson GUID -> BEIR doc id")
         p.add_argument("--queries", default=DEFAULT_QUERIES, help="BEIR queries.jsonl (the text benchmark-query sends)")
-        p.add_argument("--build-url", default=os.environ.get("IVERSON_HTTP_URL", "http://localhost:8081") + "/build")
+        p.add_argument("--build-url", default=os.environ.get("IVERSON_HTTP_URL", "http://localhost:8082") + "/build")
         p.add_argument("--username", default=BYPASS_USERNAME, help="the acting user to mint a token for")
         if name == "probe-a":
             p.add_argument("--query-id", default=None, help="default: the lowest query id")

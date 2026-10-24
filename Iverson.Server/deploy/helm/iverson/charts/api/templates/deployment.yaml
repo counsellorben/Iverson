@@ -89,6 +89,9 @@ spec:
               name: grpc
             - containerPort: 8081
               name: http
+            # CSR round 12 §3.3: /metrics and /build, for Prometheus only.
+            - containerPort: 8082
+              name: metrics
           env:
             # CSR round 12 §6.1: the api's own login, iverson_api (charts/postgres: the managed role
             # and <release>-postgres-api). It is not the owner, holds no BYPASSRLS and runs no DDL;
@@ -268,6 +271,12 @@ spec:
             - name: Kestrel__Endpoints__Http__Certificate__Path
               value: "/etc/iverson/api-tls/tls.crt"
             - name: Kestrel__Endpoints__Http__Certificate__KeyPath
+              value: "/etc/iverson/api-tls/tls.key"
+            - name: Kestrel__Endpoints__Metrics__Url
+              value: "https://*:8082"
+            - name: Kestrel__Endpoints__Metrics__Certificate__Path
+              value: "/etc/iverson/api-tls/tls.crt"
+            - name: Kestrel__Endpoints__Metrics__Certificate__KeyPath
               value: "/etc/iverson/api-tls/tls.key"
             {{- end }}
           resources:

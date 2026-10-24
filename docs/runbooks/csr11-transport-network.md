@@ -93,7 +93,7 @@ once the narrower rule works.
 
 ## 5. Reaching the API from a workstation
 
-The API's ports 8080 (gRPC) and 8081 (admin, health, metrics) now serve only TLS, from a
+The API's ports 8080 (gRPC), 8081 (admin, health) and 8082 (metrics and `/build`, CSR round 12) now serve only TLS, from a
 certificate named `<release>-api`. Through a port-forward, verify that name:
 
 ```bash

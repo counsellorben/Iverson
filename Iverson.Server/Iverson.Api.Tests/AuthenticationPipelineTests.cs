@@ -4,8 +4,10 @@ using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text.Json;
 using FluentAssertions;
+using Iverson.Api.RateLimiting;
 using Iverson.Api.Tenancy;
 using Iverson.Api.Tests.Helpers;
+using Iverson.Api.Tests.RateLimiting;
 using Iverson.Events;
 using Iverson.Sql;
 using Iverson.StarRocks;
@@ -289,9 +291,7 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
     // marker-completeness: a future endpoint added without the marker fails this assertion in
     // CI rather than surfacing as a 429 in production.
     [InlineData("/health/live")]
-    [InlineData("/build")]
     [InlineData("/health")]
-    [InlineData("/metrics")]
     public void HealthListenerEndpoint_IsMarkedForHealthListenerPort(string routePattern)
     {
         var dataSource = _factory.Services.GetRequiredService<EndpointDataSource>();
@@ -301,6 +301,52 @@ public class AuthenticationPipelineTests : IClassFixture<AuthTestWebApplicationF
 
         endpoint.Metadata.GetMetadata<Program.RequireListenerPort>()!.Port.Should().Be(8081);
     }
+
+    // CSR round 12 §3.3 (#6): /metrics and /build moved to the metrics listener, which NetworkPolicy
+    // opens to Prometheus alone. The gate must refuse them on 8081 (reachable from the edge) and admit
+    // them on 8082, and both global limiters must still exempt them, as they did on 8081.
+    [Theory]
+    [InlineData("/metrics")]
+    [InlineData("/build")]
+    public void MetricsListenerEndpoint_IsMarkedForMetricsListenerPort(string routePattern) =>
+        EndpointFor(routePattern).Metadata.GetMetadata<Program.RequireListenerPort>()!.Port.Should().Be(8082);
+
+    [Theory]
+    [InlineData("/metrics", 8082, true)]
+    [InlineData("/build", 8082, true)]
+    [InlineData("/metrics", 8081, false)]
+    [InlineData("/build", 8081, false)]
+    [InlineData("/metrics", 8080, false)]
+    public async Task MetricsAndBuild_PassTheListenerPortGateOnlyOnTheMetricsListener(string routePattern, int localPort, bool admitted)
+    {
+        var context = new DefaultHttpContext { Connection = { LocalPort = localPort } };
+        context.SetEndpoint(EndpointFor(routePattern));
+        var nextInvoked = false;
+        Task Next() { nextInvoked = true; return Task.CompletedTask; }
+
+        await Program.ListenerPortGateAsync(context, Next);
+
+        nextInvoked.Should().Be(admitted);
+        context.Response.StatusCode.Should().Be(admitted ? StatusCodes.Status200OK : StatusCodes.Status404NotFound);
+    }
+
+    [Theory]
+    [InlineData("/metrics")]
+    [InlineData("/build")]
+    public void MetricsListenerEndpoint_IsExemptFromBothGlobalLimiters(string routePattern)
+    {
+        var trustedProxies = TrustedProxyOptions.FromConfiguration(TrustedProxyOptionsTests.Config(1));
+        var context = new DefaultHttpContext { Connection = { LocalPort = 8082 } };
+        context.SetEndpoint(EndpointFor(routePattern));
+
+        Program.PreAuthPartition(context, trustedProxies).PartitionKey.Should().Be("unlimited");
+        Program.PostAuthPartition(context, trustedProxies).PartitionKey.Should().Be("unlimited");
+    }
+
+    private RouteEndpoint EndpointFor(string routePattern) =>
+        _factory.Services.GetRequiredService<EndpointDataSource>().Endpoints
+            .OfType<RouteEndpoint>()
+            .Single(e => e.RoutePattern.RawText == routePattern);
 
     [Theory]
     // The browser posts spans to the admin-api host, which the admin-api Ingress sends to the

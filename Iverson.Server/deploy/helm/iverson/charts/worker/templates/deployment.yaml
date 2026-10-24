@@ -58,9 +58,13 @@ spec:
             # No grpc (8080) port here — the worker role serves no client gRPC/HTTP
             # traffic (Kafka consumers + background reconciliation only). 8081/http is
             # kept solely so the readiness/liveness probes below can reach /health and
-            # /health/live; there is no Service or Ingress in front of it.
+            # /health/live; there is no Ingress in front of it. 8082/metrics serves
+            # /metrics and /build to Prometheus (CSR round 12 §3.3); like 8081 it is plain
+            # HTTP, from appsettings.json, because the worker has no server certificate.
             - containerPort: 8081
               name: http
+            - containerPort: 8082
+              name: metrics
           env:
             - name: WorkloadRole
               value: "worker"

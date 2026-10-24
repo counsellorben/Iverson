@@ -569,7 +569,9 @@ if (OperatorSubjects.FromConfiguration(app.Configuration).GroupFallback is { } o
         "Authorization:OperatorGroupFallback is set: every member of the '{OperatorGroup}' group is an Operator. "
         + "Only the compose development stack sets this.",
         operatorGroupFallback);
-app.MapPrometheusScrapingEndpoint().AllowAnonymous().WithMetadata(new RequireListenerPort(8081));
+// CSR round 12 §3.3 (#6): /metrics and /build answer only on the metrics listener (8082), which
+// NetworkPolicy opens to Prometheus alone; 8081 keeps /admin, /health and /v1/traces.
+app.MapPrometheusScrapingEndpoint().AllowAnonymous().WithMetadata(new RequireListenerPort(8082));
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
@@ -629,7 +631,7 @@ app.MapGet("/build", () =>
 {
     var (composite, assemblies) = BuildIdentity.Compute();
     return Results.Ok(new { composite, assemblies });
-}).WithName("BuildIdentity").AllowAnonymous().WithMetadata(new RequireListenerPort(8081));
+}).WithName("BuildIdentity").AllowAnonymous().WithMetadata(new RequireListenerPort(8082));
 
 app.MapGet("/health", async (
     IRecordStoreQueryExecutor db,
@@ -1027,10 +1029,11 @@ public partial class Program
     {
         // Exclude the gRPC data plane (already governed by RateLimitInterceptor's own 50,000/min
         // budget) and the anonymous probe/observability endpoints (kubelet, Prometheus — a 429
-        // there pulls the pod out of service). Both are marked RequireListenerPort(8081) or are
-        // gRPC methods, identified the same way Task 1's middleware identifies them, so this
-        // list can never silently diverge from Task 1's own endpoint enumeration.
-        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
+        // there pulls the pod out of service). Both are marked RequireListenerPort(8081), or (8082)
+        // for the metrics listener (CSR round 12 §3.3), or are gRPC methods, identified the same
+        // way Task 1's middleware identifies them, so this list can never silently diverge from
+        // Task 1's own endpoint enumeration.
+        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port is 8081 or 8082;
         var isGrpcCall = ctx.Request.ContentType?.StartsWith("application/grpc") == true;
         if (isHealthListenerEndpoint || isGrpcCall)
             // A constant key, not the request path: PartitionedRateLimiter.Create caches one
@@ -1060,7 +1063,7 @@ public partial class Program
         // runs post-auth), so they have no rate-limit coverage outside this pre-auth limiter.
         // Excluding gRPC here would leave garbage-token gRPC calls with zero rate limiting,
         // reopening the vulnerability this pre-auth limiter exists to close.
-        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
+        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port is 8081 or 8082;
         if (isHealthListenerEndpoint)
             return RateLimitPartition.GetNoLimiter("unlimited");
 

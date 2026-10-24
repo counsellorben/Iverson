@@ -38,6 +38,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:d5633778c754e89a386882eddf8dbee
 WORKDIR /app
 EXPOSE 8080
 EXPOSE 8081
+EXPOSE 8082
 
 # mcr.microsoft.com/dotnet/aspnet:10.0 already ships a built-in non-root
 # "ubuntu" user at uid=1000/gid=1000 (verified via `docker run ... id ubuntu`),

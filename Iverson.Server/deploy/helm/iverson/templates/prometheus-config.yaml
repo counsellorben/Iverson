@@ -34,10 +34,10 @@ data:
         dns_sd_configs:
           - names: ["{{ .Release.Name }}-api-headless.{{ .Release.Namespace }}.svc.cluster.local"]
             type: A
-            port: 8081
+            port: 8082
       - job_name: iverson-worker
         dns_sd_configs:
           - names: ["{{ .Release.Name }}-worker-headless.{{ .Release.Namespace }}.svc.cluster.local"]
             type: A
-            port: 8081
+            port: 8082
 {{- end }}

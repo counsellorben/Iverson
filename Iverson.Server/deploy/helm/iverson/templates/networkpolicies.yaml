@@ -25,8 +25,8 @@
 CSR round-11 #18: the ingress-nginx namespace is admitted only where the Ingress fronting the
 port is served by ingress-nginx (className "nginx"); every other class reaches the pod from
 clusterCidrs alone. Each rule is gated on the className of the Ingress that targets its port:
-API 8080 by api.ingress, API 8081 by api.adminApiIngress (Prometheus stays admitted there
-whatever the class), admin-ui 8080 by adminUi.ingress, Authentik 9080 by authentik.ingress. A
+API 8080 by api.ingress, API 8081 by api.adminApiIngress, admin-ui 8080 by adminUi.ingress,
+Authentik 9080 by authentik.ingress (Prometheus's 8082 rule has no Ingress and no class). A
 rule's `from` list never becomes empty: clusterCidrs is non-empty (refused above otherwise), so
 dropping the namespace peer narrows the rule instead of turning it into an allow-all.
 */}}
@@ -50,8 +50,8 @@ spec:
 # load balancer connects from (AWS/Azure/GCP have no ingress-nginx namespace). An empty
 # list is refused near the top of this file, since it would render an ingress rule that
 # matches every source. The kubelet's readiness/liveness probes need no rule: traffic from
-# the node a pod runs on is always admitted. Port 8081 also admits Prometheus, which
-# scrapes /metrics from the dedicated Http1 health port rather than from 8080.
+# the node a pod runs on is always admitted. Port 8082 admits Prometheus alone: it serves
+# /metrics and /build, and only there (CSR round 12 §3.3).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -76,12 +76,15 @@ spec:
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
         {{- end }}
-        - podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } }
         {{- range .Values.networkPolicy.clusterCidrs }}
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
       ports:
         - { protocol: TCP, port: 8081 }
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } }
+      ports:
+        - { protocol: TCP, port: 8082 }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -160,7 +163,7 @@ spec:
   ingress:
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } }
-      ports: [{ protocol: TCP, port: 8081 }]
+      ports: [{ protocol: TCP, port: 8082 }]
 ---
 # Every datastore/backing-service component: ingress only from api (and, where noted,
 # worker), on its own port. None of them need to initiate egress beyond DNS + their own
@@ -560,7 +563,7 @@ spec:
     - to:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
-      ports: [{ protocol: TCP, port: 8081 }]
+      ports: [{ protocol: TCP, port: 8082 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

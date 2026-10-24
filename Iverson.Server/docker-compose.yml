@@ -501,6 +501,8 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:8081:8081"
+      # CSR round 12 §3.3: /metrics and /build (LoadTest's run attribution reads /build here).
+      - "127.0.0.1:8082:8082"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       # CSR round 12 §6.1: the api's own login, as on the chart's api Deployment: not the owner, no
@@ -640,7 +642,7 @@ services:
     user: "1000:1000"
     # No `ports:` on purpose, mirroring the chart's worker Deployment, which publishes no gRPC
     # port either: this role serves no client traffic. Nothing is published to the host, so the
-    # container's own 8080/8081 cannot collide with iverson-api's published bindings.
+    # container's own 8080/8081/8082 cannot collide with iverson-api's published bindings.
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       # The one line that distinguishes this service from iverson-api. The env-var configuration
