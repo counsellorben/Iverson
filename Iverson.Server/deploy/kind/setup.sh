@@ -28,6 +28,42 @@ CNPG_VERSION=$(operator_version cloudnative-pg)
 STRIMZI_VERSION=$(operator_version strimzi-kafka-operator)
 STARROCKS_OPERATOR_VERSION=$(operator_version operator)
 
+# CSR round 12 §5: with no argument this script runs the whole fresh install. On an existing cluster the
+# upgrade runs the platform steps one at a time (docs/runbooks/csr12-platform.md §3): `setup.sh --only
+# <phase>` runs that phase alone. Each phase is a function below; the fresh install calls them in the
+# same order, after the operators.
+PHASES="operator-namespaces"
+ONLY=""
+if [ "$#" -gt 0 ]; then
+  if [ "$#" -ne 2 ] || [ "$1" != "--only" ] || [[ "$2" == *[[:space:]]* || " $PHASES " != *" $2 "* ]]; then
+    echo "usage: $0 [--only <phase>]   (phases: $PHASES)" >&2
+    exit 2
+  fi
+  ONLY="$2"
+fi
+
+phase_operator_namespaces() {
+  echo "Installing the operator-namespace NetworkPolicies (CSR round 12 §3.4)..."
+  # Default-deny with explicit allows in cnpg-system, kafka, starrocks, istio-system, tigera-operator and
+  # iverson-edge, from the chart the cloud Terraform installs too (modules/operators), with kind's
+  # addresses from values-kind.yaml. Every namespace it governs must exist first: istio-system, which Istio
+  # installs into, and iverson-edge, the gateway's namespace (not enrolled in the mesh).
+  local ns policies
+  for ns in istio-system iverson-edge; do
+    kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+  done
+  policies="$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform/modules/operators/charts/operator-namespace-policies" && pwd)"
+  helm upgrade --install operator-namespace-policies "$policies" \
+    --namespace kube-system \
+    -f "$policies/values-kind.yaml" \
+    --wait
+}
+
+if [ -n "$ONLY" ]; then
+  "phase_${ONLY//-/_}"
+  exit 0
+fi
+
 echo "Installing Calico (kind's default CNI, kindnet, does not enforce NetworkPolicy)..."
 kubectl create namespace tigera-operator --dry-run=client -o yaml | kubectl apply -f -
 # The tigera-operator chart bundles both the operator and its Custom Resources
@@ -187,6 +223,8 @@ helm upgrade --install metrics-server metrics-server \
   --namespace kube-system \
   --set 'args={--kubelet-insecure-tls}' \
   --wait
+
+phase_operator_namespaces
 
 echo "All operators installed."
 echo "Next: deploy/kind/build-and-load-image.sh to build+load the app image, then helm upgrade --install --wait iverson . -f values-local.yaml -n iverson --kube-as-user=kubernetes-admin --kube-as-group=kubeadm:cluster-admins --kube-as-group=iverson-operators (the kube-as flags: CSR round 12's admission policy admits only the iverson-operators group to install or change the api, see docs/runbooks/operators-group.md; --wait: the post-upgrade StarRocks role revoke then runs once the new pods are ready, though a previous-release pod may still be running or terminating; see docs/runbooks/csr12-server.md §1)"

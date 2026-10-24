@@ -64,9 +64,10 @@ provider "helm" {
 }
 
 module "operators" {
-  source       = "../modules/operators"
-  cloud        = "gcp"
-  cluster_name = module.cluster.cluster_name
+  source           = "../modules/operators"
+  cloud            = "gcp"
+  cluster_name     = module.cluster.cluster_name
+  api_server_cidrs = module.cluster.api_server_cidrs
   storage_class_config = {
     provisioner = "pd.csi.storage.gke.io"
     parameters = {

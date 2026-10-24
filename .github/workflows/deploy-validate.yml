@@ -44,6 +44,11 @@ jobs:
       - name: helm lint the PVC StorageClass admission-policy chart
         run: helm lint Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy
 
+      - name: helm lint the operator-namespace policy chart
+        run: |
+          C=Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies
+          helm lint "$C" -f "$C/values-kind.yaml"
+
   helm-template-kubeconform:
     runs-on: ubuntu-latest
     steps:
@@ -87,6 +92,15 @@ jobs:
           helm template pvc-storageclass-policy \
             Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy \
             | kubeconform -kubernetes-version 1.30.0 -summary
+
+      # The operator-namespace policy chart renders only NetworkPolicies: kind's set, and the clouds'
+      # (kind=false) with the same addresses. No -ignore-missing-schemas, as above.
+      - name: helm template | kubeconform the operator-namespace policy chart
+        run: |
+          set -e
+          C=Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies
+          helm template operator-namespace-policies "$C" -f "$C/values-kind.yaml" | kubeconform -kubernetes-version 1.30.0 -summary
+          helm template operator-namespace-policies "$C" -f "$C/values-kind.yaml" --set kind=false | kubeconform -kubernetes-version 1.30.0 -summary
 
   security-audit:
     runs-on: ubuntu-latest

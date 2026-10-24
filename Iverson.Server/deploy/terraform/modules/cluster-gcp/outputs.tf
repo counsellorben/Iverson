@@ -14,3 +14,6 @@ output "node_pool_labels" {
 }
 
 output "data_volumes_key_id" { value = google_kms_crypto_key.data_volumes.id }
+
+# CSR round 12 §3.4: as values-gcp.yaml's networkPolicy.apiServerCidrs, the private control plane's range.
+output "api_server_cidrs" { value = [google_container_cluster.this.private_cluster_config[0].master_ipv4_cidr_block] }

@@ -25,6 +25,14 @@ resource "kubernetes_namespace" "iverson" {
   }
 }
 
+# CSR round 12 §3.4: the operator-namespace policy chart (below) governs istio-system, which must exist
+# before it installs. The Istio releases install into this namespace.
+resource "kubernetes_namespace" "istio_system" {
+  metadata {
+    name = "istio-system"
+  }
+}
+
 resource "helm_release" "cloudnative_pg" {
   name             = "cnpg"
   repository       = local.operator_charts["cloudnative-pg"].repository
@@ -183,6 +191,25 @@ resource "kubernetes_storage_class" "prometheus" {
   storage_provisioner = var.storage_class_config.provisioner
   parameters          = var.storage_class_config.parameters
   volume_binding_mode = "WaitForFirstConsumer"
+}
+
+# CSR round 12 §3.4 (#16): default-deny with explicit allows in cnpg-system, kafka, starrocks and
+# istio-system. The same chart serves kind (deploy/kind/setup.sh, values-kind.yaml). Each namespace must
+# exist first: the operator releases create theirs, and istio-system is created above.
+resource "helm_release" "operator_namespace_policies" {
+  name      = "operator-namespace-policies"
+  chart     = "${path.module}/charts/operator-namespace-policies"
+  namespace = "kube-system"
+  values = [yamlencode({
+    apiServerCidrs = var.api_server_cidrs
+  })]
+
+  depends_on = [
+    kubernetes_namespace.istio_system,
+    helm_release.cloudnative_pg,
+    helm_release.strimzi,
+    helm_release.starrocks_operator,
+  ]
 }
 
 # The Kubernetes provider cannot apply this pair: 2.x has no policy resource,

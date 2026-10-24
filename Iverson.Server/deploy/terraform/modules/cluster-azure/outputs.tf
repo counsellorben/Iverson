@@ -15,4 +15,7 @@ output "node_pool_labels" {
 
 output "data_volumes_des_id" { value = azurerm_disk_encryption_set.data_volumes.id }
 
+# CSR round 12 §3.4: as values-azure.yaml's networkPolicy.apiServerCidrs, the API Server VNet Integration subnet.
+output "api_server_cidrs" { value = azurerm_subnet.apiserver.address_prefixes }
+
 output "authentik_waf_policy_id" { value = azurerm_web_application_firewall_policy.authentik.id }

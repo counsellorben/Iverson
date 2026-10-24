@@ -27,6 +27,43 @@ $CnpgVersion = Get-OperatorVersion "cloudnative-pg"
 $StrimziVersion = Get-OperatorVersion "strimzi-kafka-operator"
 $StarRocksOperatorVersion = Get-OperatorVersion "operator"
 
+# CSR round 12 §5: with no argument this script runs the whole fresh install. On an existing cluster the
+# upgrade runs the platform steps one at a time (docs/runbooks/csr12-platform.md §3): `setup.ps1 --only
+# <phase>` runs that phase alone. Each phase is a function below; the fresh install calls them in the
+# same order, after the operators. The script declares no parameters, so PowerShell hands both words to
+# $args ("-only" is accepted too).
+$Phases = @("operator-namespaces")
+$Only = ""
+if ($args.Count -gt 0) {
+  if ($args.Count -ne 2 -or $args[0] -notin @('--only', '-only') -or $Phases -notcontains $args[1]) {
+    throw "usage: setup.ps1 [--only <phase>]   (phases: $($Phases -join ' '))"
+  }
+  $Only = $args[1]
+}
+
+function Install-OperatorNamespacePolicies {
+  Write-Host "Installing the operator-namespace NetworkPolicies (CSR round 12 §3.4)..."
+  # Default-deny with explicit allows in cnpg-system, kafka, starrocks, istio-system, tigera-operator and
+  # iverson-edge, from the chart the cloud Terraform installs too (modules/operators), with kind's
+  # addresses from values-kind.yaml. Every namespace it governs must exist first: istio-system, which Istio
+  # installs into, and iverson-edge, the gateway's namespace (not enrolled in the mesh).
+  foreach ($ns in @("istio-system", "iverson-edge")) {
+    kubectl create namespace $ns --dry-run=client -o yaml | kubectl apply -f -
+  }
+  $OperatorPolicies = Join-Path $PSScriptRoot "../terraform/modules/operators/charts/operator-namespace-policies"
+  helm upgrade --install operator-namespace-policies $OperatorPolicies `
+    --namespace kube-system `
+    -f (Join-Path $OperatorPolicies "values-kind.yaml") `
+    --wait
+}
+
+if ($Only) {
+  switch ($Only) {
+    "operator-namespaces" { Install-OperatorNamespacePolicies }
+  }
+  exit 0
+}
+
 Write-Host "Installing Calico (kind's default CNI, kindnet, does not enforce NetworkPolicy)..."
 kubectl create namespace tigera-operator --dry-run=client -o yaml | kubectl apply -f -
 # The tigera-operator chart bundles both the operator and its Custom Resources
@@ -121,6 +158,8 @@ helm upgrade --install metrics-server metrics-server `
   --namespace kube-system `
   --set 'args={--kubelet-insecure-tls}' `
   --wait
+
+Install-OperatorNamespacePolicies
 
 Write-Host "All operators installed."
 Write-Host "Next: deploy/kind/build-and-load-image.ps1 to build+load the app image, then helm upgrade --install --wait iverson . -f values-local.yaml -n iverson --kube-as-user=kubernetes-admin --kube-as-group=kubeadm:cluster-admins --kube-as-group=iverson-operators (the kube-as flags: CSR round 12's admission policy admits only the iverson-operators group to install or change the api, see docs/runbooks/operators-group.md; --wait: the post-upgrade StarRocks role revoke then runs once the new pods are ready, though a previous-release pod may still be running or terminating; see docs/runbooks/csr12-server.md §1)"

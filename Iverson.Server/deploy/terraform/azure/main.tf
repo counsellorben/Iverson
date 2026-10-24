@@ -99,9 +99,10 @@ module "operators" {
   # The deploying principal's Kubernetes RBAC role must exist before any operator resource.
   depends_on = [module.cluster]
 
-  source       = "../modules/operators"
-  cloud        = "azure"
-  cluster_name = module.cluster.cluster_name
+  source           = "../modules/operators"
+  cloud            = "azure"
+  cluster_name     = module.cluster.cluster_name
+  api_server_cidrs = module.cluster.api_server_cidrs
   storage_class_config = {
     provisioner = "disk.csi.azure.com"
     parameters = {

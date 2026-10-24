@@ -16,6 +16,16 @@
 {{- fail "networkPolicy.dnsAnyDestination / apiServerAnyDestination render port-only egress rules that admit any destination. They are first-deploy fallbacks: replace them with the scoped rules, or set networkPolicy.keepFallbacks: true to record that the fallback is kept on purpose (docs/runbooks/csr10-infrastructure-cutover.md section 4)." }}
 {{- end }}
 {{- end }}
+{{- if .Values.networkPolicy.nodeSubnetFallback }}
+{{- if not .Values.networkPolicy.keepFallbacks }}
+{{- fail "networkPolicy.nodeSubnetFallback admits the listed ranges (the node subnet) on the api, admin-ui and Authentik edge rules. It is a first-deploy fallback for a policy engine that does not exempt node traffic: set networkPolicy.keepFallbacks: true to record that it is kept on purpose (docs/runbooks/csr10-infrastructure-cutover.md section 5)." }}
+{{- end }}
+{{- range .Values.networkPolicy.nodeSubnetFallback }}
+{{- if not (trim (toString .)) }}
+{{- fail "networkPolicy.nodeSubnetFallback contains a blank entry; every entry must be a CIDR" }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- range .Values.networkPolicy.clusterCidrs }}
 {{- if not (trim (toString .)) }}
 {{- fail "networkPolicy.clusterCidrs contains a blank entry; every entry must be a CIDR (note: helm's --set x={} produces a one-element list [\"\"], not an empty list — use --set-json or a values file for a true empty list)" }}
@@ -69,6 +79,9 @@ spec:
         {{- range .Values.networkPolicy.clusterCidrs }}
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
+        {{- range .Values.networkPolicy.nodeSubnetFallback }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
       ports:
         - { protocol: TCP, port: 8080 }
     - from:
@@ -77,6 +90,9 @@ spec:
             matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
         {{- end }}
         {{- range .Values.networkPolicy.clusterCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+        {{- range .Values.networkPolicy.nodeSubnetFallback }}
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
       ports:
@@ -518,6 +534,9 @@ spec:
         {{- range .Values.networkPolicy.clusterCidrs }}
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
+        {{- range .Values.networkPolicy.nodeSubnetFallback }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
       ports:
         - { protocol: TCP, port: 8080 }
 {{- end }}
@@ -604,6 +623,9 @@ spec:
             matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
         {{- end }}
         {{- range .Values.networkPolicy.clusterCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+        {{- range .Values.networkPolicy.nodeSubnetFallback }}
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
       ports: [{ protocol: TCP, port: 9080 }]

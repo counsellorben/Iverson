@@ -141,8 +141,19 @@ A profile that keeps a fallback leaves that half of CSR round-10 finding #17 ope
 ## 5. AKS ingress readiness
 
 After deploy, every pod must reach Ready. If the api, admin-ui or Authentik pods stay unready on
-probe timeouts, Azure NPM is not exempting node traffic. Add the node subnet `10.1.0.0/20` to
-`networkPolicy.clusterCidrs` in the Azure values and upgrade.
+probe timeouts, Azure NPM is not exempting node traffic. Set the node subnet as the fallback in the
+Azure values, with `keepFallbacks` beside it, and upgrade:
+
+```yaml
+networkPolicy:
+  nodeSubnetFallback: ["10.1.0.0/20"]
+  keepFallbacks: true
+```
+
+The fallback admits the node subnet on the api (8080, 8081), admin-ui and Authentik (9080) edge rules
+only; `clusterCidrs` stays the load balancer's range (CSR round 12 §3.4). Earlier versions of this
+step added the subnet to `networkPolicy.clusterCidrs` by hand: remove it from there. A profile that
+keeps the fallback records it, as for §4's fallbacks.
 
 ## 6. AKS Entra cutover
 

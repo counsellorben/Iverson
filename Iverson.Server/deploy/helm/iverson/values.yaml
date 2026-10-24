@@ -35,6 +35,12 @@ networkPolicy:
   # fails unless this is true as well, so a fallback applied for the first deploy is not left in
   # place unnoticed (docs/runbooks/csr10-infrastructure-cutover.md section 4).
   keepFallbacks: false
+  # CSR round 12 §3.4: AKS fallback. Extra address ranges (the node subnet, 10.1.0.0/20 on AKS)
+  # admitted on the api (8080, 8081), admin-ui (8080) and Authentik (9080) edge rules beside
+  # clusterCidrs, for a cloud whose policy engine does not exempt node traffic. Empty by default;
+  # like the fallbacks above it renders only with keepFallbacks: true
+  # (docs/runbooks/csr10-infrastructure-cutover.md section 5).
+  nodeSubnetFallback: []
 
 # CSR round 12 §3.1: the Kubernetes group(s) whose members alone may mint tokens for the api and
 # admin-automation identities, exec, attach or port-forward into the api, worker, Authentik and Postgres

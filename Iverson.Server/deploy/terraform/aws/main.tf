@@ -67,6 +67,7 @@ module "operators" {
   vpc_id                           = module.cluster.vpc_id
   lb_controller_irsa_role_arn      = module.cluster.lb_controller_irsa_role_arn
   cluster_autoscaler_irsa_role_arn = module.cluster.cluster_autoscaler_irsa_role_arn
+  api_server_cidrs                 = module.cluster.api_server_cidrs
   storage_class_config = {
     provisioner = "ebs.csi.aws.com"
     parameters = {
