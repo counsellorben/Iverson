@@ -35,6 +35,10 @@ spec:
       containers:
         - name: jaeger
           image: {{ .Values.image | quote }}
+          # CSR round-12 §2.2: in-memory storage keeps at most maxTraces traces, dropping the oldest.
+          # Without the flag it is unbounded (Verified assumption 86).
+          args:
+            - --memory.max-traces={{ .Values.maxTraces | int }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

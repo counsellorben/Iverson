@@ -157,6 +157,9 @@ authentik:
       limits: { cpu: "500m", memory: "1Gi", ephemeral-storage: "1Gi" }
   nodeSelector: {}
   bootstrapEmail: "admin@iverson.example.com"
+  # CSR round-12 §2.1: two server pods, with a PodDisruptionBudget and host anti-affinity.
+  server:
+    replicas: 2
   ingress:
     className: "azure-application-gateway"
     # AGIC terminates TLS from a standard Kubernetes Secret referenced via

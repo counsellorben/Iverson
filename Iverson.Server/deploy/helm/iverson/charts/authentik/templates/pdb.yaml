@@ -1,0 +1,12 @@
+{{- /* CSR round-12 §2.1: with more than one server replica, a drain takes at most one at a time. */}}
+{{- if gt (.Values.server.replicas | int) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-authentik-server
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-authentik-server
+{{- end }}

@@ -2,11 +2,15 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-authentik-worker
-  # The worker's writable root filesystem is deliberate, as for the server: see deployment-server.yaml.
+  # The writable root filesystems of `migrate` and `worker` are deliberate, as for the server: see deployment-server.yaml.
   annotations:
     kube-score/ignore: container-security-context-readonlyrootfilesystem
 spec:
   replicas: 1
+  # CSR round-12 §2.1: this pod's `migrate` init container is the release's only migrator, so the
+  # old pod is gone before a new one starts and two migrators never overlap.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: {{ .Release.Name }}-authentik-worker
@@ -70,6 +74,59 @@ spec:
             - name: jwks-relay-www
               mountPath: /www
               readOnly: true
+        # CSR round-12 §2.1: the ONE process that migrates the authentik database on this release. It
+        # moved here from the server Deployment so the server can run more than one replica: this
+        # Deployment stays at one replica with strategy Recreate, so two migrators never overlap, and
+        # each server pod waits for this pass (deployment-server.yaml's wait-for-migration). The server
+        # and worker containers both run with AUTHENTIK_SKIP_MIGRATIONS=true.
+        #
+        # Why only one: `ak server` and `ak worker` BOTH run lifecycle/migrate.py on startup. That
+        # module opens its own psycopg connection, takes pg_advisory_lock(1000) on it, then hands the
+        # actual migrating to Django on a SEPARATE connection — while its own connection sits holding
+        # an uncommitted implicit transaction from the `SET search_path` and version-history reads it
+        # performs between the lock and the Django call. A second migrator's Django connection blocks
+        # on a table lock that idle transaction holds, and Postgres cannot report it as a deadlock
+        # because the idle backend is not itself waiting on anything. Observed on the compose stack
+        # 2026-08-22: the wedge left a PARTIALLY MIGRATED schema that no retry repaired — an index
+        # existed with no Django ledger row, every blueprint apply then failed, zero OAuth2 providers
+        # were created, and only DROP DATABASE recovered it. An init container has no liveness probe,
+        # so nothing restarts it mid-ALTER TABLE, which is one way that corruption is produced.
+        #
+        # `python -m lifecycle.migrate` is the full sequence: lifecycle/system_migrations/*,
+        # `migrate_schemas`, the tenant-template pass, and Django's deploy checks. `ak migrate` is NOT
+        # equivalent — the image entrypoint routes it to `manage migrate`, skipping the system
+        # migrations and schema passes. The entrypoint is overridden because that routing swallows any
+        # bare command. Idempotent: a re-run exits 0 with "No migrations to apply."
+        - name: migrate
+          image: {{ .Values.image | quote }}
+          command: ["python", "-m", "lifecycle.migrate"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities: { drop: ["ALL"] }
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-authentik-config
+          env:
+            - name: AUTHENTIK_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: secret-key }
+            - name: AUTHENTIK_POSTGRESQL__PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-postgres, key: password }
+          resources:
+            requests:
+              cpu: {{ .Values.resources.worker.requests.cpu | quote }}
+              memory: {{ .Values.resources.worker.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.worker.requests "ephemeral-storage" | quote }}
+            limits:
+              cpu: {{ .Values.resources.worker.limits.cpu | quote }}
+              memory: {{ .Values.resources.worker.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.worker.limits "ephemeral-storage" | quote }}
+          volumeMounts:
+            - name: postgres-tls
+              mountPath: /etc/postgres-tls
+              readOnly: true
       containers:
         - name: worker
           image: {{ .Values.image | quote }}
@@ -81,16 +138,10 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ .Release.Name }}-authentik-config
-          # Migrations are owned by the server Deployment's `migrate` initContainer. This role must
-          # never migrate: two concurrent migrators wedge on an idle-in-transaction backend holding
-          # pg_advisory_lock(1000), which Postgres cannot break as a deadlock, and the observed
-          # outcome was a partially migrated schema no retry repaired. See deployment-server.yaml.
-          #
-          # Known trade-off: on a FRESH install this pod may start before migrations finish and
-          # crash-loop briefly against an incomplete schema. That is noisy but safe — it never
-          # migrates, so it cannot corrupt — and it resolves as soon as the initContainer completes.
-          # Gating it on the server's readiness would remove the churn at the cost of coupling the
-          # worker's pod start to the server being up.
+          # Migrations are owned by this pod's `migrate` init container, which has finished before
+          # this container starts. The worker process itself must never migrate: two concurrent
+          # migrators wedge on an idle-in-transaction backend holding pg_advisory_lock(1000), which
+          # Postgres cannot break as a deadlock (see the `migrate` init container above).
           env:
             - name: AUTHENTIK_SKIP_MIGRATIONS
               value: "true"

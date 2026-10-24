@@ -19,10 +19,14 @@ resources:
     limits: { cpu: "500m", memory: "1Gi", ephemeral-storage: "1Gi" }
   tlsProxy:
     requests: { cpu: "10m", memory: "16Mi", ephemeral-storage: "32Mi" }
-    limits: { cpu: "100m", memory: "64Mi", ephemeral-storage: "128Mi" }
+    limits: { cpu: "500m", memory: "64Mi", ephemeral-storage: "128Mi" }
   jwksRelay:
     requests: { cpu: "10m", memory: "32Mi", ephemeral-storage: "32Mi" }
     limits: { cpu: "100m", memory: "64Mi", ephemeral-storage: "128Mi" }
+# CSR round-12 §2.1: Authentik server pods. Above 1, the chart also renders a PodDisruptionBudget
+# (templates/pdb.yaml) and preferred host anti-affinity (deployment-server.yaml).
+server:
+  replicas: 1
 nodeSelector: {}
 bootstrapEmail: "admin@iverson.local"
 ingress:
