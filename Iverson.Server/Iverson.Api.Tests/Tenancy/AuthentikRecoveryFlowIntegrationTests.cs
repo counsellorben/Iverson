@@ -503,6 +503,58 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
         (await GroupPksOfUserAsync(created.UserId)).Should().NotContain(tenantAdminsPk);
     }
 
+    // ───────────────────────── CSR round 12 §2.1: tenant directory reads ──────────────────────
+
+    /// <summary>
+    /// ListUsers and DeleteTenant read only the caller's tenant: Authentik filters by
+    /// <c>attributes.tenant_id</c> for the orchestrator's own token, and the client keeps its own
+    /// check on what comes back.
+    /// </summary>
+    [Fact]
+    public async Task OrchestratorToken_ListUsersByTenant_ReadsOnlyThatTenantsUsers()
+    {
+        var tenant = Unique("csr12-list");
+        var usernames = new List<string>();
+        for (var i = 0; i < 3; i++)
+        {
+            var username = Unique("csr12-in");
+            usernames.Add(username);
+            await _orchestrator.CreateUserAsync(username, $"{username}@iverson-test.invalid", tenant, groups: []);
+        }
+        var outsider = Unique("csr12-out");
+        await _orchestrator.CreateUserAsync(outsider, $"{outsider}@iverson-test.invalid", Unique("csr12-other"), groups: []);
+
+        var users = (await _orchestrator.ListUsersByTenantAsync(tenant)).ToList();
+
+        users.Select(u => u.Username).Should().BeEquivalentTo(usernames);
+        users.Should().OnlyContain(u => !string.IsNullOrEmpty(u.Uid));
+
+        // Authentik applied the filter itself: the count is the tenant's, not the directory's.
+        using var orchestrator = RawClient(AuthentikContainerFixture.OrchestratorToken);
+        var filter = Uri.EscapeDataString(JsonSerializer.Serialize(new Dictionary<string, string> { ["tenant_id"] = tenant }));
+        using var page = JsonDocument.Parse(await orchestrator.GetStringAsync($"/api/v3/core/users/?attributes={filter}&page_size=1"));
+        page.RootElement.GetProperty("pagination").GetProperty("count").GetInt32().Should().Be(3);
+    }
+
+    /// <summary>RemoveUser's and SetTenantAdmin's tenant check reads one user by pk, with the orchestrator's token.</summary>
+    [Fact]
+    public async Task OrchestratorToken_GetUserAsync_ReadsOneUserByPk_AndAnUnknownPkIsNull()
+    {
+        var tenant = Unique("csr12-get");
+        var username = Unique("csr12-one");
+        var created = await _orchestrator.CreateUserAsync(username, $"{username}@iverson-test.invalid", tenant, groups: []);
+
+        var user = await _orchestrator.GetUserAsync(created.UserId);
+
+        user.Should().NotBeNull();
+        user!.Id.Should().Be(created.UserId);
+        user.Username.Should().Be(username);
+        user.TenantId.Should().Be(tenant);
+        user.IsActive.Should().BeTrue();
+        user.Uid.Should().NotBeNullOrEmpty();
+        (await _orchestrator.GetUserAsync("2147483647")).Should().BeNull();
+    }
+
     // ───────────────────────── CSR round-3 finding #2: MFA on the recovery flow ─────────────────
 
     /// <summary>
