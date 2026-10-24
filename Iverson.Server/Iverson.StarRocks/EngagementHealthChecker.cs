@@ -48,72 +48,37 @@ public sealed class EngagementHealthChecker(string connectionString) : IEngageme
         await CheckHealthAsync() == EngagementHealthStatus.Healthy;
 
     /// <summary>
-    /// Whether at least one backend is both alive AND reporting real disk capacity. Backs BOTH the
-    /// k8s readiness probe above and <c>EngagementRepository</c>'s production
+    /// CSR round 12 §3.5: the backend probe. A two-row table function runs on a backend, so it returns
+    /// both rows only while one is alive, and it needs no privilege: <c>SHOW BACKENDS</c> needed
+    /// <c>OPERATE ON SYSTEM</c>, which <c>iverson_app</c> no longer holds. With no backend alive the FE
+    /// refuses it at once ("Backend node not found"); the timeout bounds a backend that hangs.
+    /// </summary>
+    internal const string BackendProbeSql = "SELECT * FROM TABLE(generate_series(1,2))";
+
+    internal const int BackendProbeTimeoutSeconds = 5;
+
+    internal static MySqlCommand CreateBackendProbe(MySqlConnection conn) =>
+        new(BackendProbeSql, conn) { CommandTimeout = BackendProbeTimeoutSeconds };
+
+    /// <summary>
+    /// Whether a backend answers a query: both of the probe's rows came back. Backs BOTH the k8s
+    /// readiness probe above and <c>EngagementRepository</c>'s production
     /// <see cref="StarRocksReadinessGate"/>, so the two can never disagree about what "ready" means.
+    /// A failure, the probe's timeout included, throws; the callers count that as not ready.
     ///
-    /// <para><b>Alive alone was not enough, and it let both of those open too early.</b> A freshly
-    /// started BE registers with the FE and flips <c>Alive</c> to <c>true</c> BEFORE its first disk
-    /// heartbeat lands. In that window <c>SHOW BACKENDS</c> reports
-    /// <c>AvailCapacity: 1.000 B</c> — observed directly against starrocks/allin1-ubuntu — and the
-    /// FE rejects every query that touches table data with "Current available backends: [],
-    /// backends without enough disk space: [1000x]". So on a cold start the readiness gate opened
-    /// and the first real query failed anyway, and /health reported Healthy while k8s routed
-    /// traffic to a pod whose StarRocks queries could not succeed. That signature was recorded
-    /// twice during the tenant plan as an undiagnosed test flake; it is a production behaviour.</para>
-    ///
-    /// <para><b>A genuinely full disk now reports NOT ready, and that is correct.</b> If a backend
-    /// really has less than megabyte-scale space, StarRocks itself refuses data queries with that
-    /// same error — so reporting Unhealthy is the honest answer, and strictly better than reporting
-    /// Healthy while every query fails.</para>
+    /// <para>It no longer waits for a backend to report megabyte-scale disk capacity, which only
+    /// <c>SHOW BACKENDS</c> shows (spec §7): on a cold start a data query can still meet "backends
+    /// without enough disk space" in the moments after the probe first succeeds.</para>
     /// </summary>
     internal static async Task<bool> AnyBackendReadyAsync(MySqlConnection conn, CancellationToken ct = default)
     {
-        await using var cmd = new MySqlCommand("SHOW BACKENDS", conn);
+        await using var cmd = CreateBackendProbe(conn);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
-        var rows = new List<(string Alive, string AvailCapacity)>();
-        var aliveOrdinal = -1;
-        var availOrdinal = -1;
+        var rows = 0;
         while (await reader.ReadAsync(ct))
-        {
-            if (aliveOrdinal < 0)
-            {
-                aliveOrdinal = reader.GetOrdinal("Alive");
-                availOrdinal = reader.GetOrdinal("AvailCapacity");
-            }
+            rows++;
 
-            rows.Add((reader.GetString(aliveOrdinal), reader.GetString(availOrdinal)));
-        }
-
-        return AnyBackendReady(rows);
+        return rows == 2;
     }
-
-    /// <summary>
-    /// The judgement itself, over rows already read — so it is unit-testable without a live
-    /// StarRocks. Split out deliberately: a test that only graded
-    /// <see cref="HasReportedDiskCapacity"/> would still pass with the capacity check DELETED from
-    /// the caller, which is the whole defect being fixed here rather than a hypothetical.
-    /// </summary>
-    internal static bool AnyBackendReady(IEnumerable<(string Alive, string AvailCapacity)> rows) =>
-        rows.Any(r =>
-            string.Equals(r.Alive, "true", StringComparison.OrdinalIgnoreCase)
-            && HasReportedDiskCapacity(r.AvailCapacity));
-
-    /// <summary>
-    /// True when <paramref name="availCapacity"/> — <c>SHOW BACKENDS</c>' AvailCapacity, which the
-    /// FE formats for humans as e.g. "1.000 B" or "907.304 GB" — is at least megabyte scale. The
-    /// UNIT is the whole signal: a value still expressed in bytes or kilobytes is the
-    /// pre-heartbeat placeholder rather than a reading. Parsed as a unit rather than a number
-    /// because the number is meaningless without it.
-    ///
-    /// <para>Internal so it can be tested directly: the input that matters occurs only inside a
-    /// startup window no test can summon on demand.</para>
-    /// </summary>
-    internal static bool HasReportedDiskCapacity(string availCapacity) =>
-        availCapacity.Split(' ', StringSplitOptions.RemoveEmptyEntries) is [_, var unit]
-        && (unit.Equals("MB", StringComparison.OrdinalIgnoreCase)
-            || unit.Equals("GB", StringComparison.OrdinalIgnoreCase)
-            || unit.Equals("TB", StringComparison.OrdinalIgnoreCase)
-            || unit.Equals("PB", StringComparison.OrdinalIgnoreCase));
 }

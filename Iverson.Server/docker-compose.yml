@@ -88,9 +88,10 @@ services:
   #
   # Every statement here is carried over unweakened from the chart job, which explains each one
   # (CSR round 11 §3): two logins, iverson_app for queries and iverson_provisioner for tenant
-  # provisioning; iverson_app keeps only OPERATE ON SYSTEM as a direct grant, and the REVOKEs
-  # strip what earlier versions of this service granted it. A REVOKE of something the user does
-  # not hold succeeds silently, but a database-scoped REVOKE on a missing database fails and
+  # provisioning; iverson_app holds no grant (CSR round 12 §3.5), and the REVOKEs, OPERATE ON
+  # SYSTEM among them, strip what earlier versions of this service granted it. A REVOKE of
+  # something the user does not hold succeeds silently, but a database-scoped REVOKE on a missing
+  # database fails and
   # aborts the batch, so `CREATE DATABASE IF NOT EXISTS iverson` stays ahead of them. Both
   # passwords are dev-only literals: root is passwordless and published on loopback only.
   # The trailing ALTER USER ... SET PROPERTIES line (CSR finding #6, defense-in-depth) is
@@ -113,13 +114,13 @@ services:
           CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY 'dev-only-not-for-production-starrocks-app-pw-0123456789';
           CREATE USER IF NOT EXISTS 'iverson_provisioner'@'%' IDENTIFIED BY 'dev-only-not-for-production-starrocks-provisioner-pw-0123456789';
           CREATE DATABASE IF NOT EXISTS iverson;
-          GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
           GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_provisioner'@'%';
           GRANT user_admin TO 'iverson_provisioner'@'%';
           REVOKE SELECT, INSERT, UPDATE, DELETE ON iverson.* FROM 'iverson_app'@'%';
           REVOKE CREATE TABLE, DROP, ALTER ON DATABASE iverson FROM 'iverson_app'@'%';
           REVOKE CREATE DATABASE ON CATALOG default_catalog FROM 'iverson_app'@'%';
           REVOKE user_admin FROM 'iverson_app'@'%';
+          REVOKE OPERATE ON SYSTEM FROM USER 'iverson_app'@'%';
           ALTER USER 'iverson_app' SET PROPERTIES ('session.query_timeout' = '180', 'session.exec_mem_limit' = '4294967296');
         "
         fe() { mysql -h starrocks -P 9030 -u root "$$@"; }

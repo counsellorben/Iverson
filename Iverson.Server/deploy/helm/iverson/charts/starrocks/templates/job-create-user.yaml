@@ -98,23 +98,23 @@ spec:
                 CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY '$APP_PW';
                 CREATE USER IF NOT EXISTS 'iverson_provisioner'@'%' IDENTIFIED BY '$PROVISIONER_PW';
                 CREATE DATABASE IF NOT EXISTS iverson;
-                GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
                 GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_provisioner'@'%';
                 GRANT user_admin TO 'iverson_provisioner'@'%';
                 REVOKE SELECT, INSERT, UPDATE, DELETE ON iverson.* FROM 'iverson_app'@'%';
                 REVOKE CREATE TABLE, DROP, ALTER ON DATABASE iverson FROM 'iverson_app'@'%';
                 REVOKE CREATE DATABASE ON CATALOG default_catalog FROM 'iverson_app'@'%';
                 REVOKE user_admin FROM 'iverson_app'@'%';
+                REVOKE OPERATE ON SYSTEM FROM USER 'iverson_app'@'%';
                 ALTER USER 'iverson_app' SET PROPERTIES ('session.query_timeout' = '180', 'session.exec_mem_limit' = '4294967296');
               "
               # CSR round 11 §3: two logins. iverson_app runs every query; iverson_provisioner
               # runs only tenant provisioning (EngagementRepository.EnsureTenantProvisionedAsync),
               # and only the worker is given its password.
-              # iverson_app keeps one direct grant, OPERATE ON SYSTEM, needed for `SHOW BACKENDS`:
-              # /health and every EngagementRepository's readiness gate run it as this user with
-              # no role active, and without it they fail with "Access denied; you need (at least
-              # one of) the OPERATE OR NODE privilege(s) on SYSTEM", confirmed empirically
-              # against a live FE (4.1.1). It holds no tenant role (CSR round 12): see the revoke below.
+              # iverson_app holds no grant (CSR round 12 §3.5): /health and every EngagementRepository's
+              # readiness gate run a two-row generate_series probe, which needs none. It held OPERATE
+              # ON SYSTEM for SHOW BACKENDS until then, so the batch revokes it; REVOKE OPERATE ON
+              # SYSTEM succeeds whether or not the user holds it, once the user exists. It holds no
+              # tenant role (CSR round 12): see the role revoke below.
               # iverson_provisioner holds user_admin and a direct CREATE DATABASE ON CATALOG
               # default_catalog. The catalog privilege must be direct: provisioning runs
               # `CREATE DATABASE IF NOT EXISTS` for each new tenant database, StarRocks checks the

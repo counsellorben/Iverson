@@ -93,7 +93,42 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
         var healthy = await healthChecker.IsHealthyAsync();
 
         healthy.Should().BeTrue(
-            "once the backend is alive, the extended SHOW BACKENDS health check should report true");
+            "once the backend is alive, the backend probe should return both rows");
+    }
+
+    [Fact]
+    public async Task CheckHealthAsync_BackendStopped_IsUnhealthyWithinTheProbeTimeout()
+    {
+        // CSR round 12 §3.5: Healthy while a backend answers, then Unhealthy once none does, each check
+        // bounded by the probe's 5 s timeout. allin1 runs the BE under supervisord, which restarts a BE that
+        // exits but leaves one it was told to stop. No default database: this test's container never creates
+        // iverson_readiness_test, and a connection naming a missing database never reports Healthy.
+        var healthChecker = new EngagementHealthChecker(
+            new MySqlConnectionStringBuilder(_connectionString) { Database = "" }.ToString());
+        var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(3);
+        while (await healthChecker.CheckHealthAsync() != EngagementHealthStatus.Healthy)
+        {
+            DateTime.UtcNow.Should().BeBefore(deadline, "the all-in-one container's backend should come up");
+            await Task.Delay(TimeSpan.FromSeconds(3));
+        }
+
+        var stop = await _container.ExecAsync(["supervisorctl", "stop", "beservice"]);
+        stop.ExitCode.Should().Be(0, $"supervisorctl stop beservice: {stop.Stdout} {stop.Stderr}");
+
+        var stopped = DateTime.UtcNow + TimeSpan.FromSeconds(90);
+        EngagementHealthStatus status;
+        do
+        {
+            var started = DateTime.UtcNow;
+            status = await healthChecker.CheckHealthAsync();
+            (DateTime.UtcNow - started).Should().BeLessThan(TimeSpan.FromSeconds(10),
+                "each check is bounded by the probe's 5 s timeout");
+            if (status != EngagementHealthStatus.Unhealthy)
+                await Task.Delay(TimeSpan.FromSeconds(2));
+        }
+        while (status != EngagementHealthStatus.Unhealthy && DateTime.UtcNow < stopped);
+
+        status.Should().Be(EngagementHealthStatus.Unhealthy);
     }
 
     [Fact]
