@@ -113,7 +113,12 @@ public sealed class AuthInvalidationListenerPostgresIntegrationTests(ApiLoginGra
         await using var thisInstance = await StartThisInstanceAsync();
         var tenantId = NewTenantId();
         var anotherInstance = new TenantRepository(TenantSchema.TableName, fixture.Api);
+        var dropsBeforeTheInsert = thisInstance.Revocations.Invalidations;
         await anotherInstance.InsertAsync(tenantId, "Listener probe", "active");
+        // The insert's own notification must be consumed before the status is cached: otherwise it can arrive
+        // after the cache is filled and clear it, which would stand in for the update's missing notification.
+        (await WaitUntilAsync(() => Task.FromResult(thisInstance.Revocations.Invalidations > dropsBeforeTheInsert), Soon))
+            .Should().BeTrue("the insert's notification drops this instance's caches");
         (await WaitUntilAsync(async () => await thisInstance.TenantStatuses.GetStatusAsync(tenantId) == "active", Soon))
             .Should().BeTrue();
 
