@@ -15,9 +15,11 @@
 #   - Service OAuth2 client secrets (see deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml)
 #   - Qdrant: API key is generated per-checkout, required via ${QDRANT__SERVICE__API_KEY:?...}
 #     (shared by the qdrant and iverson-api services below) — run scripts/generate-compose-secrets.sh first
-#   - Authentik TLS (CSR round-10 #5): the API reaches Authentik through authentik-tls-proxy on 8443,
-#     using a per-checkout CA in deploy/compose-tls/ — run scripts/generate-compose-secrets.sh first
-#     (existing checkouts must re-run it once before the next `up`)
+#   - TLS (CSR round-10 #5, round 12 §4.6): a per-checkout CA in deploy/compose-tls/ signs the
+#     certificates authentik-tls-proxy, Postgres, the StarRocks FE, Kestrel (iverson-api and
+#     iverson-worker) and Qdrant serve, and every in-network client verifies them against it — run
+#     scripts/generate-compose-secrets.sh first (existing checkouts must re-run it once, then
+#     recreate the stack, before the next `up`)
 #   - And other dev-convenience values marked dev-only-not-for-production
 #
 # THIS DOCKER-COMPOSE STACK MUST NEVER BE EXPOSED BEYOND LOCALHOST OR USED IN:
@@ -43,6 +45,12 @@ services:
       POSTGRES_USER: iverson
       POSTGRES_PASSWORD: iverson
       POSTGRES_DB: iverson
+    # CSR round 12 §4.6: serves TLS from the compose certificate through tls-entrypoint.sh, which
+    # copies the key into a postgres-owned 0600 file before docker-entrypoint.sh runs. Host tools may
+    # still connect in plaintext: the image's pg_hba.conf ends with `host all all all scram-sha-256`,
+    # which admits both. The api, the worker and Authentik verify the certificate (verify-full).
+    entrypoint: ["sh", "/usr/local/bin/iverson-pg-tls-entrypoint.sh"]
+    command: ["postgres"]
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -51,6 +59,9 @@ services:
       # at the volume's root): `docker compose down -v` before the first start.
       - postgres_data:/var/lib/postgresql
       - ./deploy/postgres/init-authentik-db.sql:/docker-entrypoint-initdb.d/init-authentik-db.sql:ro
+      - { type: bind, source: ./deploy/postgres/tls-entrypoint.sh, target: /usr/local/bin/iverson-pg-tls-entrypoint.sh, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/postgres.crt, target: /etc/pgtls-src/tls.crt, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/postgres.key, target: /etc/pgtls-src/tls.key, read_only: true }
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U iverson"]
       interval: 10s
@@ -61,11 +72,22 @@ services:
     image: starrocks/allin1-ubuntu:4.1.6@sha256:5cbf09c4c788d2ca41a8e38599b650f04dbc6af0de51ebda0952770fb8333e5d
     container_name: iverson-starrocks
     restart: unless-stopped
+    # CSR round 12 §4.6: the FE serves TLS on 9030 from a keystore that fe-tls-entrypoint.sh builds
+    # from the compose certificate at every start, before it hands over to the image's own
+    # entrypoint under the image's tini. Secure transport is not forced; the api and worker verify
+    # the certificate (SslMode=VerifyFull).
+    entrypoint: ["/usr/bin/tini-static", "--", "bash", "/usr/local/bin/iverson-fe-tls-entrypoint.sh"]
+    tmpfs:
+      - /run/iverson-fe-tls:mode=0700
     ports:
       - "127.0.0.1:8030:8030"   # FE HTTP / admin
       - "127.0.0.1:9030:9030"   # FE MySQL query port
     volumes:
       - starrocks_data:/data/deploy
+      - { type: bind, source: ./deploy/starrocks/fe-tls-entrypoint.sh, target: /usr/local/bin/iverson-fe-tls-entrypoint.sh, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/starrocks.crt, target: /etc/iverson/starrocks-tls/tls.crt, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/starrocks.key, target: /etc/iverson/starrocks-tls/tls.key, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/iverson/starrocks-tls/ca.crt, read_only: true }
     healthcheck:
       test: ["CMD-SHELL", "mysql -h 127.0.0.1 -P 9030 -u root --connect-timeout=3 -e 'SELECT 1' 2>/dev/null || exit 1"]
       interval: 20s
@@ -143,11 +165,18 @@ services:
     environment:
       QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
       QDRANT__SERVICE__JWT_RBAC: "true"
+      # CSR round 12 §4.6: REST and gRPC serve TLS from the compose certificate, as on Helm. The api
+      # and worker pin it by its SHA-256 thumbprint (Qdrant__CertPath); host tools dial localhost.
+      QDRANT__SERVICE__ENABLE_TLS: "true"
+      QDRANT__TLS__CERT: /qdrant-tls/cert.pem
+      QDRANT__TLS__KEY: /qdrant-tls/key.pem
     ports:
       - "127.0.0.1:6333:6333"   # REST API
       - "127.0.0.1:6334:6334"   # gRPC
     volumes:
       - qdrant_data:/qdrant/storage
+      - { type: bind, source: ./deploy/compose-tls/qdrant.crt, target: /qdrant-tls/cert.pem, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/qdrant.key, target: /qdrant-tls/key.pem, read_only: true }
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
       interval: 10s
@@ -348,12 +377,17 @@ services:
     container_name: iverson-authentik-migrate
     entrypoint: ["python", "-m", "lifecycle.migrate"]
     restart: "no"
+    volumes:
+      - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/postgres-tls/ca.crt, read_only: true }
     environment:
       AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?run scripts/generate-compose-secrets.sh first}
       AUTHENTIK_POSTGRESQL__HOST: postgres
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      # CSR round 12 §4.6: verify Postgres's certificate against the compose CA, as on Helm.
+      AUTHENTIK_POSTGRESQL__SSLMODE: verify-full
+      AUTHENTIK_POSTGRESQL__SSLROOTCERT: /etc/postgres-tls/ca.crt
     depends_on:
       postgres:
         condition: service_healthy
@@ -369,6 +403,9 @@ services:
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      # CSR round 12 §4.6: verify Postgres's certificate against the compose CA, as on Helm.
+      AUTHENTIK_POSTGRESQL__SSLMODE: verify-full
+      AUTHENTIK_POSTGRESQL__SSLROOTCERT: /etc/postgres-tls/ca.crt
       AUTHENTIK_BOOTSTRAP_EMAIL: admin@iverson.local
       AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?run scripts/generate-compose-secrets.sh first}
       AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:?run scripts/generate-compose-secrets.sh first}
@@ -388,11 +425,15 @@ services:
       # CSR round-12 §2.5: a reputation row expires an hour after it is created; the login throttle
       # (blueprints/recovery-flow.yaml) sums only live rows.
       AUTHENTIK_REPUTATION__EXPIRY: "3600"
+    # CSR round 12 §4.6: host clients reach Authentik only through authentik-tls-proxy, which listens
+    # on 8443 in this container's network namespace; 9443 is free in compose and kind. 9000 is no
+    # longer published and stays reachable inside the compose network.
     ports:
-      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9443:8443"
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
       - ./deploy/helm/iverson/charts/authentik/assets/fonts/fraunces-900.woff2:/web/dist/assets/fonts/Fraunces/fraunces-900.woff2:ro
+      - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/postgres-tls/ca.crt, read_only: true }
     depends_on:
       authentik-migrate:
         condition: service_completed_successfully
@@ -416,6 +457,9 @@ services:
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      # CSR round 12 §4.6: verify Postgres's certificate against the compose CA, as on Helm.
+      AUTHENTIK_POSTGRESQL__SSLMODE: verify-full
+      AUTHENTIK_POSTGRESQL__SSLROOTCERT: /etc/postgres-tls/ca.crt
       AUTHENTIK_BOOTSTRAP_EMAIL: admin@iverson.local
       AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?run scripts/generate-compose-secrets.sh first}
       AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:?run scripts/generate-compose-secrets.sh first}
@@ -435,6 +479,7 @@ services:
       AUTHENTIK_REPUTATION__EXPIRY: "3600"
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
+      - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/postgres-tls/ca.crt, read_only: true }
     depends_on:
       authentik-migrate:
         condition: service_completed_successfully
@@ -449,7 +494,8 @@ services:
 
   # CSR round-10 #5: terminates TLS on 8443 in front of authentik-server, sharing its network
   # namespace the way the Helm chart's tls-proxy sidecar shares the pod, so the hop to Authentik
-  # stays on loopback. The API reaches it as authentik-server:8443.
+  # stays on loopback. The API reaches it as authentik-server:8443, and host clients as
+  # https://localhost:9443 (published on authentik-server, whose network namespace it shares).
   # After authentik-server is restarted or recreated, restart authentik-tls-proxy too: it shares
   # that container's network namespace.
   authentik-tls-proxy:
@@ -509,7 +555,7 @@ services:
       # CSR round 12 §6.1: the api's own login, as on the chart's api Deployment: not the owner, no
       # BYPASSRLS, no DDL. iverson-worker creates it with this password (Postgres__ApiLoginPassword)
       # and grants it what the api uses, before its healthcheck passes.
-      - ConnectionStrings__Postgres=Host=postgres;Port=5432;Database=iverson;Username=iverson_api;Password=dev-only-not-for-production-postgres-api-pw-0123456789
+      - ConnectionStrings__Postgres=Host=postgres;Port=5432;Database=iverson;Username=iverson_api;Password=dev-only-not-for-production-postgres-api-pw-0123456789;SSL Mode=VerifyFull;Root Certificate=/etc/iverson/authentik-ca/ca.crt
       - Otel__Endpoint=http://jaeger:4317
       - Embeddings__BaseUrl=http://tei-embed:80
       # MMR lambda per endpoint; these match VectorRankingOptions' defaults, set by the Tier 1 gate
@@ -530,13 +576,29 @@ services:
       # deployment.yaml): iverson_app, the login starrocks-init creates, with no default database.
       # It serves only /health and the readiness probes (CSR round 12 §7.4): every data connection
       # logs in as its tenant's own login, whose password is derived from StarRocks__TenantKey.
-      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
+      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;SslMode=VerifyFull;SslCa=/etc/iverson/authentik-ca/ca.crt;
       # CSR round 12 §7.1: the master key, shared with iverson-worker. Per-checkout, from
       # scripts/generate-compose-secrets.sh.
       - StarRocks__TenantKey=${IVERSON_STARROCKS_TENANT_KEY:?run scripts/generate-compose-secrets.sh first}
       - Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
+      # CSR round 12 §4.6: Qdrant serves TLS; the client pins this certificate by SHA-256 thumbprint.
+      - Qdrant__CertPath=/etc/qdrant-tls/cert.pem
+      # CSR round 12 §4.6: all three listeners serve HTTPS from the compose certificate, which names
+      # iverson-api, iverson-worker, localhost and 127.0.0.1, as the chart's api serves them from
+      # <release>-api-internal-tls. Overrides appsettings.json's http URLs. All-TLS: a plaintext
+      # endpoint beside TLS ones breaks UseHttpsRedirection.
+      - Kestrel__Endpoints__Grpc__Url=https://*:8080
+      - Kestrel__Endpoints__Grpc__Certificate__Path=/etc/iverson/api-tls/tls.crt
+      - Kestrel__Endpoints__Grpc__Certificate__KeyPath=/etc/iverson/api-tls/tls.key
+      - Kestrel__Endpoints__Http__Url=https://*:8081
+      - Kestrel__Endpoints__Http__Certificate__Path=/etc/iverson/api-tls/tls.crt
+      - Kestrel__Endpoints__Http__Certificate__KeyPath=/etc/iverson/api-tls/tls.key
+      - Kestrel__Endpoints__Metrics__Url=https://*:8082
+      - Kestrel__Endpoints__Metrics__Certificate__Path=/etc/iverson/api-tls/tls.crt
+      - Kestrel__Endpoints__Metrics__Certificate__KeyPath=/etc/iverson/api-tls/tls.key
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
-      - Authentication__ExternalIssuer=http://localhost:9000/
+      # CSR round 12 §4.6: the issuer a host client gets through authentik-tls-proxy on 9443.
+      - Authentication__ExternalIssuer=https://localhost:9443/
       - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
       # The admin console's client id (ValidAudiences__0): /v1/traces accepts only its tokens.
       - Authentication__ConsoleAudience=dev-iverson-human-oidc-client-id
@@ -552,7 +614,7 @@ services:
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=https://authentik-server:8443
-      - Authentik__PublicBaseUrl=http://localhost:9000
+      - Authentik__PublicBaseUrl=https://localhost:9443
       - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
       - Authentication__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
       - Authentication__ActingUser__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
@@ -577,7 +639,12 @@ services:
       # the Helm chart never sets it.
       - Authorization__OperatorGroupFallback=operators
     volumes:
+      # The compose CA, which signs every compose certificate: Authentik's, Postgres's, the FE's and
+      # Kestrel's (the worker's healthcheck) are verified against it.
       - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/iverson/authentik-ca/ca.crt, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/kestrel.crt, target: /etc/iverson/api-tls/tls.crt, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/kestrel.key, target: /etc/iverson/api-tls/tls.key, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/qdrant.crt, target: /etc/qdrant-tls/cert.pem, read_only: true }
     # A TCP connect to 8080 says Kestrel is listening, and that is all this healthcheck claims.
     # The api runs no bootstrap DDL (CSR round 12 §6.3): iverson-worker does, and this service waits
     # for it below. A bash /dev/tcp redirect rather than curl/wget: the aspnet:10.0 runtime image
@@ -651,7 +718,7 @@ services:
       # IConfiguration under the literal key "WORKLOAD_ROLE" — the first key Program.cs checks.
       - WORKLOAD_ROLE=worker
       - Otel__Endpoint=http://jaeger:4317
-      - ConnectionStrings__Postgres=Host=postgres;Port=5432;Database=iverson;Username=iverson;Password=iverson
+      - ConnectionStrings__Postgres=Host=postgres;Port=5432;Database=iverson;Username=iverson;Password=iverson;SSL Mode=VerifyFull;Root Certificate=/etc/iverson/authentik-ca/ca.crt
       # CSR round 12 §6.1: compose has no CNPG to create iverson_api, so this worker, connected as
       # the superuser above, creates it at startup with this password; iverson-api logs in with it.
       - Postgres__ApiLoginPassword=dev-only-not-for-production-postgres-api-pw-0123456789
@@ -664,16 +731,32 @@ services:
       # deployment.yaml): iverson_app, the login starrocks-init creates, with no default database.
       # It serves only /health and the readiness probes (CSR round 12 §7.4): every data connection
       # logs in as its tenant's own login, whose password is derived from StarRocks__TenantKey.
-      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;
+      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;SslMode=VerifyFull;SslCa=/etc/iverson/authentik-ca/ca.crt;
       # CSR round 11 §3: tenant provisioning's own login, as on the chart's worker. Only the
       # worker provisions, so iverson-api has no provisioner connection string.
-      - ConnectionStrings__StarRocksProvisioner=Server=starrocks;Port=9030;Uid=iverson_provisioner;Pwd=dev-only-not-for-production-starrocks-provisioner-pw-0123456789;
+      - ConnectionStrings__StarRocksProvisioner=Server=starrocks;Port=9030;Uid=iverson_provisioner;Pwd=dev-only-not-for-production-starrocks-provisioner-pw-0123456789;SslMode=VerifyFull;SslCa=/etc/iverson/authentik-ca/ca.crt;
       # CSR round 12 §7.1: iverson-api's master key. Provisioning creates each tenant's login with
       # the password derived from it, and the worker's upserts and aggregates log in with it.
       - StarRocks__TenantKey=${IVERSON_STARROCKS_TENANT_KEY:?run scripts/generate-compose-secrets.sh first}
       - Qdrant__ApiKey=${QDRANT__SERVICE__API_KEY:?run scripts/generate-compose-secrets.sh first}
+      # CSR round 12 §4.6: Qdrant serves TLS; the client pins this certificate by SHA-256 thumbprint.
+      - Qdrant__CertPath=/etc/qdrant-tls/cert.pem
+      # CSR round 12 §4.6: all three listeners serve HTTPS from the compose certificate, which names
+      # iverson-api, iverson-worker, localhost and 127.0.0.1, as the chart's api serves them from
+      # <release>-api-internal-tls. Overrides appsettings.json's http URLs. All-TLS: a plaintext
+      # endpoint beside TLS ones breaks UseHttpsRedirection.
+      - Kestrel__Endpoints__Grpc__Url=https://*:8080
+      - Kestrel__Endpoints__Grpc__Certificate__Path=/etc/iverson/api-tls/tls.crt
+      - Kestrel__Endpoints__Grpc__Certificate__KeyPath=/etc/iverson/api-tls/tls.key
+      - Kestrel__Endpoints__Http__Url=https://*:8081
+      - Kestrel__Endpoints__Http__Certificate__Path=/etc/iverson/api-tls/tls.crt
+      - Kestrel__Endpoints__Http__Certificate__KeyPath=/etc/iverson/api-tls/tls.key
+      - Kestrel__Endpoints__Metrics__Url=https://*:8082
+      - Kestrel__Endpoints__Metrics__Certificate__Path=/etc/iverson/api-tls/tls.crt
+      - Kestrel__Endpoints__Metrics__Certificate__KeyPath=/etc/iverson/api-tls/tls.key
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
-      - Authentication__ExternalIssuer=http://localhost:9000/
+      # CSR round 12 §4.6: the issuer a host client gets through authentik-tls-proxy on 9443.
+      - Authentication__ExternalIssuer=https://localhost:9443/
       - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
       - Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id
       - Authentication__ValidAudiences__2=dev-iverson-webtest-client-id
@@ -682,7 +765,7 @@ services:
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=https://authentik-server:8443
-      - Authentik__PublicBaseUrl=http://localhost:9000
+      - Authentik__PublicBaseUrl=https://localhost:9443
       - Authentik__AdminToken=${IVERSON_ADMIN_ORCHESTRATOR_TOKEN:?run scripts/generate-compose-secrets.sh first}
       - Authentication__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
       - Authentication__ActingUser__MetadataAddress=https://authentik-server:8443/application/o/iverson-api/.well-known/openid-configuration
@@ -692,17 +775,24 @@ services:
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
       - Tenancy__SeedLegacyTenants=true
     volumes:
+      # The compose CA, which signs every compose certificate: Authentik's, Postgres's, the FE's and
+      # Kestrel's (the worker's healthcheck) are verified against it.
       - { type: bind, source: ./deploy/compose-tls/ca.crt, target: /etc/iverson/authentik-ca/ca.crt, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/kestrel.crt, target: /etc/iverson/api-tls/tls.crt, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/kestrel.key, target: /etc/iverson/api-tls/tls.key, read_only: true }
+      - { type: bind, source: ./deploy/compose-tls/qdrant.crt, target: /etc/qdrant-tls/cert.pem, read_only: true }
     # CSR round 12 §6.3: iverson-api waits for this. The worker's startup block (the plumbing and
     # entity-table DDL, the roles, iverson_api and its grants, the legacy-tenant seed) is awaited
     # before Kestrel listens, so an HTTP 200 from /health on 8081 means it has finished and the
-    # stores answer. bash /dev/tcp again: the runtime image has no curl or wget. CMD-SHELL wrapping
-    # `bash -c '...'`, as qdrant's does, rather than ["CMD", "bash", "-c", "..."]: podman's Docker
-    # API splits every CMD argument on whitespace, which turns that form into `bash -c exec`, a
-    # check that always passes. The script holds no single quote (it sits inside one) and no `$`
-    # (compose would interpolate it).
+    # stores answer. 8081 serves TLS (CSR round 12 §4.6), so the request goes through the runtime
+    # image's openssl (it has no curl, wget or nc), which verifies the Kestrel certificate against the
+    # mounted compose CA and the name localhost; -verify_return_error ends the check on a failed
+    # verification. CMD-SHELL wrapping `bash -c '...'`, as qdrant's does, rather than
+    # ["CMD", "bash", "-c", "..."]: podman's Docker API splits every CMD argument on whitespace,
+    # which turns that form into `bash -c exec`, a check that always passes. The script holds no
+    # single quote (it sits inside one) and no `$` (compose would interpolate it).
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8081 && printf \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && head -n 1 <&3 | grep -q \" 200 \"'"]
+      test: ["CMD-SHELL", "bash -c 'printf \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" | openssl s_client -quiet -verify_return_error -CAfile /etc/iverson/authentik-ca/ca.crt -verify_hostname localhost -connect 127.0.0.1:8081 2>/dev/null | head -n 1 | grep -q \" 200 \"'"]
       interval: 5s
       timeout: 10s
       retries: 60
