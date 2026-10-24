@@ -234,13 +234,23 @@ spec:
                # worker reuses api's own KafkaUser/SASL credentials (see
                # charts/worker/templates/deployment.yaml's Kafka__SaslUsername) rather than a
                # separate KafkaUser, but NetworkPolicy enforcement is pure L3/L4 pod-label
-               # matching — it has no visibility into the SASL layer above it. The Kafka CR
-               # (charts/kafka/templates/kafka.yaml) doesn't set the listener's
-               # networkPolicyPeers either, so this policy is the only enforcement point;
-               # without this entry worker's TCP SYN to the broker never gets past the
+               # matching — it has no visibility into the SASL layer above it. Strimzi also
+               # generates a policy for this listener from the Kafka CR's networkPolicyPeers
+               # (charts/kafka/templates/kafka.yaml), which names the same two selectors.
+               # NetworkPolicies are additive, so a pod gets through if either admits it; without
+               # this entry and those peers, worker's TCP SYN to the broker never gets past the
                # network policy regardless of having valid credentials.
       ports: [{ protocol: TCP, port: 9093 }]
     - from: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]   # broker/controller peers
+    # CSR round 12 §3.2: the Strimzi cluster-operator (namespace kafka, as modules/operators and
+    # deploy/kind/setup.sh install it) reconciles the brokers on the control-plane (9090) and
+    # replication (9091) listeners and the agent port (8443). Strimzi's own generated policy admits
+    # it there too, but it cannot be edited (the operator reverts it), so the chart's own rule carries
+    # the operator's ports.
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kafka } }
+          podSelector: { matchLabels: { strimzi.io/kind: cluster-operator } }
+      ports: [{ protocol: TCP, port: 9090 }, { protocol: TCP, port: 9091 }, { protocol: TCP, port: 8443 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

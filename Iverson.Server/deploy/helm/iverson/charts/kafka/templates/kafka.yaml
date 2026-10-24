@@ -17,6 +17,13 @@ spec:
         tls: true
         authentication:
           type: scram-sha-512
+        # CSR round 12 §3.2 (#5): Strimzi generates its own NetworkPolicy for this listener, which
+        # without peers admits every source on 9093 and so widens the chart's kafka-ingress rule.
+        # With peers it admits only the api and worker pods; Strimzi regenerates the rule without
+        # rolling the brokers.
+        networkPolicyPeers:
+          - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+          - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
     authorization:
       type: simple
     config:
