@@ -52,6 +52,9 @@ internal static class ApiLoginGrants
 
         // Spec §7.3's provisioned-tenant check before every StarRocks read. Only the worker records.
         $"""GRANT SELECT ON "{StarRocksTenantSchema.TableName}" TO {Login}""",
+
+        // CSR round 12 §2.1: InviteUser reserves a slot of the tenant's day with one upsert.
+        $"""GRANT SELECT, INSERT, UPDATE ON "{InviteQuotaRepository.TableName}" TO {Login}""",
     ];
 
     /// <summary>
@@ -68,6 +71,7 @@ internal static class ApiLoginGrants
         "_iverson_schema",
         PrivilegedRequestSchema.TableName,
         StarRocksTenantSchema.TableName,
+        InviteQuotaRepository.TableName,
     ];
 
     /// <summary>
@@ -77,8 +81,9 @@ internal static class ApiLoginGrants
     /// one privilege stands for all of them. That holds only because every grant has shipped with
     /// this login in that one transaction: a later release that adds a grant must also move this
     /// probe to the new grant, or a login granted by an older worker reads as ready without it. It
-    /// raises 42P01, which /health reads as false, until the worker has created the table.
+    /// raises 42P01, which /health reads as false, until the worker has created the table. It names
+    /// CSR round 12 §2.1's invite-quota grant, the newest.
     /// </summary>
     public static readonly string ReadinessProbeSql =
-        $"""SELECT has_table_privilege('"{ReconciliationSchema.TableName}"', 'INSERT')""";
+        $"""SELECT has_table_privilege('"{InviteQuotaRepository.TableName}"', 'UPDATE')""";
 }

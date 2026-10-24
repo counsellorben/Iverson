@@ -23,11 +23,16 @@ public sealed class TenantAdminGrpcService(
     ITenantStatusCache tenantStatusCache,
     ITokenRevocationRepository tokenRevocations,
     ITokenRevocationCache tokenRevocationCache,
+    IInviteQuotaRepository inviteQuota,
     AuditLog auditLog) : Iverson.Client.Contracts.TenantAdminGrpcService.TenantAdminGrpcServiceBase
 {
     public override async Task<TenantUser> InviteUser(InviteUserRequest request, ServerCallContext context)
     {
         var tenantId = await RequireActiveTenantAsync(context);
+        // CSR round 12 §2.1: 100 invitations per tenant per UTC day. The slot is reserved before
+        // Authentik is called and is not given back if that call fails.
+        if (!await inviteQuota.TryReserveAsync(tenantId, DateOnly.FromDateTime(DateTime.UtcNow)))
+            throw new RpcException(new Status(StatusCode.ResourceExhausted, "The tenant's daily invitation limit is reached."));
         // CSR finding #4 remediation: password-based onboarding was replaced by Authentik's own
         // recovery-link flow (see IdpAdminClient.CreateUserAsync). The link is surfaced back to
         // the caller below via TenantUser.recovery_link (follow-up to the original remediation,

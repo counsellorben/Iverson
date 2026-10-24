@@ -447,6 +447,9 @@ builder.Services.AddSingleton<ITokenRevocationRepository>(sp =>
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITokenRevocationCache>(sp =>
     new Iverson.Api.Tenancy.TokenRevocationCache(
         sp.GetRequiredService<ITokenRevocationRepository>(), TimeProvider.System));
+// CSR round 12 §2.1: InviteUser's daily slots. The worker creates the table; the api reserves.
+builder.Services.AddSingleton<IInviteQuotaRepository>(sp =>
+    new InviteQuotaRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
 // CSR round-10 #5: the admin token travels over TLS to the tls-proxy sidecar, trusting only the
@@ -827,6 +830,7 @@ if (workloadRole == "worker")
         app.Services.GetRequiredService<IEnrichmentStateRepository>(),
         app.Services.GetRequiredService<IDocumentRerenderQueueRepository>(),
         app.Services.GetRequiredService<ITokenRevocationRepository>(),
+        app.Services.GetRequiredService<IInviteQuotaRepository>(),
         cfg["Postgres:ApiLoginPassword"],
         TimeSpan.FromMinutes(1));
 

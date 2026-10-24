@@ -1,11 +1,13 @@
 using Dapper;
 using FluentAssertions;
 using Iverson.Api.PrivilegedRequests;
+using Iverson.Api.Tests.Helpers;
 using Iverson.Api.Reconciliation;
 using Iverson.Api.Tenancy;
 using Iverson.Sql;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
+using NSubstitute;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -42,6 +44,7 @@ public sealed class ApiLoginGrantsPostgresContainerFixture : IAsyncLifetime
             new EnrichmentStateRepository(Owner),
             new DocumentRerenderQueueRepository(Owner),
             new TokenRevocationRepository(Owner),
+            new InviteQuotaRepository(Owner),
             ApiPassword,
             TimeSpan.Zero);
 
@@ -146,6 +149,7 @@ public sealed class ApiLoginGrantsPostgresIntegrationTests(ApiLoginGrantsPostgre
             "_iverson_schema:SELECT",
             "IversonPrivilegedRequests:INSERT", "IversonPrivilegedRequests:SELECT",
             "IversonStarRocksTenants:SELECT",
+            "IversonInviteQuota:SELECT", "IversonInviteQuota:INSERT", "IversonInviteQuota:UPDATE",
         });
         columnPrivileges.Should().BeEquivalentTo(new[]
         {
@@ -231,6 +235,77 @@ public sealed class ApiLoginGrantsPostgresIntegrationTests(ApiLoginGrantsPostgre
         await revocations.RevokeAsync(sub); // the ON CONFLICT update arm
 
         (await revocations.ListAsync()).Should().Contain(r => r.Sub == sub);
+    }
+
+    // CSR round 12 §2.1 and §6: two api processes, each with its own connection pool as the api
+    // login, invite into one tenant at once. The upsert hands out exactly 100 slots between them.
+    [Fact]
+    public async Task InviteQuota_TheHundredAndFirstInviteOfATenantsDay_IsRefused_AcrossTwoApiInstances()
+    {
+        var tenantId = "tenant_" + Guid.NewGuid().ToString("N")[..8];
+        var idp = Substitute.For<IIdpAdminClient>();
+        idp.CreateUserAsync(default!, default!, default!, default!)
+            .ReturnsForAnyArgs(Task.FromResult(new CreateUserResult("42", null)));
+        var tenantStatus = Substitute.For<ITenantStatusCache>();
+        tenantStatus.GetStatusAsync(tenantId).Returns(Task.FromResult<string?>("active"));
+
+        Iverson.Api.Grpc.TenantAdminGrpcService ApiInstance(string applicationName) => new(
+            idp,
+            tenantStatus,
+            Substitute.For<ITokenRevocationRepository>(),
+            Substitute.For<ITokenRevocationCache>(),
+            new InviteQuotaRepository(new PostgresRepository(
+                new NpgsqlConnectionStringBuilder(fixture.ApiConnectionString) { ApplicationName = applicationName }.ConnectionString,
+                NullLogger<PostgresRepository>.Instance)),
+            new Iverson.Api.Grpc.AuditLog(NullLogger<Iverson.Api.Grpc.AuditLog>.Instance));
+        var instances = new[] { ApiInstance("iverson-api-a"), ApiInstance("iverson-api-b") };
+
+        // 16 at a time: enough to race the upsert, well inside Postgres's connection limit.
+        var gate = new SemaphoreSlim(16);
+        var outcomes = await Task.WhenAll(Enumerable.Range(0, 101).Select(async i =>
+        {
+            await gate.WaitAsync();
+            try
+            {
+                await instances[i % 2].InviteUser(
+                    new Iverson.Client.Contracts.InviteUserRequest { Username = $"invitee-{i}", Email = $"invitee-{i}@example.invalid" },
+                    TestServerCallContext.Create(user: ActingUserFixtures.PrincipalWithTenant("quota-tenant-admin", tenantId)));
+                return global::Grpc.Core.StatusCode.OK;
+            }
+            catch (global::Grpc.Core.RpcException ex)
+            {
+                return ex.StatusCode;
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }));
+
+        outcomes.Count(status => status == global::Grpc.Core.StatusCode.OK).Should().Be(100);
+        outcomes.Should().ContainSingle(status => status == global::Grpc.Core.StatusCode.ResourceExhausted);
+        await idp.ReceivedWithAnyArgs(100).CreateUserAsync(default!, default!, default!, default!);
+        (await _owner.QuerySingleOrDefaultAsync<int>(
+            $"""SELECT "Count" FROM "{InviteQuotaRepository.TableName}" WHERE "TenantId" = @TenantId""",
+            new { TenantId = tenantId })).Should().Be(100);
+    }
+
+    // CSR round 12 §2.1: /health's probe names the newest grant, so a login granted by an older
+    // worker, which lacks it, does not read as ready.
+    [Fact]
+    public async Task ReadinessProbe_IsFalseWhileTheLoginLacksTheInviteQuotaGrant()
+    {
+        await _owner.ExecuteAsync($"""REVOKE UPDATE ON "{InviteQuotaRepository.TableName}" FROM iverson_api""");
+        try
+        {
+            (await _api.QuerySingleOrDefaultAsync<bool>(ApiLoginGrants.ReadinessProbeSql)).Should().BeFalse();
+        }
+        finally
+        {
+            await fixture.RestoreApiLoginAsync();
+        }
+
+        (await _api.QuerySingleOrDefaultAsync<bool>(ApiLoginGrants.ReadinessProbeSql)).Should().BeTrue();
     }
 
     [Fact]

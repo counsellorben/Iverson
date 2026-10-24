@@ -26,6 +26,7 @@ public class TenantAdminGrpcServiceTests
     private readonly ITenantStatusCache _tenantStatusCache = Substitute.For<ITenantStatusCache>();
     private readonly ITokenRevocationRepository _tokenRevocations = Substitute.For<ITokenRevocationRepository>();
     private readonly ITokenRevocationCache _tokenRevocationCache = Substitute.For<ITokenRevocationCache>();
+    private readonly IInviteQuotaRepository _inviteQuota = Substitute.For<IInviteQuotaRepository>();
     private readonly ILogger<AuditLog> _auditLogger = Substitute.For<ILogger<AuditLog>>();
     private readonly AuditLog _auditLog;
     private readonly Iverson.Api.Grpc.TenantAdminGrpcService _sut;
@@ -45,8 +46,11 @@ public class TenantAdminGrpcServiceTests
             _tenantStatusCache,
             _tokenRevocations,
             _tokenRevocationCache,
+            _inviteQuota,
             _auditLog);
         _tenantStatusCache.GetStatusAsync("acme").Returns(Task.FromResult<string?>("active"));
+        // A slot is free unless a test says otherwise.
+        _inviteQuota.TryReserveAsync(Arg.Any<string>(), Arg.Any<DateOnly>()).Returns(true);
         // Any other pk reads as Authentik's 404: GetUserAsync returns null.
         _authentikAdminClient.GetUserAsync("11").Returns(Task.FromResult<IdpUserRecord?>(CallerTenantUser));
         _authentikAdminClient.GetUserAsync("99").Returns(Task.FromResult<IdpUserRecord?>(OtherTenantUser));
@@ -116,6 +120,8 @@ public class TenantAdminGrpcServiceTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+        // An inactive tenant spends no slot of its daily invitation limit.
+        await _inviteQuota.DidNotReceiveWithAnyArgs().TryReserveAsync(default!, default);
         await _authentikAdminClient.DidNotReceive()
             .CreateUserAsync(
                 Arg.Any<string>(),
@@ -140,6 +146,56 @@ public class TenantAdminGrpcServiceTests
                 Arg.Any<string>(),
                 Arg.Any<string>(),
                 Arg.Any<IReadOnlyList<string>>());
+    }
+
+    // CSR round 12 §2.1: 100 invitations per tenant per UTC day. The slot is reserved before
+    // Authentik is called.
+    [Fact]
+    public async Task InviteUser_ReservesTodaysSlotForTheCallersTenant_BeforeCallingTheIdp()
+    {
+        var before = DateOnly.FromDateTime(DateTime.UtcNow);
+        _authentikAdminClient.CreateUserAsync(default!, default!, default!, default!)
+            .ReturnsForAnyArgs(Task.FromResult(new CreateUserResult("11", null)));
+
+        await _sut.InviteUser(new InviteUserRequest { Username = "bob", Email = "bob@acme.example" }, ContextForCallerTenant());
+
+        var after = DateOnly.FromDateTime(DateTime.UtcNow);
+        Received.InOrder(() =>
+        {
+            _inviteQuota.TryReserveAsync("acme", Arg.Any<DateOnly>());
+            _authentikAdminClient.CreateUserAsync("bob", "bob@acme.example", "acme", Arg.Any<IReadOnlyList<string>>());
+        });
+        var day = (DateOnly)_inviteQuota.ReceivedCalls().Single().GetArguments()[1]!;
+        new[] { before, after }.Should().Contain(day, "the slot belongs to the current UTC day");
+    }
+
+    [Fact]
+    public async Task InviteUser_DailyLimitReached_ThrowsResourceExhaustedAndDoesNotCreateUser()
+    {
+        _inviteQuota.TryReserveAsync("acme", Arg.Any<DateOnly>()).Returns(false);
+
+        var act = () => _sut.InviteUser(
+            new InviteUserRequest { Username = "bob", Email = "bob@acme.example" }, ContextForCallerTenant());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.ResourceExhausted);
+        ex.Which.Status.Detail.Should().Contain("daily invitation limit");
+        await _authentikAdminClient.DidNotReceiveWithAnyArgs().CreateUserAsync(default!, default!, default!, default!);
+    }
+
+    // Choice 6: a slot is spent even when Authentik then fails. Nothing gives it back.
+    [Fact]
+    public async Task InviteUser_IdpFails_TheReservedSlotStaysSpent()
+    {
+        _authentikAdminClient.CreateUserAsync(default!, default!, default!, default!)
+            .ThrowsAsyncForAnyArgs(new HttpRequestException("authentik is down"));
+
+        var act = () => _sut.InviteUser(
+            new InviteUserRequest { Username = "bob", Email = "bob@acme.example" }, ContextForCallerTenant());
+
+        await act.Should().ThrowAsync<HttpRequestException>();
+        _inviteQuota.ReceivedCalls().Should().ContainSingle()
+            .Which.GetMethodInfo().Name.Should().Be(nameof(IInviteQuotaRepository.TryReserveAsync));
     }
 
     // ── ListUsers ────────────────────────────────────────────────────────────

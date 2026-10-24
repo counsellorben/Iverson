@@ -211,6 +211,18 @@ public interface ITokenRevocationRepository
     Task<IEnumerable<(string Sub, DateTimeOffset RevokedAt)>> ListAsync();
 }
 
+/// <summary>CSR round 12 §2.1: InviteUser's daily slots (<see cref="InviteQuotaRepository"/>).</summary>
+public interface IInviteQuotaRepository
+{
+    Task EnsureTableAsync();
+
+    /// <summary>
+    /// Reserves one of the tenant's invitations for <paramref name="day"/> (a UTC date). False when
+    /// the day's 100 are already reserved.
+    /// </summary>
+    Task<bool> TryReserveAsync(string tenantId, DateOnly day);
+}
+
 public interface ISchemaRegistryRepository
 {
     Task EnsureTableAsync();
