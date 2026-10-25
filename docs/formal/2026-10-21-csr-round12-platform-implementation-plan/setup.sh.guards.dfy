@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-21-csr-round12-platform-implementation-plan.md, T14 S4 (4d), T16 S3 (3c), T17 S5 (5a–5d), T20 S3 (3d–3e)
 // Source: Iverson.Server/deploy/kind/setup.sh the kind version gate (4–11), the --only parser (44–52), ambient_enroll (106–115), the --only dispatch (136–140)
-// Replay base: 0c82f27cfa35fbee2e3255b1d65937a0def814d2
+// Code ref: 8ef849174092218f507041e82b8185facafb1937
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-21-csr-round12-platform-implementation-plan/setup.sh.guards.dfy
 
 // ---------------------------------------------------------------------------------------------

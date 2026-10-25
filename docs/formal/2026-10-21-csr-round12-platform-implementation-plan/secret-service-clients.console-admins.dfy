@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-21-csr-round12-platform-implementation-plan.md, T9 S3
 // Source: Iverson.Server/deploy/helm/iverson/charts/authentik/templates/secret-service-clients.yaml the iverson-console-admins expression (352–358)
-// Replay base: 7c4d86687b557e7e33a52c30cc07e6728dfb4622
+// Code ref: 8ef849174092218f507041e82b8185facafb1937
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-21-csr-round12-platform-implementation-plan/secret-service-clients.console-admins.dfy
 
 // Python string unit (shared vocabulary).
@@ -16,11 +16,11 @@ function AkIsGroupMember(env: AkEnv, user: AkUser, group: seq<CodePoint>): bool
 function UserUid(user: AkUser): seq<CodePoint>
 
 // ---- Transliteration ----
-// name="tenant-admins" (line 357), as Python code points.
+// name="tenant-admins" (line 358), as Python code points.
 const TenantAdminsGroup: seq<CodePoint> :=
   [116, 101, 110, 97, 110, 116, 45, 97, 100, 109, 105, 110, 115]
 
-// Line 357:
+// Line 358:
 //   return ak_is_group_member(request.user, name="tenant-admins") or request.user.uid in {{ .Values.global.operatorSubjects | default (list) | toJson }}
 // `env` stands for Authentik's group state seen by ak_is_group_member; `subjects` is the
 // Helm-rendered list literal (toJson of global.operatorSubjects, default []), read by Python

@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-21-csr-round12-platform-implementation-plan.md, T11 S3
 // Source: Iverson.Server/deploy/helm/iverson/templates/admission-policy.yaml variables and validations (43–126), with matchConstraints (35–42) and the binding (128–138)
-// Replay base: 7c4d86687b557e7e33a52c30cc07e6728dfb4622
+// Code ref: 8ef849174092218f507041e82b8185facafb1937
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-21-csr-round12-platform-implementation-plan/admission-policy.validations.dfy
 
 // ---------------------------------------------------------------------------------------------
@@ -54,6 +54,9 @@ const ScaleSub: seq<CodePoint> := [115, 99, 97, 108, 101] // "scale"
 const ExecSub: seq<CodePoint> := [101, 120, 101, 99] // "exec"
 const AttachSub: seq<CodePoint> := [97, 116, 116, 97, 99, 104] // "attach"
 const PortforwardSub: seq<CodePoint> := [112, 111, 114, 116, 102, 111, 114, 119, 97, 114, 100] // "portforward"
+const ProxySub: seq<CodePoint> := [112, 114, 111, 120, 121] // "proxy"
+const ServicesResource: seq<CodePoint> := [115, 101, 114, 118, 105, 99, 101, 115] // "services"
+const Colon: CodePoint := 58 // ':'
 const EphemeralSub: seq<CodePoint> := [101, 112, 104, 101, 109, 101, 114, 97, 108, 99, 111, 110, 116, 97, 105, 110, 101, 114, 115] // "ephemeralcontainers"
 const EmptyStr: seq<CodePoint> := [] // ""
 const DefaultSa: seq<CodePoint> := [100, 101, 102, 97, 117, 108, 116] // "default"
@@ -103,6 +106,43 @@ function Not(a: CelVal): CelVal
   case CError => CError
 }
 
+// list.size() == n  (list error: error)
+function SizeEq(l: LVal, n: int): CelVal
+{
+  match l
+  case LV(xs) => B(|xs| == n)
+  case LErr => CError
+}
+
+// list[i]  (list error or index out of range: error)
+function IndexS(l: LVal, i: int): SVal
+{
+  match l
+  case LV(xs) => if 0 <= i < |xs| then SV(xs[i]) else SErr
+  case LErr => SErr
+}
+
+// cel-go ext.Strings s.split(sep) == Go strings.Split(s, sep) for a one-code-point separator:
+// every occurrence splits, so "" gives [""] and ":" gives ["", ""].
+function SplitOn(s: seq<CodePoint>, sep: CodePoint): seq<seq<CodePoint>>
+  ensures |SplitOn(s, sep)| >= 1
+  decreases |s|
+{
+  if |s| == 0 then [[]]
+  else if s[0] == sep then [[]] + SplitOn(s[1..], sep)
+  else
+    var rest := SplitOn(s[1..], sep);
+    [[s[0]] + rest[0]] + rest[1..]
+}
+
+// list.exists(p, v.startsWith(p)) over a non-empty literal list (v error: every element errors, so error)
+function ExistsStartsWithS(v: SVal, l: seq<seq<CodePoint>>): CelVal
+{
+  match v
+  case SV(s) => B(exists p :: p in l && StartsWith(s, p))
+  case SErr => if |l| == 0 then CFalse else CError
+}
+
 // cond ? a : b with a string result
 function TernS(cond: CelVal, a: SVal, b: SVal): SVal
 {
@@ -132,74 +172,94 @@ predicate StartsWith(s: seq<CodePoint>, p: seq<CodePoint>)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Transliteration: matchConstraints (35–42) and the binding (128–138)
+// Transliteration: matchConstraints (39–46) and the binding (146–156)
 // ---------------------------------------------------------------------------------------------
 
-// admission-policy.yaml:36–42 resourceRules (apiVersions ["v1"] not modelled; see notes)
+// admission-policy.yaml:40–46 resourceRules (apiVersions ["v1"] not modelled; see notes)
 predicate MatchesRule(r: AReq)
 {
-  // :37 serviceaccounts/token CREATE
+  // :41 serviceaccounts/token CREATE
   (r.group == CoreGroup && r.op == CreateOp && r.resource == ServiceAccountsResource && r.sub == TokenSub)
-  // :38 pods/exec, pods/attach, pods/portforward CONNECT
-  || (r.group == CoreGroup && r.op == ConnectOp && r.resource == PodsResource && r.sub in [ExecSub, AttachSub, PortforwardSub])
-  // :39 pods CREATE, UPDATE
+  // :42 pods/exec, pods/attach, pods/portforward, pods/proxy, services/proxy CONNECT
+  || (r.group == CoreGroup && r.op == ConnectOp
+      && ((r.resource == PodsResource && r.sub in [ExecSub, AttachSub, PortforwardSub, ProxySub])
+          || (r.resource == ServicesResource && r.sub == ProxySub)))
+  // :43 pods CREATE, UPDATE
   || (r.group == CoreGroup && r.op in [CreateOp, UpdateOp] && r.resource == PodsResource && r.sub == EmptyStr)
-  // :40 pods/ephemeralcontainers UPDATE
+  // :44 pods/ephemeralcontainers UPDATE
   || (r.group == CoreGroup && r.op == UpdateOp && r.resource == PodsResource && r.sub == EphemeralSub)
-  // :41 apps workloads CREATE, UPDATE
+  // :45 apps workloads CREATE, UPDATE
   || (r.group == AppsGroup && r.op in [CreateOp, UpdateOp]
       && r.resource in [DeploymentsResource, ReplicaSetsResource, StatefulSetsResource, DaemonSetsResource] && r.sub == EmptyStr)
-  // :42 batch workloads CREATE, UPDATE
+  // :46 batch workloads CREATE, UPDATE
   || (r.group == BatchGroup && r.op in [CreateOp, UpdateOp]
       && r.resource in [JobsResource, CronJobsResource] && r.sub == EmptyStr)
 }
 
-// :136–138 namespaceSelector kubernetes.io/metadata.name == .Release.Namespace
+// :153–156 namespaceSelector kubernetes.io/metadata.name == .Release.Namespace
 predicate MatchesPolicy(r: AReq, c: Cfg)
 {
   MatchesRule(r) && r.ns == c.releaseNs
 }
 
 // ---------------------------------------------------------------------------------------------
-// Transliteration: variables (43–83)
+// Transliteration: variables (47–100)
 // ---------------------------------------------------------------------------------------------
 
-// :44–45 protected
+// :48–49 protected
 function VProtected(c: Cfg): seq<seq<CodePoint>>
 {
   [c.rel + ApiSuffix, c.rel + AdminAutomationSuffix]
 }
 
-// :46–47 operator
+// :50–51 operator
 function VOperator(r: AReq, c: Cfg): CelVal
 {
   And(B(r.groups.Some?),
       if r.groups.Some? then B(exists g :: g in r.groups.value && g in c.operatorGroups) else CError)
 }
 
-// :48–49 node
+// :52–53 node
 function VNode(r: AReq): CelVal
 {
   And(B(r.groups.Some?),
       if r.groups.Some? then B(SystemNodes in r.groups.value) else CError)
 }
 
-// :50–51 res
+// :54–55 res
 function VRes(r: AReq): seq<CodePoint> { r.resource }
 
-// :52–53 sub  (has(request.subResource) ? request.subResource : '' — r.sub already holds this value)
+// :56–57 sub  (has(request.subResource) ? request.subResource : '' — r.sub already holds this value)
 function VSub(r: AReq): seq<CodePoint> { r.sub }
 
-// :56 connectPod's prefix list
+// :31 $connectPrefixes (connectPod's and proxyTarget's prefix list)
 function ConnectPrefixes(c: Cfg): seq<seq<CodePoint>>
 {
   [c.rel + ApiTail, c.rel + WorkerTail, c.rel + AuthentikTail, c.rel + PostgresTail]
 }
 
-// :55–56 connectPod
+// :59–60 connectPod
 function VConnectPod(r: AReq, c: Cfg): CelVal
 {
   B(exists p :: p in ConnectPrefixes(c) && StartsWith(r.name, p))
+}
+
+// :63–66 proxyName
+function VProxyName(r: AReq): SVal
+{
+  TernS(Or(B(VRes(r) != PodsResource), B(VSub(r) != ProxySub)),
+        SV(EmptyStr),
+        TernS(SizeEq(LV(SplitOn(r.name, Colon)), 3),
+              IndexS(LV(SplitOn(r.name, Colon)), 1),
+              IndexS(LV(SplitOn(r.name, Colon)), 0)))
+}
+
+// :69–73 proxyTarget
+function VProxyTarget(r: AReq, c: Cfg): CelVal
+{
+  And(B(VSub(r) == ProxySub),
+      Or(B(VRes(r) == ServicesResource),
+         And(B(VRes(r) == PodsResource), ExistsStartsWithS(VProxyName(r), ConnectPrefixes(c)))))
 }
 
 // has(o.spec.serviceAccountName) ? o.spec.serviceAccountName : 'default'   (o null: error)
@@ -209,7 +269,7 @@ function PodSaField(o: Option<Obj>): SVal
   else if o.value.podSa.Some? then SV(o.value.podSa.value) else SV(DefaultSa)
 }
 
-// :58–62 podSa
+// :75–79 podSa
 function VPodSa(r: AReq): SVal
 {
   TernS(And(And(And(B(VRes(r) == PodsResource), B(VSub(r) == EmptyStr)), B(r.op == CreateOp)), B(ObjectOf(r).Some?)),
@@ -233,7 +293,7 @@ function CronTplSaField(o: Option<Obj>): SVal
   else if o.value.cronTplSa.Some? then SV(o.value.cronTplSa.value) else SV(DefaultSa)
 }
 
-// :64–70 newTplSa
+// :81–87 newTplSa
 function VNewTplSa(r: AReq): SVal
 {
   TernS(And(B(VRes(r) in WorkloadFive), B(ObjectOf(r).Some?)),
@@ -243,7 +303,7 @@ function VNewTplSa(r: AReq): SVal
               SV(EmptyStr)))
 }
 
-// :71–77 oldTplSa
+// :88–94 oldTplSa
 function VOldTplSa(r: AReq): SVal
 {
   TernS(And(B(VRes(r) in WorkloadFive), B(r.oldObject.Some?)),
@@ -272,7 +332,7 @@ function InitMap(o: Option<Obj>): LVal
   else if o.value.initContainers.Some? then LV(MapStrs(o.value.initContainers.value)) else LV([])
 }
 
-// :78–83 imagesChanged
+// :95–100 imagesChanged
 function VImagesChanged(r: AReq): CelVal
 {
   And(And(And(And(And(B(VRes(r) == PodsResource), B(VSub(r) == EmptyStr)), B(r.op == UpdateOp)),
@@ -282,35 +342,36 @@ function VImagesChanged(r: AReq): CelVal
 }
 
 // ---------------------------------------------------------------------------------------------
-// Transliteration: validations (84–126). GuardX is the negated left side of each rule's ||.
+// Transliteration: validations (101–144). GuardX is the negated left side of each rule's ||.
 // ---------------------------------------------------------------------------------------------
 
 const PodControllers: seq<seq<CodePoint>> := [ReplicaSetController, StatefulSetController, JobController, DaemonSetController]
 const WorkloadControllers: seq<seq<CodePoint>> := [DeploymentController, ReplicaSetController, CronJobController, JobController, GcController]
 
-// :89
+// :106
 function GuardA(r: AReq, c: Cfg): CelVal
 {
   And(And(B(VRes(r) == ServiceAccountsResource), B(VSub(r) == TokenSub)), B(r.name in VProtected(c)))
 }
-// :88–90 (a)
+// :105–108 (a)
 function ValA(r: AReq, c: Cfg): CelVal
 {
   Or(Or(Not(GuardA(r, c)), VOperator(r, c)), VNode(r))
 }
 
-// :94
+// :111–112
 function GuardB(r: AReq, c: Cfg): CelVal
 {
-  And(And(B(VRes(r) == PodsResource), B(VSub(r) in [ExecSub, AttachSub, PortforwardSub])), VConnectPod(r, c))
+  Or(And(And(B(VRes(r) == PodsResource), B(VSub(r) in [ExecSub, AttachSub, PortforwardSub])), VConnectPod(r, c)),
+     VProxyTarget(r, c))
 }
-// :93–95 (b)
+// :110–114 (b)
 function ValB(r: AReq, c: Cfg): CelVal
 {
   Or(Not(GuardB(r, c)), VOperator(r, c))
 }
 
-// :99
+// :117
 function GuardC(r: AReq, c: Cfg): CelVal
 {
   InListS(VPodSa(r), VProtected(c))
@@ -322,7 +383,7 @@ function ObjNameStartsWith(o: Option<Obj>, p: seq<CodePoint>): CelVal
   else if o.value.name.None? then CError
   else B(StartsWith(o.value.name.value, p))
 }
-// :98–105 (c)
+// :116–124 (c)
 function ValC(r: AReq, c: Cfg): CelVal
 {
   Or(Not(GuardC(r, c)),
@@ -330,34 +391,34 @@ function ValC(r: AReq, c: Cfg): CelVal
          ObjNameStartsWith(ObjectOf(r), c.rel + ApiTail)))
 }
 
-// :109
+// :127
 function GuardD(r: AReq, c: Cfg): CelVal
 {
   Or(InListS(VNewTplSa(r), VProtected(c)), InListS(VOldTplSa(r), VProtected(c)))
 }
-// :108–116 (d)
+// :126–135 (d)
 function ValD(r: AReq, c: Cfg): CelVal
 {
   Or(Or(Not(GuardD(r, c)), VOperator(r, c)), B(r.username in WorkloadControllers))
 }
 
-// :120
+// :138
 function GuardE(r: AReq, c: Cfg): CelVal
 {
   And(And(B(VRes(r) == PodsResource), B(VSub(r) == EphemeralSub)), VConnectPod(r, c))
 }
-// :119–121 (e)
+// :137–140 (e)
 function ValE(r: AReq, c: Cfg): CelVal
 {
   Or(Not(GuardE(r, c)), VOperator(r, c))
 }
 
-// :125
+// :143
 function GuardF(r: AReq, c: Cfg): CelVal
 {
   And(VConnectPod(r, c), VImagesChanged(r))
 }
-// :124–125 (f)
+// :142–144 (f)
 function ValF(r: AReq, c: Cfg): CelVal
 {
   Or(Not(GuardF(r, c)), VOperator(r, c))
@@ -373,7 +434,7 @@ function Validation(i: int, r: AReq, c: Cfg): CelVal
   else ValF(r, c)
 }
 
-// :34 failurePolicy: Fail and :134 validationActions: [Deny]: an error or a false validation denies.
+// :38 failurePolicy: Fail and :152 validationActions: [Deny]: an error or a false validation denies.
 predicate Admits(r: AReq, c: Cfg)
 {
   !MatchesPolicy(r, c) || forall i :: 0 <= i < 6 ==> Validation(i, r, c) == CTrue

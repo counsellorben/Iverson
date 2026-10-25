@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-21-csr-round12-platform-implementation-plan.md, T7 S3
 // Source: Iverson.Server/deploy/helm/iverson/charts/authentik/templates/deployment-server.yaml the wait-for-migration init container's python -c program (64–121)
-// Replay base: 0c82f27cfa35fbee2e3255b1d65937a0def814d2
+// Code ref: 8ef849174092218f507041e82b8185facafb1937
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-21-csr-round12-platform-implementation-plan/deployment-server.wait-for-migration.dfy
 
 // ---------------------------------------------------------------------------

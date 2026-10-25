@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-21-csr-round12-platform-implementation-plan.md, T25 S3
 // Source: Iverson.Server/deploy/scripts/authentik-probes.sh edge_client_from_xff, ip_is, is_loopback, is_console, setup_shows_no_prompt (60–92), the option parser (216–227)
-// Replay base: 7c4d86687b557e7e33a52c30cc07e6728dfb4622
+// Code ref: 8ef849174092218f507041e82b8185facafb1937
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-21-csr-round12-platform-implementation-plan/authentik-probes.helpers.dfy
 
 // ---------------------------------------------------------------------------------------------

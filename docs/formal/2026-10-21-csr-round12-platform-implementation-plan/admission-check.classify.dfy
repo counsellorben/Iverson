@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-21-csr-round12-platform-implementation-plan.md, T25 S3
 // Source: Iverson.Server/deploy/scripts/admission-check.sh classify (52–60), the option parser (186–197)
-// Replay base: 7c4d86687b557e7e33a52c30cc07e6728dfb4622
+// Code ref: 8ef849174092218f507041e82b8185facafb1937
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-21-csr-round12-platform-implementation-plan/admission-check.classify.dfy
 
 // ---------------------------------------------------------------------------
@@ -29,8 +29,8 @@ const ReleaseFlag: seq<Byte> := [45, 45, 114, 101, 108, 101, 97, 115, 101]      
 const NamespaceFlag: seq<Byte> := [45, 45, 110, 97, 109, 101, 115, 112, 97, 99, 101] // "--namespace"
 const HFlag: seq<Byte> := [45, 104]                                                // "-h"
 const HelpFlag: seq<Byte> := [45, 45, 104, 101, 108, 112]                          // "--help"
-const DefaultRelease: seq<Byte> := [105, 118, 101, 114, 115, 111, 110]             // RELEASE=iverson (line 38)
-const DefaultNs: seq<Byte> := [105, 118, 101, 114, 115, 111, 110]                  // NS=iverson (line 39)
+const DefaultRelease: seq<Byte> := [105, 118, 101, 114, 115, 111, 110]             // RELEASE=iverson (line 41)
+const DefaultNs: seq<Byte> := [105, 118, 101, 114, 115, 111, 110]                  // NS=iverson (line 42)
 
 // ---------------------------------------------------------------------------
 // Library boundary (approved axiom): printf '%s' "$2" | command grep -qF -- "$3"
@@ -40,23 +40,23 @@ function GrepQF(text: seq<Byte>, pat: seq<Byte>): bool
   ensures pat != [] && !Contains(pat, Newline) ==> (GrepQF(text, pat) <==> Contains(text, pat))
 
 // ---------------------------------------------------------------------------
-// Transliteration: classify (admission-check.sh 52–60)
+// Transliteration: classify (admission-check.sh 55–63 as built)
 // The value is what `$(classify ...)` captures (echo's trailing newline stripped).
 // ---------------------------------------------------------------------------
 
 function Classify(rc: int, out: seq<Byte>, policy: seq<Byte>): seq<Byte>
 {
-  if rc == 0 then                      // 53: if [ "$1" -eq 0 ]; then
-    Admitted                           // 54:   echo admitted
-  else if GrepQF(out, policy) then     // 55: elif printf '%s' "$2" | command grep -qF -- "$3"; then
-    RefusedWord                        // 56:   echo refused
-  else                                 // 57: else
-    ErrorWord                          // 58:   echo error
+  if rc == 0 then                      // 59: if [ "$1" -eq 0 ]; then
+    Admitted                           // 57:   echo admitted
+  else if GrepQF(out, policy) then     // 61: elif printf '%s' "$2" | command grep -qF -- "$3"; then
+    RefusedWord                        // 59:   echo refused
+  else                                 // 60: else
+    ErrorWord                          // 61:   echo error
 }
 
 // ---------------------------------------------------------------------------
-// Transliteration: the option parser (admission-check.sh 186–197), run as a script
-// (the sourced-guard at 186–188 is not taken; see the correspondence notes).
+// Transliteration: the option parser (admission-check.sh 219–230 as built), run as a script
+// (the sourced-guard at 219–221 is not taken; see the correspondence notes).
 // ---------------------------------------------------------------------------
 
 datatype OptionsOutcome = Parsed(release: seq<Byte>, ns: seq<Byte>) | Exit(code: int)
@@ -69,21 +69,21 @@ function Options(args: seq<seq<Byte>>): OptionsOutcome
 function OptionsLoop(args: seq<seq<Byte>>, release: seq<Byte>, ns: seq<Byte>): OptionsOutcome
   decreases |args|
 {
-  if |args| == 0 then                                   // 190: while [ $# -gt 0 ]; do
+  if |args| == 0 then                                   // 223: while [ $# -gt 0 ]; do
     Parsed(release, ns)
-  else if args[0] == ReleaseFlag then                   // 192: --release)
+  else if args[0] == ReleaseFlag then                   // 225: --release)
     if |args| >= 2 then                                 //        [ $# -ge 2 ] ||
       OptionsLoop(args[2..], args[1], ns)               //        RELEASE=$2; shift 2
     else
       Exit(2)                                           //        { usage; exit 2; }
-  else if args[0] == NamespaceFlag then                 // 193: --namespace)
+  else if args[0] == NamespaceFlag then                 // 226: --namespace)
     if |args| >= 2 then                                 //        [ $# -ge 2 ] ||
       OptionsLoop(args[2..], release, args[1])          //        NS=$2; shift 2
     else
       Exit(2)                                           //        { usage; exit 2; }
-  else if args[0] == HFlag || args[0] == HelpFlag then  // 194: -h|--help) usage; exit 0
+  else if args[0] == HFlag || args[0] == HelpFlag then  // 227: -h|--help) usage; exit 0
     Exit(0)
-  else                                                  // 195: *) usage; exit 2
+  else                                                  // 228: *) usage; exit 2
     Exit(2)
 }
 

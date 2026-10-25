@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-21-csr-round12-platform-implementation-plan.md, T4 S3
 // Source: Iverson.Server/Iverson.Api/OperatorAuthorizationPolicy.cs IsSatisfiedBy (14–25); with SchemaAdminAuthorizationPolicy.cs IsSatisfiedBy (11–18), ConsoleAdminAuthorizationPolicy.cs IsSatisfiedBy (10–12), OperatorSubjects.cs FromConfiguration (21–25), and the unchanged TenantAdminAuthorizationPolicy.IsSatisfiedBy
-// Replay base: 7c4d86687b557e7e33a52c30cc07e6728dfb4622
+// Code ref: 8ef849174092218f507041e82b8185facafb1937
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-21-csr-round12-platform-implementation-plan/OperatorAuthorizationPolicy.IsSatisfiedBy.dfy
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-21-csr-round12-platform-implementation-plan.md, T14 S4 (4d), T16 S3 (3c), T17 S5 (5e–5h), T20 S3 (3f–3i)
 // Source: Iverson.Server/deploy/kind/setup.ps1 the kind version gate (3–9), the --only parser (43–51), Add-AmbientLabels (96–110), the dispatch (144–152)
-// Replay base: 0c82f27cfa35fbee2e3255b1d65937a0def814d2
+// Code ref: 8ef849174092218f507041e82b8185facafb1937
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-21-csr-round12-platform-implementation-plan/setup.ps1.guards.dfy
 
 // ===================== Shared vocabulary =====================
