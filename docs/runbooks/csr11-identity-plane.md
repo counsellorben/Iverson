@@ -42,7 +42,10 @@ other hosts run it in Detection.
 Authentik re-applies a blueprint whose file changed, through a file watcher and an hourly
 schedule. On a fresh install, its first automatic apply can also run before the stock login flow
 exists, which fails `reputation.yaml` and `superusers.yaml` until the hourly re-apply
-(`reputation.yaml` also waits for `recovery-flow.yaml`, which defines the throttle it binds). To have
+(`reputation.yaml` also waits for `recovery-flow.yaml`, which defines the throttle it binds).
+`mfa-enforcement.yaml` refers to the stock TOTP and WebAuthn setup stages, and until it applies the
+stock MFA validation stage lets a user with no device sign in without MFA, whatever the profile
+renders (spec §7, fresh-install MFA window). To have
 everything in force at once, apply the files yourself after the install or upgrade, static files
 first. `superusers.yaml` refers to flows defined in them, and a missing referent fails the
 whole file.
@@ -51,11 +54,11 @@ whole file.
    `kubectl -n <ns> rollout status deploy/<release>-authentik-worker`, then repeat
    `kubectl -n <ns> get pods -l app=<release>-authentik-worker` until it lists one pod.
 2. On a fresh install, wait until Authentik's own blueprints have created the login flow and the
-   TOTP setup stage the static files refer to, and the out-of-box `initial-setup` flow that
+   TOTP and WebAuthn setup stages the static files refer to, and the out-of-box `initial-setup` flow that
    `service-clients.yaml` retitles (up to 5 minutes):
 
    ```bash
-   ok=no; for i in $(seq 1 30); do [ "$(kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c "from authentik.flows.models import Flow; from authentik.stages.authenticator_totp.models import AuthenticatorTOTPStage; print(Flow.objects.filter(slug='default-authentication-flow').count(), AuthenticatorTOTPStage.objects.filter(name='default-authenticator-totp-setup').count(), Flow.objects.filter(slug='initial-setup').count())" 2>/dev/null | tail -1)" = "1 1 1" ] && { ok=yes; break; }; sleep 10; done; echo "stock objects present: $ok"
+   ok=no; for i in $(seq 1 30); do [ "$(kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- ak shell -c "from authentik.flows.models import Flow; from authentik.stages.authenticator_totp.models import AuthenticatorTOTPStage; from authentik.stages.authenticator_webauthn.models import AuthenticatorWebAuthnStage; print(Flow.objects.filter(slug='default-authentication-flow').count(), AuthenticatorTOTPStage.objects.filter(name='default-authenticator-totp-setup').count(), AuthenticatorWebAuthnStage.objects.filter(name='default-authenticator-webauthn-setup').count(), Flow.objects.filter(slug='initial-setup').count())" 2>/dev/null | tail -1)" = "1 1 1 1" ] && { ok=yes; break; }; sleep 10; done; echo "stock objects present: $ok"
    ```
 
    Continue when it prints `yes`. If it prints `no`, Authentik's own blueprints have not applied yet:
@@ -64,7 +67,7 @@ whole file.
 
    ```bash
    kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- \
-     ak apply_blueprint custom/recovery-flow.yaml custom/reputation.yaml
+     ak apply_blueprint custom/recovery-flow.yaml custom/reputation.yaml custom/mfa-enforcement.yaml
    kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -c worker -- \
      ak apply_blueprint custom/superusers.yaml custom/orchestrator-federation.yaml \
        custom/service-clients/service-clients.yaml custom/service-clients/admin-automation.yaml \

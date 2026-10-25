@@ -63,9 +63,9 @@ spec:
 # `.Values.networkPolicy.clusterCidrs` lists for the profile: the ranges the platform's
 # load balancer connects from (AWS/Azure/GCP have no gateway namespace). An empty
 # list is refused near the top of this file, since it would render an ingress rule that
-# matches every source. The kubelet's readiness/liveness probes need no rule: traffic from
-# the node a pod runs on is always admitted. Port 8082 admits Prometheus alone: it serves
-# /metrics and /build, and only there (CSR round 12 §3.3).
+# matches every source. Under the mesh the kubelet's readiness/liveness probes arrive SNATed from
+# 169.254.7.127, which the first rule below admits on the probe port (see the top of this file).
+# Port 8082 admits Prometheus alone: it serves /metrics and /build, and only there (CSR round 12 §3.3).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -547,7 +547,8 @@ spec:
 {{- if .Values.adminUi.enabled }}
 # admin-ui is a static nginx server reachable from outside the namespace through the
 # Istio gateway (local/laptop) or the profile's load balancer (`clusterCidrs`), on 8080.
-# Its kubelet probes need no rule (node traffic is always admitted). It needs no egress
+# Its kubelet probes arrive SNATed from 169.254.7.127 under the mesh, which the first rule below
+# admits (see the top of this file). It needs no egress
 # rule of its own (the browser calls the API/Authentik directly, not this pod), so the
 # default-deny-all egress posture above is correct and sufficient.
 apiVersion: networking.k8s.io/v1
@@ -637,7 +638,7 @@ spec:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
                # api's own query path into Prometheus's HTTP API (the api-egress rule's
                # counterpart) — for the admin console landing page's live status. The
-               # kubelet's /-/ready probe needs no rule: node traffic is always admitted.
+               # kubelet's /-/ready probe arrives from 169.254.7.127, admitted by the rule above.
       ports: [{ protocol: TCP, port: 9090 }, { protocol: TCP, port: 15008 }]
 {{- end }}
 ---
@@ -657,8 +658,9 @@ spec:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
       ports: [{ protocol: TCP, port: 8443 }, { protocol: TCP, port: 15008 }]
     # CSR round-10 #4: the tls-proxy sidecar's public listener, which the Authentik Ingress targets.
-    # Port 9000 has no rule: its only callers are the kubelet (node traffic is always admitted),
-    # the sidecar over loopback and `kubectl port-forward`, none of which NetworkPolicy filters.
+    # Port 9000's only network rule is the probe rule above (the kubelet, SNATed from 169.254.7.127
+    # under the mesh); its other callers, the sidecar over loopback and `kubectl port-forward`, are
+    # not filtered by NetworkPolicy.
     - from:
         {{- if $meshEdge }}
         - namespaceSelector:

@@ -43,8 +43,9 @@ networkPolicy:
   nodeSubnetFallback: []
 
 # CSR round 12 §3.1: the Kubernetes group(s) whose members alone may mint tokens for the api and
-# admin-automation identities, exec, attach or port-forward into the api, worker, Authentik and Postgres
-# pods, and create or change the pods and workloads that run as those identities
+# admin-automation identities, exec, attach, port-forward or proxy into the api, worker, Authentik and
+# Postgres pods (and proxy to their Services), and create or change the pods and workloads that run as
+# those identities
 # (templates/admission-policy.yaml; docs/runbooks/operators-group.md). No usable default: every profile
 # names its own, and the render fails while the list is empty or holds a blank entry.
 admission:

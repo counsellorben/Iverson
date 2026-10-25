@@ -3,8 +3,9 @@
 # The edge is a GKE Gateway (global.gateway, templates/gateway-gke.yaml): no ingress controller to install.
 
 # GCLB and its health checks connect straight to pod IPs from Google's fixed ranges
-# (container-native load balancing). The node subnet is not needed: the kubelet's probes
-# are always admitted. See values.yaml's networkPolicy comment.
+# (container-native load balancing). The node subnet is not needed: under the mesh the kubelet's
+# probes arrive from 169.254.7.127, which every probed pod's ingress admits
+# (templates/networkpolicies.yaml). See values.yaml's networkPolicy comment.
 networkPolicy:
   clusterCidrs: ["130.211.0.0/22", "35.191.0.0/16"]
   # modules/cluster-gcp's master_ipv4_cidr_block (private cluster internal endpoint).

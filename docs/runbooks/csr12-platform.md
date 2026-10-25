@@ -27,8 +27,9 @@ Operator onboarding, the operator list, login throttling and `AUTHENTIK_SECRET_K
 The admission policy `<release>-<namespace>-sensitive-identities` refuses everyone outside
 `admission.operatorGroups`, cluster-admin included, when they:
 - create a token for `<release>-api` or `<release>-admin-automation`;
-- exec, attach or port-forward into a `<release>-api-*`, `<release>-worker-*`, `<release>-authentik-*` or
-  `<release>-postgres-*` pod, add an ephemeral container to one, or change one of its container images;
+- exec, attach, port-forward or proxy (through the API server) into a `<release>-api-*`, `<release>-worker-*`,
+  `<release>-authentik-*` or `<release>-postgres-*` pod, add an ephemeral container to one, or change one
+  of its container images, or proxy to the Services in front of those pods;
 - create a pod, or create or update a workload, whose pod template uses either account.
 
 So a `kubectl rollout restart` of the api, the blueprint applies and shells in the Authentik worker,

@@ -85,7 +85,8 @@ data:
     ssl_keystore_location = {{ include "starrocks.feKeystorePath" . }}
     ssl_keystore_password = {{ include "starrocks.feKeystorePassword" . }}
     ssl_key_password = {{ include "starrocks.feKeystorePassword" . }}
-    # CSR round 12 §4.4: refuse any login that does not use TLS. The FE and BE entrypoints' plain
+    # CSR round 12 §4.4: refuse any non-loopback login that does not use TLS (StarRocks exempts
+    # connections to the pod's own loopback address). The FE and BE entrypoints' plain
     # `mysql` calls negotiate TLS by default (MySQL 8 client, ssl-mode PREFERRED), and every client the
     # chart configures requires it. FE reads this only at start: an upgrade restarts the FE.
     ssl_force_secure_transport = true

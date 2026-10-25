@@ -23,12 +23,12 @@ export const METRICS_POLL_INTERVAL_MS = 30_000;
 /**
  * What a 403 means here, in words.
  *
- * This is the answer EVERY human gets from `/admin/console/metrics` today: the endpoint is
- * `Operator`-gated and no identity currently satisfies that policy (the console never requests
- * the `groups` scope, and no `operators` group exists — Design 4d). So four of the nine cards
- * on this page say this sentence on a real deployment, and it has to read as an authorization
- * answer rather than as a fault. `WidgetCard` renders it at warning severity for exactly that
- * reason.
+ * This is the answer every human outside the install's operator list gets from
+ * `/admin/console/metrics`: the endpoint is `Operator`-gated, and Operator is granted only to a
+ * `sub` on that list (`global.operatorSubjects` on Helm; compose adds a dev-only `operators` group
+ * fallback), so on Helm no Authentik group grants it. For a tenant admin, four of the nine cards
+ * on this page say this sentence, and it has to read as an authorization answer rather than as a
+ * fault. `WidgetCard` renders it at warning severity for exactly that reason.
  */
 export const METRICS_FORBIDDEN_MESSAGE =
   "Not authorized: deployment metrics require the Operator role.";

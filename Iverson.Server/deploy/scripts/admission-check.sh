@@ -15,6 +15,8 @@ set -uo pipefail
 #          an ephemeral container on an api pod, and an in-place image change of an api pod;
 #   O1-O8  the operators group is admitted for each of those;
 #   N9/O9  a non-operator is refused exec into the Postgres instance pod, the operators group admitted;
+#   N10/O11 a non-operator is refused, and the operators group admitted, the API server's proxy to an
+#          api pod (pods/proxy) and to Service <release>-authentik (services/proxy);
 #   O10    the operators group is refused a protected-account pod named outside <release>-api-*;
 #   L1/L2  a legacy service-account-token Secret's token for <release>-api is refused by the
 #          orchestrator pin and one for <release>-admin-automation by the admin-automation pin;
@@ -98,6 +100,34 @@ port_forward_outcome() {  # <impersonation flags...>
   else
     echo error
   fi
+}
+
+# The API server's proxy to <pod>:8081 (pods/proxy) and to svc/<release>-authentik:9000 (services/proxy),
+# one GET each. Prints "refused" when the admission policy refused both, "admitted" when both passed
+# admission and RBAC, and "error" otherwise. Passing means a response, or an error the API server
+# returns after admission: the backend's own error status, or its failure to reach the backend (on
+# the clouds the API server is outside the mesh, so a STRICT port answers that way). Neither response
+# body is printed.
+proxy_outcome() {  # <impersonation flags...>
+  local path out rc refused=0 passed=0
+  for path in "pods/https:$API_POD:8081/proxy/health" "services/http:$RELEASE-authentik:9000/proxy/-/health/live/"; do
+    out=$(kubectl "$@" get --raw "/api/v1/namespaces/$NS/$path" 2>&1)
+    rc=$?
+    if printf '%s' "$out" | command grep -qF -- "$POLICY"; then
+      refused=$((refused + 1))
+    elif [ "$rc" -eq 0 ] || { printf '%s' "$out" | command grep -q '^Error from server' \
+        && ! printf '%s' "$out" | command grep -qi 'forbidden'; }; then
+      passed=$((passed + 1))
+    fi
+  done
+  if [ "$refused" -eq 2 ]; then echo refused; elif [ "$passed" -eq 2 ]; then echo admitted; else echo error; fi
+}
+
+expect_proxy() {  # <id> <text> <wanted> <impersonation flags...>
+  local id=$1 text=$2 want=$3 got
+  shift 3
+  got=$(proxy_outcome "$@")
+  if [ "$got" = "$want" ]; then report PASS "$id" "$text: $got"; else report FAIL "$id" "$text: $got, wanted $want"; fi
 }
 
 expect_port_forward() {  # <id> <text> <wanted> <impersonation flags...>
@@ -259,7 +289,7 @@ bare() {  # <impersonation flags...> -- <pod name> <service account>
     --overrides="{\"spec\":{\"serviceAccountName\":\"$3\"}}" -- true
 }
 
-# N1-N8: the non-operator.
+# N1-N10: the non-operator.
 expect N1 "non-operator: token for $API_SA" refused \
   kubectl "${NON[@]}" -n "$NS" create token "$API_SA" --audience admission-check --duration 10m
 expect N2 "non-operator: token for $AUTOMATION_SA" refused \
@@ -277,8 +307,9 @@ expect N8 "non-operator: image change of $API_POD (dry run)" refused \
   kubectl "${NON[@]}" -n "$NS" set image "pod/$API_POD" "api=$PROBE_IMAGE" --dry-run=server
 expect N9 "non-operator: exec into $POSTGRES_POD" refused \
   kubectl "${NON[@]}" -n "$NS" exec "$POSTGRES_POD" -c postgres -- true
+expect_proxy N10 "non-operator: API-server proxy to $API_POD and svc/$RELEASE-authentik" refused "${NON[@]}"
 
-# O1-O10: the operators group.
+# O1-O11: the operators group.
 expect O1 "operators: token for $API_SA" admitted \
   kubectl "${OPS[@]}" -n "$NS" create token "$API_SA" --audience admission-check --duration 10m
 expect O2 "operators: token for $AUTOMATION_SA" admitted \
@@ -300,6 +331,7 @@ expect O9 "operators: exec into $POSTGRES_POD" admitted \
   kubectl "${OPS[@]}" -n "$NS" exec "$POSTGRES_POD" -c postgres -- true
 expect O10 "operators: bare pod $PROBE with $API_SA (dry run)" refused \
   bare "${OPS[@]}" -- "$PROBE" "$API_SA"
+expect_proxy O11 "operators: API-server proxy to $API_POD and svc/$RELEASE-authentik" admitted "${OPS[@]}"
 
 # L1, L2: legacy service-account-token Secrets against the two pins, each beside an accepted control.
 if start_port_forward; then

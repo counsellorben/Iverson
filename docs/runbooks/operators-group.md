@@ -7,14 +7,17 @@ cluster-admin included:
 
 - creating a token for `<release>-api` or `<release>-admin-automation` (`kubectl create token`);
 - exec, attach or port-forward into a pod named `<release>-api-*`, `<release>-worker-*`,
-  `<release>-authentik-*` or `<release>-postgres-*`;
+  `<release>-authentik-*` or `<release>-postgres-*`, and the API server's proxy (`pods/proxy`) to one, or
+  (`services/proxy`) to Service `<release>-api`, `<release>-worker` or `<release>-authentik` or any Service
+  whose name starts with one of those pod prefixes;
 - creating a pod that runs as either account; even for the group, only under a name starting
   `<release>-api-` (so `kubectl debug --copy-to` and `kubectl run --overrides` need such a name);
 - creating or updating a Deployment, ReplicaSet, StatefulSet, DaemonSet, Job or CronJob whose pod
   template runs as either account: a `kubectl rollout restart` of the api, and a `helm upgrade` that
   changes the api's template (a chart-version or api template change does). Scaling through the
-  `scale` subresource is not affected, and an upgrade that leaves those templates unchanged needs no
-  group;
+  `scale` subresource is not affected. Any other create or update of such an object needs the group,
+  even one that changes nothing in its pod template; only an upgrade that leaves those workload objects
+  entirely unchanged (Helm sends them no update) needs no group;
 - adding an ephemeral container (`kubectl debug`) to one of those pods, or changing a container
   image of one. Under Pod Security `baseline`, `kubectl debug` also needs `--profile=baseline`.
 

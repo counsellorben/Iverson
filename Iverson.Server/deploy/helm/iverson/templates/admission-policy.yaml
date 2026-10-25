@@ -3,8 +3,11 @@ CSR round 12 §3.1 (#11, cluster half): the release's protected workload identit
 operators group. A namespace-RBAC holder outside admission.operatorGroups, cluster-admin included, is refused:
   (a) a token for <release>-api or <release>-admin-automation (the kubelet, group system:nodes, still mounts
       projected tokens);
-  (b) exec, attach and port-forward into a <release>-api-*, -worker-*, -authentik-* or -postgres-* pod (a CONNECT
-      request names the pod, not its service account);
+  (b) exec, attach, port-forward and proxy into a <release>-api-*, -worker-*, -authentik-* or -postgres-* pod, and
+      proxy to a Service in front of them: <release>-api, -worker or -authentik, or any Service whose name starts
+      with one of those pod prefixes (the headless Services, CNPG's -rw, -ro and -r). A CONNECT request names the
+      pod or Service, not its service account; a proxy request's name may carry a scheme: prefix and a :port
+      suffix, so the name between them is matched;
   (c) a pod that runs as either account; the Kubernetes controllers that create pods for the release's
       workloads are admitted, and whoever creates it, the pod's name must start <release>-api-, so that (b), (e)
       and (f) cover every pod holding a protected token;
@@ -25,6 +28,7 @@ Verified on kind: spec Verified assumptions 37, 38, 69, 77, 84, 85 and 96.
 {{- end }}
 {{- end }}
 {{- $rel := .Release.Name }}
+{{- $connectPrefixes := list (printf "%s-api-" $rel) (printf "%s-worker-" $rel) (printf "%s-authentik-" $rel) (printf "%s-postgres-" $rel) | toJson }}
 {{- $name := printf "%s-%s-sensitive-identities" .Release.Name .Release.Namespace }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -35,7 +39,7 @@ spec:
   matchConstraints:
     resourceRules:
       - { apiGroups: [""], apiVersions: ["v1"], operations: ["CREATE"], resources: ["serviceaccounts/token"] }
-      - { apiGroups: [""], apiVersions: ["v1"], operations: ["CONNECT"], resources: ["pods/exec", "pods/attach", "pods/portforward"] }
+      - { apiGroups: [""], apiVersions: ["v1"], operations: ["CONNECT"], resources: ["pods/exec", "pods/attach", "pods/portforward", "pods/proxy", "services/proxy"] }
       - { apiGroups: [""], apiVersions: ["v1"], operations: ["CREATE", "UPDATE"], resources: ["pods"] }
       - { apiGroups: [""], apiVersions: ["v1"], operations: ["UPDATE"], resources: ["pods/ephemeralcontainers"] }
       - { apiGroups: ["apps"], apiVersions: ["v1"], operations: ["CREATE", "UPDATE"], resources: ["deployments", "replicasets", "statefulsets", "daemonsets"] }
@@ -53,7 +57,20 @@ spec:
       expression: "has(request.subResource) ? request.subResource : ''"
     # The pods (b), (e) and (f) protect, by name.
     - name: connectPod
-      expression: {{ printf "%s.exists(p, request.name.startsWith(p))" (list (printf "%s-api-" $rel) (printf "%s-worker-" $rel) (printf "%s-authentik-" $rel) (printf "%s-postgres-" $rel) | toJson) | quote }}
+      expression: {{ printf "%s.exists(p, request.name.startsWith(p))" $connectPrefixes | quote }}
+    # A proxy request names its target [scheme:]name[:port], split as the API server splits it; this is the
+    # name ('' for any other request).
+    - name: proxyName
+      expression: >-
+        variables.sub != 'proxy' ? ''
+          : (request.name.split(':').size() == 3 ? request.name.split(':')[1] : request.name.split(':')[0])
+    # (b)'s proxy targets: connectPod's pods, and a Service named <release>-api, -worker or -authentik or
+    # starting with one of connectPod's prefixes (name + '-' matches both).
+    - name: proxyTarget
+      expression: >-
+        variables.sub == 'proxy'
+        && ((variables.res == 'pods' && {{ $connectPrefixes }}.exists(p, variables.proxyName.startsWith(p)))
+            || (variables.res == 'services' && {{ $connectPrefixes }}.exists(p, (variables.proxyName + '-').startsWith(p))))
     # The service account a pod create runs as ('' for any other request).
     - name: podSa
       expression: >-
@@ -89,11 +106,12 @@ spec:
         !(variables.res == 'serviceaccounts' && variables.sub == 'token' && request.name in variables.protected)
         || variables.operator || variables.node
       messageExpression: {{ printf "'%s: (a) only the operators group may request a token for ' + request.name" $name | quote }}
-    # (b) exec, attach and port-forward
+    # (b) exec, attach, port-forward and proxy
     - expression: >-
-        !(variables.res == 'pods' && variables.sub in ['exec', 'attach', 'portforward'] && variables.connectPod)
+        !((variables.res == 'pods' && variables.sub in ['exec', 'attach', 'portforward'] && variables.connectPod)
+          || variables.proxyTarget)
         || variables.operator
-      messageExpression: {{ printf "'%s: (b) only the operators group may ' + variables.sub + ' into ' + request.name" $name | quote }}
+      messageExpression: {{ printf "'%s: (b) only the operators group may ' + (variables.sub == 'proxy' ? 'proxy to ' + variables.res + '/' : variables.sub + ' into ') + request.name" $name | quote }}
     # (c) pods that run as a protected account
     - expression: >-
         !(variables.podSa in variables.protected)
