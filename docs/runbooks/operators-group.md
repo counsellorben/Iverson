@@ -7,9 +7,10 @@ cluster-admin included:
 
 - creating a token for `<release>-api` or `<release>-admin-automation` (`kubectl create token`);
 - exec, attach or port-forward into a pod named `<release>-api-*`, `<release>-worker-*`,
-  `<release>-authentik-*` or `<release>-postgres-*`, and the API server's proxy (`pods/proxy`) to one, or
-  (`services/proxy`) to Service `<release>-api`, `<release>-worker` or `<release>-authentik` or any Service
-  whose name starts with one of those pod prefixes;
+  `<release>-authentik-*` or `<release>-postgres-*`, and the API server's proxy (`pods/proxy`) to one;
+- the API server's proxy (`services/proxy`) to any Service in the namespace, whatever its name: a
+  Service's name says nothing about its backends, since anyone who can edit Services can point one at a
+  protected pod;
 - creating a pod that runs as either account; even for the group, only under a name starting
   `<release>-api-` (so `kubectl debug --copy-to` and `kubectl run --overrides` need such a name);
 - creating or updating a Deployment, ReplicaSet, StatefulSet, DaemonSet, Job or CronJob whose pod

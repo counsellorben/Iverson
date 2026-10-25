@@ -28755,7 +28755,7 @@ Expected:
 - `trim: kafkauser iverson-api Ready with its Secret`, `trim: entity operator removed exit=0`, `trim: TEI scaled to 0 exit=0`.
 - `authentik-probes exit=0`: A1–A9 `PASS`; A7 shows `/setup: 500` (a fresh install never sets Authentik's Setup flag, §2.6); A8 shows the edge-reported address, A9 `::ffff:127.0.0.1`; `authentik-probes.sh: 9 passed, 0 failed`.
 - `mesh-check exit=0`: M1–M5 `PASS`, `mesh-check.sh: 5 passed, 0 failed, 0 skipped`.
-- `admission-check exit=0`: N1–N9, O1–O10, L1, L1c, L2 and L2c `PASS`; `admission-check.sh: 23 passed, 0 failed`.
+- `admission-check exit=0`: N1–N10, O1–O11, L1, L1c, L2 and L2c `PASS`; `admission-check.sh: 25 passed, 0 failed`.
 
 - [ ] **Step 16: Kind fresh install: the TokenReview pin and `CreateTenant` through the gateway.** A token bound to a throwaway pod of the api's account is accepted while the pod lives and refused after it is deleted (§2.6, VA25: about 10–12 s; the check waits 30 s). Then round 12's `CreateTenant` console runs through the gateway's GRPCS edge (`https://iverson.local`, connected to `127.0.0.1:8443`, edge certificate pinned): the api's own orchestrator exchange passes the TokenReview pin from the live api pod.
 
@@ -28983,7 +28983,7 @@ echo "pre-upgrade tenant: $(kubectl $OPS_AS -n iverson exec iverson-postgres-1 -
 Expected:
 - `authentik-probes exit=0`: A1–A9 `PASS`; A7 shows `/setup: 302 /` here (`main` set the Setup flag with its bootstrap password; the executor still shows no prompt).
 - `mesh-check exit=0`: M1 and M5 `PASS`, M2–M4 `SKIP` (laptop runs no StarRocks or Jaeger); `mesh-check.sh: 2 passed, 0 failed, 3 skipped`.
-- `admission-check exit=0`, `23 passed, 0 failed`.
+- `admission-check exit=0`, `25 passed, 0 failed`.
 - `U2 authentik-app keys:` without `bootstrap-password` (§2.6); `U3 worker restarts: 0`: the worker started cleanly without the bootstrap password.
 - `link host=http://authentik.iverson.local path=/if/flow/iverson-recovery/` and `row: csr12p-post|active`: `CreateTenant` through the new gateway edge, with the orchestrator exchange through the TokenReview pin.
 - `pre-upgrade tenant: csr12p-pre|active`.

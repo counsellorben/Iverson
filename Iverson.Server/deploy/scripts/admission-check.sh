@@ -16,7 +16,8 @@ set -uo pipefail
 #   O1-O8  the operators group is admitted for each of those;
 #   N9/O9  a non-operator is refused exec into the Postgres instance pod, the operators group admitted;
 #   N10/O11 a non-operator is refused, and the operators group admitted, the API server's proxy to an
-#          api pod (pods/proxy) and to Service <release>-authentik (services/proxy);
+#          api pod (pods/proxy), to Service <release>-authentik and to the unprotected-name Service
+#          <release>-qdrant (services/proxy: every Service's proxy is operator-only, whatever its name);
 #   O10    the operators group is refused a protected-account pod named outside <release>-api-*;
 #   L1/L2  a legacy service-account-token Secret's token for <release>-api is refused by the
 #          orchestrator pin and one for <release>-admin-automation by the admin-automation pin;
@@ -102,15 +103,17 @@ port_forward_outcome() {  # <impersonation flags...>
   fi
 }
 
-# The API server's proxy to <pod>:8081 (pods/proxy) and to svc/<release>-authentik:9000 (services/proxy),
-# one GET each. Prints "refused" when the admission policy refused both, "admitted" when both passed
-# admission and RBAC, and "error" otherwise. Passing means a response, or an error the API server
-# returns after admission: the backend's own error status, or its failure to reach the backend (on
-# the clouds the API server is outside the mesh, so a STRICT port answers that way). Neither response
-# body is printed.
+# The API server's proxy to <pod>:8081 (pods/proxy), to svc/<release>-authentik:9000 and to
+# svc/<release>-qdrant:6333 (services/proxy), one GET each. Prints "refused" when the admission policy
+# refused all three, "admitted" when all three passed admission and RBAC, and "error" otherwise.
+# Passing means a response, or an error the API server returns after admission: the backend's own
+# error status, or its failure to reach the backend (on the clouds the API server is outside the
+# mesh, so a STRICT port answers that way). No response body is printed.
 proxy_outcome() {  # <impersonation flags...>
-  local path out rc refused=0 passed=0
-  for path in "pods/https:$API_POD:8081/proxy/health" "services/http:$RELEASE-authentik:9000/proxy/-/health/live/"; do
+  local path out rc refused=0 passed=0 total=0
+  for path in "pods/https:$API_POD:8081/proxy/health" "services/http:$RELEASE-authentik:9000/proxy/-/health/live/" \
+      "services/https:$RELEASE-qdrant:6333/proxy/readyz"; do
+    total=$((total + 1))
     out=$(kubectl "$@" get --raw "/api/v1/namespaces/$NS/$path" 2>&1)
     rc=$?
     if printf '%s' "$out" | command grep -qF -- "$POLICY"; then
@@ -120,7 +123,7 @@ proxy_outcome() {  # <impersonation flags...>
       passed=$((passed + 1))
     fi
   done
-  if [ "$refused" -eq 2 ]; then echo refused; elif [ "$passed" -eq 2 ]; then echo admitted; else echo error; fi
+  if [ "$refused" -eq "$total" ]; then echo refused; elif [ "$passed" -eq "$total" ]; then echo admitted; else echo error; fi
 }
 
 expect_proxy() {  # <id> <text> <wanted> <impersonation flags...>
@@ -307,7 +310,7 @@ expect N8 "non-operator: image change of $API_POD (dry run)" refused \
   kubectl "${NON[@]}" -n "$NS" set image "pod/$API_POD" "api=$PROBE_IMAGE" --dry-run=server
 expect N9 "non-operator: exec into $POSTGRES_POD" refused \
   kubectl "${NON[@]}" -n "$NS" exec "$POSTGRES_POD" -c postgres -- true
-expect_proxy N10 "non-operator: API-server proxy to $API_POD and svc/$RELEASE-authentik" refused "${NON[@]}"
+expect_proxy N10 "non-operator: API-server proxy to $API_POD, svc/$RELEASE-authentik and svc/$RELEASE-qdrant" refused "${NON[@]}"
 
 # O1-O11: the operators group.
 expect O1 "operators: token for $API_SA" admitted \
@@ -331,7 +334,7 @@ expect O9 "operators: exec into $POSTGRES_POD" admitted \
   kubectl "${OPS[@]}" -n "$NS" exec "$POSTGRES_POD" -c postgres -- true
 expect O10 "operators: bare pod $PROBE with $API_SA (dry run)" refused \
   bare "${OPS[@]}" -- "$PROBE" "$API_SA"
-expect_proxy O11 "operators: API-server proxy to $API_POD and svc/$RELEASE-authentik" admitted "${OPS[@]}"
+expect_proxy O11 "operators: API-server proxy to $API_POD, svc/$RELEASE-authentik and svc/$RELEASE-qdrant" admitted "${OPS[@]}"
 
 # L1, L2: legacy service-account-token Secrets against the two pins, each beside an accepted control.
 if start_port_forward; then

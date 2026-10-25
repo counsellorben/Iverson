@@ -3,11 +3,11 @@ CSR round 12 §3.1 (#11, cluster half): the release's protected workload identit
 operators group. A namespace-RBAC holder outside admission.operatorGroups, cluster-admin included, is refused:
   (a) a token for <release>-api or <release>-admin-automation (the kubelet, group system:nodes, still mounts
       projected tokens);
-  (b) exec, attach, port-forward and proxy into a <release>-api-*, -worker-*, -authentik-* or -postgres-* pod, and
-      proxy to a Service in front of them: <release>-api, -worker or -authentik, or any Service whose name starts
-      with one of those pod prefixes (the headless Services, CNPG's -rw, -ro and -r). A CONNECT request names the
-      pod or Service, not its service account; a proxy request's name may carry a scheme: prefix and a :port
-      suffix, so the name between them is matched;
+  (b) exec, attach, port-forward and proxy into a <release>-api-*, -worker-*, -authentik-* or -postgres-* pod
+      (a CONNECT request names the pod, not its service account; a pod proxy request's name may carry a scheme:
+      prefix and a :port suffix, so the name between them is matched), and proxy to ANY Service in the
+      namespace: a Service's name says nothing about its backends, since anyone who can edit Services can
+      point one at a protected pod;
   (c) a pod that runs as either account; the Kubernetes controllers that create pods for the release's
       workloads are admitted, and whoever creates it, the pod's name must start <release>-api-, so that (b), (e)
       and (f) cover every pod holding a protected token;
@@ -58,19 +58,19 @@ spec:
     # The pods (b), (e) and (f) protect, by name.
     - name: connectPod
       expression: {{ printf "%s.exists(p, request.name.startsWith(p))" $connectPrefixes | quote }}
-    # A proxy request names its target [scheme:]name[:port], split as the API server splits it; this is the
-    # name ('' for any other request).
+    # A pod proxy request names its target [scheme:]name[:port], split as the API server splits it; this is
+    # the pod's name ('' for any other request).
     - name: proxyName
       expression: >-
-        variables.sub != 'proxy' ? ''
+        variables.res != 'pods' || variables.sub != 'proxy' ? ''
           : (request.name.split(':').size() == 3 ? request.name.split(':')[1] : request.name.split(':')[0])
-    # (b)'s proxy targets: connectPod's pods, and a Service named <release>-api, -worker or -authentik or
-    # starting with one of connectPod's prefixes (name + '-' matches both).
+    # (b)'s proxy targets: connectPod's pods by name, and every Service. A Service is not matched by name:
+    # its selector, which any namespace editor can set, decides which pods it reaches.
     - name: proxyTarget
       expression: >-
         variables.sub == 'proxy'
-        && ((variables.res == 'pods' && {{ $connectPrefixes }}.exists(p, variables.proxyName.startsWith(p)))
-            || (variables.res == 'services' && {{ $connectPrefixes }}.exists(p, (variables.proxyName + '-').startsWith(p))))
+        && (variables.res == 'services'
+            || (variables.res == 'pods' && {{ $connectPrefixes }}.exists(p, variables.proxyName.startsWith(p))))
     # The service account a pod create runs as ('' for any other request).
     - name: podSa
       expression: >-
