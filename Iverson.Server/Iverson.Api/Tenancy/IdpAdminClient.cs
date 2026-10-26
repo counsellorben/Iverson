@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace Iverson.Api.Tenancy;
@@ -11,10 +12,10 @@ namespace Iverson.Api.Tenancy;
 /// (attributes, groups, is_active) are grounded in Authentik's documented DRF conventions
 /// and public API docs, but have NOT been verified against a live instance or the
 /// /api/v3/schema/ OpenAPI document. Re-verify against a running Authentik before
-/// production use. (The group add_user/remove_user endpoints this caveat used to also
-/// cover are gone — see <see cref="AddGroupAsync"/>, CSR round-3 finding #1; the
-/// replacement groups-PATCH path IS exercised against a live Authentik by
-/// Iverson.Api.Tests' AuthentikRecoveryFlowIntegrationTests.)
+/// production use. (The <c>attributes</c> filter, the per-pk read and the group add_user/
+/// remove_user actions — see <see cref="ListUsersByTenantAsync"/>, <see cref="GetUserAsync"/> and
+/// <see cref="AddGroupAsync"/>, CSR round 12 §2.1 and §2.4 — ARE exercised against a live
+/// Authentik by Iverson.Api.Tests' AuthentikRecoveryFlowIntegrationTests.)
 ///
 /// CSR finding #4 remediation: CreateUserAsync no longer posts a caller-supplied password to
 /// Authentik's set_password endpoint. Instead it POSTs /api/v3/core/users/{id}/recovery/,
@@ -136,12 +137,22 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
         }
     }
 
+    /// <summary>
+    /// The tenant's users (CSR round 12 §2.1). Every page request carries the
+    /// <c>attributes</c> filter <c>{"tenant_id": tenantId}</c>, the first one included, so Authentik
+    /// reads only the tenant's rows: the next page is a fresh query, and one built without the
+    /// filter would page through the whole directory. Each returned user's own <c>tenant_id</c>
+    /// is still checked here, because Authentik answers with the unfiltered list when filtering
+    /// raises a <c>ValueError</c>.
+    /// </summary>
     public async Task<IEnumerable<IdpUser>> ListUsersByTenantAsync(string tenantId)
     {
         using var client = httpClientFactory.CreateClient(HttpClientName);
 
+        var filter = Uri.EscapeDataString(
+            JsonSerializer.Serialize(new Dictionary<string, string> { ["tenant_id"] = tenantId }));
         var matches = new List<IdpUser>();
-        string? path = "/api/v3/core/users/";
+        string? path = $"/api/v3/core/users/?attributes={filter}";
 
         while (path is not null)
         {
@@ -154,14 +165,7 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
 
             foreach (var user in root.GetProperty("results").EnumerateArray())
             {
-                var userTenantId =
-                    user.TryGetProperty("attributes", out var attrs) &&
-                    attrs.TryGetProperty("tenant_id", out var tid) &&
-                    tid.ValueKind == JsonValueKind.String
-                        ? tid.GetString()
-                        : null;
-
-                if (userTenantId != tenantId)
+                if (TenantIdOf(user) != tenantId)
                     continue;
 
                 matches.Add(new IdpUser(
@@ -195,10 +199,42 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
                     $"Authentik pagination envelope's \"next\" field was negative ({nextPage}); " +
                     "refusing to silently truncate the tenant's user list.");
 
-            path = nextPage > 0 ? $"/api/v3/core/users/?page={nextPage}" : null;
+            path = nextPage > 0 ? $"/api/v3/core/users/?attributes={filter}&page={nextPage}" : null;
         }
 
         return matches;
+    }
+
+    /// <summary>
+    /// One user by Authentik pk (CSR round 12 §2.1), for RemoveUser's and SetTenantAdmin's tenant
+    /// check, which used to list the whole directory. Null when Authentik answers 404, and null
+    /// when the user it returns carries another pk than the one asked for: either way there is no
+    /// record of the requested user to check.
+    /// </summary>
+    public async Task<IdpUserRecord?> GetUserAsync(string userId)
+    {
+        using var client = httpClientFactory.CreateClient(HttpClientName);
+        using var response = await client.GetAsync($"/api/v3/core/users/{userId}/");
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return null;
+        await EnsureSuccessWithBodyAsync(response, "read user");
+
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var doc = await JsonDocument.ParseAsync(stream);
+        var user = doc.RootElement;
+
+        var pk = ReadPk(user);
+        if (pk != userId)
+            return null;
+
+        return new IdpUserRecord(
+            pk,
+            user.GetProperty("username").GetString()!,
+            user.GetProperty("email").GetString()!,
+            user.GetProperty("uid").GetString()!,
+            user.GetProperty("is_active").GetBoolean(),
+            [.. user.GetProperty("groups").EnumerateArray().Select(group => group.GetString()!)],
+            TenantIdOf(user));
     }
 
     public async Task DeactivateUserAsync(string userId)
@@ -217,32 +253,21 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
     }
 
     /// <summary>
-    /// CSR round-3 finding #1 remediation. This used to POST
-    /// <c>/api/v3/core/groups/{pk}/add_user/</c>, which Authentik gates on the GLOBAL
-    /// <c>authentik_core.add_user_to_group</c> permission — and that permission means "add ANY
-    /// user to ANY group". Authentik's <c>GroupViewSet.add_user</c> has no
-    /// <c>enable_group_superuser</c> check (unlike its user serializer), so an orchestrator token
-    /// holding it could add any account to <c>authentik Admins</c> and become superuser.
-    /// Authentik 2026.5.3 cannot express a per-object grant of that permission in a blueprint
-    /// (<c>RoleObjectPermission</c> is in the blueprint importer's <c>excluded_models()</c>), so
-    /// the permission is dropped entirely and membership is written through the USER instead:
-    /// <c>PATCH /api/v3/core/users/{id}/</c> with the new <c>groups</c> list. That path needs only
-    /// <c>change_user</c>, which the blueprint object-scopes to users this service created, and
-    /// Authentik's own <c>UserSerializer.validate_groups</c> independently refuses to add a member
-    /// to a superuser group without <c>enable_group_superuser</c> (which this role does not hold).
-    /// <para>
-    /// Trade-off, accepted deliberately: <c>groups</c> is a whole-list write, so this is a
-    /// read-modify-write where the old endpoint was atomic. The only caller is
-    /// <c>TenantAdminGrpcService.SetTenantAdmin</c> — a rare, human-driven admin action on a
-    /// single user — so the lost-update window is not worth holding a superuser-equivalent
-    /// permission to close.
-    /// </para>
+    /// CSR round 12 §2.4: membership is written through the group's own actions,
+    /// <c>POST /api/v3/core/groups/{pk}/add_user/</c> and <c>/remove_user/</c> with the body
+    /// <c>{"pk": user}</c>. These honour the object-level <c>add_user_to_group</c> and
+    /// <c>remove_user_from_group</c> permissions, which the orchestrator role holds on the
+    /// <c>tenant-admins</c> group only (the blueprint entry's <c>permissions:</c> field), and
+    /// Authentik 2026.8 refuses add_user for a superuser group. The user PATCH of <c>groups</c> this
+    /// replaces checked no permission on the group, so it could put a user the orchestrator
+    /// created into any non-superuser group. Both actions are idempotent. The caller passes a pk it
+    /// has already checked against its own tenant (<c>TenantAdminGrpcService</c>).
     /// </summary>
     public async Task AddGroupAsync(string userId, string groupName)
     {
         using var client = httpClientFactory.CreateClient(HttpClientName);
         var groupPk = await ResolveGroupPkAsync(client, groupName);
-        await SetGroupMembershipAsync(client, userId, groupPk, shouldBeMember: true);
+        await PostGroupMembershipAsync(client, groupPk, "add_user", userId, "add user to group");
     }
 
     /// <inheritdoc cref="AddGroupAsync"/>
@@ -250,64 +275,20 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
     {
         using var client = httpClientFactory.CreateClient(HttpClientName);
         var groupPk = await ResolveGroupPkAsync(client, groupName);
-        await SetGroupMembershipAsync(client, userId, groupPk, shouldBeMember: false);
+        await PostGroupMembershipAsync(client, groupPk, "remove_user", userId, "remove user from group");
     }
 
-    /// <summary>
-    /// Reads the user's current group list and PATCHes it back with <paramref name="groupPk"/>
-    /// added or removed. See <see cref="AddGroupAsync"/> for why membership goes through the user
-    /// rather than the group's own add_user/remove_user actions.
-    /// <para>
-    /// A user whose membership already matches the requested state is left alone rather than
-    /// PATCHed with an identical list — this preserves the idempotence the group add_user/
-    /// remove_user actions had (Django's <c>m2m.add</c>/<c>.remove</c> are both no-ops on a
-    /// no-change call) without spending a write.
-    /// </para>
-    /// </summary>
-    private static async Task SetGroupMembershipAsync(
+    private static async Task PostGroupMembershipAsync(
         HttpClient client,
-        string userId,
         string groupPk,
-        bool shouldBeMember)
+        string action,
+        string userId,
+        string operation)
     {
-        var operation = shouldBeMember ? "add user to group" : "remove user from group";
-
-        using var readResponse = await client.GetAsync($"/api/v3/core/users/{userId}/");
-        await EnsureSuccessWithBodyAsync(readResponse, operation);
-
-        await using var stream = await readResponse.Content.ReadAsStreamAsync();
-        using var doc = await JsonDocument.ParseAsync(stream);
-
-        // Refuse to guess. A missing/!array "groups" property would make the PATCH below
-        // overwrite the user's real membership with a list reconstructed from nothing, silently
-        // dropping every other group they belong to.
-        if (!doc.RootElement.TryGetProperty("groups", out var groupsProp) ||
-            groupsProp.ValueKind != JsonValueKind.Array)
-        {
-            throw new InvalidOperationException(
-                $"Authentik user {userId} response has no \"groups\" array; refusing to rewrite " +
-                "group membership from an unrecognised payload.");
-        }
-
-        var groups = new List<string>();
-        foreach (var group in groupsProp.EnumerateArray())
-            groups.Add(group.ValueKind == JsonValueKind.Number ? group.GetRawText() : group.GetString()!);
-
-        var isMember = groups.Contains(groupPk);
-        if (isMember == shouldBeMember)
-            return;
-
-        if (shouldBeMember)
-            groups.Add(groupPk);
-        else
-            groups.RemoveAll(group => group == groupPk);
-
-        using var request = new HttpRequestMessage(HttpMethod.Patch, $"/api/v3/core/users/{userId}/")
-        {
-            Content = JsonBody(new { groups })
-        };
-        using var patchResponse = await client.SendAsync(request);
-        await EnsureSuccessWithBodyAsync(patchResponse, operation);
+        using var response = await client.PostAsync(
+            $"/api/v3/core/groups/{groupPk}/{action}/",
+            JsonBody(new { pk = int.Parse(userId, NumberStyles.None, CultureInfo.InvariantCulture) }));
+        await EnsureSuccessWithBodyAsync(response, operation);
     }
 
     private static async Task PatchIsActiveAsync(HttpClient client, string userId, bool isActive)
@@ -322,7 +303,7 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
 
     private static async Task<string> ResolveGroupPkAsync(HttpClient client, string groupName)
     {
-        using var response = await client.GetAsync($"/api/v3/core/groups/?name={Uri.EscapeDataString(groupName)}");
+        using var response = await client.GetAsync($"/api/v3/core/groups/?name={Uri.EscapeDataString(groupName)}&include_users=false");
         response.EnsureSuccessStatusCode();
 
         await using var stream = await response.Content.ReadAsStreamAsync();
@@ -399,4 +380,12 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory, ILogger
             ? pk.GetRawText()
             : pk.GetString()!;
     }
+
+    // A user's attributes.tenant_id, or null when it has none or it is not a string.
+    private static string? TenantIdOf(JsonElement user) =>
+        user.TryGetProperty("attributes", out var attrs) &&
+        attrs.TryGetProperty("tenant_id", out var tid) &&
+        tid.ValueKind == JsonValueKind.String
+            ? tid.GetString()
+            : null;
 }

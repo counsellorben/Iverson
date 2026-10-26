@@ -263,7 +263,7 @@ public sealed class PostgresSchemaManager(
                     "Role iverson_maintenance exists without BYPASSRLS and this connection lacks the "
                     + "privilege to add it. Every cross-tenant maintenance read would return zero rows. "
                     + "Run `ALTER ROLE iverson_maintenance BYPASSRLS;` as a superuser "
-                    + "(`kubectl cnpg psql <release>-postgres -- -d iverson`) and restart.", ex);
+                    + "(`kubectl cnpg psql <release>-postgres -- -d iverson`, as the operators group: docs/runbooks/operators-group.md §2) and restart.", ex);
             }
         }
 
@@ -391,7 +391,7 @@ public sealed class PostgresSchemaManager(
                 $"Role {roleName} exists but this connection is not a member of it, so no statement "
                 + "can enter it. Every access that names this role would fail at runtime with 42501. "
                 + $"Run `GRANT {roleName} TO {conn.UserName};` as a superuser "
-                + "(`kubectl cnpg psql <release>-postgres -- -d iverson`), then restart — the grant "
+                + "(`kubectl cnpg psql <release>-postgres -- -d iverson`, as the operators group: docs/runbooks/operators-group.md §2), then restart — the grant "
                 + $"target is this connection's own role ({conn.UserName}), not CURRENT_USER as "
                 + "evaluated inside that psql session, which connects as the cluster superuser. See "
                 + "docs/runbooks/rls-force-maintenance-role-cutover.md.", ex);
@@ -424,7 +424,7 @@ public sealed class PostgresSchemaManager(
             throw new InvalidOperationException(
                 $"Role {roleName} does not exist and this connection cannot create it. On an "
                 + $"already-initialised cluster run `{createSql};` and `GRANT {roleName} TO iverson;` "
-                + "as a superuser (`kubectl cnpg psql <release>-postgres -- -d iverson`), then restart.", ex);
+                + "as a superuser (`kubectl cnpg psql <release>-postgres -- -d iverson`, as the operators group: docs/runbooks/operators-group.md §2), then restart.", ex);
         }
     }
 

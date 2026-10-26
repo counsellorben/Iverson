@@ -13,6 +13,12 @@ data:
   AUTHENTIK_LOG_LEVEL: "info"
   AUTHENTIK_BOOTSTRAP_EMAIL: "{{ .Values.bootstrapEmail }}"
   # CSR round-11 #8: Authentik takes the left-most X-Forwarded-For entry from a trusted peer, and its
-  # default trusts every private range. Only the tls-proxy sidecar (loopback) is trusted now; it
-  # always sends exactly one address (configmap-tls-proxy.yaml).
-  AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS: "127.0.0.1/32,::1/128"
+  # default trusts every private range. Only the tls-proxy sidecar is trusted; it always sends
+  # exactly one address (configmap-tls-proxy.yaml). CSR round-12 §2.5: it connects from 127.0.0.2
+  # (proxy_bind), so a `kubectl port-forward` caller, which arrives from 127.0.0.1, is untrusted
+  # and recorded as itself.
+  AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS: "127.0.0.2/32"
+  # CSR round-12 §2.5: a reputation row (one per client address and identifier) expires an hour
+  # after it is created; the login throttle (blueprints/recovery-flow.yaml) sums only live rows. The
+  # server and the worker both read it.
+  AUTHENTIK_REPUTATION__EXPIRY: "3600"

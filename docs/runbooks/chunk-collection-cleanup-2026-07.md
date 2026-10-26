@@ -1,5 +1,7 @@
 # Chunk Collection Cleanup — Post Chunk-ID-Stability Fix
 
+> **CSR round 12 §3.1.** Commands written `kubectl $OPS …` or `helm … $HOPS` run as the operators group: set `OPS` and `HOPS` as `docs/runbooks/operators-group.md` §1 says (both empty on a cloud).
+
 **Why:** Before the fix in `docs/superpowers/plans/2026-07-06-architectural-review-remediation.md`
 (Task 1), chunk point IDs were derived using `string.GetHashCode()`, which .NET randomizes per
 process. Every process restart caused subsequent chunk writes for existing articles to land under
@@ -24,7 +26,7 @@ chunk from an orphaned duplicate after the fact.
    `/admin/*` is not reachable through the ingress (the admin-ui Ingress owns `/admin` on the
    same host) — reach it in-cluster instead, via a port-forward:
    ```
-   kubectl -n <ns> port-forward svc/<release>-api 8080:8080 &
+   kubectl $OPS -n <ns> port-forward svc/<release>-api 8080:8080 &
    kubectl -n <ns> get secret <release>-api-internal-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > api-ca.pem
    curl --http2 --cacert api-ca.pem --connect-to <release>-api:8080:127.0.0.1:8080 -X POST https://<release>-api:8080/admin/reconcile/{TypeName}
    ```

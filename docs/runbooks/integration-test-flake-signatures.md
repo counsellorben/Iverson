@@ -38,8 +38,13 @@ production readiness gate. **This was a production defect, not a test artifact:*
 gate opened, the first real query failed anyway, and `/health` reported Healthy while k8s routed
 traffic to a pod whose StarRocks queries could not succeed.
 
-Both checks now also require reported capacity. A genuinely full disk reports NOT ready, which is
-correct — StarRocks refuses data queries in that state too.
+Since CSR round 12 Platform (spec §3.5) the production gate no longer reads capacity:
+`EngagementHealthChecker` runs `SELECT * FROM TABLE(generate_series(1,2))` as `iverson_app`, which
+needs no grant (so `OPERATE ON SYSTEM` could be revoked) and fails within half a second when no backend
+is alive, but cannot see `AvailCapacity`. This window is open again, by an accepted trade (spec §7): on a
+cold start the gate can open before the BE reports disk, and data queries fail until it does. A test
+that needs a data query to succeed straight after startup waits for one to succeed, not for readiness
+alone.
 
 ### Circuit breaker returns the wrong exception
 > expected `BrokenCircuitException`, got `MySqlException: Unable to connect to any of the specified MySQL hosts`

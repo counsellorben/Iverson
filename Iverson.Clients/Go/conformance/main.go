@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"crypto/md5"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -21,6 +22,7 @@ import (
 	"strings"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -240,6 +242,21 @@ func grpcDialTarget(addr string) (string, error) {
 	return u.Host, nil
 }
 
+// transportOption picks the channel's transport security from --grpc's scheme (CSR round 12 §4.6):
+// https:// dials TLS, verifying the server against the system roots, which SSL_CERT_FILE points at
+// the compose CA; anything else dials plaintext h2c, the accepted local dev/test model.
+func transportOption(addr string) grpc.DialOption {
+	if grpcUsesTLS(addr) {
+		return grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{}))
+	}
+	return grpc.WithInsecure() //nolint:staticcheck
+}
+
+// grpcUsesTLS reports whether --grpc names an https:// endpoint.
+func grpcUsesTLS(addr string) bool {
+	return strings.HasPrefix(strings.ToLower(addr), "https://")
+}
+
 // ── Step result / phase document ─────────────────────────────────────────────
 
 // stepResult is one step's outcome within a phase document. All fields are always present (null
@@ -373,8 +390,8 @@ type staticServiceToken struct {
 	token       string
 	actingToken string
 	// allowInsecureCredentials is this driver's explicit, named opt-in to send the
-	// service token over the plaintext h2c channel it deliberately dials — the
-	// accepted dev/test model. False by default so RequireTransportSecurity reports
+	// service token over the plaintext h2c channel it dials for an http:// --grpc — the
+	// accepted local dev/test model. False by default so RequireTransportSecurity reports
 	// true and grpc-go's own construction-time guard would refuse a plaintext dial
 	// that forgot to set it, mirroring iverson.OAuth2ClientCredentials.
 	allowInsecureCredentials bool
@@ -504,7 +521,7 @@ func run(argv []string) int {
 
 	serviceToken := a.optional("--service-token")
 
-	dialOpts := []grpc.DialOption{grpc.WithInsecure()} //nolint:staticcheck
+	dialOpts := []grpc.DialOption{transportOption(grpcAddr)}
 	// A pre-minted service token wins over the client-credentials trio. Authentik stamps the
 	// JWT's `iss` from the request's Host header and grants scopes only when the token request
 	// asks for them, so a token this driver minted for itself would be rejected by the API on
@@ -519,9 +536,9 @@ func run(argv []string) int {
 			ClientID:      clientID,
 			ClientSecret:  clientSecret,
 			TokenEndpoint: tokenEndpoint,
-			// This driver deliberately dials a plaintext h2c channel (grpc.WithInsecure above) —
-			// the accepted dev/test model documented on grpcDialTarget/NewIversonClient — so it
-			// must explicitly defeat OAuth2ClientCredentials' default transport-security guard.
+			// For an http:// --grpc this driver dials a plaintext h2c channel (transportOption) —
+			// the accepted local dev/test model — so it must explicitly defeat
+			// OAuth2ClientCredentials' default transport-security guard. On TLS the opt-in is inert.
 			AllowInsecureCredentials: true,
 		}))
 	}
@@ -886,7 +903,7 @@ func run(argv []string) int {
 		deniedStep := func() stepResult {
 			wrongActingToken := a.optional("--wrong-acting-token")
 			wrongOpts := []grpc.DialOption{
-				grpc.WithInsecure(), //nolint:staticcheck
+				transportOption(grpcAddr),
 				grpc.WithPerRPCCredentials(staticServiceToken{token: serviceToken, actingToken: wrongActingToken, allowInsecureCredentials: true}),
 			}
 			wrongClient, err := iverson.NewIversonClient(dialTarget, wrongOpts...)

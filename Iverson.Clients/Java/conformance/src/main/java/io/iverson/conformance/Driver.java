@@ -173,16 +173,26 @@ public final class Driver {
             parsedArgs.optional("--acting-token"),
             parsedArgs.optional("--service-token"));
 
-        ManagedChannel channel = ManagedChannelBuilder.forAddress(grpcUri.getHost(), grpcUri.getPort())
-            .usePlaintext()
+        // CSR round 12 §4.6: the scheme picks the transport. https:// dials TLS, verifying the
+        // server against the JVM's trust store (a PKCS12 truststore holding the compose CA, passed
+        // with -Djavax.net.ssl.trustStore); http:// dials plaintext h2c, the accepted local
+        // dev/test model.
+        ManagedChannelBuilder<?> channelBuilder = ManagedChannelBuilder.forAddress(grpcUri.getHost(), grpcUri.getPort());
+        if ("https".equalsIgnoreCase(grpcUri.getScheme())) {
+            channelBuilder.useTransportSecurity();
+        } else {
+            channelBuilder.usePlaintext();
+        }
+        ManagedChannel channel = channelBuilder
             .intercept(capture)
             .build();
 
         List<StepResult> steps = new ArrayList<>();
         try {
-            // This driver deliberately dials a plaintext h2c channel above — the accepted
-            // dev/test model — so it must explicitly defeat IversonClient's default guard
-            // against attaching CallCredentials to a plaintext channel.
+            // For an http:// --grpc this driver dials a plaintext h2c channel above — the
+            // accepted local dev/test model — so it must explicitly defeat IversonClient's
+            // default guard against attaching CallCredentials to a plaintext channel. On TLS the
+            // opt-in is inert.
             IversonClient client = new IversonClient(channel, credentials, true);
 
             if (INTEROP_SCENARIO.equals(scenario)) {

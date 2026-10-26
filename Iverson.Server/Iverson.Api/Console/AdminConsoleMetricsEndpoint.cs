@@ -53,6 +53,7 @@ public static class AdminConsoleMetricsEndpoint
     {
         app.MapGet($"{AdminConsoleEndpoints.RoutePrefix}/metrics", GetMetricsAsync)
             .WithName("AdminConsoleMetrics")
+            .RequireRateLimiting("admin")
             .RequireAuthorization("Operator");
 
         return app;

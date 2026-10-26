@@ -44,6 +44,11 @@ jobs:
       - name: helm lint the PVC StorageClass admission-policy chart
         run: helm lint Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy
 
+      - name: helm lint the operator-namespace policy chart
+        run: |
+          C=Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies
+          helm lint "$C" -f "$C/values-kind.yaml"
+
   helm-template-kubeconform:
     runs-on: ubuntu-latest
     steps:
@@ -74,7 +79,7 @@ jobs:
               extra_arg="-f Iverson.Server/deploy/helm/iverson/$values.ci-override.yaml"
             fi
             helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" $extra_arg > rendered.yaml
-            kubeconform -kubernetes-version 1.30.0 -summary -ignore-missing-schemas < rendered.yaml
+            kubeconform -kubernetes-version 1.35.0 -summary -ignore-missing-schemas < rendered.yaml
             echo "::endgroup::"
           done
 
@@ -86,7 +91,18 @@ jobs:
         run: |
           helm template pvc-storageclass-policy \
             Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy \
-            | kubeconform -kubernetes-version 1.30.0 -summary
+            | kubeconform -kubernetes-version 1.35.0 -summary
+
+      # The operator-namespace policy chart renders NetworkPolicies, kind's set and the clouds' (kind=false)
+      # with the same addresses, and the CNPG operator's PeerAuthentication (CSR round 12 §4.1), an Istio
+      # kind kubeconform has no schema for: that kind alone is skipped, so a missing schema for anything
+      # else still fails.
+      - name: helm template | kubeconform the operator-namespace policy chart
+        run: |
+          set -e
+          C=Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies
+          helm template operator-namespace-policies "$C" -f "$C/values-kind.yaml" | kubeconform -kubernetes-version 1.35.0 -summary -skip PeerAuthentication
+          helm template operator-namespace-policies "$C" -f "$C/values-kind.yaml" --set kind=false --set cnpgWebhookPermissive=true | kubeconform -kubernetes-version 1.35.0 -summary -skip PeerAuthentication
 
   security-audit:
     runs-on: ubuntu-latest

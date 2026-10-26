@@ -1,0 +1,4 @@
+# kind (local and laptop): the node network under docker (172.18.0.0/16) and podman (its default
+# pool, 10.89.0.0/16), as the chart's values-local.yaml and values-laptop.yaml.
+apiServerCidrs: ["172.18.0.0/16", "10.89.0.0/16"]
+kind: true

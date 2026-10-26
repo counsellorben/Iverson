@@ -1,0 +1,178 @@
+{{- /*
+CSR round 12 §3.4 (#16): default-deny with explicit allows in the operator namespaces. A namespace
+here must exist before the install: modules/operators creates istio-system, and deploy/kind/setup.sh
+creates istio-system and iverson-edge, before installing this chart.
+*/}}
+{{- if not .Values.apiServerCidrs }}
+{{- fail "apiServerCidrs must list at least one CIDR: it scopes every namespace's API-server egress and the CNPG and istiod webhook ingress" }}
+{{- end }}
+{{- range .Values.apiServerCidrs }}
+{{- if not (trim (toString .)) }}
+{{- fail "apiServerCidrs contains a blank entry; every entry must be a CIDR" }}
+{{- end }}
+{{- end }}
+{{- $namespaces := list "cnpg-system" "kafka" "starrocks" "istio-system" }}
+{{- if .Values.kind }}
+{{- $namespaces = concat $namespaces (list "tigera-operator" "iverson-edge") }}
+{{- end }}
+{{- $rel := .Values.release.name }}
+{{- $relNs := .Values.release.namespace }}
+{{- range $ns := $namespaces }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  {{- include "onp.metadata" (dict "ns" $ns) | nindent 2 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dns-and-api-server-egress
+  {{- include "onp.metadata" (dict "ns" $ns) | nindent 2 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    {{- include "onp.commonEgress" $ | nindent 4 }}
+{{- end }}
+{{- /*
+The enrolled namespaces' operators: kubelet probes reach an ambient pod SNATed to 169.254.7.127, which
+Istio asks NetworkPolicy to admit on the probe ports (§4.2). CNPG probes 9443, Strimzi 8080, the
+StarRocks operator 8081.
+*/}}
+{{- $probes := list
+      (dict "ns" "cnpg-system" "name" "cnpg-operator" "selector" (dict "app.kubernetes.io/name" "cloudnative-pg") "port" 9443)
+      (dict "ns" "kafka" "name" "strimzi-cluster-operator" "selector" (dict "strimzi.io/kind" "cluster-operator") "port" 8080)
+      (dict "ns" "starrocks" "name" "starrocks-operator" "selector" (dict "app" "kube-starrocks-operator") "port" 8081) }}
+{{- range $probes }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .name }}-probes
+  {{- include "onp.metadata" (dict "ns" .ns) | nindent 2 }}
+spec:
+  podSelector:
+    matchLabels: {{ toJson .selector }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from: [{ ipBlock: { cidr: 169.254.7.127/32 } }]
+      ports: [{ protocol: TCP, port: {{ .port }} }, { protocol: TCP, port: 15008 }]
+{{- end }}
+---
+# CNPG: the API server calls the operator's admission webhook on 9443, and the operator reaches the
+# release's Postgres instances on their status port (8000) and on 5432.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cnpg-operator
+  {{- include "onp.metadata" (dict "ns" "cnpg-system") | nindent 2 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: cloudnative-pg }
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        {{- range .Values.apiServerCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+      ports: [{ protocol: TCP, port: 9443 }, { protocol: TCP, port: 15008 }]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $relNs }} } }
+          podSelector: { matchLabels: { cnpg.io/cluster: {{ $rel }}-postgres } }
+      ports: [{ protocol: TCP, port: 8000 }, { protocol: TCP, port: 5432 }, { protocol: TCP, port: 15008 }]
+---
+# Strimzi: the cluster-operator reaches the release's brokers on the control-plane (9090) and
+# replication (9091) listeners and the agent port (8443).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: strimzi-cluster-operator
+  {{- include "onp.metadata" (dict "ns" "kafka") | nindent 2 }}
+spec:
+  podSelector:
+    matchLabels: { strimzi.io/kind: cluster-operator }
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $relNs }} } }
+          podSelector: { matchLabels: { strimzi.io/cluster: {{ $rel }}-kafka } }
+      ports: [{ protocol: TCP, port: 9090 }, { protocol: TCP, port: 9091 }, { protocol: TCP, port: 8443 }, { protocol: TCP, port: 15008 }]
+---
+# istiod: xDS and certificates (15012) for ztunnel and, on kind, the gateway; its validating webhook
+# (15017) for the API server. Istio 1.31.2's ambient pods are not host-network, istio-cni included,
+# so this namespace's policies govern all of them; istio-cni needs only the common rules.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: istiod
+  {{- include "onp.metadata" (dict "ns" "istio-system") | nindent 2 }}
+spec:
+  podSelector:
+    matchLabels: { app: istiod }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: ztunnel } }
+        {{- if .Values.kind }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: iverson-edge } }
+          podSelector: { matchLabels: { gateway.networking.k8s.io/gateway-name: {{ .Values.gatewayName }} } }
+        {{- end }}
+      ports: [{ protocol: TCP, port: 15012 }, { protocol: TCP, port: 15008 }]
+    - from:
+        {{- range .Values.apiServerCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+      ports: [{ protocol: TCP, port: 15017 }, { protocol: TCP, port: 15008 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ztunnel
+  {{- include "onp.metadata" (dict "ns" "istio-system") | nindent 2 }}
+spec:
+  podSelector:
+    matchLabels: { app: ztunnel }
+  policyTypes: ["Egress"]
+  egress:
+    - to: [{ podSelector: { matchLabels: { app: istiod } } }]
+      ports: [{ protocol: TCP, port: 15012 }, { protocol: TCP, port: 15008 }]
+{{- if .Values.kind }}
+---
+# kind's gateway (iverson-edge, not enrolled): 80/443 from anywhere through kind's host-port mappings;
+# out to the release's api (8080, 8081), admin-ui (8080) and Authentik public listener (9080), and to
+# istiod (15012).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway
+  {{- include "onp.metadata" (dict "ns" "iverson-edge") | nindent 2 }}
+spec:
+  podSelector:
+    matchLabels: { gateway.networking.k8s.io/gateway-name: {{ .Values.gatewayName }} }
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - ports: [{ protocol: TCP, port: 80 }, { protocol: TCP, port: 443 }, { protocol: TCP, port: 15008 }]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $relNs }} } }
+          podSelector: { matchLabels: { app: {{ $rel }}-api } }
+      ports: [{ protocol: TCP, port: 8080 }, { protocol: TCP, port: 8081 }, { protocol: TCP, port: 15008 }]
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $relNs }} } }
+          podSelector: { matchLabels: { app: {{ $rel }}-admin-ui } }
+      ports: [{ protocol: TCP, port: 8080 }, { protocol: TCP, port: 15008 }]
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $relNs }} } }
+          podSelector: { matchLabels: { app: {{ $rel }}-authentik-server } }
+      ports: [{ protocol: TCP, port: 9080 }, { protocol: TCP, port: 15008 }]
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: istio-system } }
+          podSelector: { matchLabels: { app: istiod } }
+      ports: [{ protocol: TCP, port: 15012 }, { protocol: TCP, port: 15008 }]
+{{- end }}

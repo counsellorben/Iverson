@@ -12,7 +12,7 @@ variable "region" {
 
 variable "kubernetes_version" {
   type    = string
-  default = "1.30"
+  default = "1.35"
 }
 
 # No default — same rationale as the AWS/Azure equivalents: forces an
@@ -22,6 +22,16 @@ variable "master_authorized_networks" {
   validation {
     condition     = length(var.master_authorized_networks) > 0
     error_message = "master_authorized_networks must contain at least one CIDR — an empty list can be interpreted as unrestricted public access rather than no access."
+  }
+}
+
+# CSR round 12 §3.1: Google Groups for RBAC needs the domain's gke-security-groups@<domain> group, whose
+# member groups (the operators' group among them) reach the API server as request groups. No default.
+variable "rbac_security_group" {
+  type = string
+  validation {
+    condition     = can(regex("^gke-security-groups@", var.rbac_security_group))
+    error_message = "rbac_security_group must be the gke-security-groups@<your domain> group Google Groups for RBAC requires."
   }
 }
 

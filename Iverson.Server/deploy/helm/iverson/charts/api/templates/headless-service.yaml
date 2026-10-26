@@ -4,8 +4,8 @@
 # so; this Service exists only so Prometheus's dns_sd_configs scrape (Task 8,
 # the parent chart's templates/prometheus-config.yaml) can resolve one A record per pod IP
 # instead of the ClusterIP VIP, which load-balances across the HPA's 2-5 replicas and makes
-# per-pod counters look non-monotonic. Only the metrics/health port is exposed — nothing
-# outside this chart resolves grpc (8080) through the headless name.
+# per-pod counters look non-monotonic. Only the metrics port (8082, CSR round 12 §3.3) is
+# exposed — nothing outside this chart resolves grpc (8080) or 8081 through the headless name.
 apiVersion: v1
 kind: Service
 metadata:
@@ -15,6 +15,6 @@ spec:
   selector:
     app: {{ .Release.Name }}-api
   ports:
-    - name: http
-      port: 8081
-      targetPort: 8081
+    - name: metrics
+      port: 8082
+      targetPort: 8082

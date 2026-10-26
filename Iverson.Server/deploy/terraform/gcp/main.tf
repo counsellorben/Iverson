@@ -30,6 +30,9 @@ variable "master_authorized_networks" {
   type = list(object({ cidr_block = string, display_name = string }))
 }
 
+# CSR round 12 §3.1: gke-security-groups@<your domain> (cluster-gcp's rbac_security_group); no default.
+variable "rbac_security_group" { type = string }
+
 provider "google" {
   project = var.project_id
   region  = var.region
@@ -41,6 +44,7 @@ module "cluster" {
   cluster_name               = var.cluster_name
   region                     = var.region
   master_authorized_networks = var.master_authorized_networks
+  rbac_security_group        = var.rbac_security_group
 }
 
 data "google_client_config" "default" {}
@@ -60,9 +64,10 @@ provider "helm" {
 }
 
 module "operators" {
-  source       = "../modules/operators"
-  cloud        = "gcp"
-  cluster_name = module.cluster.cluster_name
+  source           = "../modules/operators"
+  cloud            = "gcp"
+  cluster_name     = module.cluster.cluster_name
+  api_server_cidrs = module.cluster.api_server_cidrs
   storage_class_config = {
     provisioner = "pd.csi.storage.gke.io"
     parameters = {
@@ -75,4 +80,14 @@ module "operators" {
 output "cluster_name" { value = module.cluster.cluster_name }
 output "node_pool_labels" { value = module.cluster.node_pool_labels }
 output "storage_class_names" { value = module.operators.storage_class_names }
+# Copy into values-gcp.yaml's authentik.serviceAccountIssuer (docs/runbooks/csr11-identity-plane.md §7).
+output "service_account_issuer" { value = module.cluster.service_account_issuer }
 output "kubeconfig_command" { value = "gcloud container clusters get-credentials ${module.cluster.cluster_name} --region ${var.region} --project ${var.project_id}" }
+
+# CSR round 12 §4.5: the static address of the chart's GKE Gateway (a global external Application Load
+# Balancer). Copy the output into values-gcp.yaml's global.gateway.addressName.
+resource "google_compute_global_address" "gateway" {
+  name = "${var.cluster_name}-gateway"
+}
+
+output "gateway_address_name" { value = google_compute_global_address.gateway.name }

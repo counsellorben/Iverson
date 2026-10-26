@@ -48,6 +48,7 @@ helm-lint:
         helm lint Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" $extra_arg
       done
     - helm lint Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy
+    - helm lint Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies -f Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies/values-kind.yaml
 
 helm-template-kubeconform:
   stage: validate
@@ -69,12 +70,16 @@ helm-template-kubeconform:
           extra_arg="-f Iverson.Server/deploy/helm/iverson/$values.ci-override.yaml"
         fi
         helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" $extra_arg > rendered.yaml
-        kubeconform -kubernetes-version 1.30.0 -summary -ignore-missing-schemas < rendered.yaml
+        kubeconform -kubernetes-version 1.35.0 -summary -ignore-missing-schemas < rendered.yaml
       done
     # helm lint only proves the rendered YAML parses; schema validation is what catches
     # a misspelled ValidatingAdmissionPolicy field. No -ignore-missing-schemas: this
     # chart renders only core kinds, so a missing schema means something is wrong.
-    - helm template pvc-storageclass-policy Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy | kubeconform -kubernetes-version 1.30.0 -summary
+    - helm template pvc-storageclass-policy Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy | kubeconform -kubernetes-version 1.35.0 -summary
+    # The operator-namespace policy chart: kind's set, and the clouds' (kind=false) with the same addresses.
+    # Its CNPG PeerAuthentication (CSR round 12 §4.1) is an Istio kind with no schema here: only it is skipped.
+    - helm template operator-namespace-policies Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies -f Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies/values-kind.yaml | kubeconform -kubernetes-version 1.35.0 -summary -skip PeerAuthentication
+    - helm template operator-namespace-policies Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies -f Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies/values-kind.yaml --set kind=false --set cnpgWebhookPermissive=true | kubeconform -kubernetes-version 1.35.0 -summary -skip PeerAuthentication
 
 security-audit:
   stage: validate

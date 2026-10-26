@@ -15,11 +15,20 @@ spec:
     limits:
       cpu: {{ .Values.resources.limits.cpu | quote }}
       memory: {{ .Values.resources.limits.memory | quote }}
+  {{- /* CSR round 12 §4.3 #2: each renders only when non-empty. An empty nodeSelector or tolerations
+     differs from the instance pod CNPG builds, so once the operator can read the status port it
+     restarts the primary, and keeps restarting it. */}}
+  {{- if or .Values.nodeSelector .Values.tolerations }}
   affinity:
+    {{- with .Values.nodeSelector }}
     nodeSelector:
-      {{- toYaml .Values.nodeSelector | nindent 6 }}
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.tolerations }}
     tolerations:
-      {{- toYaml .Values.tolerations | nindent 6 }}
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  {{- end }}
   bootstrap:
     initdb:
       database: iverson
@@ -38,7 +47,8 @@ spec:
       # and granting membership at bootstrap makes the worker's own CREATEs a no-op.
       #
       # An already-initialised cluster does not re-run this: apply the four statements by hand
-      # (`kubectl cnpg psql <release>-postgres -- -d iverson`). EnsureRolesAsync fails startup with
+      # (`kubectl cnpg psql <release>-postgres -- -d iverson`, as the operators group:
+      # docs/runbooks/operators-group.md §2). EnsureRolesAsync fails startup with
       # the exact statement to run rather than a bare 42501 if you forget.
       postInitApplicationSQL:
         - CREATE ROLE iverson_runtime NOLOGIN

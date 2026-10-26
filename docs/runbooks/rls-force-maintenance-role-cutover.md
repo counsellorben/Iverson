@@ -1,5 +1,7 @@
 # Forced RLS + `iverson_maintenance` — Upgrade Runbook
 
+> **CSR round 12 §3.1.** Commands written `kubectl $OPS …` or `helm … $HOPS` run as the operators group: set `OPS` and `HOPS` as `docs/runbooks/operators-group.md` §1 says (both empty on a cloud).
+
 **Why:** CSR round-3 finding #5 made two changes that a **populated kubernetes deployment** cannot
 absorb on its own. Entity tables now get `ALTER TABLE … FORCE ROW LEVEL SECURITY`, so the tables'
 owner — which the worker connects as (and the api did, until CSR round 12) — is no longer exempt
@@ -27,7 +29,8 @@ GRANT iverson_maintenance TO iverson;
 Run **both**, as a superuser, against the `iverson` database, *before* the `helm upgrade`:
 
 ```bash
-kubectl cnpg psql <release>-postgres -- -d iverson
+PRIMARY="$(kubectl -n <ns> get cluster.postgresql.cnpg.io <release>-postgres -o jsonpath='{.status.currentPrimary}')"
+kubectl $OPS -n <ns> exec -it "$PRIMARY" -c postgres -- psql -U postgres -d iverson
 ```
 
 The `GRANT` is not optional and is not cosmetic. Creating the role without granting it produces a

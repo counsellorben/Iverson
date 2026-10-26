@@ -1,24 +1,27 @@
-# kind local profile — laptop-sized resources, kind's built-in StorageClass,
-# ingress-nginx instead of a cloud LB controller.
+# kind local profile — laptop-sized resources, kind's built-in StorageClass, and an Istio
+# gateway (global.gateway.class istio; deploy/kind/setup.sh creates it) instead of a cloud LB
+# controller. The chart renders routes for the gateway in place of the four Ingresses, so the
+# ingress blocks' className values below are inert here.
 #
-# tlsSecretName is now a real self-signed dev cert (deploy/kind/setup.sh
-# generates it), because external gRPC clients need genuine HTTP/2 from the
-# first byte, which ingress-nginx never offers over a plaintext connection —
-# see docs/specs/2026-09-24-api-ingress-nginx-grpc-design.md. Everything else
-# on this profile still stays plain HTTP: admin-api/authentik are on
-# different hostnames with no certificate, and admin-ui's Ingress carries its
-# own ssl-redirect: "false" annotation to stay off the redirect this
-# certificate would otherwise trigger on their shared iverson.local host.
+# api.ingress.tlsSecretName is a self-signed dev cert (deploy/kind/setup.sh generates it), which
+# the gateway's HTTPS listener serves for iverson.local: external gRPC clients need HTTP/2 over
+# TLS from the first byte. Everything else on this profile stays plain HTTP on the gateway's
+# port-80 listeners (admin-api, authentik, and the console under iverson.local/admin).
 # global.externalScheme is untouched, still "http".
 
-# kind has no load balancer: ingress-nginx is admitted by namespace. clusterCidrs must still
-# list at least one range (see values.yaml's networkPolicy comment), so it names kind's docker
-# network, which nothing else needs.
+# kind has no load balancer: the edge gateway's namespace (iverson-edge) is admitted by namespace.
+# clusterCidrs must still list at least one range (see values.yaml's networkPolicy comment), so it
+# names kind's docker network, which nothing else needs.
 networkPolicy:
   clusterCidrs: ["172.18.0.0/16"]
   # kind's node network under docker (172.18.0.0/16) and podman (its default pool,
   # 10.89.0.0/16); the control plane serves on 6443.
   apiServerCidrs: ["172.18.0.0/16", "10.89.0.0/16"]
+
+# CSR round 12 §3.1: kind's operators group. kind's kubeconfig user is not in it, so deploy/kind/setup.sh's
+# printed install command and the runbooks impersonate it (docs/runbooks/operators-group.md §1).
+admission:
+  operatorGroups: ["iverson-operators"]
 
 global:
   # Restated explicitly even though it matches values.yaml's own default (true) — this profile
@@ -38,13 +41,17 @@ global:
   # Local dev needs the Authentik test identities and legacy tenant seeding the production
   # default (values.yaml) turns off.
   provisionTestIdentities: true
-  # CSR round-10 #3: ingress-nginx reaches the API from a pod IP in kind's pod CIDR (the tigera
-  # operator sizes Calico's pool from kubeadm's podSubnet, kind's default 10.244.0.0/16), and its
-  # defaults replace X-Forwarded-For with the address it saw. NetworkPolicy admits only the
-  # ingress-nginx namespace from pod IPs on 8080.
+  # CSR round-10 #3, round 12 §4.5: the edge gateway's pod reaches the API from a pod IP in kind's
+  # pod CIDR (the tigera operator sizes Calico's pool from kubeadm's podSubnet, kind's default
+  # 10.244.0.0/16), and through the mesh the API still sees that address. The gateway appends the
+  # client address it saw to X-Forwarded-For, as its last entry. NetworkPolicy admits only the
+  # gateway's namespace (iverson-edge) from pod IPs on 8080.
   trustedProxies:
     cidrs: ["10.244.0.0/16"]
     hops: 1
+  # CSR round 12 §4.5: the Istio Gateway in iverson-edge (deploy/kind/edge-gateway.yaml) is the edge.
+  gateway:
+    class: istio
 
 postgres:
   instances: 1
@@ -147,6 +154,8 @@ prometheus:
     limits: { cpu: "500m", memory: "512Mi" }
 
 authentik:
+  # CSR round-12 §2.6: the iss of kind's service-account tokens, which both workload pins compare.
+  serviceAccountIssuer: "https://kubernetes.default.svc.cluster.local"
   resources:
     server:
       requests: { cpu: "100m", memory: "256Mi", ephemeral-storage: "256Mi" }

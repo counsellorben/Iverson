@@ -16,19 +16,19 @@ using ContractsRelationKind = Iverson.Client.Contracts.RelationKind;
 namespace Iverson.Api.Console;
 
 /// <summary>
-/// The admin console's four read-only JSON endpoints, under <c>/admin/console/</c>.
+/// The admin console's read-only JSON endpoints, under <c>/admin/console/</c>.
 /// <para>
 /// These are ordinary minimal-API endpoints on the same app as the gRPC services, reached by the
 /// browser over the dedicated <c>admin-api</c> hostname. They return <b>projections</b> — what a
 /// widget renders — not the descriptors or proto messages behind them.
 /// </para>
 /// <para>
-/// <b>Two of the four are authenticated-only, deliberately, and must not be normalised to
-/// <c>Operator</c>.</b> <c>ObjectMappingGrpcService.GetSchema</c> carries no <c>[Authorize]</c> and
-/// <c>ObjectSearchGrpcService</c> is mapped without one, both because they filter per-row and
-/// per-field internally rather than at the door. <c>/schema</c> and <c>/data-volume</c> project
-/// exactly those two surfaces, so gating them on <c>Operator</c> would silently change who can see
-/// what.
+/// <b>The console is for admins only</b> (CSR round 12 §2.2). <c>/tenants</c> and <c>/qdrant</c> are
+/// cross-tenant and require <c>Operator</c>. <c>/schema</c> and <c>/data-volume</c> require
+/// <c>ConsoleAdmin</c> (Operator or TenantAdmin), and inside it they still filter per row and per field
+/// the way <c>ObjectMappingGrpcService.GetSchema</c> and <c>ObjectSearchGrpcService</c> do, so a tenant
+/// admin sees exactly what its own grants allow. <c>/roles</c> tells the console's role guard which of
+/// the two roles the caller holds.
 /// </para>
 /// <para>
 /// <b>Those two pass <see cref="HttpContext.User"/> explicitly.</b> The acting user is populated
@@ -45,46 +45,59 @@ public static class AdminConsoleEndpoints
     public const string RoutePrefix = "/admin/console";
 
     /// <summary>
-    /// Maps the four endpoints. Registered from <c>Program.cs</c> alongside the other
+    /// Maps the five endpoints. Registered from <c>Program.cs</c> alongside the other
     /// <c>/admin</c> routes, and — like them — after <c>UseAuthentication</c>/<c>UseAuthorization</c>.
-    /// Every one carries <see cref="ActiveTenantEndpointFilter"/>: a caller whose tenant is not
-    /// active is refused here as it is on the gRPC surfaces.
+    /// Every data endpoint carries <see cref="ActiveTenantEndpointFilter"/>: a caller whose tenant is
+    /// not active is refused here as it is on the gRPC surfaces. <c>/roles</c> does not: it reads
+    /// nothing but the caller's own token, and an operator carries no <c>tenant_id</c>.
     /// </summary>
     public static IEndpointRouteBuilder MapAdminConsoleEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet($"{RoutePrefix}/tenants", GetTenantsAsync)
             .WithName("AdminConsoleTenants")
+            .RequireRateLimiting("admin")
             .RequireAuthorization("Operator")
             .AddEndpointFilter<ActiveTenantEndpointFilter>();
 
-        // RequireAuthorization() with no policy name applies the DefaultPolicy
-        // (RequireAuthenticatedUser). Stated explicitly rather than relying on the
-        // FallbackPolicy, so these two stay authenticated even if that fallback ever changes.
-        //
-        // NOT PINNED BY A TEST, deliberately, so nobody assumes otherwise. The anonymous-401
-        // assertions in AdminConsoleEndpointsPipelineTests are satisfied by the FallbackPolicy
-        // alone, which means deleting either RequireAuthorization() call below leaves the whole
-        // suite green. That is not a security gap — the fallback denies by default, so the
-        // endpoints stay closed either way — and pinning it would take endpoint-metadata
-        // introspection tests that assert on registration rather than behaviour. These two calls
-        // are defence-in-depth against a future change to that fallback, and nothing more.
+        // CSR round 12 §2.2: ConsoleAdmin (Operator or TenantAdmin). These two used to serve any
+        // authenticated caller; AdminConsoleEndpointsPipelineTests pins the 403 for a signed-in user
+        // with neither role.
         app.MapGet($"{RoutePrefix}/schema", GetSchema)
             .WithName("AdminConsoleSchema")
-            .RequireAuthorization()
+            .RequireRateLimiting("admin")
+            .RequireAuthorization("ConsoleAdmin")
             .AddEndpointFilter<ActiveTenantEndpointFilter>();
 
         app.MapGet($"{RoutePrefix}/data-volume", GetDataVolumeAsync)
             .WithName("AdminConsoleDataVolume")
-            .RequireAuthorization()
+            .RequireRateLimiting("admin")
+            .RequireAuthorization("ConsoleAdmin")
             .AddEndpointFilter<ActiveTenantEndpointFilter>();
 
         app.MapGet($"{RoutePrefix}/qdrant", GetQdrantAsync)
             .WithName("AdminConsoleQdrant")
+            .RequireRateLimiting("admin")
             .RequireAuthorization("Operator")
             .AddEndpointFilter<ActiveTenantEndpointFilter>();
 
+        // CSR round 12 §2.2: the console's role guard reads this. ConsoleClient only, so a console token
+        // of a user with neither role still gets an answer ({ false, false }) and the console can say so.
+        app.MapGet($"{RoutePrefix}/roles", GetRoles)
+            .WithName("AdminConsoleRoles")
+            .RequireRateLimiting("admin")
+            .RequireAuthorization("ConsoleClient");
+
         return app;
     }
+
+    /// <summary>
+    /// The caller's console roles, computed with the functions the server's own policies use, so the
+    /// console's role guard and the server cannot disagree.
+    /// </summary>
+    public static IResult GetRoles(HttpContext http, IConfiguration configuration) =>
+        Results.Ok(new ConsoleRolesResponse(
+            OperatorAuthorizationPolicy.IsSatisfiedBy(http.User, OperatorSubjects.FromConfiguration(configuration)),
+            TenantAdminAuthorizationPolicy.IsSatisfiedBy(http.User.FindAll("groups").Select(c => c.Value))));
 
     /// <summary>Tenant roster. Operator-gated: it is a cross-tenant enumeration.</summary>
     public static async Task<IResult> GetTenantsAsync(ITenantRepository tenants)
@@ -172,18 +185,13 @@ public static class AdminConsoleEndpoints
     /// authenticated caller how many types other tenants own.
     /// </para>
     /// <para>
-    /// <b>An operator sees <c>types: []</c>, structurally and permanently — this is unrelated to
-    /// whether any human is currently a member of the
-    /// <c>operators</c> Authentik group (see <c>docs/runbooks/operator-access-onboarding.md</c>
-    /// for that separate, unrelated onboarding step, which gates <c>/tenants</c> and
-    /// <c>/qdrant</c> below, not this endpoint).</b> Operators are cross-tenant by design and so
-    /// never carry a <c>tenant_id</c> claim, and the evaluator denies any principal without one:
-    /// every unscoped type (no <c>OwnerTenantId</c>) lands in <c>deniedTypeCount</c>, and every
-    /// tenant-owned type is absent under the rule above.
-    /// This endpoint is not <c>Operator</c>-gated — any authenticated caller reaches it — so
-    /// onboarding an operator does not change this outcome. That is pre-existing authorization
-    /// semantics, not something this endpoint may paper over; the response says so explicitly
-    /// instead of returning zeroes.
+    /// <b>An operator sees <c>types: []</c>, structurally and permanently.</b> Operators are
+    /// cross-tenant by design and so never carry a <c>tenant_id</c> claim, and the evaluator denies
+    /// any principal without one: every unscoped type (no <c>OwnerTenantId</c>) lands in
+    /// <c>deniedTypeCount</c>, and every tenant-owned type is absent under the rule above. The
+    /// operator list admits an operator here through <c>ConsoleAdmin</c> but does not change this
+    /// outcome. That is pre-existing authorization semantics, not something this endpoint may paper
+    /// over; the response says so explicitly instead of returning zeroes.
     /// </para>
     /// </summary>
     public static async Task<IResult> GetDataVolumeAsync(
@@ -354,6 +362,9 @@ public sealed record DataVolumeResponse(
 public sealed record EngagementUnavailableResponse(string Reason, string Error);
 
 public sealed record QdrantCollectionSummary(string Name, ulong? PointsCount, ulong? IndexedVectorsCount);
+
+/// <summary>The caller's console roles (<c>/admin/console/roles</c>): <c>{ "operator": …, "tenantAdmin": … }</c>.</summary>
+public sealed record ConsoleRolesResponse(bool Operator, bool TenantAdmin);
 
 /// <summary>
 /// The collections read, plus the count Qdrant listed but whose stats could not be read.

@@ -4,6 +4,7 @@ using Grpc.Core;
 using Grpc.Net.Client;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
+using Microsoft.AspNetCore.Hosting;
 using Xunit;
 
 namespace Iverson.Api.Tests.Grpc;
@@ -26,26 +27,38 @@ namespace Iverson.Api.Tests.Grpc;
 // gate let the call through to the method body.
 public class RegisterSchemaAuthorizationPipelineTests : IClassFixture<AuthTestWebApplicationFactory>
 {
+    private readonly AuthTestWebApplicationFactory _factory;
     private readonly ObjectMappingService.ObjectMappingServiceClient _client;
 
     public RegisterSchemaAuthorizationPipelineTests(AuthTestWebApplicationFactory factory)
+    {
+        _factory = factory;
+        _client = ClientFor(factory);
+    }
+
+    private static ObjectMappingService.ObjectMappingServiceClient ClientFor(
+        Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> factory)
     {
         var channel = GrpcChannel.ForAddress(factory.Server.BaseAddress, new GrpcChannelOptions
         {
             HttpHandler = factory.Server.CreateHandler()
         });
-        _client = new ObjectMappingService.ObjectMappingServiceClient(channel);
+        return new ObjectMappingService.ObjectMappingServiceClient(channel);
     }
 
     private static Metadata Headers(string? token) => token is null
         ? new Metadata()
         : new Metadata { { "authorization", $"Bearer {token}" } };
 
-    private async Task<RpcException?> TryRegisterEmptySchemaAsync(Metadata headers)
+    private Task<RpcException?> TryRegisterEmptySchemaAsync(Metadata headers) =>
+        TryRegisterEmptySchemaAsync(_client, headers);
+
+    private static async Task<RpcException?> TryRegisterEmptySchemaAsync(
+        ObjectMappingService.ObjectMappingServiceClient client, Metadata headers)
     {
         try
         {
-            await _client.RegisterSchemaAsync(new SchemaRequest(), headers);
+            await client.RegisterSchemaAsync(new SchemaRequest(), headers);
             return null;
         }
         catch (RpcException ex)
@@ -75,11 +88,10 @@ public class RegisterSchemaAuthorizationPipelineTests : IClassFixture<AuthTestWe
     }
 
     [Fact]
-    public async Task RegisterSchema_AuthenticatedWithAdminScopeAlone_ThrowsPermissionDenied()
+    public async Task RegisterSchema_AuthenticatedWithAdminScope_PassesAuthorizationGate()
     {
-        // "admin" is the existing (broader) Operator scope. It must NOT satisfy SchemaAdmin on
-        // its own — see SchemaAdminAuthorizationPolicy's design note — so an admin-scoped-but-
-        // not-schema_admin-scoped automation caller is still rejected here.
+        // CSR round 12 §2.4: the admin scope makes its holder an Operator, and Operator implies
+        // SchemaAdmin (SchemaAdminAuthorizationPolicy).
         var token = TestJwtFactory.CreateToken(
             "test-service-audience",
             "ak-admin-scoped-service",
@@ -88,15 +100,44 @@ public class RegisterSchemaAuthorizationPipelineTests : IClassFixture<AuthTestWe
         var ex = await TryRegisterEmptySchemaAsync(Headers(token));
 
         ex.Should().NotBeNull();
-        ex!.StatusCode.Should().Be(StatusCode.PermissionDenied);
+        ex!.StatusCode.Should().Be(StatusCode.InvalidArgument);
     }
 
     [Fact]
-    public async Task RegisterSchema_AuthenticatedWithOperatorsGroup_PassesAuthorizationGate()
+    public async Task RegisterSchema_OperatorsGroupWithoutTheComposeFallback_ThrowsPermissionDenied()
     {
         var token = TestJwtFactory.CreateToken(
-            "test-service-audience", "human-operator",
+            "test-service-audience", "groups-only-operator",
             extraClaims: [new Claim("groups", "operators")]);
+
+        var ex = await TryRegisterEmptySchemaAsync(Headers(token));
+
+        ex.Should().NotBeNull();
+        ex!.StatusCode.Should().Be(StatusCode.PermissionDenied);
+    }
+
+    // Compose's dev-only fallback (Authorization:OperatorGroupFallback) makes the group an Operator again,
+    // and so a SchemaAdmin.
+    [Fact]
+    public async Task RegisterSchema_OperatorsGroupWithTheComposeFallback_PassesAuthorizationGate()
+    {
+        var composeLike = _factory.WithWebHostBuilder(builder =>
+            builder.UseSetting("Authorization:OperatorGroupFallback", "operators"));
+        var token = TestJwtFactory.CreateToken(
+            "test-service-audience", "groups-only-operator",
+            extraClaims: [new Claim("groups", "operators")]);
+
+        var ex = await TryRegisterEmptySchemaAsync(ClientFor(composeLike), Headers(token));
+
+        ex.Should().NotBeNull();
+        ex!.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterSchema_SubjectOnTheOperatorList_PassesAuthorizationGate()
+    {
+        var token = TestJwtFactory.CreateToken(
+            "test-service-audience", AuthTestWebApplicationFactory.HumanOperatorSubject);
 
         var ex = await TryRegisterEmptySchemaAsync(Headers(token));
 

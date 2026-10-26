@@ -3,3 +3,6 @@ resources:
   requests: { cpu: "2", memory: "4Gi", ephemeral-storage: "1Gi" }
   limits: { cpu: "2", memory: "4Gi", ephemeral-storage: "2Gi" }
 nodeSelector: {}
+# CSR round-12 §2.2: the most traces the in-memory store keeps (--memory.max-traces). A profile may
+# set a smaller value sized to its memory limit.
+maxTraces: 50000

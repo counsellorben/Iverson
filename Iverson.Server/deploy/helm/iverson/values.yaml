@@ -13,8 +13,9 @@
 #
 # networkPolicy.clusterCidrs has no default here on purpose. It lists the address ranges
 # the platform's load balancer connects from, for the api (8080, 8081), admin-ui (8080) and
-# Authentik public-listener (9080) ingress rules. The kubelet needs no entry: NetworkPolicy
-# always admits traffic from the node a pod runs on. That set is a different value per
+# Authentik public-listener (9080) ingress rules. The kubelet needs no entry: under the mesh its
+# probes arrive from 169.254.7.127, which each probed pod's ingress admits on its probe ports
+# (templates/networkpolicies.yaml). That set is a different value per
 # profile, so every values-*.yaml overlay MUST set its own. templates/networkpolicies.yaml
 # fails the render with `fail` (not `required`, which lets an empty list through) if this is
 # left unset or contains a blank entry (the shape `--set clusterCidrs={}` produces), rather
@@ -35,6 +36,21 @@ networkPolicy:
   # fails unless this is true as well, so a fallback applied for the first deploy is not left in
   # place unnoticed (docs/runbooks/csr10-infrastructure-cutover.md section 4).
   keepFallbacks: false
+  # CSR round 12 §3.4: AKS fallback. Extra address ranges (the node subnet, 10.1.0.0/20 on AKS)
+  # admitted on the api (8080, 8081), admin-ui (8080) and Authentik (9080) edge rules beside
+  # clusterCidrs, for a cloud whose policy engine does not exempt node traffic. Empty by default;
+  # like the fallbacks above it renders only with keepFallbacks: true
+  # (docs/runbooks/csr10-infrastructure-cutover.md section 5).
+  nodeSubnetFallback: []
+
+# CSR round 12 §3.1: the Kubernetes group(s) whose members alone may mint tokens for the api and
+# admin-automation identities, exec, attach, port-forward or proxy into the api, worker, Authentik and
+# Postgres pods, proxy to any Service in the namespace (a Service's name says nothing about its
+# backends), and create or change the pods and workloads that run as those identities
+# (templates/admission-policy.yaml; docs/runbooks/operators-group.md). No usable default: every profile
+# names its own, and the render fails while the list is empty or holds a blank entry.
+admission:
+  operatorGroups: []
 
 # global values are visible to every subchart (unlike top-level keys like `api:`,
 # which are scoped only to the matching subchart) — used here so the authentik
@@ -118,6 +134,22 @@ global:
   trustedProxies:
     cidrs: []
     hops: 1
+  # CSR round 12 §4.5: the edge in front of the api, Authentik and admin-ui. "istio" (kind and laptop):
+  # the Istio Gateway deploy/kind/setup.sh creates in namespace iverson-edge, a mesh client, for which
+  # the chart renders routes instead of Ingresses. "gke-l7-global-external-managed" (GCP): a GKE Gateway
+  # the chart renders (templates/gateway-gke.yaml) on the static address named by addressName, the
+  # Terraform output gateway_address_name. Empty (AWS, Azure): each Ingress's own className.
+  gateway:
+    class: ""
+    addressName: ""
+  # CSR round 12 §2.4: the `sub` of every human operator on this install. A `sub` is Authentik's
+  # per-install hash of the user, so it is read from the Authentik admin API or a first token
+  # (docs/runbooks/operator-access-onboarding.md), and a recreated Authentik database changes
+  # every one. The api grants Operator to these subjects (charts/api renders them as
+  # Authorization__OperatorSubjects__N). Empty is allowed on kind and laptop, where
+  # admin-automation still has Operator; charts/api fails the render while it is empty on an
+  # https (cloud) profile.
+  operatorSubjects: []
 
 postgres:
   enabled: true

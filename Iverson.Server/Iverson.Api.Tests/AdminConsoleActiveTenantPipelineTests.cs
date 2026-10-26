@@ -15,9 +15,9 @@ namespace Iverson.Api.Tests;
 
 /// <summary>
 /// CSR round-10 #14: <c>ActiveTenantEndpointFilter</c> on all four <c>/admin/console/*</c>
-/// endpoints, through the real <c>Program.cs</c> pipeline. Every token here carries both the
-/// <c>operators</c> group and the reader group, so it clears every endpoint's authorization
-/// policy and the filter is the only thing that can answer 403.
+/// endpoints, through the real <c>Program.cs</c> pipeline. Every token here is an Operator (its
+/// subject is on the test host's operator list) and carries the reader group, so it clears every
+/// endpoint's authorization policy and the filter is the only thing that can answer 403.
 /// </summary>
 public class AdminConsoleActiveTenantPipelineTests : IClassFixture<AdminConsoleTestWebApplicationFactory>
 {
@@ -53,18 +53,20 @@ public class AdminConsoleActiveTenantPipelineTests : IClassFixture<AdminConsoleT
         });
 
         public void Invalidate(string tenantId) { }
+
+        public void InvalidateAll() { }
     }
 
     private static string Token(string? tenantId)
     {
         var claims = new List<Claim>
         {
-            new("groups", "operators"),
             new("groups", AdminConsoleTestWebApplicationFactory.ReaderGroup)
         };
         if (tenantId is not null)
             claims.Add(new Claim("tenant_id", tenantId));
-        return TestJwtFactory.CreateToken("test-service-audience", "console-user", extraClaims: claims);
+        return TestJwtFactory.CreateToken(
+            "test-service-audience", AuthTestWebApplicationFactory.HumanOperatorSubject, extraClaims: claims);
     }
 
     private async Task<HttpResponseMessage> GetAsync(string path, string token)

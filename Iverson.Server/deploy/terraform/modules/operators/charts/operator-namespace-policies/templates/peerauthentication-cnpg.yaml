@@ -1,0 +1,23 @@
+{{- /*
+CSR round 12 §4.1: the CNPG operator's mutual TLS, the shape the release chart gives its own workloads
+(templates/mesh-policies.yaml there): STRICT, selector-scoped, because ztunnel honours a port-level
+setting only on a policy with a workload selector. On the cloud profiles (cnpgWebhookPermissive, which
+modules/operators sets) the webhook port 9443 is PERMISSIVE: the API server that calls it runs off-node,
+outside the mesh. On kind the API server is host-network and istio-cni lets node-originated connections
+bypass ztunnel, so nothing is PERMISSIVE there.
+*/}}
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: cnpg-operator
+  namespace: cnpg-system
+spec:
+  selector:
+    matchLabels: { app.kubernetes.io/name: cloudnative-pg }
+  mtls:
+    mode: STRICT
+  {{- if .Values.cnpgWebhookPermissive }}
+  portLevelMtls:
+    9443:
+      mode: PERMISSIVE
+  {{- end }}

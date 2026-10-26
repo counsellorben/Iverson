@@ -6,18 +6,28 @@
 # PRODUCTION defaults (postgres 8 CPU x2, qdrant 8, ollama 8) unless the laptop sizing
 # is restated here. The CI harness passes exactly one -f per overlay.
 #
-# Capacity: 250+250+250+250+250+100+100+50+200 = 1.7 CPU of requests; system + operators
-# measured ~2.0; metrics-server ~0.1. Total ~3.8 of 4.0 (~95%). Margin is thin — roughly
-# 200m. Re-measure with `kubectl top` after deploying.
+# Capacity (measured on kind 2026-10-24 on a 4-CPU / 9 GB host, with Istio ambient and its
+# gateway): the release requests 1.43 CPU and 4.6 GiB (Ollama included); Istio's istiod, ztunnel,
+# istio-cni and gateway 0.23 CPU and 0.4 GiB; Calico, the operators, metrics-server and kube-system
+# 1.55 CPU and 1.0 GiB. Total 3.21 of 4.0 allocatable CPU (80%) of requests;
+# `kubectl top node` showed 0.87 CPU in use once the release settled. Re-measure with
+# `kubectl describe node` and `kubectl top` after deploying.
+# The measured pods ran without Strimzi's entity operator and TEI: the full laptop profile, with both,
+# saturated a 4-CPU host's 6.5 GB kind node at install, so these numbers are of the profile without them.
 #
-# kind has no load balancer: ingress-nginx is admitted by namespace. clusterCidrs must still
-# list at least one range (see values.yaml's networkPolicy comment), so it names kind's docker
-# network, which nothing else needs.
+# kind has no load balancer: the edge gateway's namespace (iverson-edge) is admitted by namespace.
+# clusterCidrs must still list at least one range (see values.yaml's networkPolicy comment), so it
+# names kind's docker network, which nothing else needs.
 networkPolicy:
   clusterCidrs: ["172.18.0.0/16"]
   # kind's node network under docker (172.18.0.0/16) and podman (its default pool,
   # 10.89.0.0/16); the control plane serves on 6443.
   apiServerCidrs: ["172.18.0.0/16", "10.89.0.0/16"]
+
+# CSR round 12 §3.1: kind's operators group. kind's kubeconfig user is not in it, so deploy/kind/setup.sh's
+# printed install command and the runbooks impersonate it (docs/runbooks/operators-group.md §1).
+admission:
+  operatorGroups: ["iverson-operators"]
 
 global:
   engagementEnabled: false   # no StarRocks: vendor sizes FE at 8 CPU/16GB
@@ -37,13 +47,17 @@ global:
   # Laptop dev needs the Authentik test identities and legacy tenant seeding the production
   # default (values.yaml) turns off.
   provisionTestIdentities: true
-  # CSR round-10 #3: ingress-nginx reaches the API from a pod IP in kind's pod CIDR (the tigera
-  # operator sizes Calico's pool from kubeadm's podSubnet, kind's default 10.244.0.0/16), and its
-  # defaults replace X-Forwarded-For with the address it saw. NetworkPolicy admits only the
-  # ingress-nginx namespace from pod IPs on 8080.
+  # CSR round-10 #3, round 12 §4.5: the edge gateway's pod reaches the API from a pod IP in kind's
+  # pod CIDR (the tigera operator sizes Calico's pool from kubeadm's podSubnet, kind's default
+  # 10.244.0.0/16), and through the mesh the API still sees that address. The gateway appends the
+  # client address it saw to X-Forwarded-For, as its last entry. NetworkPolicy admits only the
+  # gateway's namespace (iverson-edge) from pod IPs on 8080.
   trustedProxies:
     cidrs: ["10.244.0.0/16"]
     hops: 1
+  # CSR round 12 §4.5: the Istio Gateway in iverson-edge (deploy/kind/edge-gateway.yaml) is the edge.
+  gateway:
+    class: istio
 
 adminUi:
   enabled: false
@@ -108,6 +122,8 @@ worker:
   hpa: { minReplicas: 1, maxReplicas: 2, targetCPUUtilization: 70 }
 
 authentik:
+  # CSR round-12 §2.6: the iss of kind's service-account tokens, which both workload pins compare.
+  serviceAccountIssuer: "https://kubernetes.default.svc.cluster.local"
   resources:
     server:
       requests: { cpu: "100m", memory: "256Mi", ephemeral-storage: "256Mi" }

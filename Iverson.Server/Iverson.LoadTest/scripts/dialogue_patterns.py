@@ -877,7 +877,7 @@ def build_arg_parser():
     for name in COMMANDS:
         p = sub.add_parser(name)
         p.add_argument("--out", required=True, help="the run's OUT directory (data under OUT/data/)")
-        p.add_argument("--build-url", default=os.environ.get("IVERSON_HTTP_URL", "http://localhost:8081") + "/build")
+        p.add_argument("--build-url", default=os.environ.get("IVERSON_HTTP_URL", "https://localhost:8082") + "/build")
         p.add_argument("--username", default=pl.BYPASS_USERNAME, help="the acting user to mint a token for")
     return ap
 

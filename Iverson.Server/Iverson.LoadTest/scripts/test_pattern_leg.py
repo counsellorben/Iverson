@@ -479,6 +479,19 @@ def test_mint_service_token_omits_scope_when_falsy():
     assert "scope" not in captured["body"]
 
 
+def test_mint_service_token_sends_no_host_header_when_none_is_configured():
+    """CSR round 12 §4.6: compose needs no Host override, so none is sent unless one is set."""
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["headers"] = dict(request.header_items())
+        return FakeTokenResponse(200, {"access_token": "t", "expires_in": 3600})
+
+    pl.mint_service_token("cid", "csecret", "https://localhost:9443/application/o/token/", None, None,
+                          urlopen=fake_urlopen)
+    assert "Host" not in captured["headers"]
+
+
 def test_mint_service_token_aborts_on_a_non_200_response():
     def fake_urlopen(request, timeout=None):
         return FakeTokenResponse(500, {"error": "boom"})

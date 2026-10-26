@@ -83,7 +83,7 @@ public class AuthentikTrustTests : IClassFixture<AuthTestWebApplicationFactory>,
     private static async Task<HttpStatusCode> GetThroughHandler(X509Certificate2 serverCert, string caPath, X509Certificate2? intermediate = null)
     {
         var builder = WebApplication.CreateBuilder();
-        // The copied Iverson.Api appsettings.json would also bind Kestrel:Endpoints (8080/8081).
+        // The copied Iverson.Api appsettings.json would also bind Kestrel:Endpoints (8080/8081/8082).
         builder.Configuration.Sources.Clear();
         var https = new HttpsConnectionAdapterOptions { ServerCertificate = serverCert };
         if (intermediate is not null)

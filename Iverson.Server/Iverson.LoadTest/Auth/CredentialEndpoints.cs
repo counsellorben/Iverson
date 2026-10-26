@@ -58,7 +58,7 @@ public static class CredentialEndpoints
     /// </summary>
     public static string AuthentikBaseUrl(string? tokenEndpoint) => tokenEndpoint is not null
         ? tokenEndpoint[..tokenEndpoint.IndexOf(TokenEndpointPath, StringComparison.Ordinal)]
-        : "http://localhost:9000";
+        : "https://localhost:9443";
 
     public static bool IsLoopback(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.IsLoopback;

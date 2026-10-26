@@ -1,0 +1,6 @@
+# CSR round 12 §4.1: ztunnel on kind, at a smaller request than the chart's 200m / 512Mi (see
+# istiod.yaml in this directory for why).
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi

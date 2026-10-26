@@ -1,0 +1,256 @@
+{{- /*
+CSR round 12 §4.1, §4.2: Istio ambient's policies for the release's workloads.
+
+PeerAuthentication, one per workload (ztunnel honours port-level settings only on a policy with a
+workload selector): mutual TLS is STRICT. Only the ports the edge reaches from outside the mesh are
+PERMISSIVE, which is none where the edge is the Istio gateway (a mesh client) and, elsewhere, the API's
+8080 and 8081, Authentik's public listener 9080 and admin-ui's 8080.
+
+AuthorizationPolicy (ALLOW, enforced by ztunnel), one per workload with NetworkPolicy ingress rules: it
+mirrors those rules (templates/networkpolicies.yaml), because inside the mesh NetworkPolicy sees only
+the HBONE port 15008 and ztunnel forwards to whatever port the sender asked for. Each rule names its
+peers by service account (cluster.local/ns/<namespace>/sa/<account>) and lists that rule's ports; a
+port-less NetworkPolicy rule mirrors as a rule with no `to`. Once a workload has an ALLOW policy,
+ztunnel refuses every connection no rule admits. Kubelet probes arrive SNATed and are not subject to
+it, so the probe rules have no mirror. A PERMISSIVE edge port gets one more rule, from the address
+ranges its NetworkPolicy edge rule admits (`ipBlocks`), because a principals-only rule refuses
+plaintext from outside the mesh. `notPrincipals` is never used: it also matches a connection that
+carries no identity, so it would admit every plaintext caller.
+
+The AuthorizationPolicies render with the NetworkPolicies they mirror (networkPolicy.enabled, which
+also validates clusterCidrs); the PeerAuthentications always render.
+*/}}
+{{- $sa := printf "cluster.local/ns/%s/sa/%s-" .Release.Namespace .Release.Name }}
+{{- $meshEdge := eq (include "iverson.meshEdge" .) "true" }}
+{{- $edge := include "iverson.edgeGatewayPrincipal" . }}
+{{- $edgeRanges := concat .Values.networkPolicy.clusterCidrs (default (list) .Values.networkPolicy.nodeSubnetFallback) }}
+{{- /* name, selector label, selector value, the ports the edge reaches (cloud PERMISSIVE), whether it renders */}}
+{{- $workloads := list
+  (dict "name" "api" "key" "app" "value" (printf "%s-api" .Release.Name) "edgePorts" (list 8080 8081) "on" true)
+  (dict "name" "worker" "key" "app" "value" (printf "%s-worker" .Release.Name) "edgePorts" (list) "on" true)
+  (dict "name" "postgres" "key" "cnpg.io/cluster" "value" (printf "%s-postgres" .Release.Name) "edgePorts" (list) "on" true)
+  (dict "name" "kafka" "key" "strimzi.io/cluster" "value" (printf "%s-kafka" .Release.Name) "edgePorts" (list) "on" true)
+  (dict "name" "starrocks-fe" "key" "app.starrocks.ownerreference/name" "value" (printf "%s-starrocks-fe" .Release.Name) "edgePorts" (list) "on" true)
+  (dict "name" "starrocks-be" "key" "app.starrocks.ownerreference/name" "value" (printf "%s-starrocks-be" .Release.Name) "edgePorts" (list) "on" true)
+  (dict "name" "qdrant" "key" "app" "value" (printf "%s-qdrant" .Release.Name) "edgePorts" (list) "on" true)
+  (dict "name" "tei" "key" "iverson.io/component" "value" "tei" "edgePorts" (list) "on" true)
+  (dict "name" "ollama" "key" "app" "value" (printf "%s-ollama" .Release.Name) "edgePorts" (list) "on" true)
+  (dict "name" "admin-ui" "key" "app" "value" (printf "%s-admin-ui" .Release.Name) "edgePorts" (list 8080) "on" .Values.adminUi.enabled)
+  (dict "name" "jaeger" "key" "app" "value" (printf "%s-jaeger" .Release.Name) "edgePorts" (list) "on" .Values.global.tracingEnabled)
+  (dict "name" "prometheus" "key" "app" "value" (printf "%s-prometheus" .Release.Name) "edgePorts" (list) "on" .Values.global.prometheusEnabled)
+  (dict "name" "authentik-server" "key" "app" "value" (printf "%s-authentik-server" .Release.Name) "edgePorts" (list 9080) "on" true)
+  (dict "name" "authentik-worker" "key" "app" "value" (printf "%s-authentik-worker" .Release.Name) "edgePorts" (list) "on" true)
+}}
+{{- range $workloads }}
+{{- if .on }}
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ $.Release.Name }}-{{ .name }}
+spec:
+  selector:
+    matchLabels: { {{ .key }}: {{ .value }} }
+  mtls:
+    mode: STRICT
+  {{- if and .edgePorts (not $meshEdge) }}
+  portLevelMtls:
+    {{- range .edgePorts }}
+    {{ . }}:
+      mode: PERMISSIVE
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# api: the edge on 8080 (gRPC) and 8081 (/admin, /health, /v1/traces); Prometheus on 8082.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-api
+spec:
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-api }
+  action: ALLOW
+  rules:
+    {{- range list "8080" "8081" }}
+    {{- if $meshEdge }}
+    - from: [{ source: { principals: ["{{ $edge }}"] } }]
+      to: [{ operation: { ports: ["{{ . }}"] } }]
+    {{- else }}
+    - from: [{ source: { ipBlocks: {{ toJson $edgeRanges }} } }]
+      to: [{ operation: { ports: ["{{ . }}"] } }]
+    {{- end }}
+    {{- end }}
+    - from: [{ source: { principals: ["{{ $sa }}prometheus"] } }]
+      to: [{ operation: { ports: ["8082"] } }]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-worker
+spec:
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-worker }
+  action: ALLOW
+  rules:
+    - from: [{ source: { principals: ["{{ $sa }}prometheus"] } }]
+      to: [{ operation: { ports: ["8082"] } }]
+---
+# Postgres: the app logins on 5432, the CNPG operator on 8000 and 5432, and the instances themselves on
+# every port (streaming replication, cloning and each other's status port).
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-postgres
+spec:
+  selector:
+    matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres }
+  action: ALLOW
+  rules:
+    - from: [{ source: { principals: ["{{ $sa }}api", "{{ $sa }}worker", "{{ $sa }}authentik", "{{ $sa }}authentik-revoke-cross-db"] } }]
+      to: [{ operation: { ports: ["5432"] } }]
+    - from: [{ source: { principals: ["cluster.local/ns/cnpg-system/sa/cnpg-cloudnative-pg"] } }]
+      to: [{ operation: { ports: ["8000", "5432"] } }]
+    - from: [{ source: { principals: ["{{ $sa }}postgres"] } }]
+---
+# Kafka (brokers and the entity operator): the api and worker on 9093, the cluster's own pods on every
+# port, and the Strimzi cluster operator on 9090, 9091 and 8443.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-kafka
+spec:
+  selector:
+    matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka }
+  action: ALLOW
+  rules:
+    - from: [{ source: { principals: ["{{ $sa }}api", "{{ $sa }}worker"] } }]
+      to: [{ operation: { ports: ["9093"] } }]
+    - from: [{ source: { principals: ["{{ $sa }}kafka-kafka", "{{ $sa }}kafka-entity-operator"] } }]
+    - from: [{ source: { principals: ["cluster.local/ns/kafka/sa/strimzi-cluster-operator"] } }]
+      to: [{ operation: { ports: ["9090", "9091", "8443"] } }]
+{{- range list "fe" "be" }}
+---
+# StarRocks {{ upper . }}: the api, worker and create-user Job on 9030, and the FE and BE on every port.
+# One policy each: a selector takes matchLabels only.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ $.Release.Name }}-starrocks-{{ . }}
+spec:
+  selector:
+    matchLabels: { app.starrocks.ownerreference/name: {{ $.Release.Name }}-starrocks-{{ . }} }
+  action: ALLOW
+  rules:
+    - from: [{ source: { principals: ["{{ $sa }}api", "{{ $sa }}worker", "{{ $sa }}starrocks-create-user"] } }]
+      to: [{ operation: { ports: ["9030"] } }]
+    - from: [{ source: { principals: ["{{ $sa }}starrocks-fe", "{{ $sa }}starrocks-be"] } }]
+{{- end }}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-qdrant
+spec:
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-qdrant }
+  action: ALLOW
+  rules:
+    - from: [{ source: { principals: ["{{ $sa }}api", "{{ $sa }}worker"] } }]
+      to: [{ operation: { ports: ["6334"] } }]
+    - from: [{ source: { principals: ["{{ $sa }}qdrant"] } }]
+      to: [{ operation: { ports: ["6335"] } }]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-tei
+spec:
+  selector:
+    matchLabels: { iverson.io/component: tei }
+  action: ALLOW
+  rules:
+    - from: [{ source: { principals: ["{{ $sa }}api", "{{ $sa }}worker"] } }]
+      to: [{ operation: { ports: ["8080"] } }]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-ollama
+spec:
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-ollama }
+  action: ALLOW
+  rules:
+    - from: [{ source: { principals: ["{{ $sa }}api", "{{ $sa }}worker"] } }]
+      to: [{ operation: { ports: ["11434"] } }]
+{{- if .Values.adminUi.enabled }}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-admin-ui
+spec:
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-admin-ui }
+  action: ALLOW
+  rules:
+    {{- if $meshEdge }}
+    - from: [{ source: { principals: ["{{ $edge }}"] } }]
+      to: [{ operation: { ports: ["8080"] } }]
+    {{- else }}
+    - from: [{ source: { ipBlocks: {{ toJson $edgeRanges }} } }]
+      to: [{ operation: { ports: ["8080"] } }]
+    {{- end }}
+{{- end }}
+{{- if .Values.global.tracingEnabled }}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-jaeger
+spec:
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-jaeger }
+  action: ALLOW
+  rules:
+    - from: [{ source: { principals: ["{{ $sa }}api", "{{ $sa }}worker"] } }]
+      to: [{ operation: { ports: ["4317", "4318"] } }]
+{{- end }}
+{{- if .Values.global.prometheusEnabled }}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-prometheus
+spec:
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-prometheus }
+  action: ALLOW
+  rules:
+    - from: [{ source: { principals: ["{{ $sa }}api"] } }]
+      to: [{ operation: { ports: ["9090"] } }]
+{{- end }}
+---
+# Authentik server: the api on the tls-proxy's 8443, and the edge on the public listener 9080.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-authentik-server
+spec:
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-authentik-server }
+  action: ALLOW
+  rules:
+    - from: [{ source: { principals: ["{{ $sa }}api"] } }]
+      to: [{ operation: { ports: ["8443"] } }]
+    {{- if $meshEdge }}
+    - from: [{ source: { principals: ["{{ $edge }}"] } }]
+      to: [{ operation: { ports: ["9080"] } }]
+    {{- else }}
+    - from: [{ source: { ipBlocks: {{ toJson $edgeRanges }} } }]
+      to: [{ operation: { ports: ["9080"] } }]
+    {{- end }}
+{{- end }}

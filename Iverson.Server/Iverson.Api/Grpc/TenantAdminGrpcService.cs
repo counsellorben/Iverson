@@ -1,3 +1,4 @@
+using System.Globalization;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Tenancy;
@@ -22,11 +23,16 @@ public sealed class TenantAdminGrpcService(
     ITenantStatusCache tenantStatusCache,
     ITokenRevocationRepository tokenRevocations,
     ITokenRevocationCache tokenRevocationCache,
+    IInviteQuotaRepository inviteQuota,
     AuditLog auditLog) : Iverson.Client.Contracts.TenantAdminGrpcService.TenantAdminGrpcServiceBase
 {
     public override async Task<TenantUser> InviteUser(InviteUserRequest request, ServerCallContext context)
     {
         var tenantId = await RequireActiveTenantAsync(context);
+        // CSR round 12 §2.1: 100 invitations per tenant per UTC day. The slot is reserved before
+        // Authentik is called and is not given back if that call fails.
+        if (!await inviteQuota.TryReserveAsync(tenantId, DateOnly.FromDateTime(DateTime.UtcNow)))
+            throw new RpcException(new Status(StatusCode.ResourceExhausted, "The tenant's daily invitation limit is reached."));
         // CSR finding #4 remediation: password-based onboarding was replaced by Authentik's own
         // recovery-link flow (see IdpAdminClient.CreateUserAsync). The link is surfaced back to
         // the caller below via TenantUser.recovery_link (follow-up to the original remediation,
@@ -65,7 +71,7 @@ public sealed class TenantAdminGrpcService(
         // user's tokens valid until they expire.
         await tokenRevocations.RevokeAsync(user.Uid);
         tokenRevocationCache.Invalidate();
-        await authentikAdminClient.DeactivateUserAsync(request.UserId);
+        await authentikAdminClient.DeactivateUserAsync(user.Id);
         // Revoke again (CSR round 11 #13): a token refreshed between the first revoke and the
         // deactivation has an iat after the first revocation. As in SetTenantAdmin's demotion.
         await tokenRevocations.RevokeAsync(user.Uid);
@@ -79,7 +85,7 @@ public sealed class TenantAdminGrpcService(
         var tenantId = await RequireActiveTenantAsync(context);
         var user = await RequireUserInTenantAsync(request.UserId, tenantId);
         if (request.Grant)
-            await authentikAdminClient.AddGroupAsync(request.UserId, "tenant-admins");
+            await authentikAdminClient.AddGroupAsync(user.Id, "tenant-admins");
         else
         {
             // A demoted admin's existing tokens still carry the tenant-admins group, which the
@@ -87,7 +93,7 @@ public sealed class TenantAdminGrpcService(
             // does. Granting needs no revocation.
             await tokenRevocations.RevokeAsync(user.Uid);
             tokenRevocationCache.Invalidate();
-            await authentikAdminClient.RemoveGroupAsync(request.UserId, "tenant-admins");
+            await authentikAdminClient.RemoveGroupAsync(user.Id, "tenant-admins");
             // Revoke again: a token refreshed between the first revoke and the group removal
             // still carries tenant-admins, and its iat is after the first revocation.
             await tokenRevocations.RevokeAsync(user.Uid);
@@ -109,15 +115,28 @@ public sealed class TenantAdminGrpcService(
 
     // Cross-tenant escalation guard: user_id (unlike tenant_id) is always caller-supplied, so
     // without this check a tenant-admin of Tenant A could deactivate or promote/demote a user
-    // in Tenant B by supplying that user's id. Looking the target up via the caller's OWN
-    // tenant's user list — rather than trusting the request's tenant scoping — closes that gap.
-    private async Task<IdpUser> RequireUserInTenantAsync(string userId, string tenantId)
+    // in Tenant B by supplying that user's id. CSR round 12 §2.1: the target is read by its pk and
+    // its own tenant_id compared with the caller's, instead of listing the directory. A user_id
+    // that is not a canonical positive decimal integer (Authentik's pk) is "not in this tenant"
+    // before any IdP request, so nothing but a pk reaches the user API's path. Authentik's 404 is
+    // "not in this tenant" too. The callers act on the returned record's pk.
+    private async Task<IdpUserRecord> RequireUserInTenantAsync(string userId, string tenantId)
     {
-        var users = await authentikAdminClient.ListUsersByTenantAsync(tenantId);
-        return users.FirstOrDefault(u => u.Id == userId)
-            ?? throw new RpcException(
-                new Status(
-                    StatusCode.PermissionDenied,
-                    "User does not belong to your tenant."));
+        if (!IsCanonicalUserPk(userId))
+            throw UserNotInTenant();
+        var user = await authentikAdminClient.GetUserAsync(userId);
+        if (user is null || user.TenantId != tenantId)
+            throw UserNotInTenant();
+        return user;
     }
+
+    private static RpcException UserNotInTenant() =>
+        new(new Status(StatusCode.PermissionDenied, "User does not belong to your tenant."));
+
+    // Authentik's user pk is a Django AutoField: a positive 32-bit integer, written in ASCII digits
+    // with no sign, no leading zero and no whitespace.
+    private static bool IsCanonicalUserPk(string userId) =>
+        int.TryParse(userId, NumberStyles.None, CultureInfo.InvariantCulture, out var pk)
+        && pk > 0
+        && pk.ToString(CultureInfo.InvariantCulture) == userId;
 }

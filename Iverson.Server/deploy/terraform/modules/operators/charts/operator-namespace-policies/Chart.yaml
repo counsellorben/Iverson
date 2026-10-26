@@ -1,0 +1,6 @@
+apiVersion: v2
+name: operator-namespace-policies
+description: Default-deny NetworkPolicies with explicit allows for the operator namespaces (CSR round 12 §3.4)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

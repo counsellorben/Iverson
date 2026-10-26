@@ -26,6 +26,9 @@ variable "cluster_name" {
 # applying this root module must supply the real allow-list.
 variable "api_public_access_cidrs" { type = list(string) }
 
+# CSR round 12 §3.1: the operators' IAM roles (cluster-aws's operator_role_arns); no default.
+variable "operator_role_arns" { type = list(string) }
+
 provider "aws" {
   region = var.region
 }
@@ -35,6 +38,7 @@ module "cluster" {
   cluster_name            = var.cluster_name
   region                  = var.region
   api_public_access_cidrs = var.api_public_access_cidrs
+  operator_role_arns      = var.operator_role_arns
 }
 
 data "aws_eks_cluster_auth" "this" {
@@ -63,6 +67,7 @@ module "operators" {
   vpc_id                           = module.cluster.vpc_id
   lb_controller_irsa_role_arn      = module.cluster.lb_controller_irsa_role_arn
   cluster_autoscaler_irsa_role_arn = module.cluster.cluster_autoscaler_irsa_role_arn
+  api_server_cidrs                 = module.cluster.api_server_cidrs
   storage_class_config = {
     provisioner = "ebs.csi.aws.com"
     parameters = {
@@ -76,4 +81,6 @@ module "operators" {
 output "cluster_name" { value = module.cluster.cluster_name }
 output "node_pool_labels" { value = module.cluster.node_pool_labels }
 output "storage_class_names" { value = module.operators.storage_class_names }
+# Copy into values-aws.yaml's authentik.serviceAccountIssuer (docs/runbooks/csr11-identity-plane.md §7).
+output "service_account_issuer" { value = module.cluster.service_account_issuer }
 output "kubeconfig_command" { value = "aws eks update-kubeconfig --name ${module.cluster.cluster_name} --region ${var.region}" }

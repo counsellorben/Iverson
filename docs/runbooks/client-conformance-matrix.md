@@ -27,8 +27,20 @@ export IVERSON_CLIENT_ID=dev-iverson-loadtest-client-id
 # scripts/generate-compose-secrets.sh (CSR round-4 finding #8) — read it out of
 # Iverson.Server/.env's IVERSON_LOADTEST_CLIENT_SECRET.
 export IVERSON_CLIENT_SECRET="$(grep IVERSON_LOADTEST_CLIENT_SECRET Iverson.Server/.env | cut -d= -f2)"
-export IVERSON_TOKEN_ENDPOINT=http://localhost:9000/application/o/token/
+export IVERSON_TOKEN_ENDPOINT=https://localhost:9443/application/o/token/
 export IVERSON_CLIENT_SCOPE="schema_admin tenant_id_loadtest"
+# CSR round 12: the compose API (https://localhost:8080, the harness's default IVERSON_GRPC_URL) and
+# Authentik serve TLS from the per-checkout compose CA. The harness and every driver it starts inherit
+# these, one per runtime; docs/runbooks/csr12-platform.md §4 explains the bundle and the truststore.
+mkdir -p ~/.cache/iverson
+cat /etc/ssl/certs/ca-certificates.crt Iverson.Server/deploy/compose-tls/ca.crt > ~/.cache/iverson/compose-ca-bundle.pem
+export SSL_CERT_FILE=~/.cache/iverson/compose-ca-bundle.pem                              # .NET, Go, Python urllib
+export GRPC_DEFAULT_SSL_ROOTS_FILE_PATH="$PWD/Iverson.Server/deploy/compose-tls/ca.crt"  # Python grpcio
+export NODE_EXTRA_CA_CERTS="$PWD/Iverson.Server/deploy/compose-tls/ca.crt"               # TypeScript
+cp "$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")/lib/security/cacerts" ~/.cache/iverson/compose-truststore.p12
+keytool -importcert -noprompt -alias iverson-compose-ca -file Iverson.Server/deploy/compose-tls/ca.crt \
+  -keystore ~/.cache/iverson/compose-truststore.p12 -storepass changeit
+export JAVA_TOOL_OPTIONS="-Djavax.net.ssl.trustStore=$HOME/.cache/iverson/compose-truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit"   # Java
 ```
 
 `IVERSON_CLIENT_SCOPE` is not optional in practice and has no default. The two scopes are exactly

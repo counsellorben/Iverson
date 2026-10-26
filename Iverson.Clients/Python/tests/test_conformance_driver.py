@@ -15,7 +15,7 @@ from __future__ import annotations
 import grpc
 import pytest
 
-from conformance.driver import Args, _DriverSchemaCatalogClient, entity_to_dict
+from conformance.driver import Args, _DriverSchemaCatalogClient, build_driver_channel, entity_to_dict, parse_grpc_address
 from conformance.models import PyArticle, PyAuthor, PyTag
 from iverson_client.core import IversonClient
 
@@ -169,3 +169,45 @@ def test_optional_treats_an_unset_or_empty_secret_variable_as_absent(monkeypatch
 def test_optional_never_reads_the_environment_for_a_non_secret_flag(monkeypatch):
     monkeypatch.setenv("IVERSON_DRIVER_CLIENT_ID", "ENV")
     assert Args([]).optional("--client-id") is None
+
+
+# ── CSR round 12 §4.6: the --grpc scheme picks the transport ──────────────────────────────────
+
+@pytest.mark.parametrize("grpc_addr,expected", [
+    ("https://localhost:8080", ("localhost", 8080, True)),
+    ("http://localhost:8080", ("localhost", 8080, False)),
+    ("localhost:8080", ("localhost", 8080, False)),
+])
+def test_parse_grpc_address_takes_tls_from_the_scheme(grpc_addr, expected):
+    assert parse_grpc_address(grpc_addr) == expected
+
+
+def _record_channel_credentials(monkeypatch):
+    """Records which base ChannelCredentials build_driver_channel asks grpc for."""
+    made = []
+    real_ssl, real_local = grpc.ssl_channel_credentials, grpc.local_channel_credentials
+
+    def ssl(*args, **kwargs):
+        made.append("ssl")
+        return real_ssl(*args, **kwargs)
+
+    def local(*args, **kwargs):
+        made.append("local")
+        return real_local(*args, **kwargs)
+
+    monkeypatch.setattr(grpc, "ssl_channel_credentials", ssl)
+    monkeypatch.setattr(grpc, "local_channel_credentials", local)
+    return made
+
+
+@pytest.mark.parametrize("use_tls,acting_token,expected", [
+    (True, "acting", ["ssl"]),
+    (False, "acting", ["local"]),
+    (True, None, ["ssl"]),
+    (False, None, []),
+])
+def test_build_driver_channel_takes_its_transport_from_use_tls(monkeypatch, use_tls, acting_token, expected):
+    made = _record_channel_credentials(monkeypatch)
+    channel = build_driver_channel("localhost", 1, None, None, None, acting_token, None, use_tls=use_tls)
+    channel.close()
+    assert made == expected

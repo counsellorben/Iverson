@@ -1,0 +1,156 @@
+{{- /*
+CSR round 12 §3.1 (#11, cluster half): the release's protected workload identities are reserved to the
+operators group. A namespace-RBAC holder outside admission.operatorGroups, cluster-admin included, is refused:
+  (a) a token for <release>-api or <release>-admin-automation (the kubelet, group system:nodes, still mounts
+      projected tokens);
+  (b) exec, attach, port-forward and proxy into a <release>-api-*, -worker-*, -authentik-* or -postgres-* pod
+      (a CONNECT request names the pod, not its service account; a pod proxy request's name may carry a scheme:
+      prefix and a :port suffix, so the name between them is matched), and proxy to ANY Service in the
+      namespace: a Service's name says nothing about its backends, since anyone who can edit Services can
+      point one at a protected pod;
+  (c) a pod that runs as either account; the Kubernetes controllers that create pods for the release's
+      workloads are admitted, and whoever creates it, the pod's name must start <release>-api-, so that (b), (e)
+      and (f) cover every pod holding a protected token;
+  (d) creating or updating a workload whose pod template (old or new) runs as either account; the controllers
+      that maintain those objects are admitted. The scale subresource is not matched;
+  (e) an ephemeral container on one of (b)'s pods, which would share its mounted tokens;
+  (f) a change of any container or init-container image of one of (b)'s pods; metadata-only updates pass.
+The binding selects the release namespace only. failurePolicy Fail: an evaluation error refuses the request.
+Verified on kind: spec Verified assumptions 37, 38, 69, 77, 84, 85 and 96.
+*/}}
+{{- $groups := .Values.admission.operatorGroups }}
+{{- if not $groups }}
+{{- fail "admission.operatorGroups must name at least one Kubernetes group: its members alone may mint tokens for, exec into, or change the pods and workloads of the api and admin-automation identities (docs/runbooks/operators-group.md)" }}
+{{- end }}
+{{- range $groups }}
+{{- if not (trim (toString .)) }}
+{{- fail "admission.operatorGroups contains a blank entry; every entry must be a Kubernetes group name" }}
+{{- end }}
+{{- end }}
+{{- $rel := .Release.Name }}
+{{- $connectPrefixes := list (printf "%s-api-" $rel) (printf "%s-worker-" $rel) (printf "%s-authentik-" $rel) (printf "%s-postgres-" $rel) | toJson }}
+{{- $name := printf "%s-%s-sensitive-identities" .Release.Name .Release.Namespace }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - { apiGroups: [""], apiVersions: ["v1"], operations: ["CREATE"], resources: ["serviceaccounts/token"] }
+      - { apiGroups: [""], apiVersions: ["v1"], operations: ["CONNECT"], resources: ["pods/exec", "pods/attach", "pods/portforward", "pods/proxy", "services/proxy"] }
+      - { apiGroups: [""], apiVersions: ["v1"], operations: ["CREATE", "UPDATE"], resources: ["pods"] }
+      - { apiGroups: [""], apiVersions: ["v1"], operations: ["UPDATE"], resources: ["pods/ephemeralcontainers"] }
+      - { apiGroups: ["apps"], apiVersions: ["v1"], operations: ["CREATE", "UPDATE"], resources: ["deployments", "replicasets", "statefulsets", "daemonsets"] }
+      - { apiGroups: ["batch"], apiVersions: ["v1"], operations: ["CREATE", "UPDATE"], resources: ["jobs", "cronjobs"] }
+  variables:
+    - name: protected
+      expression: {{ list (printf "%s-api" $rel) (printf "%s-admin-automation" $rel) | toJson | quote }}
+    - name: operator
+      expression: {{ printf "has(request.userInfo.groups) && request.userInfo.groups.exists(g, g in %s)" (toJson $groups) | quote }}
+    - name: node
+      expression: "has(request.userInfo.groups) && 'system:nodes' in request.userInfo.groups"
+    - name: res
+      expression: "request.resource.resource"
+    - name: sub
+      expression: "has(request.subResource) ? request.subResource : ''"
+    # The pods (b), (e) and (f) protect, by name.
+    - name: connectPod
+      expression: {{ printf "%s.exists(p, request.name.startsWith(p))" $connectPrefixes | quote }}
+    # A pod proxy request names its target [scheme:]name[:port], split as the API server splits it; this is
+    # the pod's name ('' for any other request).
+    - name: proxyName
+      expression: >-
+        variables.res != 'pods' || variables.sub != 'proxy' ? ''
+          : (request.name.split(':').size() == 3 ? request.name.split(':')[1] : request.name.split(':')[0])
+    # (b)'s proxy targets: connectPod's pods by name, and every Service. A Service is not matched by name:
+    # its selector, which any namespace editor can set, decides which pods it reaches.
+    - name: proxyTarget
+      expression: >-
+        variables.sub == 'proxy'
+        && (variables.res == 'services'
+            || (variables.res == 'pods' && {{ $connectPrefixes }}.exists(p, variables.proxyName.startsWith(p))))
+    # The service account a pod create runs as ('' for any other request).
+    - name: podSa
+      expression: >-
+        variables.res == 'pods' && variables.sub == '' && request.operation == 'CREATE' && object != null
+          ? (has(object.spec.serviceAccountName) ? object.spec.serviceAccountName : 'default')
+          : ''
+    # The service account of a workload's pod template, new and old (a CronJob nests one level deeper).
+    - name: newTplSa
+      expression: >-
+        variables.res in ['deployments', 'replicasets', 'statefulsets', 'daemonsets', 'jobs'] && object != null
+          ? (has(object.spec.template.spec.serviceAccountName) ? object.spec.template.spec.serviceAccountName : 'default')
+          : (variables.res == 'cronjobs' && object != null
+              ? (has(object.spec.jobTemplate.spec.template.spec.serviceAccountName) ? object.spec.jobTemplate.spec.template.spec.serviceAccountName : 'default')
+              : '')
+    - name: oldTplSa
+      expression: >-
+        variables.res in ['deployments', 'replicasets', 'statefulsets', 'daemonsets', 'jobs'] && oldObject != null
+          ? (has(oldObject.spec.template.spec.serviceAccountName) ? oldObject.spec.template.spec.serviceAccountName : 'default')
+          : (variables.res == 'cronjobs' && oldObject != null
+              ? (has(oldObject.spec.jobTemplate.spec.template.spec.serviceAccountName) ? oldObject.spec.jobTemplate.spec.template.spec.serviceAccountName : 'default')
+              : '')
+    - name: imagesChanged
+      expression: >-
+        variables.res == 'pods' && variables.sub == '' && request.operation == 'UPDATE' && object != null && oldObject != null
+        && (object.spec.containers.map(c, c.name + '=' + c.image) != oldObject.spec.containers.map(c, c.name + '=' + c.image)
+            || (has(object.spec.initContainers) ? object.spec.initContainers.map(c, c.name + '=' + c.image) : [])
+               != (has(oldObject.spec.initContainers) ? oldObject.spec.initContainers.map(c, c.name + '=' + c.image) : []))
+  validations:
+    # Each message starts with the policy's own name, so every refusal names the policy, whichever path
+    # kubectl reports it on (a CONNECT refusal can surface as the message alone).
+    # (a) token minting
+    - expression: >-
+        !(variables.res == 'serviceaccounts' && variables.sub == 'token' && request.name in variables.protected)
+        || variables.operator || variables.node
+      messageExpression: {{ printf "'%s: (a) only the operators group may request a token for ' + request.name" $name | quote }}
+    # (b) exec, attach, port-forward and proxy
+    - expression: >-
+        !((variables.res == 'pods' && variables.sub in ['exec', 'attach', 'portforward'] && variables.connectPod)
+          || variables.proxyTarget)
+        || variables.operator
+      messageExpression: {{ printf "'%s: (b) only the operators group may ' + (variables.sub == 'proxy' ? 'proxy to ' + variables.res + '/' : variables.sub + ' into ') + request.name" $name | quote }}
+    # (c) pods that run as a protected account
+    - expression: >-
+        !(variables.podSa in variables.protected)
+        || ((variables.operator || request.userInfo.username in [
+              'system:serviceaccount:kube-system:replicaset-controller',
+              'system:serviceaccount:kube-system:statefulset-controller',
+              'system:serviceaccount:kube-system:job-controller',
+              'system:serviceaccount:kube-system:daemon-set-controller'])
+            && object.metadata.name.startsWith({{ printf "%s-api-" $rel | squote }}))
+      messageExpression: {{ printf "'%s: (c) a pod running as ' + variables.podSa + ' must be created by the operators group or a workload controller, under a name starting %s-api-; got ' + object.metadata.name" $name $rel | quote }}
+    # (d) workload templates
+    - expression: >-
+        !(variables.newTplSa in variables.protected || variables.oldTplSa in variables.protected)
+        || variables.operator
+        || request.userInfo.username in [
+             'system:serviceaccount:kube-system:deployment-controller',
+             'system:serviceaccount:kube-system:replicaset-controller',
+             'system:serviceaccount:kube-system:cronjob-controller',
+             'system:serviceaccount:kube-system:job-controller',
+             'system:serviceaccount:kube-system:generic-garbage-collector']
+      messageExpression: {{ printf "'%s: (d) only the operators group may ' + request.operation + ' ' + variables.res + '/' + request.name + ', whose pod template runs as a protected account'" $name | quote }}
+    # (e) ephemeral containers
+    - expression: >-
+        !(variables.res == 'pods' && variables.sub == 'ephemeralcontainers' && variables.connectPod)
+        || variables.operator
+      messageExpression: {{ printf "'%s: (e) only the operators group may add an ephemeral container to ' + request.name" $name | quote }}
+    # (f) in-place image changes
+    - expression: >-
+        !(variables.connectPod && variables.imagesChanged) || variables.operator
+      messageExpression: {{ printf "'%s: (f) only the operators group may change a container image of ' + request.name" $name | quote }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}

@@ -128,7 +128,8 @@ Writes, alongside --key-map-path:
                                means a document recorded in .progress but never counted in the
                                sidecar would otherwise vanish from the totals permanently.
 
-Requires Qdrant at http://localhost:6333 and the embedding backend at --embed-url (TEI at
+Requires Qdrant at https://localhost:6333 (CSR round 12: trust the compose CA through SSL_CERT_FILE)
+and the embedding backend at --embed-url (TEI at
 http://localhost:8091 by default, which serves one model regardless of --model; or Ollama,
 with the model pulled) -- the dimension probe runs before --drop acts, so an
 unpulled Ollama model fails the run rather than deleting collections it then cannot refill.
@@ -156,7 +157,7 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(_SCRIPT_DIR, "ingest-contract.json"), encoding="utf-8") as _contract_f:
     CONTRACT = json.load(_contract_f)
 
-QDRANT_URL = "http://localhost:6333"
+QDRANT_URL = "https://localhost:6333"  # TLS since CSR round 12 §4.6; the certificate names localhost
 QDRANT_API_KEY = os.environ["QDRANT__SERVICE__API_KEY"]
 DEFAULT_EMBED_URL = "http://localhost:8091"
 

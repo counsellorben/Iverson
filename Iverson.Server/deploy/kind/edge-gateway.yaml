@@ -1,0 +1,66 @@
+# CSR round 12 §4.5: kind's edge, an Istio Gateway in namespace iverson-edge (not enrolled in the mesh,
+# but its pod is a mesh client: it reaches the release over mutual TLS as
+# cluster.local/ns/iverson-edge/sa/edge-istio). deploy/kind/setup.sh and setup.ps1 apply this file after
+# creating the namespace; the chart attaches its routes to the listeners by name (templates/gateway-istio.yaml)
+# and lets the HTTPS listener read the edge certificate (its ReferenceGrant). Hosts are the kind profile's
+# global.ingressHost, iverson.local.
+#
+# The options ConfigMap gives the gateway's pod host ports 80 and 443, which kind-config.yaml maps to
+# 127.0.0.1:8080 and 8443, and replaces the old pod before starting a new one: with host ports, a surge
+# pod can never schedule on a single-node cluster, so the default rollout would deadlock. The Service
+# Istio generates stays ClusterIP (kind has no load balancer).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: edge-options
+  namespace: iverson-edge
+data:
+  deployment: |
+    spec:
+      strategy:
+        type: RollingUpdate
+        rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
+      template:
+        spec:
+          containers:
+            - name: istio-proxy
+              ports:
+                - { containerPort: 443, hostPort: 443, protocol: TCP }
+                - { containerPort: 80, hostPort: 80, protocol: TCP }
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: edge
+  namespace: iverson-edge
+  annotations:
+    networking.istio.io/service-type: ClusterIP
+spec:
+  gatewayClassName: istio
+  infrastructure:
+    parametersRef: { group: "", kind: ConfigMap, name: edge-options }
+  listeners:
+    # gRPC to the API, over TLS: external gRPC clients need HTTP/2 from the first byte.
+    - name: api-https
+      hostname: iverson.local
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs: [{ kind: Secret, name: iverson-api-tls, namespace: iverson }]
+      allowedRoutes: { namespaces: { from: Selector, selector: { matchLabels: { kubernetes.io/metadata.name: iverson } } } }
+    - name: admin-api-http
+      hostname: admin-api.iverson.local
+      port: 80
+      protocol: HTTP
+      allowedRoutes: { namespaces: { from: Selector, selector: { matchLabels: { kubernetes.io/metadata.name: iverson } } } }
+    - name: authentik-http
+      hostname: authentik.iverson.local
+      port: 80
+      protocol: HTTP
+      allowedRoutes: { namespaces: { from: Selector, selector: { matchLabels: { kubernetes.io/metadata.name: iverson } } } }
+    - name: ui-http
+      hostname: iverson.local
+      port: 80
+      protocol: HTTP
+      allowedRoutes: { namespaces: { from: Selector, selector: { matchLabels: { kubernetes.io/metadata.name: iverson } } } }

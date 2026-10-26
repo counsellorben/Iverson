@@ -1,5 +1,11 @@
+admission:
+  operatorGroups: ["00000000-0000-0000-0000-000000000000"]
 global:
   ingressHost: "iverson-ci-test.example.org"
+  # CSR round 12 §2.4: a cloud render fails with no operator subject; CI renders with a dummy one.
+  operatorSubjects:
+    - "ci-dummy-operator-subject"
 authentik:
+  serviceAccountIssuer: "https://eastus.oic.prod-aks.azure.com/00000000-0000-0000-0000-000000000000/00000000-0000-0000-0000-000000000000/"
   ingress:
     wafPolicyId: "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/iverson-rg/providers/Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/iverson-waf-authentik"

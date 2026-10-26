@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Web;
 using FluentAssertions;
 using Iverson.Api.Tenancy;
 using Microsoft.Extensions.Configuration;
@@ -168,7 +169,7 @@ public sealed class AuthentikAdminClientTests
 
         handler.Requests.Should().HaveCount(3);
         handler.Requests[0].Method.Should().Be(HttpMethod.Get);
-        handler.Requests[0].RequestUri!.PathAndQuery.Should().Be("/api/v3/core/groups/?name=tenant-admins");
+        handler.Requests[0].RequestUri!.PathAndQuery.Should().Be("/api/v3/core/groups/?name=tenant-admins&include_users=false");
 
         handler.Requests[1].Method.Should().Be(HttpMethod.Post);
         handler.Requests[1].RequestUri!.AbsolutePath.Should().Be("/api/v3/core/users/");
@@ -282,15 +283,18 @@ public sealed class AuthentikAdminClientTests
             Arg.Any<Func<object, Exception?, string>>());
     }
 
+    // CSR round 12 §2.1: the attributes filter, {"tenant_id": t} as JSON, rides on the request.
+    private static string? AttributesFilterOf(HttpRequestMessage request) =>
+        HttpUtility.ParseQueryString(request.RequestUri!.Query)["attributes"];
+
     [Fact]
-    public async Task ListUsersByTenantAsync_FiltersByAttributesTenantId()
+    public async Task ListUsersByTenantAsync_AsksAuthentikForTheTenantsUsersOnly()
     {
         var page = JsonResponse(HttpStatusCode.OK, """
             {
               "pagination": {"next": 0},
               "results": [
-                {"pk": 1, "uid": "uid-alice", "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}},
-                {"pk": 2, "uid": "uid-bob", "username": "bob", "email": "bob@example.invalid", "attributes": {"tenant_id": "tenant-b"}}
+                {"pk": 1, "uid": "uid-alice", "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}}
               ]
             }
             """);
@@ -299,10 +303,34 @@ public sealed class AuthentikAdminClientTests
 
         var users = (await sut.ListUsersByTenantAsync("tenant-a")).ToList();
 
-        users.Should().ContainSingle();
-        users[0].Should().BeEquivalentTo(new IdpUser("1", "alice", "alice@example.invalid", "uid-alice"));
+        users.Should().ContainSingle().Which.Should().BeEquivalentTo(new IdpUser("1", "alice", "alice@example.invalid", "uid-alice"));
         handler.Requests.Should().ContainSingle();
         handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v3/core/users/");
+        AttributesFilterOf(handler.Requests[0]).Should().Be("""{"tenant_id":"tenant-a"}""");
+    }
+
+    // Authentik answers with the unfiltered list when filtering raises a ValueError, so the client
+    // keeps its own check: a user of another tenant, or of none, is dropped even when the server
+    // returns it.
+    [Fact]
+    public async Task ListUsersByTenantAsync_DropsAUserOfAnotherTenant_EvenWhenAuthentikReturnsIt()
+    {
+        var page = JsonResponse(HttpStatusCode.OK, """
+            {
+              "pagination": {"next": 0},
+              "results": [
+                {"pk": 1, "uid": "uid-alice", "username": "alice", "email": "alice@example.invalid", "attributes": {"tenant_id": "tenant-a"}},
+                {"pk": 2, "uid": "uid-bob", "username": "bob", "email": "bob@example.invalid", "attributes": {"tenant_id": "tenant-b"}},
+                {"pk": 3, "uid": "uid-carol", "username": "carol", "email": "carol@example.invalid", "attributes": {}}
+              ]
+            }
+            """);
+
+        var sut = CreateClient(new FakeHttpMessageHandler(page), out _);
+
+        var users = (await sut.ListUsersByTenantAsync("tenant-a")).ToList();
+
+        users.Select(u => u.Username).Should().Equal("alice");
     }
 
     [Fact]
@@ -332,7 +360,10 @@ public sealed class AuthentikAdminClientTests
         users.Should().HaveCount(2);
         users.Select(u => u.Username).Should().BeEquivalentTo(["alice", "carol"]);
         handler.Requests.Should().HaveCount(2);
-        handler.Requests[1].RequestUri!.PathAndQuery.Should().Be("/api/v3/core/users/?page=2");
+        // Every page carries the filter: each page is a fresh query, and one without the filter
+        // would page through the whole directory.
+        handler.Requests.Should().AllSatisfy(r => AttributesFilterOf(r).Should().Be("""{"tenant_id":"tenant-a"}"""));
+        HttpUtility.ParseQueryString(handler.Requests[1].RequestUri!.Query)["page"].Should().Be("2");
     }
 
     /// <summary>
@@ -438,6 +469,69 @@ public sealed class AuthentikAdminClientTests
         handler.Requests[0].Method.Should().Be(HttpMethod.Get);
     }
 
+    // ── CSR round 12 §2.1: one user by pk ──────────────────────────────────────────────────────
+
+    private const string UserTwelve = """
+        {"pk": 12, "uid": "uid-twelve", "username": "twelve", "email": "twelve@example.invalid", "is_active": true,
+         "groups": ["22222222-2222-2222-2222-222222222222"], "attributes": {"tenant_id": "tenant-a"}}
+        """;
+
+    [Fact]
+    public async Task GetUserAsync_ReadsTheUserByPk()
+    {
+        var sut = CreateClient(new FakeHttpMessageHandler(JsonResponse(HttpStatusCode.OK, UserTwelve)), out var handler);
+
+        var user = await sut.GetUserAsync("12");
+
+        user.Should().BeEquivalentTo(
+            new IdpUserRecord("12", "twelve", "twelve@example.invalid", "uid-twelve", true,
+                ["22222222-2222-2222-2222-222222222222"], "tenant-a"),
+            options => options.ComparingByMembers<IdpUserRecord>());
+        handler.Requests.Should().ContainSingle();
+        handler.Requests[0].Method.Should().Be(HttpMethod.Get);
+        handler.Requests[0].RequestUri!.PathAndQuery.Should().Be("/api/v3/core/users/12/");
+    }
+
+    [Fact]
+    public async Task GetUserAsync_UserWithNoTenantId_HasANullTenant()
+    {
+        var sut = CreateClient(new FakeHttpMessageHandler(JsonResponse(HttpStatusCode.OK,
+            """{"pk": 12, "uid": "uid-twelve", "username": "twelve", "email": "", "is_active": false, "groups": [], "attributes": {}}""")),
+            out _);
+
+        var user = await sut.GetUserAsync("12");
+
+        user!.TenantId.Should().BeNull();
+        user.IsActive.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetUserAsync_NotFound_ReturnsNull()
+    {
+        var sut = CreateClient(new FakeHttpMessageHandler(
+            JsonResponse(HttpStatusCode.NotFound, """{"detail":"No User matches the given query."}""")), out _);
+
+        (await sut.GetUserAsync("12")).Should().BeNull();
+    }
+
+    // The tenant check must run against the requested user: an answer about another pk is no record
+    // of it.
+    [Fact]
+    public async Task GetUserAsync_ReturnedPkDiffersFromTheRequestedOne_ReturnsNull()
+    {
+        var sut = CreateClient(new FakeHttpMessageHandler(JsonResponse(HttpStatusCode.OK, UserTwelve)), out _);
+
+        (await sut.GetUserAsync("13")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetUserAsync_OtherFailure_ThrowsHttpRequestException()
+    {
+        var sut = CreateClient(new FakeHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.Forbidden)), out _);
+
+        await sut.Invoking(s => s.GetUserAsync("12")).Should().ThrowAsync<HttpRequestException>();
+    }
+
     [Fact]
     public async Task DeactivateUserAsync_SendsPatchWithIsActiveFalse()
     {
@@ -483,152 +577,79 @@ public sealed class AuthentikAdminClientTests
     }
 
     private const string TenantAdminsPk = "22222222-2222-2222-2222-222222222222";
-    private const string OtherGroupPk = "44444444-4444-4444-4444-444444444444";
 
     private static HttpResponseMessage TenantAdminsLookup() => JsonResponse(HttpStatusCode.OK,
         $$"""{"pagination":{"next":0},"results":[{"pk":"{{TenantAdminsPk}}","name":"tenant-admins"}]}""");
 
-    private static HttpResponseMessage UserWithGroups(params string[] groupPks) => JsonResponse(
-        HttpStatusCode.OK,
-        $$"""{"pk":9,"username":"u","groups":[{{string.Join(",", groupPks.Select(pk => $"\"{pk}\""))}}]}""");
-
     /// <summary>
-    /// CSR round-3 finding #1: membership must NOT go through
-    /// <c>POST /api/v3/core/groups/{pk}/add_user/</c>. That endpoint is gated on the global
-    /// <c>authentik_core.add_user_to_group</c> permission, which means "add any user to any
-    /// group" — including <c>authentik Admins</c>, with no superuser check on that code path —
-    /// so the orchestrator role no longer holds it. Membership is written through the user
-    /// instead, which needs only the object-scoped <c>change_user</c>.
+    /// CSR round 12 §2.4: membership goes through the group's own add_user/remove_user actions,
+    /// which honour the object-level permission the orchestrator holds on tenant-admins only. The
+    /// user PATCH of <c>groups</c> checked no permission on the group, and is gone.
     /// </summary>
     [Fact]
-    public async Task AddGroupAsync_ResolvesGroupThenPatchesTheUsersGroupList()
+    public async Task AddGroupAsync_ResolvesTheGroupThenPostsTheUserToItsAddUserAction()
     {
         var sut = CreateClient(
-            new FakeHttpMessageHandler(
-                TenantAdminsLookup(),
-                UserWithGroups(OtherGroupPk),
-                JsonResponse(HttpStatusCode.OK, "{}")),
+            new FakeHttpMessageHandler(TenantAdminsLookup(), new HttpResponseMessage(HttpStatusCode.NoContent)),
             out var handler);
 
         await sut.AddGroupAsync("9", "tenant-admins");
 
-        handler.Requests.Should().HaveCount(3);
-        handler.Requests[0].RequestUri!.PathAndQuery.Should().Be("/api/v3/core/groups/?name=tenant-admins");
-        handler.Requests[1].Method.Should().Be(HttpMethod.Get);
-        handler.Requests[1].RequestUri!.AbsolutePath.Should().Be("/api/v3/core/users/9/");
-        handler.Requests[2].Method.Should().Be(HttpMethod.Patch);
-        handler.Requests[2].RequestUri!.AbsolutePath.Should().Be("/api/v3/core/users/9/");
-
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests[0].Method.Should().Be(HttpMethod.Get);
+        handler.Requests[0].RequestUri!.PathAndQuery.Should().Be("/api/v3/core/groups/?name=tenant-admins&include_users=false");
+        handler.Requests[1].Method.Should().Be(HttpMethod.Post);
+        handler.Requests[1].RequestUri!.AbsolutePath.Should().Be($"/api/v3/core/groups/{TenantAdminsPk}/add_user/");
+        using var body = JsonDocument.Parse(handler.RequestBodies[1]!);
+        body.RootElement.GetProperty("pk").GetInt32().Should().Be(9);
         handler.Requests.Should().NotContain(
-            r => r.RequestUri!.AbsolutePath.Contains("/add_user/"),
-            "the group add_user action requires the global add_user_to_group permission that CSR " +
-            "round-3 finding #1 removed from the orchestrator role");
-
-        using var body = JsonDocument.Parse(handler.RequestBodies[2]!);
-        var groups = body.RootElement.GetProperty("groups").EnumerateArray().Select(g => g.GetString()).ToArray();
-        groups.Should().BeEquivalentTo([OtherGroupPk, TenantAdminsPk],
-            "the PATCH replaces the whole list, so every group the user already had must be carried over");
+            r => r.Method == HttpMethod.Patch || r.RequestUri!.AbsolutePath.StartsWith("/api/v3/core/users/"));
     }
 
     [Fact]
-    public async Task AddGroupAsync_UserAlreadyInGroup_DoesNotPatch()
+    public async Task RemoveGroupAsync_ResolvesTheGroupThenPostsTheUserToItsRemoveUserAction()
     {
         var sut = CreateClient(
-            new FakeHttpMessageHandler(TenantAdminsLookup(), UserWithGroups(TenantAdminsPk)),
-            out var handler);
-
-        await sut.AddGroupAsync("9", "tenant-admins");
-
-        handler.Requests.Should().HaveCount(2, "a no-change membership write should spend no PATCH");
-        handler.Requests.Should().NotContain(r => r.Method == HttpMethod.Patch);
-    }
-
-    [Fact]
-    public async Task RemoveGroupAsync_ResolvesGroupThenPatchesTheGroupOutOfTheUsersList()
-    {
-        var sut = CreateClient(
-            new FakeHttpMessageHandler(
-                TenantAdminsLookup(),
-                UserWithGroups(OtherGroupPk, TenantAdminsPk),
-                JsonResponse(HttpStatusCode.OK, "{}")),
-            out var handler);
-
-        await sut.RemoveGroupAsync("9", "tenant-admins");
-
-        handler.Requests.Should().HaveCount(3);
-        handler.Requests[2].Method.Should().Be(HttpMethod.Patch);
-        handler.Requests[2].RequestUri!.AbsolutePath.Should().Be("/api/v3/core/users/9/");
-        handler.Requests.Should().NotContain(r => r.RequestUri!.AbsolutePath.Contains("/remove_user/"));
-
-        using var body = JsonDocument.Parse(handler.RequestBodies[2]!);
-        var groups = body.RootElement.GetProperty("groups").EnumerateArray().Select(g => g.GetString()).ToArray();
-        groups.Should().BeEquivalentTo([OtherGroupPk],
-            "removing one group must not drop the user's other memberships");
-    }
-
-    [Fact]
-    public async Task RemoveGroupAsync_UserNotInGroup_DoesNotPatch()
-    {
-        var sut = CreateClient(
-            new FakeHttpMessageHandler(TenantAdminsLookup(), UserWithGroups(OtherGroupPk)),
+            new FakeHttpMessageHandler(TenantAdminsLookup(), new HttpResponseMessage(HttpStatusCode.NoContent)),
             out var handler);
 
         await sut.RemoveGroupAsync("9", "tenant-admins");
 
         handler.Requests.Should().HaveCount(2);
-        handler.Requests.Should().NotContain(r => r.Method == HttpMethod.Patch);
-    }
-
-    /// <summary>
-    /// The groups PATCH is a whole-list write, so an unrecognised user payload must abort rather
-    /// than PATCH a list rebuilt from nothing — that would silently strip every other group the
-    /// user belongs to.
-    /// </summary>
-    [Theory]
-    [InlineData("""{"pk":9,"username":"u"}""")]                 // no "groups" property at all
-    [InlineData("""{"pk":9,"username":"u","groups":null}""")]   // present but not an array
-    [InlineData("""{"pk":9,"username":"u","groups":"none"}""")]
-    public async Task AddGroupAsync_UserResponseHasNoGroupsArray_ThrowsWithoutPatching(string userJson)
-    {
-        var sut = CreateClient(
-            new FakeHttpMessageHandler(TenantAdminsLookup(), JsonResponse(HttpStatusCode.OK, userJson)),
-            out var handler);
-
-        await sut.Invoking(s => s.AddGroupAsync("9", "tenant-admins"))
-                 .Should().ThrowAsync<InvalidOperationException>()
-                 .WithMessage("*groups*");
-
-        handler.Requests.Should().NotContain(r => r.Method == HttpMethod.Patch);
+        handler.Requests[1].Method.Should().Be(HttpMethod.Post);
+        handler.Requests[1].RequestUri!.AbsolutePath.Should().Be($"/api/v3/core/groups/{TenantAdminsPk}/remove_user/");
+        using var body = JsonDocument.Parse(handler.RequestBodies[1]!);
+        body.RootElement.GetProperty("pk").GetInt32().Should().Be(9);
+        handler.Requests.Should().NotContain(
+            r => r.Method == HttpMethod.Patch || r.RequestUri!.AbsolutePath.StartsWith("/api/v3/core/users/"));
     }
 
     [Fact]
-    public async Task AddGroupAsync_UserReadFails_ThrowsHttpRequestException()
-    {
-        var sut = CreateClient(
-            new FakeHttpMessageHandler(TenantAdminsLookup(), new HttpResponseMessage(HttpStatusCode.Forbidden)),
-            out var handler);
-
-        await sut.Invoking(s => s.AddGroupAsync("9", "tenant-admins"))
-                 .Should().ThrowAsync<HttpRequestException>();
-
-        handler.Requests.Should().NotContain(r => r.Method == HttpMethod.Patch);
-    }
-
-    [Fact]
-    public async Task AddGroupAsync_SendsPatchBodyWithContentLength_NotChunked()
+    public async Task AddGroupAsync_ActionRefused_ThrowsHttpRequestExceptionCarryingAuthentiksAnswer()
     {
         var sut = CreateClient(
             new FakeHttpMessageHandler(
                 TenantAdminsLookup(),
-                UserWithGroups(),
-                JsonResponse(HttpStatusCode.OK, "{}")),
+                JsonResponse(HttpStatusCode.Forbidden, """{"detail":"You do not have permission to perform this action."}""")),
+            out _);
+
+        await sut.Invoking(s => s.AddGroupAsync("9", "tenant-admins"))
+                 .Should().ThrowAsync<HttpRequestException>()
+                 .WithMessage("*403*permission*");
+    }
+
+    [Fact]
+    public async Task AddGroupAsync_SendsBodyWithContentLength_NotChunked()
+    {
+        var sut = CreateClient(
+            new FakeHttpMessageHandler(TenantAdminsLookup(), new HttpResponseMessage(HttpStatusCode.NoContent)),
             out var handler);
 
         await sut.AddGroupAsync("9", "tenant-admins");
 
-        handler.BodyFraming.Should().HaveCount(1);
-        handler.BodyFraming[0].ContentLength.Should().NotBeNull();
-        handler.BodyFraming[0].Chunked.Should().NotBe(true);
+        var post = handler.BodyFraming.Should().ContainSingle().Subject;
+        post.ContentLength.Should().NotBeNull();
+        post.Chunked.Should().NotBe(true);
     }
 
     [Fact]

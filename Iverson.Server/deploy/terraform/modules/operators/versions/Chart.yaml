@@ -19,10 +19,10 @@ dependencies:
   - name: operator
     version: 1.11.5
     repository: https://starrocks.github.io/starrocks-kubernetes-operator
-  # AWS only. Its appVersion must match cluster-aws's EKS kubernetes_version (default "1.30");
-  # 9.37.0 has appVersion 1.30.0. Bump the two together.
+  # AWS only. Its appVersion must match cluster-aws's EKS kubernetes_version (default "1.35");
+  # 9.59.0 has appVersion 1.35.0. Bump the two together.
   - name: cluster-autoscaler
-    version: 9.37.0
+    version: 9.59.0
     repository: https://kubernetes.github.io/autoscaler
   # AWS only. 1.9.0 has appVersion v2.9.0, matching the controller IAM policy cluster-aws commits
   # (files/aws-load-balancer-controller-iam-policy-v2.9.0.json). Bump the two together.

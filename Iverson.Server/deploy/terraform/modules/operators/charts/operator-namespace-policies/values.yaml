@@ -1,0 +1,15 @@
+# CSR round 12 §3.4 (#16). Populated per profile: modules/operators/main.tf's helm_release on the
+# clouds, values-kind.yaml on kind (deploy/kind/setup.sh and setup.ps1). The address ranges the
+# Kubernetes API server connects from and is reached at; the render fails while it is empty.
+apiServerCidrs: []
+# kind only: also governs tigera-operator and iverson-edge, the namespace of the kind gateway, and
+# admits that gateway to istiod.
+kind: false
+# The release whose Postgres (CNPG) and Kafka (Strimzi) pods the operators reconcile, and whose
+# api, admin-ui and Authentik pods the kind gateway reaches.
+release:
+  name: iverson
+  namespace: iverson
+# The kind Gateway's name (deploy/kind/setup.sh): Istio labels its pods
+# gateway.networking.k8s.io/gateway-name=<name>.
+gatewayName: edge

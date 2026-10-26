@@ -1,21 +1,14 @@
-{{/*
-Mirror the security-header block admin-ui's nginx already serves, at the Ingress
-layer, for the controller classes that support it — see charts/admin-ui/templates/
-ingress.yaml for the per-class rationale. The nginx `allow-snippet-annotations`
-controller setting is not external to this repo on the kind profile — see that
-file's comment — and the AGIC "iverson-security-headers" rewrite rule set is not
-provisioned anywhere, so that annotation is opt-in via `ingress.securityHeadersRuleSet`
-(see the admin-ui template and values.yaml). This Ingress serves gRPC, which no
-browser renders as a document, so the mirror's value here is materially lower than
-on the admin-ui Ingress — browser-enforced headers like frame-ancestors and
-X-Frame-Options have no audience on a gRPC response. It is still applied uniformly
-for consistency with the admin-ui Ingress and because the same channel (this API)
-is also reachable from the browser via grpc-web fetches, where CSP connect-src
-still matters.
-*/}}
-{{- $oidcOrigin := printf "%s://authentik.%s" .Values.global.externalScheme .Values.global.ingressHost }}
+{{- if not (dig "gateway" "class" "" .Values.global) }}
+{{- /* CSR round 12 §4.5: rendered only where the profile's own Ingress class is the edge (AWS's alb,
+   Azure's Application Gateway); where global.gateway.class is set, the parent's gateway templates route
+   this host instead. */}}
+{{- include "iverson.refuseRetiredIngressClass" (dict "label" "api.ingress" "className" .Values.ingress.className) }}
 {{- /* CSR round-11 #4, #6: the class's edge → API protocol and port-80 settings (iverson.edgeAnnotations,
-   parent templates/_helpers.tpl), merged over the profile's annotations. */}}
+   parent templates/_helpers.tpl), merged over the profile's annotations. On Azure the security headers
+   admin-ui's own nginx serves are mirrored here through AGIC's rewrite rule set, opt-in via
+   ingress.securityHeadersRuleSet (see charts/admin-ui/templates/ingress.yaml); ALB sets no response
+   headers. This Ingress serves gRPC, which no browser renders as a document, but the same API is also
+   reachable from the browser through grpc-web fetches. */}}
 {{- $backendTls := eq (include "api.backendTls" .) "true" }}
 {{- $edge := include "iverson.edgeAnnotations" (dict "className" .Values.ingress.className "backendTls" $backendTls "grpc" true "trustedRoot" .Values.ingress.appgwTrustedRootCertificate "host" (printf "%s-api" .Release.Name) "probePort" 8081 "probePath" "/health") | fromYaml }}
 {{- $annotations := mergeOverwrite (deepCopy (default dict .Values.ingress.annotations)) $edge }}
@@ -27,17 +20,7 @@ metadata:
     {{- with $annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    {{- if eq .Values.ingress.className "nginx" }}
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      more_set_headers "X-Frame-Options: DENY";
-      more_set_headers "X-Content-Type-Options: nosniff";
-      more_set_headers "Referrer-Policy: no-referrer";
-      more_set_headers "Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' {{ $oidcOrigin }}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'";
-      more_set_headers "Permissions-Policy: camera=(), microphone=(), geolocation=()";
-      {{- if eq .Values.global.externalScheme "https" }}
-      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
-      {{- end }}
-    {{- else if and (eq .Values.ingress.className "azure-application-gateway") .Values.ingress.securityHeadersRuleSet }}
+    {{- if and (eq .Values.ingress.className "azure-application-gateway") .Values.ingress.securityHeadersRuleSet }}
     appgw.ingress.kubernetes.io/rewrite-rule-set: {{ .Values.ingress.securityHeadersRuleSet | quote }}
     {{- end }}
 spec:
@@ -97,3 +80,4 @@ spec:
                 name: {{ .Release.Name }}-api
                 port:
                   number: 8080
+{{- end }}

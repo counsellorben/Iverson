@@ -75,7 +75,7 @@ builder.Services.AddOpenTelemetry()
         }))
     .WithMetrics(metrics => metrics
         .SetResourceBuilder(resource)
-        .AddMeter("Iverson.Events", Iverson.Api.Reconciliation.ReconciliationTelemetry.MeterName)
+        .AddMeter("Iverson.Events", Iverson.Api.Reconciliation.ReconciliationTelemetry.MeterName, Iverson.Api.Tenancy.AuthInvalidationListener.MeterName)
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
         .AddPrometheusExporter());
@@ -99,11 +99,14 @@ builder.Services.AddGrpc(options =>
 {
     options.Interceptors.Add<RateLimitInterceptor>();
     options.Interceptors.Add<ActingUserInterceptor>();
+    // CSR round 12 §2.3: after ActingUserInterceptor, which has set the acting user by the time this runs.
+    options.Interceptors.Add<StreamRevalidationInterceptor>();
 });
 
 // CSR finding #7 (round 7): per-principal rate limit for the /v1/traces relay — 60/min per
 // "sub" claim, sliding window. The gRPC entity API's own per-principal limit is enforced by
-// RateLimitInterceptor (registered above); this policy covers the one HTTP (non-gRPC) endpoint.
+// RateLimitInterceptor (registered above). These named policies cover the HTTP (non-gRPC)
+// endpoints: "traces" the relay, "admin" the Operator admin routes (CSR round 12 §2.1).
 builder.Services.AddRateLimiter(options =>
 {
     // 429 Too Many Requests is the semantically correct rejection status for a rate limit
@@ -118,17 +121,59 @@ builder.Services.AddRateLimiter(options =>
             .LogWarning("[RateLimit] Rejected {Path}", ctx.HttpContext.Request.Path.ToString().SanitizeForLog());
         return ValueTask.CompletedTask;
     };
+    // CSR round 12 §2.2: besides each caller's 60/min, every caller's requests share one ceiling of
+    // 600/min, so the relay as a whole is bounded however many callers there are. A request takes
+    // the caller's permit first, then the shared one (SharedCeilingRateLimiter).
+    var tracesCeiling = new SlidingWindowRateLimiter(new SlidingWindowRateLimiterOptions
+    {
+        PermitLimit = 600,
+        Window = TimeSpan.FromMinutes(1),
+        SegmentsPerWindow = 6,
+        QueueLimit = 0
+    });
     options.AddPolicy("traces", ctx =>
+        RateLimitPartition.Get(
+            ctx.User.FindFirst("sub")?.Value ?? "anon",
+            _ => new SharedCeilingRateLimiter(
+                new SlidingWindowRateLimiter(new SlidingWindowRateLimiterOptions
+                {
+                    PermitLimit = 60,
+                    Window = TimeSpan.FromMinutes(1),
+                    SegmentsPerWindow = 6,
+                    QueueLimit = 0
+                }),
+                tracesCeiling)));
+
+    // CSR round 12 §2.1: the Operator HTTP admin routes (/admin/reconcile/{type}, /admin/dlq, its
+    // replay, and every /admin/console/* route) share one bucket of 30 per minute per caller.
+    // Every admin-automation caller is one user, so automation shares one bucket. /health is not an
+    // admin route.
+    options.AddPolicy("admin", ctx =>
         RateLimitPartition.GetSlidingWindowLimiter(
             ctx.User.FindFirst("sub")?.Value ?? "anon",
             _ => new SlidingWindowRateLimiterOptions
             {
-                PermitLimit = 60,
+                PermitLimit = 30,
                 Window = TimeSpan.FromMinutes(1),
                 SegmentsPerWindow = 6,
                 QueueLimit = 0
             }));
 });
+
+// ── HSTS ───────────────────────────────────────────────────────────────────────
+// CSR round 12 §4.4: the chart sets Hsts:Enabled where global.externalScheme is https. Browsers are
+// then told to reach this host only over HTTPS for a year, subdomains included (no preload). ASP.NET
+// writes the header only on HTTPS requests and never for localhost, so it stays silent where the
+// edge → pod hop is plaintext.
+var hstsEnabled = cfg.GetValue("Hsts:Enabled", false);
+if (hstsEnabled)
+{
+    builder.Services.AddHsts(options =>
+    {
+        options.MaxAge = TimeSpan.FromDays(365);
+        options.IncludeSubDomains = true;
+    });
+}
 
 // ── CORS (admin console) ────────────────────────────────────────────────────────
 // The admin console is served from the shared iverson.local-style hostname while this
@@ -228,14 +273,12 @@ builder.Services.AddAuthorization(options =>
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
+    // CSR round 12 §2.4: Operator comes from the install's operator list (see OperatorSubjects), read at
+    // each decision as ConsoleClient reads its audience, not from the groups claim.
     options.AddPolicy("Operator", policy => policy.RequireAssertion(context =>
-        OperatorAuthorizationPolicy.IsSatisfiedBy(
-            context.User.FindAll("groups").Select(c => c.Value),
-            context.User.FindFirst("scope")?.Value)));
+        OperatorAuthorizationPolicy.IsSatisfiedBy(context.User, OperatorSubjects.FromConfiguration(cfg))));
     options.AddPolicy("SchemaAdmin", policy => policy.RequireAssertion(context =>
-        SchemaAdminAuthorizationPolicy.IsSatisfiedBy(
-            context.User.FindAll("groups").Select(c => c.Value),
-            context.User.FindFirst("scope")?.Value)));
+        SchemaAdminAuthorizationPolicy.IsSatisfiedBy(context.User, OperatorSubjects.FromConfiguration(cfg))));
     options.AddPolicy("TenantAdmin", policy => policy.RequireAssertion(context =>
         TenantAdminAuthorizationPolicy.IsSatisfiedBy(
             context.User.FindAll("groups").Select(c => c.Value))));
@@ -245,6 +288,10 @@ builder.Services.AddAuthorization(options =>
         ConsoleClientAuthorizationPolicy.IsSatisfiedBy(
             context.User.FindAll("aud").Select(c => c.Value),
             cfg["Authentication:ConsoleAudience"])));
+    // CSR round 12 §2.2: the console is for admins only. /v1/traces and the console's schema and
+    // data-volume reads require Operator or TenantAdmin.
+    options.AddPolicy("ConsoleAdmin", policy => policy.RequireAssertion(context =>
+        ConsoleAdminAuthorizationPolicy.IsSatisfiedBy(context.User, OperatorSubjects.FromConfiguration(cfg))));
 });
 
 builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, AuditingAuthorizationMiddlewareResultHandler>();
@@ -419,6 +466,9 @@ builder.Services.AddSingleton<ITokenRevocationRepository>(sp =>
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITokenRevocationCache>(sp =>
     new Iverson.Api.Tenancy.TokenRevocationCache(
         sp.GetRequiredService<ITokenRevocationRepository>(), TimeProvider.System));
+// CSR round 12 §2.1: InviteUser's daily slots. The worker creates the table; the api reserves.
+builder.Services.AddSingleton<IInviteQuotaRepository>(sp =>
+    new InviteQuotaRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
 // CSR round-10 #5: the admin token travels over TLS to the tls-proxy sidecar, trusting only the
@@ -426,6 +476,9 @@ builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>(
 // Development, and the Development test hosts register their own clients.
 var authentikAdminClient = builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName, client =>
 {
+    // CSR round 12 §2.1: a hung Authentik must not hold an admin RPC for HttpClient's 100 s default. The
+    // orchestrator token exchange runs inside the same SendAsync, so this bounds it too.
+    client.Timeout = TimeSpan.FromSeconds(10);
     if (cfg["Authentik:BaseUrl"] is { Length: > 0 } authentikBaseUrl)
         client.BaseAddress = new Uri(authentikBaseUrl);
     var adminToken = cfg["Authentik:AdminToken"];
@@ -513,12 +566,27 @@ if (workloadRole == "worker")
 // the calling process's own in-memory copy.
 builder.Services.AddHostedService<Iverson.Api.Schema.SchemaRefreshWorker>();
 
+// CSR round 12 §2.3: each api replica hears every revocation and tenant-status write, by any replica or by
+// the worker, and drops its caches within seconds instead of on their 30 s TTL. The worker serves no
+// tenant traffic, so it keeps the TTL alone.
+if (workloadRole == "api")
+    builder.Services.AddHostedService<Iverson.Api.Tenancy.AuthInvalidationListener>();
+
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
 // CSR round-10 #5: outside Development the api role reaches Authentik only over TLS, trusting only
 // the CA the deployment mounts.
 Iverson.Api.Tenancy.AuthentikTrust.ValidateStartup(app.Configuration, workloadRole, app.Environment);
-app.MapPrometheusScrapingEndpoint().AllowAnonymous().WithMetadata(new RequireListenerPort(8081));
+// CSR round 12 §2.4: compose's dev-only group fallback. Only docker-compose.yml sets it, and the chart never
+// renders it; say so loudly if it is ever set anywhere else.
+if (OperatorSubjects.FromConfiguration(app.Configuration).GroupFallback is { } operatorGroupFallback)
+    app.Logger.LogWarning(
+        "Authorization:OperatorGroupFallback is set: every member of the '{OperatorGroup}' group is an Operator. "
+        + "Only the compose development stack sets this.",
+        operatorGroupFallback);
+// CSR round 12 §3.3 (#6): /metrics and /build answer only on the metrics listener (8082), which
+// NetworkPolicy opens to Prometheus alone; 8081 keeps /admin, /health and /v1/traces.
+app.MapPrometheusScrapingEndpoint().AllowAnonymous().WithMetadata(new RequireListenerPort(8082));
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
@@ -537,9 +605,13 @@ preAuthOptions.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string
 // the real per-sub policy, which has no "sub" claim to key on this early): the real 60/min budget
 // stays enforced by the unchanged post-auth limiter below.
 preAuthOptions.AddPolicy("traces", _ => RateLimitPartition.GetNoLimiter<string>("unlimited"));
+// The same for "admin" (CSR round 12 §2.1): its 30/min per-sub budget is the post-auth one.
+preAuthOptions.AddPolicy("admin", _ => RateLimitPartition.GetNoLimiter<string>("unlimited"));
 
 app.Use(ListenerPortGateAsync);
 app.UseRateLimiter(preAuthOptions);
+if (hstsEnabled)
+    app.UseHsts();
 app.UseHttpsRedirection();
 
 // Must run before UseAuthentication: a cross-origin preflight OPTIONS carries no
@@ -576,7 +648,7 @@ app.MapGet("/build", () =>
 {
     var (composite, assemblies) = BuildIdentity.Compute();
     return Results.Ok(new { composite, assemblies });
-}).WithName("BuildIdentity").AllowAnonymous().WithMetadata(new RequireListenerPort(8081));
+}).WithName("BuildIdentity").AllowAnonymous().WithMetadata(new RequireListenerPort(8082));
 
 app.MapGet("/health", async (
     IRecordStoreQueryExecutor db,
@@ -651,9 +723,7 @@ app.MapPost("/admin/reconcile/{typeName}", async (
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
         return Results.Unauthorized();
 
-    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(
-        actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
-        actingUserResult.Principal.FindFirst("scope")?.Value);
+    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(actingUserResult.Principal, OperatorSubjects.FromConfiguration(cfg));
     if (!isOperator)
         return Results.Forbid();
 
@@ -670,7 +740,7 @@ app.MapPost("/admin/reconcile/{typeName}", async (
         () => audit.AdminOperation(httpContext.User, "Reconcile", typeName),
         result => Results.Ok(new { reconciledCount = result.Count, typeName }),
         httpContext.RequestAborted);
-}).WithName("Reconcile").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
+}).WithName("Reconcile").RequireRateLimiting("admin").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
 {
@@ -678,9 +748,7 @@ app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantS
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
         return Results.Unauthorized();
 
-    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(
-        actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
-        actingUserResult.Principal.FindFirst("scope")?.Value);
+    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(actingUserResult.Principal, OperatorSubjects.FromConfiguration(cfg));
     var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
 
     // CSR round 11 #21: an acting user whose tenant is not active is refused, as on the gRPC
@@ -706,7 +774,7 @@ app.MapGet("/admin/dlq", async (IDlqRepository dlq, Iverson.Api.Tenancy.ITenantS
     var visible = rows.Where(r => r.TenantId == actingTenantId || (r.TenantId is null && isOperator));
     audit.AdminOperation(httpContext.User, "ListDlq", null);
     return Results.Ok(visible);
-}).WithName("ListDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
+}).WithName("ListDlq").RequireRateLimiting("admin").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
 app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, Iverson.Api.PrivilegedRequests.PrivilegedRequestClient privileged, Iverson.Api.Tenancy.ITenantStatusCache tenantStatusCache, AuditLog audit, HttpContext httpContext) =>
 {
@@ -714,9 +782,7 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, Iverso
     if (!actingUserResult.Succeeded || actingUserResult.Principal is null)
         return Results.Unauthorized();
 
-    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(
-        actingUserResult.Principal.FindAll("groups").Select(c => c.Value),
-        actingUserResult.Principal.FindFirst("scope")?.Value);
+    var isOperator = OperatorAuthorizationPolicy.IsSatisfiedBy(actingUserResult.Principal, OperatorSubjects.FromConfiguration(cfg));
     var actingTenantId = actingUserResult.Principal.FindFirst("tenant_id")?.Value;
 
     // Same inactive-tenant refusal and audit as /admin/dlq (see comment there), BEFORE the row fetch.
@@ -753,12 +819,11 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, Iverso
         () => audit.AdminOperation(httpContext.User, "ReplayDlq", id.ToString()),
         _ => Results.Ok(new { replayed = true, id, topic = row.SourceTopic }),
         httpContext.RequestAborted);
-}).WithName("ReplayDlq").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
+}).WithName("ReplayDlq").RequireRateLimiting("admin").RequireAuthorization("Operator").WithMetadata(new RequireListenerPort(8080));
 
-// The admin console's four read-only JSON endpoints, under the same /admin prefix and — for
-// three of the four — the same Operator policy as the routes above. /admin/console/schema and
-// /admin/console/data-volume are authenticated-only on purpose and pass HttpContext.User to
-// their readers; see AdminConsoleEndpoints for why neither may be normalised to Operator.
+// The admin console's read-only JSON endpoints, under the same /admin prefix. /tenants and /qdrant
+// carry the Operator policy, as the routes above do; /schema and /data-volume require ConsoleAdmin and
+// pass HttpContext.User to their readers; /roles answers the caller's console roles (CSR round 12 §2.2).
 app.MapAdminConsoleEndpoints();
 
 // The console's fifth endpoint, Operator-gated like /tenants and /qdrant above — a Prometheus
@@ -797,6 +862,7 @@ if (workloadRole == "worker")
         app.Services.GetRequiredService<IEnrichmentStateRepository>(),
         app.Services.GetRequiredService<IDocumentRerenderQueueRepository>(),
         app.Services.GetRequiredService<ITokenRevocationRepository>(),
+        app.Services.GetRequiredService<IInviteQuotaRepository>(),
         cfg["Postgres:ApiLoginPassword"],
         TimeSpan.FromMinutes(1));
 
@@ -853,9 +919,10 @@ if (workloadRole == "api")
 
     // Relays the admin-ui browser's OTel Web SDK spans to Jaeger's OTLP/HTTP endpoint.
     // Served by the API so the browser never needs Jaeger's own network address, and limited to
-    // tokens the console's own OIDC client issued (the ConsoleClient policy, CSR round-10 #13),
-    // so only signed-in admin-ui sessions can write traces through it — not service clients or
-    // acting-user tokens.
+    // tokens the console's own OIDC client issued (the ConsoleClient policy, CSR round-10 #13) to
+    // an Operator or a tenant admin (the ConsoleAdmin policy, CSR round 12 §2.2), so only admins'
+    // console sessions can write traces through it — not service clients, acting-user tokens or a
+    // signed-in user with neither role.
     // Body is relayed byte-for-byte (StreamContent straight from the request body), so this
     // must not attempt to parse or re-serialize it. The endpoint's only consumer is the
     // admin UI's browser OTel SDK, whose JsonTraceSerializer hardcodes
@@ -907,7 +974,7 @@ if (workloadRole == "api")
         using var response = await client.PostAsync("/v1/traces", content);
         ctx.Response.StatusCode = (int)response.StatusCode;
         await response.Content.CopyToAsync(ctx.Response.Body);
-    }).RequireAuthorization("ConsoleClient")
+    }).RequireAuthorization("ConsoleClient", "ConsoleAdmin")
         // CSR round 11 #21: the console token's tenant must be active; no tenant_id passes.
         .AddEndpointFilter<ActiveTenantEndpointFilter>()
         .RequireRateLimiting("traces")
@@ -979,10 +1046,11 @@ public partial class Program
     {
         // Exclude the gRPC data plane (already governed by RateLimitInterceptor's own 50,000/min
         // budget) and the anonymous probe/observability endpoints (kubelet, Prometheus — a 429
-        // there pulls the pod out of service). Both are marked RequireListenerPort(8081) or are
-        // gRPC methods, identified the same way Task 1's middleware identifies them, so this
-        // list can never silently diverge from Task 1's own endpoint enumeration.
-        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
+        // there pulls the pod out of service). Both are marked RequireListenerPort(8081), or (8082)
+        // for the metrics listener (CSR round 12 §3.3), or are gRPC methods, identified the same
+        // way Task 1's middleware identifies them, so this list can never silently diverge from
+        // Task 1's own endpoint enumeration.
+        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port is 8081 or 8082;
         var isGrpcCall = ctx.Request.ContentType?.StartsWith("application/grpc") == true;
         if (isHealthListenerEndpoint || isGrpcCall)
             // A constant key, not the request path: PartitionedRateLimiter.Create caches one
@@ -1012,7 +1080,7 @@ public partial class Program
         // runs post-auth), so they have no rate-limit coverage outside this pre-auth limiter.
         // Excluding gRPC here would leave garbage-token gRPC calls with zero rate limiting,
         // reopening the vulnerability this pre-auth limiter exists to close.
-        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port == 8081;
+        var isHealthListenerEndpoint = ctx.GetEndpoint()?.Metadata.GetMetadata<RequireListenerPort>()?.Port is 8081 or 8082;
         if (isHealthListenerEndpoint)
             return RateLimitPartition.GetNoLimiter("unlimited");
 
@@ -1032,24 +1100,21 @@ public partial class Program
 
     /// <summary>
     /// CSR round-10 #11: both JwtBearer schemes' <c>OnTokenValidated</c>. Refuses a token whose
-    /// <c>sub</c> was revoked (a removed user, or a demoted tenant admin) at or after its
-    /// <c>iat</c>; a token with no <c>iat</c> cannot show it came later, so it is refused too.
+    /// <c>sub</c> was revoked (a removed user, or a demoted tenant admin) after, or less than 5 s
+    /// before, its <c>iat</c> (the clock-skew margin, CSR round 12 §2.3); a token with no <c>iat</c>
+    /// cannot show it came later, so it is refused too.
     /// The default scheme then answers 401 / Unauthenticated, and the ActingUser scheme's callers
     /// treat the failed result as an invalid acting-user token. Service clients' subs are never
     /// revoked, so they always pass.
     /// </summary>
     internal static async Task RejectRevokedTokenAsync(TokenValidatedContext context)
     {
-        var sub = context.Principal?.FindFirst("sub")?.Value;
-        if (sub is null)
+        if (context.Principal is null)
             return;
 
-        DateTimeOffset? issuedAt = long.TryParse(context.Principal!.FindFirst("iat")?.Value, out var iat)
-            ? DateTimeOffset.FromUnixTimeSeconds(iat)
-            : null;
-
+        // The same check StreamRevalidationInterceptor runs before every streamed message.
         var revocations = context.HttpContext.RequestServices.GetRequiredService<Iverson.Api.Tenancy.ITokenRevocationCache>();
-        if (await revocations.IsRevokedAsync(sub, issuedAt, context.HttpContext.RequestAborted))
+        if (await Iverson.Api.Tenancy.TokenRevocationCheck.IsRevokedAsync(revocations, context.Principal, context.HttpContext.RequestAborted))
             context.Fail("Token has been revoked.");
     }
 

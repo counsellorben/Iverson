@@ -1,5 +1,13 @@
+admission:
+  operatorGroups: ["iverson-operators@iverson-ci-test.example.org"]
 global:
   ingressHost: "iverson-ci-test.example.org"
+  gateway:
+    addressName: "iverson-gateway"
+  # CSR round 12 §2.4: a cloud render fails with no operator subject; CI renders with a dummy one.
+  operatorSubjects:
+    - "ci-dummy-operator-subject"
 authentik:
+  serviceAccountIssuer: "https://container.googleapis.com/v1/projects/iverson-ci/locations/us-east1/clusters/iverson"
   ingress:
     securityPolicy: "iverson-authentik-login"

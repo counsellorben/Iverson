@@ -104,6 +104,56 @@ resource "azurerm_key_vault_access_policy" "des" {
   key_permissions = ["Get", "WrapKey", "UnwrapKey"]
 }
 
+# CSR round 12 §3.4 (#16): etcd encryption of Kubernetes Secrets under a customer-managed key (AKS KMS,
+# key_management_service on the cluster). A dedicated vault, because AKS KMS does not support the
+# data-volume vault's firewall mode (public access from listed IP addresses only): this one allows
+# public network access and admits callers through its access policies alone, and keeps purge
+# protection. AKS reaches it with the control plane's user-assigned identity.
+# AKS KMS needs public network access with access policies; no network ACL can be set.
+#tfsec:ignore:azure-keyvault-specify-network-acl
+resource "azurerm_key_vault" "kms" {
+  name                          = "${var.cluster_name}-kms-kv"
+  location                      = azurerm_resource_group.this.location
+  resource_group_name           = azurerm_resource_group.this.name
+  tenant_id                     = data.azurerm_client_config.current.tenant_id
+  sku_name                      = "standard"
+  purge_protection_enabled      = true
+  soft_delete_retention_days    = 30
+  public_network_access_enabled = true
+}
+
+# KMS-only and purge-protected; rotated rather than expired (a new key version, then
+# key_management_service.key_vault_key_id updated to it).
+#tfsec:ignore:azure-keyvault-ensure-key-expiry
+resource "azurerm_key_vault_key" "kms" {
+  name         = "etcd-kms"
+  key_vault_id = azurerm_key_vault.kms.id
+  key_type     = "RSA"
+  key_size     = 2048
+  key_opts     = ["decrypt", "encrypt"]
+
+  depends_on = [azurerm_key_vault_access_policy.kms_terraform]
+}
+
+# The deploying principal creates and manages the key.
+resource "azurerm_key_vault_access_policy" "kms_terraform" {
+  key_vault_id = azurerm_key_vault.kms.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = data.azurerm_client_config.current.object_id
+
+  key_permissions = ["Create", "Delete", "Get", "List", "Purge", "Recover", "Update", "GetRotationPolicy"]
+}
+
+# Encrypt and decrypt, the two operations AKS KMS performs, for the control plane's identity. It must
+# be in place before KMS is turned on (the cluster depends on it).
+resource "azurerm_key_vault_access_policy" "kms_control_plane" {
+  key_vault_id = azurerm_key_vault.kms.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = azurerm_user_assigned_identity.control_plane.principal_id
+
+  key_permissions = ["Encrypt", "Decrypt"]
+}
+
 # Grants the AKS cluster's control-plane identity (user-assigned, see below) Reader
 # access to the disk encryption set. Without this, disk.csi.azure.com cannot
 # create a managed disk referencing this DES and every Azure PVC stays
@@ -208,6 +258,10 @@ resource "azurerm_kubernetes_cluster" "this" {
 
   role_based_access_control_enabled = true
 
+  # CSR round-12 §2.6: the service-account issuer, which the Authentik workload pins compare
+  # (output service_account_issuer). It cannot be disabled once enabled.
+  oidc_issuer_enabled = true
+
   # CSR round-10 #6: no local accounts, so no static cluster-admin certificate exists to copy
   # out of state. `managed = true` is mandatory in azurerm 3.x for AKS-managed Entra integration.
   local_account_disabled = true
@@ -241,6 +295,8 @@ resource "azurerm_kubernetes_cluster" "this" {
     azurerm_role_assignment.control_plane_aks_subnet,
     azurerm_role_assignment.control_plane_apiserver_subnet,
     azurerm_role_assignment.aks_data_volumes_des,
+    # CSR round 12 §3.4: KMS needs the control plane's access policy before it is turned on.
+    azurerm_key_vault_access_policy.kms_control_plane,
   ]
 
   # network_policy = "azure" is what makes the companion Helm chart plan's
@@ -266,6 +322,13 @@ resource "azurerm_kubernetes_cluster" "this" {
   # Standard_v2 gateway, which could carry no WAF policy.
   ingress_application_gateway {
     gateway_id = azurerm_application_gateway.agic.id
+  }
+
+  # CSR round 12 §3.4: etcd encryption with the dedicated KMS key above, over public network access
+  # (see the vault's comment).
+  key_management_service {
+    key_vault_key_id         = azurerm_key_vault_key.kms.id
+    key_vault_network_access = "Public"
   }
 
   oms_agent {

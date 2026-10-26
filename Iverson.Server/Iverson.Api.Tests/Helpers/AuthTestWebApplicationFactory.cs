@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace Iverson.Api.Tests.Helpers;
 
@@ -22,6 +23,15 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
     /// and Authentication:ConsoleAudience, the only audience /v1/traces accepts.
     /// </summary>
     public const string ConsoleAudience = "test-console-audience";
+
+    /// <summary>
+    /// CSR round 12 §2.4: this test host's operator list (Authorization:OperatorSubjects). A service
+    /// token or console token with one of the first two subjects is an Operator; the third is for acting
+    /// users. A <c>groups: operators</c> claim is not, because this host sets no group fallback.
+    /// </summary>
+    public const string OperatorSubject = "test-operator";
+    public const string HumanOperatorSubject = "human-operator";
+    public const string ActingOperatorSubject = "test-acting-operator";
 
     static AuthTestWebApplicationFactory()
     {
@@ -47,11 +57,21 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
         Environment.SetEnvironmentVariable("Qdrant__ApiKey", "test-auth-pipeline-signing-key-0123456789abcdef");
     }
 
+    /// <summary>
+    /// Whether Program.cs registered the auth-invalidation listener in this host (CSR round 12 §2.3). The
+    /// host removes it again, so no test host dials the Postgres that appsettings.Development.json names;
+    /// this records that the api role had registered it.
+    /// </summary>
+    public bool AuthInvalidationListenerWasRegistered { get; private set; }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         // The ConsoleClient policy's audience (/v1/traces). A test overrides it the same way, via
         // WithWebHostBuilder; TracesRelayEndpointTests' unset case does.
         builder.UseSetting("Authentication:ConsoleAudience", ConsoleAudience);
+        builder.UseSetting("Authorization:OperatorSubjects:0", OperatorSubject);
+        builder.UseSetting("Authorization:OperatorSubjects:1", HumanOperatorSubject);
+        builder.UseSetting("Authorization:OperatorSubjects:2", ActingOperatorSubject);
 
         builder.ConfigureServices(services =>
         {
@@ -78,6 +98,15 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<IDlqRepository>();
             services.AddSingleton<IDlqRepository, NoOpDlqRepository>();
+
+            var listener = services.SingleOrDefault(d =>
+                d.ServiceType == typeof(IHostedService)
+                && d.ImplementationType == typeof(Iverson.Api.Tenancy.AuthInvalidationListener));
+            if (listener is not null)
+            {
+                services.Remove(listener);
+                AuthInvalidationListenerWasRegistered = true;
+            }
 
             services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
             {

@@ -157,6 +157,12 @@ resource "google_container_cluster" "this" {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
 
+  # CSR round 12 §3.1: Google Groups for RBAC, so the operators' Google Group (values-gcp.yaml's
+  # admission.operatorGroups, a member of this group) reaches the API server in the request's groups.
+  authenticator_groups_config {
+    security_group = var.rbac_security_group
+  }
+
   database_encryption {
     state    = "ENCRYPTED"
     key_name = google_kms_crypto_key.gke_secrets.id
@@ -193,8 +199,30 @@ resource "google_container_cluster" "this" {
     }
   }
 
+  # CSR round 12 §4.5: the Gateway API, which the chart's GKE Gateway (class
+  # gke-l7-global-external-managed) and its routes and policies need. GKE manages the CRDs.
+  gateway_api_config {
+    channel = "CHANNEL_STANDARD"
+  }
+
   resource_labels = {
     app = "iverson"
+  }
+}
+
+# CSR round 12 §3.4: the private cluster's control plane reaches the nodes only on the ports GKE's own
+# firewall rule opens, so the admission webhooks on other ports (CNPG 9443, istiod 15017) are
+# unreachable without this rule.
+resource "google_compute_firewall" "control_plane_webhooks" {
+  name                    = "${var.cluster_name}-control-plane-webhooks"
+  network                 = google_compute_network.this.name
+  direction               = "INGRESS"
+  source_ranges           = [google_container_cluster.this.private_cluster_config[0].master_ipv4_cidr_block]
+  target_service_accounts = [google_service_account.gke_nodes.email]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["9443", "15017"]
   }
 }
 

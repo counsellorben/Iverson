@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Claims;
 using System.Text;
 using FluentAssertions;
 using Iverson.Api.Tests.Helpers;
@@ -36,13 +37,17 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
         }
     }
 
+    // A tenant admin's console role: /v1/traces requires ConsoleAdmin (CSR round 12 §2.2).
+    private static readonly Claim[] TenantAdminClaims = [new Claim("groups", "tenant-admins")];
+
     // The token's audience defaults to the console's, the only one /v1/traces accepts (CSR
-    // round-10 #13). configuredConsoleAudience, when given, replaces the factory's
-    // Authentication:ConsoleAudience.
+    // round-10 #13), and its claims to a tenant admin's. configuredConsoleAudience, when given,
+    // replaces the factory's Authentication:ConsoleAudience.
     private (HttpClient Client, FakeJaegerHandler JaegerHandler) CreateAuthenticatedClient(
         string subject = "trace-relay-test-user",
         string audience = AuthTestWebApplicationFactory.ConsoleAudience,
-        string? configuredConsoleAudience = null)
+        string? configuredConsoleAudience = null,
+        Claim[]? claims = null)
     {
         var jaegerHandler = new FakeJaegerHandler();
         var factory = _baseFactory.WithWebHostBuilder(builder =>
@@ -63,8 +68,40 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
 
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", TestJwtFactory.CreateToken(audience, subject));
+            new AuthenticationHeaderValue("Bearer",
+                TestJwtFactory.CreateToken(audience, subject, extraClaims: claims ?? TenantAdminClaims));
         return (client, jaegerHandler);
+    }
+
+    // CSR round 12 §2.2: only admins post traces. A console token of a signed-in user with neither
+    // role is the console's own audience, so ConsoleClient alone admitted it.
+    [Fact]
+    public async Task PostTraces_ConsoleTokenOfAUserWithNeitherRole_Returns403_AndIsNeverForwarded()
+    {
+        var (client, jaegerHandler) = CreateAuthenticatedClient(subject: "trace-relay-ordinary-user", claims: []);
+
+        using var content = new ByteArrayContent(Encoding.UTF8.GetBytes("""{"resourceSpans":[]}"""));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        var response = await client.PostAsync("/v1/traces", content);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        jaegerHandler.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task PostTraces_ConsoleTokenOfAListedOperator_IsAccepted()
+    {
+        var (client, jaegerHandler) = CreateAuthenticatedClient(
+            subject: AuthTestWebApplicationFactory.HumanOperatorSubject, claims: []);
+
+        using var content = new ByteArrayContent(Encoding.UTF8.GetBytes("""{"resourceSpans":[]}"""));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        var response = await client.PostAsync("/v1/traces", content);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        jaegerHandler.CallCount.Should().Be(1);
     }
 
     [Fact]
@@ -191,5 +228,37 @@ public class TracesRelayEndpointTests : IClassFixture<AuthTestWebApplicationFact
             last = await client.PostAsync("/v1/traces", content);
         }
         last!.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
+    }
+
+    // CSR round 12 §2.2: besides each caller's 60/min, every caller shares one ceiling of 600/min.
+    // Ten callers spend 60 each; the eleventh caller's first request is refused although its own
+    // budget is untouched. The tokens carry tenant-admins, the role §2.2's ConsoleAdmin admits.
+    [Fact]
+    public async Task The_601st_request_within_a_minute_across_all_callers_is_rejected()
+    {
+        var jaegerHandler = new FakeJaegerHandler();
+        var client = _baseFactory.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+                services.AddHttpClient("JaegerOtlpHttp").ConfigurePrimaryHttpMessageHandler(() => jaegerHandler)))
+            .CreateClient();
+
+        async Task<HttpStatusCode> PostAs(string subject)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/traces")
+            {
+                Content = new ByteArrayContent(Encoding.UTF8.GetBytes("""{"resourceSpans":[]}"""))
+            };
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", TestJwtFactory.CreateToken(
+                AuthTestWebApplicationFactory.ConsoleAudience, subject, extraClaims: [new Claim("groups", "tenant-admins")]));
+            using var response = await client.SendAsync(request);
+            return response.StatusCode;
+        }
+
+        for (var caller = 0; caller < 10; caller++)
+            for (var i = 0; i < 60; i++)
+                (await PostAs($"traces-ceiling-caller-{caller}")).Should().Be(HttpStatusCode.Accepted);
+
+        (await PostAs("traces-ceiling-caller-10")).Should().Be(HttpStatusCode.TooManyRequests);
+        jaegerHandler.CallCount.Should().Be(600);
     }
 }

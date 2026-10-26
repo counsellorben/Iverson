@@ -109,4 +109,32 @@ public class TenantRepositoryTests
             Arg.Is<string>(s => s.Contains($"DELETE FROM \"{TableName}\"") && s.Contains("WHERE \"Id\" = @Id")),
             Arg.Any<object?>());
     }
+
+    // CSR round 12 §2.3: every write to the tenant registry notifies the api replicas' listeners in the
+    // write's own statement, so the notification is sent exactly when the write commits.
+    [Theory]
+    [InlineData("Insert")]
+    [InlineData("SeedIfMissing")]
+    [InlineData("UpdateStatus")]
+    [InlineData("UpdateStatusUnlessDeleted")]
+    [InlineData("Delete")]
+    public async Task EveryWrite_NotifiesTheAuthInvalidationChannel_InTheSameStatement(string write)
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        var repo = new TenantRepository(TableName, sql);
+
+        await (write switch
+        {
+            "Insert"                    => repo.InsertAsync("tenant-1", "Display Name", "active"),
+            "SeedIfMissing"             => repo.SeedIfMissingAsync("tenant-1", "Display Name", "active"),
+            "UpdateStatus"              => repo.UpdateStatusAsync("tenant-1", "suspended"),
+            "UpdateStatusUnlessDeleted" => (Task)repo.UpdateStatusUnlessDeletedAsync("tenant-1", "active"),
+            "Delete"                    => repo.DeleteAsync("tenant-1"),
+            _ => throw new ArgumentOutOfRangeException(nameof(write), write, null)
+        });
+
+        await sql.Received(1).ExecuteAsync(
+            Arg.Is<string>(s => s.Contains("RETURNING pg_notify('iverson_auth_invalidation', 'tenant-status')")),
+            Arg.Any<object?>());
+    }
 }

@@ -1,6 +1,8 @@
 import { StrictMode } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ConsoleRolesContext } from "../auth/roles";
+import type { ConsoleRoleState } from "../auth/roles";
 import { LandingPage } from "./LandingPage";
 
 const useAuthMock = vi.fn();
@@ -35,7 +37,10 @@ const ALL_MOCKS = [
   fetchQdrantMock,
 ];
 
-/** Every card's `data-testid`. Nine cards over six fetchers — Band B's four share one poll. */
+const OPERATOR: ConsoleRoleState = { status: "ready", roles: { operator: true, tenantAdmin: false } };
+const TENANT_ADMIN: ConsoleRoleState = { status: "ready", roles: { operator: false, tenantAdmin: true } };
+
+/** Every card's `data-testid`, as an operator sees them. Nine cards over six fetchers — Band B's four share one poll. */
 const ALL_CARD_TEST_IDS = [
   "widget-health",
   "widget-tenants",
@@ -48,7 +53,19 @@ const ALL_CARD_TEST_IDS = [
   "widget-qdrant",
 ];
 
+/** The cards a tenant admin is shown: the health strip and the two ConsoleAdmin reads. */
+const TENANT_ADMIN_CARD_TEST_IDS = ["widget-health", "widget-schema", "widget-data-volume"];
+
+/** The cards whose endpoints are Operator-gated: tenants, the four metrics cards and Qdrant. */
+const OPERATOR_ONLY_CARD_TEST_IDS = ALL_CARD_TEST_IDS.filter((id) => !TENANT_ADMIN_CARD_TEST_IDS.includes(id));
+
 const FORBIDDEN = { kind: "forbidden", status: 403, error: null };
+
+const HEALTHY = {
+  kind: "ok",
+  status: 200,
+  data: { status: "healthy", checks: { postgres: true, starrocks: true, qdrant: true, kafka: true } },
+};
 
 beforeEach(() => {
   useAuthMock.mockReset();
@@ -63,8 +80,17 @@ function signedIn(accessToken: string | undefined): void {
   });
 }
 
+function renderLanding(roles: ConsoleRoleState, strict = false): void {
+  const page = (
+    <ConsoleRolesContext.Provider value={roles}>
+      <LandingPage />
+    </ConsoleRolesContext.Provider>
+  );
+  render(page, strict ? { wrapper: StrictMode } : undefined);
+}
+
 describe("LandingPage", () => {
-  it("renders all four Band A widgets", async () => {
+  it("renders the four Band A widgets for an operator", async () => {
     signedIn(TOKEN);
     fetchHealthMock.mockResolvedValue({
       kind: "ok",
@@ -88,7 +114,7 @@ describe("LandingPage", () => {
     fetchMetricsMock.mockResolvedValue(FORBIDDEN);
     fetchQdrantMock.mockResolvedValue(FORBIDDEN);
 
-    render(<LandingPage />);
+    renderLanding(OPERATOR);
 
     expect(screen.getByRole("heading", { name: "Overview", level: 1 })).toBeInTheDocument();
     expect(screen.getByTestId("widget-health")).toBeInTheDocument();
@@ -113,9 +139,9 @@ describe("LandingPage", () => {
 
   it("threads the session's access token into every widget's fetch", async () => {
     signedIn(TOKEN);
-    for (const mock of ALL_MOCKS) mock.mockResolvedValue({ kind: "forbidden", status: 403, error: null });
+    for (const mock of ALL_MOCKS) mock.mockResolvedValue(FORBIDDEN);
 
-    render(<LandingPage />);
+    renderLanding(OPERATOR);
 
     await waitFor(() => expect(fetchHealthMock).toHaveBeenCalled());
     for (const mock of ALL_MOCKS) {
@@ -126,7 +152,7 @@ describe("LandingPage", () => {
   it("puts every widget in the waiting-for-session state before a token exists", () => {
     signedIn(undefined);
 
-    render(<LandingPage />);
+    renderLanding(OPERATOR);
 
     for (const testId of ALL_CARD_TEST_IDS) {
       expect(screen.getByTestId(testId)).toHaveAttribute("data-state", "awaitingToken");
@@ -136,11 +162,7 @@ describe("LandingPage", () => {
 
   it("renders under StrictMode without any widget stranded on the spinner", async () => {
     signedIn(TOKEN);
-    fetchHealthMock.mockResolvedValue({
-      kind: "ok",
-      status: 200,
-      data: { status: "healthy", checks: { postgres: true, starrocks: true, qdrant: true, kafka: true } },
-    });
+    fetchHealthMock.mockResolvedValue(HEALTHY);
     fetchTenantsMock.mockResolvedValue({ kind: "forbidden", status: 403, error: null });
     fetchSchemaMock.mockResolvedValue({
       kind: "ok",
@@ -172,7 +194,7 @@ describe("LandingPage", () => {
       data: { collectionCount: 0, collections: [], unreadableCollectionCount: 0 },
     });
 
-    render(<LandingPage />, { wrapper: StrictMode });
+    renderLanding(OPERATOR, true);
 
     await waitFor(() => {
       for (const testId of ALL_CARD_TEST_IDS) {
@@ -183,16 +205,12 @@ describe("LandingPage", () => {
     });
   });
 
-  it("renders all nine cards, with Band B's four sharing a single metrics poll", async () => {
+  it("renders all nine cards for an operator, with Band B's four sharing a single metrics poll", async () => {
     signedIn(TOKEN);
     for (const mock of ALL_MOCKS) mock.mockResolvedValue(FORBIDDEN);
-    fetchHealthMock.mockResolvedValue({
-      kind: "ok",
-      status: 200,
-      data: { status: "healthy", checks: { postgres: true, starrocks: true, qdrant: true, kafka: true } },
-    });
+    fetchHealthMock.mockResolvedValue(HEALTHY);
 
-    render(<LandingPage />);
+    renderLanding(OPERATOR);
 
     await waitFor(() => {
       for (const testId of ALL_CARD_TEST_IDS) {
@@ -208,17 +226,10 @@ describe("LandingPage", () => {
     expect(fetchMetricsMock).toHaveBeenCalledTimes(1);
   });
 
-  it("shows every Operator-gated card as 'not authorized', never as a failure", async () => {
-    // This is the page a real human sees today: nobody satisfies the Operator policy, so
-    // tenants, all four metrics cards and Qdrant all answer 403 (Design 4d). Six red "request
-    // failed" cards would read as a broken deployment rather than a permissions gap.
+  it("shows a tenant admin the health strip, schema and data volume only, and never asks for an Operator-only endpoint", async () => {
+    // CSR round 12 §2.2: cards by role. A tenant admin is not shown cards that could only answer 403.
     signedIn(TOKEN);
-    for (const mock of ALL_MOCKS) mock.mockResolvedValue(FORBIDDEN);
-    fetchHealthMock.mockResolvedValue({
-      kind: "ok",
-      status: 200,
-      data: { status: "healthy", checks: { postgres: true, starrocks: true, qdrant: true, kafka: true } },
-    });
+    fetchHealthMock.mockResolvedValue(HEALTHY);
     fetchSchemaMock.mockResolvedValue({
       kind: "ok",
       status: 200,
@@ -230,27 +241,18 @@ describe("LandingPage", () => {
       data: { types: [], deniedTypeCount: 0, unknownTypeCount: 0 },
     });
 
-    const operatorGated = [
-      "widget-tenants",
-      "widget-fan-out-backlog",
-      "widget-consumer-activity",
-      "widget-transport-health",
-      "widget-embedding-latency",
-      "widget-qdrant",
-    ];
-
-    render(<LandingPage />);
+    renderLanding(TENANT_ADMIN);
 
     await waitFor(() => {
-      for (const testId of operatorGated) {
-        expect(screen.getByTestId(testId)).toHaveAttribute("data-state", "forbidden");
+      for (const testId of TENANT_ADMIN_CARD_TEST_IDS) {
+        expect(screen.getByTestId(testId)).toHaveAttribute("data-state", "ready");
       }
     });
-    for (const testId of operatorGated) {
-      const notice = screen.getByTestId(`${testId}-notice`);
-      expect(notice).toHaveTextContent("Operator role");
-      expect(notice).toHaveClass("MuiAlert-colorWarning");
-      expect(notice).not.toHaveClass("MuiAlert-colorError");
+    for (const testId of OPERATOR_ONLY_CARD_TEST_IDS) {
+      expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
     }
+    expect(fetchTenantsMock).not.toHaveBeenCalled();
+    expect(fetchMetricsMock).not.toHaveBeenCalled();
+    expect(fetchQdrantMock).not.toHaveBeenCalled();
   });
 });

@@ -14,8 +14,8 @@ variable "authentik_login_rate_window" {
   }
 }
 
-# Attached only to the Authentik Service's backend, through the BackendConfig the chart renders when
-# authentik.ingress.securityPolicy is set. A client over the limit is banned for 10 minutes. The path
+# Attached only to the Authentik Service's backend, through the GCPBackendPolicy the chart's GKE Gateway
+# renders from authentik.ingress.securityPolicy. A client over the limit is banned for 10 minutes. The path
 # is URL-decoded before it is matched, because Authentik decodes percent-encoded path segments.
 resource "google_compute_security_policy" "authentik_login" {
   name = "${var.cluster_name}-authentik-login"

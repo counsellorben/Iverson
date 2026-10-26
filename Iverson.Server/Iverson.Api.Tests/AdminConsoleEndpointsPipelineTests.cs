@@ -17,8 +17,9 @@ namespace Iverson.Api.Tests;
 /// Three things are pinned here that a shape-only test would miss:
 /// </para>
 /// <list type="number">
-/// <item><b>Authorization per endpoint</b> — anonymous is rejected on all four; an authenticated
-/// non-operator is served by the two authenticated rows and rejected by the two Operator rows.</item>
+/// <item><b>Authorization per endpoint</b> — anonymous is rejected on all four; a tenant admin is
+/// served by the two ConsoleAdmin rows and rejected by the two Operator rows; a signed-in user with
+/// neither console role is rejected by the ConsoleAdmin rows too (CSR round 12 §2.2).</item>
 /// <item><b>The principal actually reaches the readers.</b> The fixtures are authorized to a group
 /// only the reader token carries, so a handler that passed <c>null</c> instead of
 /// <c>HttpContext.User</c> would see the evaluator DENY (its null-principal branch pairs
@@ -43,9 +44,10 @@ public class AdminConsoleEndpointsPipelineTests : IClassFixture<AdminConsoleTest
     private const string Qdrant     = "/admin/console/qdrant";
 
     /// <summary>
-    /// A tenant-scoped human: carries the <c>tenant_id</c> the evaluator requires and the group the
-    /// two visible fixtures grant read access to. Carries NO <c>operators</c> group and no admin
-    /// scope, so it is also the non-operator half of every Operator-gate assertion.
+    /// A tenant admin: carries the <c>tenant_id</c> the evaluator requires, the <c>tenant-admins</c>
+    /// group that makes it a ConsoleAdmin, and the group the two visible fixtures grant read access to.
+    /// It is not on the operator list and has no admin scope, so it is also the non-operator half of
+    /// every Operator-gate assertion.
     /// </summary>
     private static string ReaderToken() => TestJwtFactory.CreateToken(
         "test-service-audience",
@@ -53,18 +55,28 @@ public class AdminConsoleEndpointsPipelineTests : IClassFixture<AdminConsoleTest
         extraClaims:
         [
             new Claim("tenant_id", "tenant_alpha"),
+            new Claim("groups", "tenant-admins"),
+            new Claim("groups", AdminConsoleTestWebApplicationFactory.ReaderGroup)
+        ]);
+
+    /// <summary>The same tenant-scoped reader without a console role: neither tenant admin nor Operator.</summary>
+    private static string OrdinaryUserToken() => TestJwtFactory.CreateToken(
+        "test-service-audience",
+        "console-ordinary-user",
+        extraClaims:
+        [
+            new Claim("tenant_id", "tenant_alpha"),
             new Claim("groups", AdminConsoleTestWebApplicationFactory.ReaderGroup)
         ]);
 
     /// <summary>
-    /// An operator with the <c>operators</c> group claim and no <c>tenant_id</c> claim. That absence
+    /// An operator on the test host's operator list, with no <c>tenant_id</c> claim. That absence
     /// is not an omission in the fixture — it is the live state Design 4d records, and the two
-    /// authenticated endpoints' behaviour under it is pinned below rather than papered over.
+    /// ConsoleAdmin endpoints' behaviour under it is pinned below rather than papered over.
     /// </summary>
     private static string OperatorToken() => TestJwtFactory.CreateToken(
         "test-service-audience",
-        "human-operator",
-        extraClaims: [new Claim("groups", "operators")]);
+        AuthTestWebApplicationFactory.HumanOperatorSubject);
 
     private async Task<HttpResponseMessage> GetAsync(string path, string? token)
     {
@@ -94,7 +106,7 @@ public class AdminConsoleEndpointsPipelineTests : IClassFixture<AdminConsoleTest
     [Theory]
     [InlineData(Tenants)]
     [InlineData(Qdrant)]
-    public async Task AuthenticatedNonOperator_OperatorGatedEndpoint_Returns403(string path)
+    public async Task TenantAdmin_OperatorGatedEndpoint_Returns403(string path)
     {
         var response = await GetAsync(path, ReaderToken());
 
@@ -104,11 +116,22 @@ public class AdminConsoleEndpointsPipelineTests : IClassFixture<AdminConsoleTest
     [Theory]
     [InlineData(Schema)]
     [InlineData(DataVolume)]
-    public async Task AuthenticatedNonOperator_AuthenticatedOnlyEndpoint_Returns200(string path)
+    public async Task TenantAdmin_ConsoleAdminEndpoint_Returns200(string path)
     {
         var response = await GetAsync(path, ReaderToken());
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    // CSR round 12 §2.2: the console is for admins only. These two used to serve any authenticated caller.
+    [Theory]
+    [InlineData(Schema)]
+    [InlineData(DataVolume)]
+    public async Task OrdinaryUser_ConsoleAdminEndpoint_Returns403(string path)
+    {
+        var response = await GetAsync(path, OrdinaryUserToken());
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     // ── /admin/console/tenants ─────────────────────────────────────────────────

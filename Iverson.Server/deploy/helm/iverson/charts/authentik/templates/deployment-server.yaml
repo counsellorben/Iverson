@@ -9,11 +9,11 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-authentik-server
-  # The writable root filesystems of `migrate` and `server` are deliberate: see `server`'s securityContext.
+  # The writable root filesystems of `wait-for-migration` and `server` are deliberate: see `server`'s securityContext.
   annotations:
     kube-score/ignore: container-security-context-readonlyrootfilesystem
 spec:
-  replicas: 1
+  replicas: {{ .Values.server.replicas }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-authentik-server
@@ -26,37 +26,99 @@ spec:
       automountServiceAccountToken: false
       nodeSelector:
         {{- toYaml .Values.nodeSelector | nindent 8 }}
+      {{- if gt (.Values.server.replicas | int) 1 }}
+      # CSR round-12 §2.1: spread the server replicas across nodes where the scheduler can.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: {{ .Release.Name }}-authentik-server
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
         seccompProfile: { type: RuntimeDefault }
-      # The ONE process that migrates the authentik database on this release. The server and worker
-      # containers both run with AUTHENTIK_SKIP_MIGRATIONS=true so neither migrates concurrently.
-      #
-      # Why: `ak server` and `ak worker` BOTH run lifecycle/migrate.py on startup. That module opens
-      # its own psycopg connection, takes pg_advisory_lock(1000) on it, then hands the actual
-      # migrating to Django on a SEPARATE connection — while its own connection sits holding an
-      # uncommitted implicit transaction from the `SET search_path` and version-history reads it
-      # performs between the lock and the Django call. A second migrator's Django connection blocks
-      # on a table lock that idle transaction holds, and Postgres cannot report it as a deadlock
-      # because the idle backend is not itself waiting on anything. Observed on the compose stack
-      # 2026-08-22: the wedge left a PARTIALLY MIGRATED schema that no retry repaired — an index
-      # existed with no Django ledger row, every blueprint apply then failed, zero OAuth2 providers
-      # were created, and only DROP DATABASE recovered it. In Kubernetes the liveness probes turn
-      # that into restart churn, and a restart landing mid-ALTER TABLE is one way the corruption is
-      # produced.
-      #
-      # `python -m lifecycle.migrate` is the full sequence: lifecycle/system_migrations/*,
-      # `migrate_schemas`, the tenant-template pass, and Django's deploy checks. `ak migrate` is NOT
-      # equivalent — the image entrypoint routes it to `manage migrate`, skipping the system
-      # migrations and schema passes. The entrypoint is overridden because that routing swallows any
-      # bare command. Idempotent: a re-run exits 0 with "No migrations to apply."
+      # CSR round-12 §2.1: the worker pod migrates (deployment-worker.yaml); a server pod never does.
+      # Each server pod waits here until the database is migrated for its own image's version.
+      # Neither marker shows that alone (Verified assumption 72): lifecycle/migrate.py writes this
+      # version's authentik_version_history row before migrate_schemas runs, and advisory lock 1000
+      # is free until a migrator takes it. Both together do not either: a migrator killed after
+      # writing the row leaves the row behind, and Postgres frees the lock. So the wait ends when the
+      # row exists, no session holds or waits for lock 1000, and none of this image's Django
+      # migrations is unapplied. That holds on a fresh install (no row until the worker's pass
+      # starts) and on an upgrade (the old version's servers keep serving while the new ones wait).
+      # It reads the database with the image's own Python and connection settings, and writes nothing.
       initContainers:
-        - name: migrate
+        - name: wait-for-migration
           image: {{ .Values.image | quote }}
-          command: ["python", "-m", "lifecycle.migrate"]
+          command:
+            - python
+            - -c
+            - |
+              import os
+              import time
+
+              # The pass's last state change is migrate_schemas (lifecycle/migrate.py), so the wait also
+              # requires that none of this image's Django migrations is unapplied: a migrator killed after
+              # writing this version's row leaves the row and a free lock behind, with migrations unapplied.
+              # Django's settings need a secret key at import; this process only reads the migration state
+              # and signs nothing, so it gets a placeholder rather than the real key.
+              os.environ.setdefault("DJANGO_SETTINGS_MODULE", "authentik.root.settings")
+              os.environ.setdefault("AUTHENTIK_SECRET_KEY", "wait-for-migration-reads-only")
+              import django
+              django.setup()
+              from django.db import connection
+              from django.db.migrations.executor import MigrationExecutor
+              from psycopg import connect
+              from authentik import authentik_build_hash, authentik_version
+              from authentik.lib.config import CONFIG, postgresql_direct_connection_kwargs
+
+              # lifecycle/migrate.py takes pg_advisory_lock(1000), one bigint key: classid 0,
+              # objid 1000, objsubid 1 in pg_locks.
+              LOCK_1000 = (
+                  "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory'"
+                  " AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
+                  " AND classid = 0 AND objid = 1000 AND objsubid = 1)"
+              )
+
+              def migrated():
+                  with connect(**postgresql_direct_connection_kwargs(CONFIG), autocommit=True) as conn:
+                      cur = conn.cursor()
+                      cur.execute(f"SET search_path = {CONFIG.get('postgresql.default_schema')}")
+                      cur.execute("SELECT to_regclass('authentik_version_history') IS NOT NULL")
+                      if not cur.fetchone()[0]:
+                          return False
+                      cur.execute(
+                          "SELECT EXISTS (SELECT 1 FROM authentik_version_history"
+                          " WHERE version = %s AND build = %s)",
+                          (authentik_version(), authentik_build_hash()),
+                      )
+                      if not cur.fetchone()[0]:
+                          return False
+                      cur.execute(LOCK_1000)
+                      if cur.fetchone()[0]:
+                          return False
+                  try:
+                      executor = MigrationExecutor(connection)
+                      return not executor.migration_plan(executor.loader.graph.leaf_nodes())
+                  finally:
+                      connection.close()
+
+              while True:
+                  try:
+                      if migrated():
+                          print("database migrated for", authentik_version(), flush=True)
+                          break
+                      print("waiting for the worker to migrate to", authentik_version(), flush=True)
+                  except Exception as exc:
+                      print("waiting for the database:", exc, flush=True)
+                  time.sleep(5)
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
@@ -65,9 +127,6 @@ spec:
             - configMapRef:
                 name: {{ .Release.Name }}-authentik-config
           env:
-            - name: AUTHENTIK_SECRET_KEY
-              valueFrom:
-                secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: secret-key }
             - name: AUTHENTIK_POSTGRESQL__PASSWORD
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-postgres, key: password }
@@ -83,6 +142,39 @@ spec:
           volumeMounts:
             - name: postgres-tls
               mountPath: /etc/postgres-tls
+              readOnly: true
+        # CSR round-12 §2.6: the orchestrator pin's TokenReview (orchestrator-federation.yaml) goes to the
+        # Kubernetes API through this loopback relay, the worker's jwks-relay pattern. A native sidecar on
+        # its own projected token, which the ClusterRole in clusterrole-tokenreview.yaml lets create
+        # tokenreviews and nothing else. It forwards only POSTs to the tokenreviews path. No --www and no
+        # startup probe: the server never waits on it, and a missing relay refuses the exchange.
+        - name: tokenreview-relay
+          image: {{ .Values.jwksRelay.image | quote }}
+          restartPolicy: Always
+          args:
+            - proxy
+            - --address=127.0.0.1
+            - --port=8001
+            - --accept-paths=^/apis/authentication.k8s.io/v1/tokenreviews$
+            - --reject-methods=^(GET|PUT|PATCH|DELETE)$
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests:
+              cpu: {{ .Values.resources.jwksRelay.requests.cpu | quote }}
+              memory: {{ .Values.resources.jwksRelay.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.jwksRelay.requests "ephemeral-storage" | quote }}
+            limits:
+              cpu: {{ .Values.resources.jwksRelay.limits.cpu | quote }}
+              memory: {{ .Values.resources.jwksRelay.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.jwksRelay.limits "ephemeral-storage" | quote }}
+          volumeMounts:
+            - name: tokenreview-relay-credential
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
       containers:
         - name: server
@@ -210,6 +302,12 @@ spec:
                 path: tls.key
         - name: tls-proxy-tmp
           emptyDir: {}
+        - name: tokenreview-relay-credential
+          projected:
+            sources:
+              - serviceAccountToken: { path: token, expirationSeconds: 3600 }
+              - configMap: { name: kube-root-ca.crt, items: [{ key: ca.crt, path: ca.crt }] }
+              - downwardAPI: { items: [{ path: namespace, fieldRef: { fieldPath: metadata.namespace } }] }
         - name: postgres-tls
           secret:
             secretName: {{ .Release.Name }}-postgres-ca

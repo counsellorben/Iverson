@@ -41,4 +41,16 @@ public class EngagementHealthCheckerTests
     {
         typeof(EngagementHealthChecker).Should().Implement<IEngagementStoreHealthCheck>();
     }
+
+    // CSR round 12 §3.5: the readiness probe needs no privilege (iverson_app no longer holds OPERATE ON
+    // SYSTEM, which SHOW BACKENDS needed) and is bounded, so a hung backend reads as not ready within 5 s.
+    [Fact]
+    public void CreateBackendProbe_IsTheNoGrantQuery_UnderAFiveSecondTimeout()
+    {
+        using var conn = new MySqlConnector.MySqlConnection("Server=unused");
+        using var cmd = EngagementHealthChecker.CreateBackendProbe(conn);
+
+        cmd.CommandText.Should().Be("SELECT * FROM TABLE(generate_series(1,2))");
+        cmd.CommandTimeout.Should().Be(5);
+    }
 }

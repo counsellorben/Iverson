@@ -104,7 +104,7 @@ describe("FanOutBacklogWidget", () => {
     expect(FAN_OUT_BACKLOG_SUBTITLE).toContain("not zero");
   });
 
-  it("renders the 403 every human gets today as an authorization answer, not a fault", async () => {
+  it("renders a 403 as an authorization answer, not a fault", async () => {
     fetchMetricsMock.mockResolvedValue(metricsForbidden());
 
     render(<MetricsBand accessToken={TOKEN} />);

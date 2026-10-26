@@ -149,7 +149,10 @@ sets it (verified against the pinned 2026.5.3 image, not assumed).
 it with `condition: service_completed_successfully` and both carry `AUTHENTIK_SKIP_MIGRATIONS=true`.
 
 **Helm:** a `migrate` initContainer on the server Deployment, with `AUTHENTIK_SKIP_MIGRATIONS=true` on
-both the server and worker containers.
+both the server and worker containers. Since CSR round 12 the worker pod runs the migration instead (its
+`migrate` initContainer, under a `Recreate` strategy), and every server pod waits until the image's
+version is recorded, the migration lock is free and none of the image's Django migrations is
+unapplied, so the trade-off below no longer applies.
 
 Two details worth recording, both verified rather than assumed:
 

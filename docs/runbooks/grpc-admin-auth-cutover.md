@@ -1,5 +1,7 @@
 # gRPC + Admin Auth — First-Install / Cutover Runbook
 
+> **CSR round 12 §3.1.** Commands written `kubectl $OPS …` or `helm … $HOPS` run as the operators group: set `OPS` and `HOPS` as `docs/runbooks/operators-group.md` §1 says (both empty on a cloud).
+
 **Why:** authentication is a hard cutover the moment this ships — there is no permissive/warn-only
 rollout window (see `docs/superpowers/plans/2026-07-11-grpc-and-admin-authentication-implementation-plan.md`'s
 Global Constraints). Every existing caller must already hold a valid token before this deploys.
@@ -13,8 +15,9 @@ There is no grace period. Confirm before deploying:
 - Every service/automation caller (loadtest, webtest, admin-automation, and any future caller) has its
   `client_id`/`client_secret` and is wired to fetch a token via its SDK's `IversonClientCredentials`
   (or per-language equivalent) — not just deployed with the old unauthenticated call construction.
-- Any human operator who needs `/admin/*` access is already a member of Authentik's `operators` Group
-  (Task 10 Step 9 — this part has no automated coverage; see below).
+- Any human operator who needs `/admin/*` access has their `sub` on the release's operator list,
+  `global.operatorSubjects` (`docs/runbooks/operator-access-onboarding.md` — this part has no automated
+  coverage; see below).
 
 ## FIXED (CSR round-3 finding #15): a fresh install no longer needs a two-pass `helm upgrade`
 
@@ -47,7 +50,7 @@ covers directly.)
 A single `helm upgrade --install` now converges on the first pass:
 
 ```bash
-helm upgrade --install iverson . -f values-<env>.yaml -n iverson --create-namespace
+helm upgrade --install iverson . -f values-<env>.yaml -n iverson --create-namespace $HOPS
 ```
 
 Note: the upgrade moves the Authentik Ingress to Service port 9080 immediately, while the old
@@ -62,7 +65,7 @@ something's broken:
 
 ```bash
 LOADTEST_SECRET_ID=$(kubectl -n <ns> get secret <release>-authentik-loadtest-client -o jsonpath='{.data.client-id}' | base64 -d)
-kubectl -n <ns> exec deploy/<release>-authentik-worker -- env EXPECTED_CLIENT_ID="$LOADTEST_SECRET_ID" ak shell -c "
+kubectl $OPS -n <ns> exec deploy/<release>-authentik-worker -- env EXPECTED_CLIENT_ID="$LOADTEST_SECRET_ID" ak shell -c "
 import os
 from authentik.providers.oauth2.models import OAuth2Provider
 print('matches secret:', OAuth2Provider.objects.get(name='iverson-loadtest').client_id == os.environ['EXPECTED_CLIENT_ID'])
@@ -87,19 +90,18 @@ those Secrets is rotated by hand after the `iverson-api` Deployment's pods alrea
 the Secret's content alone is not enough:
 
 ```bash
-kubectl -n <ns> rollout restart deployment/<release>-api
+kubectl $OPS -n <ns> rollout restart deployment/<release>-api
 ```
 
 ## Known gap: the human/browser OIDC path has no automated verification
 
-The interactive Authorization Code + PKCE + MFA flow a human operator uses to log in and pick up the
-`operators` group membership can't be scripted meaningfully. After any deploy where operator access
-matters, manually confirm:
-1. Log into Authentik's UI as the operator.
-2. Add the operator's user to the `operators` Group (if not already a member).
-3. Complete a browser-based OIDC login against the `iverson-api` application.
-4. Confirm the resulting token's `groups` claim contains `operators` and that it's accepted on
-   `/admin/*`.
+The interactive Authorization Code + PKCE + MFA flow a human operator uses to sign in to the console
+can't be scripted meaningfully. After any deploy where operator access matters, manually confirm:
+1. The operator's `sub` is on `global.operatorSubjects`, the api pods have rolled with it, and
+   service-clients blueprint has been re-applied (`docs/runbooks/csr11-identity-plane.md` §2).
+2. Complete a browser-based OIDC login against the `iverson-api` application (the console).
+3. Confirm `GET /admin/console/roles` answers `"operator": true` for the resulting token and that
+   `/admin/*` accepts it.
 
 ## Related
 

@@ -1,0 +1,7 @@
+# CSR round 12 §4.1: the istio-cni node agent on kind, at a smaller request than the chart's 100m /
+# 100Mi (see istiod.yaml in this directory for why). It chains itself into Calico's CNI configuration.
+profile: ambient
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi

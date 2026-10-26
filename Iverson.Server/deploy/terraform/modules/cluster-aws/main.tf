@@ -275,7 +275,50 @@ resource "aws_eks_cluster" "this" {
 
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
+  # CSR round 12 §3.1: access entries (below) need an API authentication mode; a cluster created through
+  # the EKS API defaults to CONFIG_MAP. The provider sends the bootstrap flag as false when it is left
+  # unset in this block, which would drop the Terraform caller's own cluster access that the root's
+  # kubernetes and helm providers use, so it is set explicitly. It is ForceNew: a second plan must show
+  # no change to this resource.
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
+  }
+
   depends_on = [aws_iam_role_policy_attachment.cluster_policy]
+}
+
+# CSR round 12 §3.1: the operators group. The chart's admission policy admits token minting, exec,
+# port-forward and protected workload changes only for members of admission.operatorGroups
+# (values-aws.yaml: iverson-operators). Each operator IAM role gets that Kubernetes group through its
+# access entry, and AmazonEKSClusterAdminPolicy at cluster scope, because a group grants nothing without
+# an RBAC binding and the chart adds none; cluster scope, because operators run the helm upgrade, which
+# writes cluster-scoped objects (the admission policy and its binding, Authentik's TokenReview
+# ClusterRole and binding). The Terraform caller is not one of them: EKS creates its entry, and an IAM
+# principal can be in one access entry only.
+locals {
+  operators_kubernetes_group = "iverson-operators"
+}
+
+resource "aws_eks_access_entry" "operators" {
+  for_each          = toset(var.operator_role_arns)
+  cluster_name      = aws_eks_cluster.this.name
+  principal_arn     = each.value
+  kubernetes_groups = [local.operators_kubernetes_group]
+  type              = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "operators" {
+  for_each      = toset(var.operator_role_arns)
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = each.value
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.operators]
 }
 
 # OIDC provider for IRSA (IAM Roles for Service Accounts) — lets specific
@@ -476,8 +519,9 @@ resource "aws_eks_addon" "vpc_cni" {
   cluster_name = aws_eks_cluster.this.name
   addon_name   = "vpc-cni"
   # Must stay compatible with the pinned var.kubernetes_version (currently
-  # "1.30") — bump deliberately alongside that variable, don't let it float.
-  addon_version = "v1.18.5-eksbuild.1"
+  # "1.35") — bump deliberately alongside that variable, don't let it float.
+  # CSR round 12 §3.6: the latest EKS-type version AWS lists for 1.35 (user guide, "Amazon VPC CNI versions").
+  addon_version = "v1.23.1-eksbuild.1"
   configuration_values = jsonencode({
     enableNetworkPolicy = "true"
   })
@@ -500,8 +544,10 @@ resource "aws_eks_addon" "ebs_csi" {
   cluster_name = aws_eks_cluster.this.name
   addon_name   = "aws-ebs-csi-driver"
   # Must stay compatible with the pinned var.kubernetes_version (currently
-  # "1.30") — bump deliberately alongside that variable, don't let it float.
-  addon_version               = "v1.37.0-eksbuild.1"
+  # "1.35") — bump deliberately alongside that variable, don't let it float.
+  # CSR round 12 §3.6: AWS publishes no per-version table for this add-on; the first deploy confirms the
+  # pin with `aws eks describe-addon-versions --addon-name aws-ebs-csi-driver --kubernetes-version 1.35`.
+  addon_version               = "v1.66.1-eksbuild.1"
   service_account_role_arn    = aws_iam_role.ebs_csi_irsa.arn
   depends_on                  = [aws_iam_role_policy_attachment.ebs_csi_irsa]
   resolve_conflicts_on_create = "OVERWRITE"
@@ -521,9 +567,10 @@ locals {
   }
 }
 
-# /dev/xvda is the root device of the EKS-optimized AL2 x86_64 AMI that
-# these node groups take (they set no ami_type and the cluster pins
-# kubernetes_version 1.30) — naming a different device here would silently
+# /dev/xvda is the root device of the EKS-optimized AL2023 x86_64 AMI that
+# these node groups take (ami_type AL2023_x86_64_STANDARD below; EKS publishes
+# no AL2 AMI for Kubernetes 1.33 and later, and the cluster pins
+# kubernetes_version 1.35) — naming a different device here would silently
 # ADD a second volume instead of encrypting the root, leaving the root
 # volume this task exists to encrypt untouched. volume_size must be set
 # here rather than via the node group's disk_size argument: EKS rejects a
@@ -564,6 +611,9 @@ resource "aws_eks_node_group" "pools" {
   node_role_arn   = aws_iam_role.node.arn
   subnet_ids      = aws_subnet.private[*].id
   instance_types  = [each.value.instance_type]
+  # CSR round 12 §3.6: EKS publishes no AL2 AMI for 1.33 and later; AL2023 keeps the /dev/xvda root
+  # device the launch template encrypts.
+  ami_type = "AL2023_x86_64_STANDARD"
 
   launch_template {
     id      = aws_launch_template.pools[each.key].id

@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# CSR round 12 §3.6: kind-config.yaml pins kindest/node:v1.35.8, which was run with kind v0.33.0; an older
+# kind is refused before anything touches the cluster.
+KIND_MIN=v0.33.0
+KIND_VERSION="$(kind version | awk '{ print $2 }')"
+if [ "$(printf '%s\n%s\n' "$KIND_MIN" "${KIND_VERSION%%-*}" | sort -V | head -n 1)" != "$KIND_MIN" ]; then
+  echo "kind $KIND_VERSION is older than $KIND_MIN, the version kind-config.yaml's node image was run with; install kind $KIND_MIN or later and recreate the cluster" >&2
+  exit 1
+fi
+
 # If your `docker` CLI is actually podman (podman-docker shim) or you set
 # KIND_EXPERIMENTAL_PROVIDER=podman directly, podman's default PidsLimit (2048) on the
 # kind node container becomes the *entire* node's pids budget, which systemd then divides
@@ -27,6 +36,108 @@ operator_version() {   # $1 = chart name in $OPERATOR_PINS/Chart.yaml; prints it
 CNPG_VERSION=$(operator_version cloudnative-pg)
 STRIMZI_VERSION=$(operator_version strimzi-kafka-operator)
 STARROCKS_OPERATOR_VERSION=$(operator_version operator)
+
+# CSR round 12 §5: with no argument this script runs the whole fresh install. On an existing cluster the
+# upgrade runs the platform steps one at a time (docs/runbooks/csr12-platform.md §3): `setup.sh --only
+# <phase>` runs that phase alone. Each phase is a function below; the fresh install calls them in the
+# same order, after the operators.
+PHASES="istio operator-namespaces ambient-labels gateway"
+ONLY=""
+if [ "$#" -gt 0 ]; then
+  if [ "$#" -ne 2 ] || [ "$1" != "--only" ] || [[ "$2" == *[[:space:]]* || " $PHASES " != *" $2 "* ]]; then
+    echo "usage: $0 [--only <phase>]   (phases: $PHASES)" >&2
+    exit 2
+  fi
+  ONLY="$2"
+fi
+
+phase_istio() {
+  echo "Installing the Gateway API CRDs and Istio 1.31.2 (ambient)..."
+  # CSR round 12 §4.1: Istio ambient carries every in-cluster hop over mutual TLS. Its charts are vendored
+  # where the cloud Terraform installs them from (terraform/modules/operators/charts/istio; the source
+  # tarball and its SHA-256 are in vendor-istio-charts.sh there). kind installs them with the smaller
+  # requests in deploy/kind/istio/, so the laptop profile still fits its 4-CPU host. The Gateway API
+  # standard CRDs carry kind's edge Gateway and the chart's routes; nothing else installs them on kind.
+  # istio-cni chains itself into Calico's CNI configuration, so Calico comes first.
+  local charts values
+  charts="$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform/modules/operators/charts/istio" && pwd)"
+  values="$(cd "$(dirname "${BASH_SOURCE[0]}")/istio" && pwd)"
+  kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.3/standard-install.yaml
+  helm upgrade --install istio-base "$charts/base" \
+    --namespace istio-system --create-namespace \
+    --wait
+  helm upgrade --install istiod "$charts/istio-discovery" \
+    --namespace istio-system \
+    -f "$values/istiod.yaml" \
+    --wait
+  helm upgrade --install istio-cni "$charts/istio-cni" \
+    --namespace istio-system \
+    -f "$values/istio-cni.yaml" \
+    --wait
+  helm upgrade --install ztunnel "$charts/ztunnel" \
+    --namespace istio-system \
+    -f "$values/ztunnel.yaml" \
+    --wait
+}
+
+phase_operator_namespaces() {
+  echo "Installing the operator-namespace NetworkPolicies (CSR round 12 §3.4)..."
+  # Default-deny with explicit allows in cnpg-system, kafka, starrocks, istio-system, tigera-operator and
+  # iverson-edge, from the chart the cloud Terraform installs too (modules/operators), with kind's
+  # addresses from values-kind.yaml. Every namespace it governs must exist first: istio-system, which Istio
+  # installs into, and iverson-edge, the gateway's namespace (not enrolled in the mesh).
+  local ns policies
+  for ns in istio-system iverson-edge; do
+    kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+  done
+  policies="$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform/modules/operators/charts/operator-namespace-policies" && pwd)"
+  helm upgrade --install operator-namespace-policies "$policies" \
+    --namespace kube-system \
+    -f "$policies/values-kind.yaml" \
+    --wait
+}
+
+# CSR round 12 §4.1, §5: the four namespaces are labelled together. An enrolled pod's egress leaves on
+# the HBONE port 15008, so a release whose NetworkPolicies do not list 15008 loses every hop once its
+# namespace is enrolled. They are labelled when namespace iverson has no NetworkPolicy yet (a fresh
+# cluster: the chart brings its 15008 rules with its first install) or when its policies already list
+# 15008 (the release was upgraded first). Otherwise nothing is labelled, and the upgrade order applies:
+# helm upgrade the release, then run `--only ambient-labels`. Running pods are captured without a restart.
+ambient_enroll() {
+  local policies ports
+  policies="$(kubectl get networkpolicy -n iverson -o name)"
+  ports=" $(kubectl get networkpolicy -n iverson -o jsonpath='{..port}') "
+  if [ -n "$policies" ] && [ "${ports#* 15008 }" = "$ports" ]; then
+    echo "Not enrolled: the NetworkPolicies in namespace iverson do not list port 15008 yet. Run the release's helm upgrade first, then run this script with --only ambient-labels."
+    return 0
+  fi
+  kubectl label namespace iverson cnpg-system kafka starrocks istio.io/dataplane-mode=ambient --overwrite
+}
+
+phase_ambient_labels() {
+  echo "Enrolling iverson, cnpg-system, kafka and starrocks in the ambient mesh..."
+  ambient_enroll
+}
+
+phase_gateway() {
+  echo "Creating the edge gateway (Istio, namespace iverson-edge)..."
+  # CSR round 12 §4.5: kind's edge, replacing ingress-nginx (archived 2026-03-24, no further security
+  # fixes). edge-gateway.yaml gives the gateway's pod host ports 80 and 443, which kind-config.yaml maps to
+  # 127.0.0.1:8080 and 8443; the chart renders the routes that attach to it. Its namespace, iverson-edge,
+  # is the operator-namespace phase's. istiod creates the gateway's Deployment (edge-istio) a few seconds
+  # after the Gateway, so wait for it to exist first.
+  kubectl apply -f "$(dirname "${BASH_SOURCE[0]}")/edge-gateway.yaml"
+  for _ in $(seq 1 30); do
+    kubectl get deployment edge-istio -n iverson-edge >/dev/null 2>&1 && break
+    sleep 2
+  done
+  kubectl rollout status deployment/edge-istio -n iverson-edge --timeout=180s
+}
+
+if [ -n "$ONLY" ]; then
+  "phase_${ONLY//-/_}"
+  exit 0
+fi
 
 echo "Installing Calico (kind's default CNI, kindnet, does not enforce NetworkPolicy)..."
 kubectl create namespace tigera-operator --dry-run=client -o yaml | kubectl apply -f -
@@ -72,7 +183,7 @@ kubectl create namespace iverson --dry-run=client -o yaml | kubectl apply -f -
 kubectl label namespace iverson pod-security.kubernetes.io/enforce=baseline --overwrite
 
 if ! kubectl get secret iverson-api-tls -n iverson >/dev/null 2>&1; then
-  echo "Generating a self-signed dev cert for the api Ingress (iverson.local)..."
+  echo "Generating a self-signed dev cert for the edge gateway's HTTPS listener (iverson.local)..."
   openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
     -keyout /tmp/iverson-api-tls.key -out /tmp/iverson-api-tls.crt \
     -subj "/CN=iverson.local" -addext "subjectAltName=DNS:iverson.local"
@@ -80,58 +191,6 @@ if ! kubectl get secret iverson-api-tls -n iverson >/dev/null 2>&1; then
     --cert=/tmp/iverson-api-tls.crt --key=/tmp/iverson-api-tls.key
   rm -f /tmp/iverson-api-tls.key /tmp/iverson-api-tls.crt
 fi
-
-echo "Installing ingress-nginx..."
-# allow-snippet-annotations is disabled by default since ingress-nginx v1.9; the
-# api and admin-ui charts' Ingress templates emit
-# nginx.ingress.kubernetes.io/configuration-snippet on this className, which the
-# validating admission webhook rejects (or the controller silently drops) without
-# this setting. This install is this repo's only source of the controller for the
-# only ingress class the kind profile actually runs, so this is the one place that
-# setting can be turned on.
-#
-# SECURITY TRADE-OFF (CSR round-2 finding #13): upstream disables snippet annotations
-# by default because they let anyone who can create/edit an Ingress inject arbitrary
-# nginx.conf directives (Lua, arbitrary proxying, config-level RCE surface) into the
-# shared controller — a real risk on a multi-tenant cluster where Ingress creation isn't
-# trusted. Here it is acceptable: this is a single-tenant kind/local cluster, every
-# Ingress in the namespace is rendered from this repo's own chart templates (not
-# arbitrary user input), and the only annotation actually emitted is the fixed
-# security-header snippet those templates hardcode — there is no untrusted path that can
-# reach configuration-snippet. This setting is scoped to the `nginx` ingress class used
-# only by kind/local; production/cloud profiles use alb/gce/azure-application-gateway
-# (see values-aws/azure/gcp.yaml) and never enable this flag — azure wires the same
-# security headers through AGIC's own rewrite-rule-set mechanism instead (see
-# charts/api/templates/ingress.yaml's `securityHeadersRuleSet`), and none of the cloud
-# ingress classes support or need nginx's snippet-annotation feature at all.
-# CSR round-3 finding #7: chart 4.11.3 shipped controller v1.11.3, which predates the
-# March-2025 "IngressNightmare" CVE fixes (CVE-2025-1097, CVE-2025-1098, CVE-2025-1974,
-# CVE-2025-24513, CVE-2025-24514), landed in controller v1.11.5 / v1.12.1. Bumped to
-# chart 4.12.8 (controller v1.12.8, confirmed via the ingress-nginx Helm repo's
-# index.yaml chart-version-to-appVersion mapping as of this fix), well past the fixed
-# versions. Re-verified `helm template` output with this repo's exact --set flags
-# renders cleanly at this chart version.
-#
-# `allowSnippetAnnotations=true` alone is no longer sufficient on this chart version:
-# confirmed live 2026-09-24 that installing with only that flag still gets the api and
-# admin-ui Ingresses rejected at apply time with "annotation group ConfigurationSnippet
-# contains risky annotation" from the admission webhook. Controller 1.12 added a second,
-# independent gate — annotations are now classified by risk, and the ConfigMap's default
-# `annotations-risk-level` dropped from Critical to High, which sits below
-# configuration-snippet's Critical classification. `allow-snippet-annotations` only
-# controls whether the controller RENDERS the annotation into nginx.conf; this is what
-# controls whether the admission webhook lets the Ingress through in the first place.
-# Raising it back to Critical carries the same trade-off as the setting above (this is a
-# single-tenant cluster; only this repo's own chart templates create Ingresses here).
-helm upgrade --install ingress-nginx ingress-nginx \
-  --repo https://kubernetes.github.io/ingress-nginx \
-  --version 4.12.8 \
-  --namespace ingress-nginx --create-namespace \
-  --set controller.hostPort.enabled=true \
-  --set controller.service.type=ClusterIP \
-  --set controller.allowSnippetAnnotations=true \
-  --set-string controller.config.annotations-risk-level=Critical \
-  --wait
 
 echo "Installing CloudNativePG operator..."
 # CSR round-2 finding #12: the same version as modules/operators/main.tf's
@@ -188,6 +247,11 @@ helm upgrade --install metrics-server metrics-server \
   --set 'args={--kubelet-insecure-tls}' \
   --wait
 
+phase_istio
+phase_operator_namespaces
+phase_ambient_labels
+phase_gateway
+
 echo "All operators installed."
-echo "Next: deploy/kind/build-and-load-image.sh to build+load the app image, then helm upgrade --install --wait iverson . -f values-local.yaml -n iverson (--wait: the post-upgrade StarRocks role revoke then runs once the new pods are ready, though a previous-release pod may still be running or terminating; see docs/runbooks/csr12-server.md §1)"
+echo "Next: deploy/kind/build-and-load-image.sh to build+load the app image, then helm upgrade --install --wait iverson . -f values-local.yaml -n iverson --kube-as-user=kubernetes-admin --kube-as-group=kubeadm:cluster-admins --kube-as-group=iverson-operators (the kube-as flags: CSR round 12's admission policy admits only the iverson-operators group to install or change the api, see docs/runbooks/operators-group.md; --wait: the post-upgrade StarRocks role revoke then runs once the new pods are ready, though a previous-release pod may still be running or terminating; see docs/runbooks/csr12-server.md §1)"
 echo "Note: TEI and Ollama run model images with their weights baked in. Before installing the chart, build and load them: deploy/kind/build-and-load-image.sh 0.1.0 iverson --model-images (add --values <overlay> to match the overlay you install)."

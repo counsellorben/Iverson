@@ -73,7 +73,7 @@ public class AdminConsoleMetricsPipelineTests : IClassFixture<AuthTestWebApplica
     public async Task AuthenticatedOperator_PrometheusNotConfigured_Returns503WithNotDeployedReason()
     {
         var token = TestJwtFactory.CreateToken(
-            "test-service-audience", "human-operator", extraClaims: [new Claim("groups", "operators")]);
+            "test-service-audience", AuthTestWebApplicationFactory.HumanOperatorSubject);
         using var request = new HttpRequestMessage(HttpMethod.Get, Metrics);
         Authorize(request, token);
 

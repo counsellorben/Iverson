@@ -19,6 +19,7 @@ internal static class WorkerStoreBootstrap
         IEnrichmentStateRepository enrichmentState,
         IDocumentRerenderQueueRepository rerenderQueue,
         ITokenRevocationRepository tokenRevocations,
+        IInviteQuotaRepository inviteQuota,
         string? apiLoginPassword,
         TimeSpan apiLoginWait)
     {
@@ -35,6 +36,9 @@ internal static class WorkerStoreBootstrap
 
         // Token revocations (CSR round-10 #11): raw DDL, the same shape.
         await tokenRevocations.EnsureTableAsync();
+
+        // InviteUser's daily slots (CSR round 12 §2.1): raw DDL too, for the composite key.
+        await inviteQuota.EnsureTableAsync();
 
         // EnsureRolesAsync must run before ANY ApplySchemaAsync call, since that DDL GRANTs to
         // iverson_maintenance on every table (and to iverson_runtime on the tenant-scoped ones) —

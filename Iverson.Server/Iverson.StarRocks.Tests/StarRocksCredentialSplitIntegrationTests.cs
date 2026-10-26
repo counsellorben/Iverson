@@ -155,10 +155,22 @@ public sealed class StarRocksCredentialSplitIntegrationTests
     // ── what it still does ──────────────────────────────────────────────────────────────────────
 
     [Fact]
+    public async Task AppLogin_HoldsNoOperatePrivilege()
+    {
+        // CSR round 12 §3.5: the constructor granted OPERATE ON SYSTEM as the pre-round-12 job did, and the
+        // job's statements (StarRocksSplitLogins) revoke it.
+        await using var conn = await OpenAppConnectionAsync();
+
+        var act = () => conn.QueryAsync("SHOW BACKENDS");
+
+        await act.Should().ThrowAsync<MySqlException>().WithMessage("*OPERATE*");
+    }
+
+    [Fact]
     public async Task AppLogin_PassesTheReadinessGateAndTheHealthCheck()
     {
-        // A fresh repository: its first operation goes through the cold-start readiness gate (SHOW BACKENDS,
-        // no role active), which needs the one direct grant iverson_app keeps.
+        // A fresh repository: its first operation goes through the cold-start readiness gate (the
+        // generate_series probe, no role active), which needs no grant (CSR round 12 §3.5).
         var repo = new EngagementRepository(_appConnectionString, NullLogger<EngagementRepository>.Instance,
             new EngagementResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(30) });
 

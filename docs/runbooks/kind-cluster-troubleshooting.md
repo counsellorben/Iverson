@@ -93,8 +93,8 @@ kube-proxy's Service DNAT**. A rule written against a Service's declared port (e
 the `kubernetes` Service) never matches once the packet's destination port has already been
 rewritten to the real backend port — on kind/kubeadm-style self-hosted control planes the real
 apiserver port is **6443**, not 443. Confirmed to generalize beyond just the `kubernetes` Service
-(`cnpg-webhook-service` :443→:9443, `ingress-nginx-controller-admission` :443→:8443 hit the same
-pattern).
+(`cnpg-webhook-service` :443→:9443, and before CSR round 12 replaced ingress-nginx with an Istio
+gateway, `ingress-nginx-controller-admission` :443→:8443, hit the same pattern).
 
 **Fix:** allow both the Service port and the real backend port wherever a rule targets a Service by
 its external port, especially the Kubernetes API server (this affected both
@@ -283,6 +283,31 @@ environment). Disable the config-reload file watcher instead — set the environ
 sandbox-specific workaround; don't commit it to the chart as a permanent value unless the target
 environment is known to have the same constraint.
 
+### 4.4 StarRocks FE exits on every start after its first start crashed
+
+**Symptom:** `iverson-starrocks-fe-0` is in `CrashLoopBackOff`, exits with code 255, and its log ends
+with:
+```
+ERROR NodeMgr.checkCurrentNodeExist() current node is not added to the cluster, will exit
+```
+
+**Root cause:** the FE's very first start died part-way through bootstrapping (seen in the CSR round 12
+kind run when the FE JVM hit the 128 inotify-instance limit of §4.3). That start wrote
+`meta/image/ROLE` and `meta/image/VERSION` to the `fe-meta-<release>-starrocks-fe-0` volume, but no
+`image.0` and no journal entry registering the node. Every later start finds the half-written metadata,
+does not find itself registered, and exits. Fixing the original cause (for example raising
+`fs.inotify.max_user_instances`) does not recover it.
+
+**Fix:** only when the FE has never been healthy on this cluster, so its metadata holds no catalog.
+Deleting `fe-meta` on a working FE throws away its databases and users.
+```bash
+kubectl -n <ns> scale sts <release>-starrocks-fe --replicas=0
+kubectl -n <ns> delete pvc fe-meta-<release>-starrocks-fe-0 --wait=true
+kubectl -n <ns> scale sts <release>-starrocks-fe --replicas=1
+```
+Scale back by hand: a `helm upgrade` does not restore the replicas, because its three-way merge sees
+no change in the chart. The FE then bootstraps on a fresh volume.
+
 ## 5. Testing/verification pitfalls that look like auth or config bugs but aren't
 
 ### 5.1 A freshly-minted bearer token gets rejected with a generic 401, no useful log line
@@ -321,11 +346,11 @@ that is not loopback (CSR round-11 #15), so point it at the TLS listeners and tr
 - `IVERSON_TOKEN_ENDPOINT=https://<release>-authentik:8443/application/o/token/`, set explicitly:
   its default is loopback, and LoadTest derives the Authentik base URL from it. Authentik's
   tls-proxy serves 8443 from the `<release>-authentik-internal-tls` Secret.
-- `IVERSON_ACTING_USER_HOST_HEADER=<release>-authentik:8443`. LoadTest sets this Host on every
-  Authentik request (default `authentik-server:9000`), so the in-cluster name does not reach
-  Authentik by itself. Authentik stamps the token's `iss` from it, and the API accepts the issuer
-  it reads from its own 8443 metadata, `https://<release>-authentik:8443/…`. .NET also checks the
-  8443 certificate against this Host. With any other Host, one of the two checks fails.
+- Leave `IVERSON_ACTING_USER_HOST_HEADER` unset. Since CSR round 12 LoadTest sends no Host override
+  unless it is set, so Authentik sees the token endpoint's own host, `<release>-authentik:8443`, and
+  stamps the token's `iss` from it; the API accepts that issuer, which it reads from its own 8443
+  metadata (`https://<release>-authentik:8443/…`), and .NET checks the 8443 certificate against the
+  same name. Any other Host fails one of the two checks.
 - Trust both chart CAs: collect them in one file in the pod and point `SSL_CERT_FILE` at it.
   ```bash
   for s in <release>-api-internal-tls <release>-authentik-internal-tls; do
@@ -342,12 +367,15 @@ jsonpath='{...env[*].value}'` shows the var as empty.
 **Two separate traps here:**
 1. `.value` in the Pod spec **never** shows a `secretKeyRef`-resolved value — only a literal
    `value:` field. The pod's *actual* resolved environment only exists inside the running container.
-   Check it with `kubectl exec <pod> -- printenv`, not `kubectl get pod -o jsonpath`.
+   Check it with `kubectl exec <pod> -- printenv`, not `kubectl get pod -o jsonpath`. An api, worker,
+   Authentik or Postgres pod admits the exec only for the operators group (`kubectl $OPS exec`,
+   `docs/runbooks/operators-group.md`).
 2. Even checked correctly, `secretKeyRef` values are resolved **once, at pod creation** — Kubernetes
    does not live-update a running container's environment when the backing Secret's data changes
    later. If a Deployment's pods were created before a Secret's value converged to its final state
    (e.g. Helm's two-pass `lookup`-guard pattern), you need `kubectl rollout restart deployment/<name>`
-   to pick up the current Secret content.
+   to pick up the current Secret content (for the api, `kubectl $OPS rollout restart`, as the
+   operators group).
 
 ### 5.3 A live smoke-test script's own curl command uses the wrong HTTP verb
 
@@ -400,7 +428,7 @@ few minutes on the Authentik side — a `docker compose up` dependency-wait givi
 already in use` for a service whose compose port mapping you didn't think was in conflict.
 
 **Root cause:** kind's own control-plane container has its own host port mapping (e.g. `kind-config.
-yaml`'s `extraPortMappings`, commonly 8080/8443 for its built-in ingress) — if docker-compose's
+yaml`'s `extraPortMappings`, 8080/8443 for its edge gateway) — if docker-compose's
 `iverson-api` service *also* wants host port 8080, the two environments collide even though they're
 otherwise fully independent stacks.
 

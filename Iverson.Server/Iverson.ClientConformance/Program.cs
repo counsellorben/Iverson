@@ -1,9 +1,7 @@
 using Grpc.Core;
-using Grpc.Net.Client;
 using Iverson.Client.Contracts;
 using Iverson.ClientConformance;
 using Iverson.ClientConformance.Scenarios;
-using Iverson.LoadTest.Auth;
 using Microsoft.Extensions.Logging;
 
 var flags = CliFlags.Parse(args);
@@ -14,13 +12,14 @@ if (flags.ShowHelp)
     return 0;
 }
 
-var grpcUrl = Env("IVERSON_GRPC_URL", "http://localhost:8080");
+var grpcUrl = Env("IVERSON_GRPC_URL", "https://localhost:8080");
 var postgresCs = Env("IVERSON_POSTGRES_CS", "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
-// CSR round-11 #15: the harness's channel below is plaintext and carries both tokens, and the five
-// drivers receive the same URL and secrets, so nothing runs unless the gRPC URL is loopback and
-// the token endpoint and the Authentik base URL are https or loopback. Checked before the base URL
-// is derived, so a malformed token endpoint is named instead of failing inside the derivation.
-if (CredentialEndpoints.Check(grpcUrl, Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT"), grpcMayUseTls: false) is { } endpointRefusal)
+// CSR round-11 #15 and round 12 §4.6: the harness's channel below carries both tokens and is TLS
+// only for an https:// URL (HarnessChannel), and the five drivers receive the same URL and secrets,
+// so nothing runs unless the gRPC URL is https or loopback and the token endpoint and the Authentik
+// base URL are https or loopback. Checked before the base URL is derived, so a malformed token
+// endpoint is named instead of failing inside the derivation.
+if (HarnessChannel.CheckEndpoints(grpcUrl, Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT")) is { } endpointRefusal)
 {
     Console.Error.WriteLine(endpointRefusal);
     return 1;
@@ -101,18 +100,13 @@ try
 
     // Both identities on one channel, exactly as the drivers wire them: the service token as
     // channel call credentials (`authorization`), the acting-user token per call
-    // (`x-acting-user-authorization`). UnsafeUseInsecureChannelCallCredentials is required or
-    // the credentials are silently dropped over plaintext h2c — no exception, no header.
+    // (`x-acting-user-authorization`). HarnessChannel takes TLS or plaintext from the URL's scheme.
     var callCredentials = CallCredentials.FromInterceptor((_, metadata) =>
     {
         metadata.Add("Authorization", $"Bearer {serviceToken}");
         return Task.CompletedTask;
     });
-    using var channel = GrpcChannel.ForAddress(grpcUrl, new GrpcChannelOptions
-    {
-        UnsafeUseInsecureChannelCallCredentials = true,
-        Credentials = ChannelCredentials.Create(ChannelCredentials.Insecure, callCredentials),
-    });
+    using var channel = HarnessChannel.Create(grpcUrl, callCredentials);
 
     var mapping = new ObjectMappingService.ObjectMappingServiceClient(channel);
     var runner = new DriverRunner();

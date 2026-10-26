@@ -231,11 +231,13 @@ function deriveKey(idPrefix: string, logicalName: string): string {
 
 /**
  * Splits a gRPC endpoint into the `host` / `port` pair `@grpc/grpc-js` needs, accepting both the
- * scheme-qualified form the harness sends (`http://localhost:8080`) and a bare `host:port`.
+ * scheme-qualified form the harness sends (`https://localhost:8080`) and a bare `host:port`, and
+ * reports whether the scheme asks for TLS (CSR round 12 §4.6: only `https://` does; a bare
+ * `host:port` is plaintext).
  * Throws on anything unusable so the driver fails as a driver (non-zero exit) rather than
  * silently dialing `NaN` and reporting it as a client-library conformance failure.
  */
-export function parseGrpcAddress(addr: string): { host: string; port: number } {
+export function parseGrpcAddress(addr: string): { host: string; port: number; useTls: boolean } {
     const withScheme = addr.includes('://') ? addr : `http://${addr}`;
     let url: URL;
     try {
@@ -246,7 +248,7 @@ export function parseGrpcAddress(addr: string): { host: string; port: number } {
     if (!url.hostname) throw new Error(`unusable --grpc value '${addr}'`);
     const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
     if (!Number.isInteger(port) || port <= 0) throw new Error(`unusable --grpc port in '${addr}'`);
-    return { host: url.hostname, port };
+    return { host: url.hostname, port, useTls: url.protocol === 'https:' };
 }
 
 function parseKeys(keysJson: string | undefined, language: string): Record<string, string> {
@@ -359,7 +361,7 @@ async function main(argv: string[]): Promise<number> {
     // `host:port`, so the scheme is stripped back off here rather than split on naively — a
     // `split(':')` of `http://localhost:8080` yields host `http` and port NaN.
     const grpcAddr = args.require('--grpc');
-    const { host, port } = parseGrpcAddress(grpcAddr);
+    const { host, port, useTls } = parseGrpcAddress(grpcAddr);
 
     const clientId = args.optional('--client-id');
     const clientSecret = args.optional('--client-secret');
@@ -384,10 +386,12 @@ async function main(argv: string[]): Promise<number> {
           ? createOAuth2ClientCredentials(clientId, clientSecret, tokenEndpoint)
           : undefined;
 
-    // This driver deliberately dials a plaintext channel (useTls=false) — the accepted
-    // dev/test model — so it must explicitly defeat IversonClient's default guard against
-    // attaching credentials to a plaintext channel.
-    const client = new IversonClient(host, port, false, callCredentials, actingToken, true);
+    // CSR round 12 §4.6: the --grpc scheme picks the transport. https:// dials TLS, verifying the
+    // server against Node's roots plus NODE_EXTRA_CA_CERTS (the compose CA); http:// dials
+    // plaintext, the accepted local dev/test model, for which the driver must explicitly defeat
+    // IversonClient's default guard against attaching credentials to a plaintext channel (on TLS
+    // the opt-in is inert).
+    const client = new IversonClient(host, port, useTls, callCredentials, actingToken, true);
 
     // A second, independent ObjectMappingServiceClient built entirely from the public generated
     // module — the sanctioned capture seam per the plan: SchemaRegistrar takes its mapping client
@@ -396,7 +400,7 @@ async function main(argv: string[]): Promise<number> {
     // accessible, so it is not reused here (mirrors the Python driver's `build_registration_channel`
     // and the .NET driver's `Auth.BuildInvoker`, both of which build their own channel/stub rather
     // than reach into the client's internals).
-    const registrationChannelCreds = grpc.credentials.createInsecure();
+    const registrationChannelCreds = useTls ? grpc.credentials.createSsl() : grpc.credentials.createInsecure();
     const realMappingClient = new ObjectMappingServiceClient(`${host}:${port}`, registrationChannelCreds);
     // Both identities go into registration: the service identity via `callCredentials` on the
     // registrar, the acting-user identity via the capture wrapper's per-call metadata.
@@ -736,7 +740,7 @@ async function main(argv: string[]): Promise<number> {
         // between this call and an allowed one is which end user it acts as. The status code is
         // DATA to report, never an error to judge — that is the orchestrator's job.
         const wrongClient = new IversonClient(
-            host, port, false, callCredentials, args.optional('--wrong-acting-token'), true);
+            host, port, useTls, callCredentials, args.optional('--wrong-acting-token'), true);
         try {
             // The update payload's tenant value no longer affects the outcome on THIS leg. It USED to: the
             // server once rejected an existing row's payload tenant that differed from the caller's claim as

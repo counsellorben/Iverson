@@ -1,0 +1,26 @@
+{{- /*
+CSR round-12 §2.6: lets the Authentik server's tokenreview-relay (deployment-server.yaml) create
+TokenReviews, and nothing else. The server and worker share the <release>-authentik ServiceAccount.
+Cluster-scoped, so the name carries the namespace as well as the release.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-authentik-tokenreview
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-authentik-tokenreview
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}-authentik-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-authentik
+    namespace: {{ .Release.Namespace }}

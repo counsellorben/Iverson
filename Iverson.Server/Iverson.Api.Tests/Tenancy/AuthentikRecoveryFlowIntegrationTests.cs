@@ -142,8 +142,10 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
             File.Delete(assertionFile);
         }
 
-        // Wrong subject, wrong audience, arrival through the public listener, no pod binding, or a lifetime over 600 s: refused, nobody created.
+        // Wrong issuer, wrong subject, wrong audience, arrival through the public listener, no pod binding, or a lifetime over 600 s: refused, nobody created.
         var usersAfter = await UserCountAsync(admin);
+        (await ExchangeAsync(clientId, Assertion(rsa, kid, FederatedSubject, FederatedAudience, issuer: "https://issuer.invalid")))
+            .Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
         (await ExchangeAsync(clientId, Assertion(rsa, kid, "system:serviceaccount:iverson-test:other", FederatedAudience)))
             .Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
         (await ExchangeAsync(clientId, Assertion(rsa, kid, FederatedSubject, "somebody-else")))
@@ -157,12 +159,17 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
         (await UserCountAsync(admin)).Should().Be(usersAfter);
     }
 
-    /// <summary>Creates the federation objects and returns the provider's client id.</summary>
-    private static async Task<string> CreateFederationObjectsAsync(HttpClient admin, RSA rsa, string kid)
+    /// <summary>
+    /// Creates the federation objects and returns the provider's client id. The application runs in `all` mode
+    /// with the shipped pin and marker bound in that order, or with <paramref name="policies"/> in their place;
+    /// the source maps every assertion to the shipped username, or to <paramref name="usernameExpression"/>'s.
+    /// </summary>
+    private static async Task<string> CreateFederationObjectsAsync(
+        HttpClient admin, RSA rsa, string kid, string? usernameExpression = null, string[]? policies = null)
     {
         var key = rsa.ExportParameters(false);
         var mapping = await PostAsync(admin, "/api/v3/propertymappings/source/oauth/",
-            new { name = $"{kid} username", expression = AuthentikOrchestratorFederationBlueprintTests.UsernameMappingExpression() });
+            new { name = $"{kid} username", expression = usernameExpression ?? AuthentikOrchestratorFederationBlueprintTests.UsernameMappingExpression() });
         var source = await PostAsync(admin, "/api/v3/sources/oauth/", new
         {
             name = kid, slug = kid, provider_type = "openidconnect", enabled = true,
@@ -187,18 +194,18 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
             new { name = kid, slug = kid, provider = provider.GetProperty("pk"), policy_engine_mode = "all" });
         // The expressions are the SHIPPED ones (orchestrator-federation.yaml), not a copy, so this
         // fact fails if the template's pin, marker or mapping stops behaving as tested.
-        var pin = await PostAsync(admin, "/api/v3/policies/expression/", new
+        policies ??= new[]
         {
-            name = $"{kid} workload",
-            expression = AuthentikOrchestratorFederationBlueprintTests.PinPolicyExpression(FederatedSubject),
-        });
-        var marker = await PostAsync(admin, "/api/v3/policies/expression/", new
+            AuthentikOrchestratorFederationBlueprintTests.PinPolicyExpression(FederatedSubject),
+            AuthentikOrchestratorFederationBlueprintTests.InClusterOnlyExpression(),
+        };
+        for (var order = 0; order < policies.Length; order++)
         {
-            name = $"{kid} in-cluster-only",
-            expression = AuthentikOrchestratorFederationBlueprintTests.InClusterOnlyExpression(),
-        });
-        await PostAsync(admin, "/api/v3/policies/bindings/", new { policy = pin.GetProperty("pk"), target = app.GetProperty("pk"), order = 0, enabled = true });
-        await PostAsync(admin, "/api/v3/policies/bindings/", new { policy = marker.GetProperty("pk"), target = app.GetProperty("pk"), order = 1, enabled = true });
+            var policy = await PostAsync(admin, "/api/v3/policies/expression/",
+                new { name = $"{kid} policy {order}", expression = policies[order] });
+            await PostAsync(admin, "/api/v3/policies/bindings/",
+                new { policy = policy.GetProperty("pk"), target = app.GetProperty("pk"), order, enabled = true });
+        }
         return kid;
     }
 
@@ -261,13 +268,15 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
     /// An RS256 JWT shaped like a kubelet-projected service-account token: pod-bound (a
     /// <c>kubernetes.io.pod</c> claim) with a 600 s life, unless told otherwise.
     /// </summary>
-    private static string Assertion(RSA rsa, string kid, string subject, string audience, bool podBound = true, int lifetimeSeconds = 600)
+    private static string Assertion(
+        RSA rsa, string kid, string subject, string audience, bool podBound = true, int lifetimeSeconds = 600,
+        string issuer = AuthentikOrchestratorFederationBlueprintTests.FixtureIssuer)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var header = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new { alg = "RS256", typ = "JWT", kid }));
         var claims = new Dictionary<string, object>
         {
-            ["iss"] = "https://kubernetes.default.svc.cluster.local", ["sub"] = subject, ["aud"] = new[] { audience },
+            ["iss"] = issuer, ["sub"] = subject, ["aud"] = new[] { audience },
             ["iat"] = now, ["exp"] = now + lifetimeSeconds,
         };
         var kubernetes = new Dictionary<string, object>
@@ -447,12 +456,13 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
     }
 
     /// <summary>
-    /// The privilege-escalation step the finding is really about. Authentik's
-    /// <c>GroupViewSet.add_user</c> has NO superuser-group check of its own, so a token holding the
+    /// The privilege-escalation step the finding is really about. On 2026.5.3 Authentik's
+    /// <c>GroupViewSet.add_user</c> had no superuser-group check of its own, so a token holding the
     /// global <c>add_user_to_group</c> permission could add any account to <c>authentik Admins</c>
-    /// and become superuser. Both routes to that must now fail — the group action because the
-    /// permission is gone, and the user-groups PATCH because Authentik refuses to add members to a
-    /// superuser group without <c>enable_group_superuser</c>.
+    /// and become superuser (2026.8.4 refuses a superuser group there without
+    /// <c>enable_group_superuser</c>). Both routes to that must fail — the group action because the
+    /// role holds the permission on <c>tenant-admins</c> only, and the user-groups PATCH because
+    /// Authentik refuses to add members to a superuser group without <c>enable_group_superuser</c>.
     /// </summary>
     [Fact]
     public async Task OrchestratorToken_CannotAddAnyoneToAuthentikAdmins_ByEitherRoute()
@@ -466,7 +476,7 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
         using var groupActionResponse = await orchestrator.PostAsync(
             $"/api/v3/core/groups/{adminsPk}/add_user/", Json($$"""{"pk":{{created.UserId}}}"""));
         groupActionResponse.StatusCode.Should().Be(HttpStatusCode.Forbidden,
-            "the global add_user_to_group permission that gates this endpoint has been removed");
+            "the role holds add_user_to_group on tenant-admins only, never globally");
 
         using var patchRequest = new HttpRequestMessage(HttpMethod.Patch, $"/api/v3/core/users/{created.UserId}/")
         {
@@ -501,6 +511,58 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
 
         await _orchestrator.RemoveGroupAsync(created.UserId, "tenant-admins");
         (await GroupPksOfUserAsync(created.UserId)).Should().NotContain(tenantAdminsPk);
+    }
+
+    // ───────────────────────── CSR round 12 §2.1: tenant directory reads ──────────────────────
+
+    /// <summary>
+    /// ListUsers and DeleteTenant read only the caller's tenant: Authentik filters by
+    /// <c>attributes.tenant_id</c> for the orchestrator's own token, and the client keeps its own
+    /// check on what comes back.
+    /// </summary>
+    [Fact]
+    public async Task OrchestratorToken_ListUsersByTenant_ReadsOnlyThatTenantsUsers()
+    {
+        var tenant = Unique("csr12-list");
+        var usernames = new List<string>();
+        for (var i = 0; i < 3; i++)
+        {
+            var username = Unique("csr12-in");
+            usernames.Add(username);
+            await _orchestrator.CreateUserAsync(username, $"{username}@iverson-test.invalid", tenant, groups: []);
+        }
+        var outsider = Unique("csr12-out");
+        await _orchestrator.CreateUserAsync(outsider, $"{outsider}@iverson-test.invalid", Unique("csr12-other"), groups: []);
+
+        var users = (await _orchestrator.ListUsersByTenantAsync(tenant)).ToList();
+
+        users.Select(u => u.Username).Should().BeEquivalentTo(usernames);
+        users.Should().OnlyContain(u => !string.IsNullOrEmpty(u.Uid));
+
+        // Authentik applied the filter itself: the count is the tenant's, not the directory's.
+        using var orchestrator = RawClient(AuthentikContainerFixture.OrchestratorToken);
+        var filter = Uri.EscapeDataString(JsonSerializer.Serialize(new Dictionary<string, string> { ["tenant_id"] = tenant }));
+        using var page = JsonDocument.Parse(await orchestrator.GetStringAsync($"/api/v3/core/users/?attributes={filter}&page_size=1"));
+        page.RootElement.GetProperty("pagination").GetProperty("count").GetInt32().Should().Be(3);
+    }
+
+    /// <summary>RemoveUser's and SetTenantAdmin's tenant check reads one user by pk, with the orchestrator's token.</summary>
+    [Fact]
+    public async Task OrchestratorToken_GetUserAsync_ReadsOneUserByPk_AndAnUnknownPkIsNull()
+    {
+        var tenant = Unique("csr12-get");
+        var username = Unique("csr12-one");
+        var created = await _orchestrator.CreateUserAsync(username, $"{username}@iverson-test.invalid", tenant, groups: []);
+
+        var user = await _orchestrator.GetUserAsync(created.UserId);
+
+        user.Should().NotBeNull();
+        user!.Id.Should().Be(created.UserId);
+        user.Username.Should().Be(username);
+        user.TenantId.Should().Be(tenant);
+        user.IsActive.Should().BeTrue();
+        user.Uid.Should().NotBeNullOrEmpty();
+        (await _orchestrator.GetUserAsync("2147483647")).Should().BeNull();
     }
 
     // ───────────────────────── CSR round-3 finding #2: MFA on the recovery flow ─────────────────
@@ -588,65 +650,378 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
             "a failed second factor must leave the session unauthenticated");
     }
 
+    // ───────────────────────── CSR round 12: the login and admin planes on 2026.8.4 ─────────────────
+    //
+    // Every request in this class reaches Authentik from one client address, so the throttle facts
+    // delete every reputation row before and after they run.
+
+    private const string GoodPassword = "Correct-Horse-Battery-9";
+    private const string Throttled = "Too many failed attempts. Try again later.";
+
+    /// <summary>A user with a password, created with the superuser token; optionally in <paramref name="groupPks"/>.</summary>
+    private async Task<(string Pk, string Username)> CreateUserWithPasswordAsync(string prefix, params string[] groupPks)
+    {
+        using var admin = RawClient(_authentik.AdminToken);
+        var username = Unique(prefix);
+        var user = await PostAsync(admin, "/api/v3/core/users/",
+            new { username, name = username, email = $"{username}@iverson-test.invalid", is_active = true, groups = groupPks });
+        var pk = user.GetProperty("pk").GetRawText();
+        using var response = await admin.PostAsync($"/api/v3/core/users/{pk}/set_password/",
+            Json(JsonSerializer.Serialize(new { password = GoodPassword })));
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        return (pk, username);
+    }
+
+    private async Task<string> RecoveryLinkAsync(string userPk)
+    {
+        using var admin = RawClient(_authentik.AdminToken);
+        using var response = await admin.PostAsync($"/api/v3/core/users/{userPk}/recovery/", Json("{}"));
+        response.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("link").GetString()!;
+    }
+
+    private async Task ClearReputationAsync()
+    {
+        using var admin = RawClient(_authentik.AdminToken);
+        using var doc = JsonDocument.Parse(await admin.GetStringAsync("/api/v3/policies/reputation/scores/?page_size=1000"));
+        foreach (var row in doc.RootElement.GetProperty("results").EnumerateArray())
+        {
+            using var response = await admin.DeleteAsync($"/api/v3/policies/reputation/scores/{row.GetProperty("pk").GetString()}/");
+            response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        }
+    }
+
+    private async Task<long> ScoreAsync(string identifier)
+    {
+        using var admin = RawClient(_authentik.AdminToken);
+        using var doc = JsonDocument.Parse(await admin.GetStringAsync(
+            $"/api/v3/policies/reputation/scores/?identifier={Uri.EscapeDataString(identifier)}"));
+        return doc.RootElement.GetProperty("results").EnumerateArray().Sum(row => row.GetProperty("score").GetInt64());
+    }
+
+    /// <summary>One login plan up to the stage after identification; returns that stage's component.</summary>
+    private async Task<(LoginFlowSession Plan, string? Component)> IdentifyAsync(string username, bool publicListener = false)
+    {
+        var plan = new LoginFlowSession(_authentik.BaseUrl, publicListener);
+        (await plan.StartAsync()).Should().Be("ak-stage-identification");
+        return (plan, await plan.IdentifyAsync(username));
+    }
+
     /// <summary>
-    /// Minimal driver for Authentik's flow-executor API — enough to walk the recovery flow the way
-    /// a browser does. Cookies are the flow plan's only carrier, so one session per flow run.
+    /// CSR round 12 §2.5, live with the shipped reputation.yaml. A known username's rows for this address
+    /// fall by one per wrong password; at −5 the next plan is refused at order 12, before any password is
+    /// asked, and so is a recovery link for the account minted afterwards (order 0 of iverson-recovery).
     /// </summary>
-    private sealed class RecoveryFlowSession : IDisposable
+    [Fact]
+    public async Task LoginThrottle_RefusesANewPlanAndARecoveryLink_OnceThePairReachesMinusFive()
+    {
+        await ClearReputationAsync();
+        try
+        {
+            var (pk, username) = await CreateUserWithPasswordAsync("csr12-pair");
+            for (var attempt = 1; attempt <= 5; attempt++)
+            {
+                var (plan, component) = await IdentifyAsync(username);
+                using (plan)
+                {
+                    component.Should().Be("ak-stage-password", $"plan {attempt} starts with the pair above −5");
+                    (await plan.SubmitPasswordAsync("wrong-password")).Should().Be("ak-stage-password");
+                }
+            }
+            (await ScoreAsync(username)).Should().Be(-5);
+
+            var (refused, refusedComponent) = await IdentifyAsync(username);
+            using (refused)
+            {
+                refusedComponent.Should().Be("ak-stage-access-denied");
+                refused.ErrorMessage().Should().Be(Throttled);
+            }
+
+            using var recovery = new RecoveryFlowSession(_authentik.BaseUrl, await RecoveryLinkAsync(pk));
+            (await recovery.StartAsync()).Should().Be("ak-stage-access-denied", "the throttle runs at order 0 of iverson-recovery");
+            recovery.ErrorMessage().Should().Be(Throttled);
+        }
+        finally
+        {
+            await ClearReputationAsync();
+        }
+    }
+
+    /// <summary>
+    /// CSR round 12 §2.5. An unknown username scores at identification and at the password, so its third plan
+    /// is refused after two failed attempts. Ten such identifiers bring this address's failures to −50, which
+    /// refuses every new plan from it, a known account with no failures of its own included; at nine (−45)
+    /// that account is still asked for its password.
+    /// </summary>
+    [Fact]
+    public async Task LoginThrottle_RefusesEveryNewPlan_FromAnAddressWhoseFailuresReachMinusFifty()
+    {
+        await ClearReputationAsync();
+        try
+        {
+            var (_, known) = await CreateUserWithPasswordAsync("csr12-addr");
+            for (var identifier = 1; identifier <= 10; identifier++)
+            {
+                if (identifier == 10)
+                {
+                    var (control, controlComponent) = await IdentifyAsync(known);
+                    using (control)
+                        controlComponent.Should().Be("ak-stage-password", "nine identifiers at −5 sum to −45, above the cap");
+                }
+
+                var unknown = Unique("csr12-nobody");
+                for (var attempt = 1; attempt <= 2; attempt++)
+                {
+                    var (plan, component) = await IdentifyAsync(unknown);
+                    using (plan)
+                    {
+                        component.Should().Be("ak-stage-password");
+                        (await plan.SubmitPasswordAsync("wrong-password")).Should().Be("ak-stage-password");
+                    }
+                }
+                var (third, thirdComponent) = await IdentifyAsync(unknown);
+                using (third)
+                    thirdComponent.Should().Be("ak-stage-access-denied", "an unknown username's third plan starts at −5");
+                (await ScoreAsync(unknown)).Should().Be(-5);
+            }
+
+            var (refused, refusedComponent) = await IdentifyAsync(known);
+            using (refused)
+            {
+                refusedComponent.Should().Be("ak-stage-access-denied", "ten identifiers at −5 sum to −50");
+                refused.ErrorMessage().Should().Be(Throttled);
+            }
+        }
+        finally
+        {
+            await ClearReputationAsync();
+        }
+    }
+
+    /// <summary>
+    /// CSR round 12 §2.7 (Verified assumption 33, re-run in the suite): with the shipped superusers.yaml, which
+    /// the fixture applies, a superuser is refused on the public listener after identification, before any
+    /// password is asked, and a recovery link for one is refused there. Without the listener's marker the same
+    /// account is asked for its password and its link opens.
+    /// </summary>
+    [Fact]
+    public async Task ShippedSuperusersBlueprint_RefusesASuperuser_OnlyOnThePublicListener()
+    {
+        var (pk, username) = await CreateUserWithPasswordAsync("csr12-super", await GroupPkAsync("authentik Admins"));
+
+        var (publicPlan, publicComponent) = await IdentifyAsync(username, publicListener: true);
+        using (publicPlan)
+        {
+            publicComponent.Should().Be("ak-stage-access-denied");
+            publicPlan.ErrorMessage().Should().Be("Administrators sign in through the in-cluster route.");
+        }
+        var (inCluster, inClusterComponent) = await IdentifyAsync(username);
+        using (inCluster)
+            inClusterComponent.Should().Be("ak-stage-password");
+
+        using (var publicRecovery = new RecoveryFlowSession(_authentik.BaseUrl, await RecoveryLinkAsync(pk), publicListener: true))
+            (await publicRecovery.StartAsync()).Should().Be("ak-stage-access-denied");
+        using var inClusterRecovery = new RecoveryFlowSession(_authentik.BaseUrl, await RecoveryLinkAsync(pk));
+        (await inClusterRecovery.StartAsync()).Should().Be("ak-stage-prompt");
+    }
+
+    /// <summary>
+    /// CSR round 12 §2.5 (Verified assumption 19 on 2026.8.4): with mfa-enforcement.yaml as Helm renders it where
+    /// no test identities are provisioned (not_configured_action deny), a user with no device is refused after its
+    /// password, and a user with a TOTP device is challenged. Helm's own render is checked by the chart's render
+    /// checks; this applies the same substitution, then re-applies the shipped file for the facts that follow.
+    /// </summary>
+    [Fact]
+    public async Task MfaDeny_RefusesAUserWithNoDevice_AndChallengesAUserWithOne()
+    {
+        var shipped = await File.ReadAllTextAsync(Path.Combine(
+            AuthentikOrchestratorRoleBlueprintTests.AuthentikChartDirectory(), "blueprints", "mfa-enforcement.yaml"));
+        var deny = shipped.Replace("not_configured_action: configure", "not_configured_action: deny");
+        deny.Should().NotBe(shipped, "templates/blueprints-configmap.yaml rewrites exactly this value");
+        await _authentik.ImportBlueprintAsync(deny);
+        try
+        {
+            var (_, bare) = await CreateUserWithPasswordAsync("csr12-nodevice");
+            var (refused, _) = await IdentifyAsync(bare);
+            using (refused)
+            {
+                (await refused.SubmitPasswordAsync(GoodPassword)).Should().Be("ak-stage-access-denied");
+                (await refused.AuthenticatedUsernameAsync()).Should().BeNull();
+            }
+
+            var (_, enrolled) = await CreateUserWithPasswordAsync("csr12-device");
+            await _authentik.EnrollTotpDeviceAsync(enrolled);
+            var (challenged, _) = await IdentifyAsync(enrolled);
+            using (challenged)
+            {
+                (await challenged.SubmitPasswordAsync(GoodPassword)).Should().Be("ak-stage-authenticator-validate");
+                (await challenged.AuthenticatedUsernameAsync()).Should().BeNull();
+            }
+        }
+        finally
+        {
+            await _authentik.ImportBlueprintAsync(shipped);
+        }
+    }
+
+    /// <summary>
+    /// CSR round 12 §2.4 (Verified assumptions 28 and 73): the orchestrator role holds add_user_to_group and
+    /// remove_user_from_group on the tenant-admins group object only, through that entry's permissions in
+    /// compose-only/service-clients.yaml, so the group endpoints work there and are refused on every other group.
+    /// </summary>
+    [Fact]
+    public async Task OrchestratorToken_AddsAndRemovesMembers_OfTenantAdminsOnly()
+    {
+        var username = Unique("csr12-member");
+        var created = await _orchestrator.CreateUserAsync(username, $"{username}@iverson-test.invalid", "csr12-tenant", groups: []);
+        using var orchestrator = RawClient(AuthentikContainerFixture.OrchestratorToken);
+        var body = $$"""{"pk":{{created.UserId}}}""";
+
+        var tenantAdminsPk = await GroupPkAsync("tenant-admins");
+        using (var added = await orchestrator.PostAsync($"/api/v3/core/groups/{tenantAdminsPk}/add_user/", Json(body)))
+            added.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await GroupPksOfUserAsync(created.UserId)).Should().Contain(tenantAdminsPk);
+        using (var removed = await orchestrator.PostAsync($"/api/v3/core/groups/{tenantAdminsPk}/remove_user/", Json(body)))
+            removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await GroupPksOfUserAsync(created.UserId)).Should().NotContain(tenantAdminsPk);
+
+        foreach (var other in new[] { "operators", "authentik Admins", "iverson-admin-orchestrators" })
+        {
+            var otherPk = await GroupPkAsync(other);
+            using var add = await orchestrator.PostAsync($"/api/v3/core/groups/{otherPk}/add_user/", Json(body));
+            add.StatusCode.Should().Be(HttpStatusCode.Forbidden, $"the role holds the group verbs on tenant-admins only, not on {other}");
+            using var remove = await orchestrator.PostAsync($"/api/v3/core/groups/{otherPk}/remove_user/", Json(body));
+            remove.StatusCode.Should().Be(HttpStatusCode.Forbidden, $"the role holds the group verbs on tenant-admins only, not on {other}");
+        }
+    }
+
+    /// <summary>
+    /// CSR round 12 §2.2, §2.4: the console sign-in policy, evaluated live. The compose copy, bound to iverson-api
+    /// in compose-only/service-clients.yaml (which this fixture applies), admits tenant-admins and operators
+    /// members. The Helm expression (templates/secret-service-clients.yaml) admits tenant-admins members and the
+    /// subjects on the operator list, and not an operators member. Everyone else is refused by both.
+    /// </summary>
+    [Fact]
+    public async Task ConsoleSignInPolicy_AdmitsOnlyTenantAdminsAndOperators()
+    {
+        using var admin = RawClient(_authentik.AdminToken);
+        var (tenantAdmin, _) = await CreateUserWithPasswordAsync("csr12-ta", await GroupPkAsync("tenant-admins"));
+        var (groupOperator, _) = await CreateUserWithPasswordAsync("csr12-op", await GroupPkAsync("operators"));
+        var (listed, _) = await CreateUserWithPasswordAsync("csr12-listed");
+        var (ordinary, _) = await CreateUserWithPasswordAsync("csr12-plain");
+
+        var app = await GetAsync(admin, "/api/v3/core/applications/iverson-api/");
+        using (var bindings = JsonDocument.Parse(await admin.GetStringAsync(
+                   $"/api/v3/policies/bindings/?target={app.GetProperty("pk").GetString()}")))
+        {
+            bindings.RootElement.GetProperty("results").EnumerateArray()
+                .Select(b => b.GetProperty("policy_obj").GetProperty("name").GetString())
+                .Should().Equal("iverson-console-admins");
+        }
+        var compose = (await FirstAsync(admin, "/api/v3/policies/expression/?name=iverson-console-admins", "pk")).GetString()!;
+        (await PassesAsync(admin, compose, tenantAdmin)).Should().BeTrue();
+        (await PassesAsync(admin, compose, groupOperator)).Should().BeTrue();
+        (await PassesAsync(admin, compose, listed)).Should().BeFalse();
+        (await PassesAsync(admin, compose, ordinary)).Should().BeFalse();
+
+        var uid = (await GetAsync(admin, $"/api/v3/core/users/{listed}/")).GetProperty("uid").GetString()!;
+        var helm = (await PostAsync(admin, "/api/v3/policies/expression/",
+            new { name = Unique("csr12-console-helm"), expression = HelmConsoleSignInExpression(uid) })).GetProperty("pk").GetString()!;
+        (await PassesAsync(admin, helm, tenantAdmin)).Should().BeTrue();
+        (await PassesAsync(admin, helm, listed)).Should().BeTrue();
+        (await PassesAsync(admin, helm, groupOperator)).Should().BeFalse("on Helm no group yields Operator");
+        (await PassesAsync(admin, helm, ordinary)).Should().BeFalse();
+    }
+
+    /// <summary>The Helm console sign-in expression, with the rendered operator list replaced by one subject.</summary>
+    private static string HelmConsoleSignInExpression(string subject)
+    {
+        const string list = "{{ .Values.global.operatorSubjects | default (list) | toJson }}";
+        var lines = File.ReadAllLines(Path.Combine(
+            AuthentikOrchestratorRoleBlueprintTests.AuthentikChartDirectory(), "templates", "secret-service-clients.yaml"));
+        var policy = Array.FindIndex(lines, line => line.Trim() == "name: iverson-console-admins");
+        policy.Should().BeGreaterThanOrEqualTo(0, "the service-clients blueprint must carry the console sign-in policy");
+        var expression = lines[Array.FindIndex(lines, policy, line => line.Trim() == "expression: |") + 1].Trim();
+        expression.Should().Contain(list, "the Helm expression reads the release's operator list");
+        return expression.Replace(list, JsonSerializer.Serialize(new[] { subject }));
+    }
+
+    private static async Task<JsonElement> GetAsync(HttpClient admin, string path)
+    {
+        using var doc = JsonDocument.Parse(await admin.GetStringAsync(path));
+        return doc.RootElement.Clone();
+    }
+
+    private static async Task<bool> PassesAsync(HttpClient admin, string policyPk, string userPk)
+    {
+        using var response = await admin.PostAsync($"/api/v3/policies/all/{policyPk}/test/", Json($$"""{"user":{{userPk}}}"""));
+        response.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("passing").GetBoolean();
+    }
+
+    /// <summary>
+    /// CSR round 12 §2.6. The TokenReview policy reads the raw assertion from the token request's form body:
+    /// a policy admitting exactly the presented assertion admits the exchange. The shipped review refuses when
+    /// it gets no answer, which is this fixture's case (no Kubernetes API behind its relay address); the review
+    /// that succeeds is exercised in the kind run.
+    /// </summary>
+    [Fact]
+    public async Task OrchestratorTokenReview_ReadsTheRawAssertion_AndRefusesWithoutAReview()
+    {
+        using var admin = RawClient(_authentik.AdminToken);
+        using var rsa = RSA.Create(2048);
+
+        var seenKid = "tr-" + Guid.NewGuid().ToString("N")[..8];
+        var assertion = Assertion(rsa, seenKid, FederatedSubject, FederatedAudience);
+        var seen = await CreateFederationObjectsAsync(admin, rsa, seenKid,
+            usernameExpression: $"return {{\"username\": \"{seenKid}-probe\"}}",
+            policies: [$"return request.http_request.POST.get(\"client_assertion\") == \"{assertion}\""]);
+        (await ExchangeAsync(seen, assertion)).Should().Be((HttpStatusCode.OK, (string?)null));
+
+        var reviewKid = "tr-" + Guid.NewGuid().ToString("N")[..8];
+        var review = await CreateFederationObjectsAsync(admin, rsa, reviewKid,
+            usernameExpression: $"return {{\"username\": \"{reviewKid}-probe\"}}",
+            policies: [AuthentikOrchestratorFederationBlueprintTests.TokenReviewPolicyExpression(FederatedSubject)]);
+        var usersBefore = await UserCountAsync(admin);
+        (await ExchangeAsync(review, Assertion(rsa, reviewKid, FederatedSubject, FederatedAudience)))
+            .Should().Be((HttpStatusCode.BadRequest, "invalid_grant"));
+        (await UserCountAsync(admin)).Should().Be(usersBefore);
+    }
+
+    /// <summary>
+    /// Minimal driver for Authentik's flow-executor API — enough to walk a flow the way a browser does.
+    /// Cookies are the flow plan's only carrier, so one session per plan. With <c>publicListener</c>, every
+    /// request carries the marker the tls-proxy's public listener (:9080) sets.
+    /// </summary>
+    private abstract class FlowSession : IDisposable
     {
         private readonly HttpClient _client;
         private readonly string _executorUrl;
 
         public string LastChallengeBody { get; private set; } = "";
 
-        public RecoveryFlowSession(string baseUrl, string recoveryLink)
+        protected FlowSession(string baseUrl, string executorUrl, bool publicListener)
         {
-            var flowToken = new Uri(recoveryLink).Query.TrimStart('?')
-                .Split('&')
-                .Select(pair => pair.Split('=', 2))
-                .Where(parts => parts.Length == 2 && parts[0] == "flow_token")
-                .Select(parts => Uri.UnescapeDataString(parts[1]))
-                .FirstOrDefault();
-            flowToken.Should().NotBeNullOrEmpty("the recovery link must carry a flow_token");
-
             _client = new HttpClient(new HttpClientHandler { CookieContainer = new CookieContainer() })
             {
                 BaseAddress = new Uri(baseUrl)
             };
-            _executorUrl = "/api/v3/flows/executor/iverson-recovery/?query=" +
-                           Uri.EscapeDataString($"flow_token={flowToken}");
+            if (publicListener)
+                _client.DefaultRequestHeaders.Add("X-Iverson-Public-Ingress", "1");
+            _executorUrl = executorUrl;
         }
 
         public Task<string?> StartAsync() => ReadComponentAsync(_client.GetAsync(_executorUrl));
 
-        public Task<string?> SubmitPasswordAsync(string password) => ReadComponentAsync(
-            _client.PostAsync(_executorUrl, Json(
-                $$"""{"component":"ak-stage-prompt","password":"{{password}}","password_repeat":"{{password}}"}""")));
+        protected Task<string?> SubmitAsync(string json) => ReadComponentAsync(_client.PostAsync(_executorUrl, Json(json)));
 
-        public Task<string?> SubmitTotpCodeAsync(string code) => ReadComponentAsync(
-            _client.PostAsync(_executorUrl, Json(
-                $$"""{"component":"ak-stage-authenticator-validate","code":"{{code}}"}""")));
-
-        public Task<string?> SubmitTotpSetupCodeAsync(string code) => ReadComponentAsync(
-            _client.PostAsync(_executorUrl, Json(
-                $$"""{"component":"ak-stage-authenticator-totp","code":"{{code}}"}""")));
-
-        /// <summary>The base32 secret in the last challenge's config_url (the TOTP setup stage).</summary>
-        public string TotpSetupSecret()
+        /// <summary>The last challenge's <c>error_message</c> (an access-denied stage's reason), or null.</summary>
+        public string? ErrorMessage()
         {
             using var doc = JsonDocument.Parse(LastChallengeBody);
-            var configUrl = new Uri(doc.RootElement.GetProperty("config_url").GetString()!);
-            return HttpUtility.ParseQueryString(configUrl.Query)["secret"]!;
-        }
-
-        /// <summary>Device classes the last challenge offered (empty when it wasn't an MFA challenge).</summary>
-        public string[] OfferedDeviceClasses()
-        {
-            using var doc = JsonDocument.Parse(LastChallengeBody);
-            return doc.RootElement.TryGetProperty("device_challenges", out var challenges) &&
-                   challenges.ValueKind == JsonValueKind.Array
-                ? [.. challenges.EnumerateArray().Select(c => c.GetProperty("device_class").GetString()!)]
-                : [];
+            return doc.RootElement.TryGetProperty("error_message", out var message) ? message.GetString() : null;
         }
 
         /// <summary>
@@ -680,5 +1055,61 @@ public sealed class AuthentikRecoveryFlowIntegrationTests : IClassFixture<Authen
         }
 
         public void Dispose() => _client.Dispose();
+    }
+
+    /// <summary>Walks a recovery link: the <c>iverson-recovery</c> flow with the link's flow token.</summary>
+    private sealed class RecoveryFlowSession(string baseUrl, string recoveryLink, bool publicListener = false)
+        : FlowSession(baseUrl, "/api/v3/flows/executor/iverson-recovery/?query=" +
+                               Uri.EscapeDataString($"flow_token={FlowToken(recoveryLink)}"), publicListener)
+    {
+        private static string FlowToken(string recoveryLink)
+        {
+            var flowToken = new Uri(recoveryLink).Query.TrimStart('?')
+                .Split('&')
+                .Select(pair => pair.Split('=', 2))
+                .Where(parts => parts.Length == 2 && parts[0] == "flow_token")
+                .Select(parts => Uri.UnescapeDataString(parts[1]))
+                .FirstOrDefault();
+            flowToken.Should().NotBeNullOrEmpty("the recovery link must carry a flow_token");
+            return flowToken!;
+        }
+
+        public Task<string?> SubmitPasswordAsync(string password) => SubmitAsync(
+            $$"""{"component":"ak-stage-prompt","password":"{{password}}","password_repeat":"{{password}}"}""");
+
+        public Task<string?> SubmitTotpCodeAsync(string code) => SubmitAsync(
+            $$"""{"component":"ak-stage-authenticator-validate","code":"{{code}}"}""");
+
+        public Task<string?> SubmitTotpSetupCodeAsync(string code) => SubmitAsync(
+            $$"""{"component":"ak-stage-authenticator-totp","code":"{{code}}"}""");
+
+        /// <summary>The base32 secret in the last challenge's config_url (the TOTP setup stage).</summary>
+        public string TotpSetupSecret()
+        {
+            using var doc = JsonDocument.Parse(LastChallengeBody);
+            var configUrl = new Uri(doc.RootElement.GetProperty("config_url").GetString()!);
+            return HttpUtility.ParseQueryString(configUrl.Query)["secret"]!;
+        }
+
+        /// <summary>Device classes the last challenge offered (empty when it wasn't an MFA challenge).</summary>
+        public string[] OfferedDeviceClasses()
+        {
+            using var doc = JsonDocument.Parse(LastChallengeBody);
+            return doc.RootElement.TryGetProperty("device_challenges", out var challenges) &&
+                   challenges.ValueKind == JsonValueKind.Array
+                ? [.. challenges.EnumerateArray().Select(c => c.GetProperty("device_class").GetString()!)]
+                : [];
+        }
+    }
+
+    /// <summary>Walks one plan of the login flow, <c>default-authentication-flow</c>.</summary>
+    private sealed class LoginFlowSession(string baseUrl, bool publicListener = false)
+        : FlowSession(baseUrl, "/api/v3/flows/executor/default-authentication-flow/?query=", publicListener)
+    {
+        public Task<string?> IdentifyAsync(string username) => SubmitAsync(
+            $$"""{"component":"ak-stage-identification","uid_field":"{{username}}"}""");
+
+        public Task<string?> SubmitPasswordAsync(string password) => SubmitAsync(
+            $$"""{"component":"ak-stage-password","password":"{{password}}"}""");
     }
 }

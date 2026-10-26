@@ -1,5 +1,10 @@
 # Fix the api Ingress on nginx profiles — design
 
+> **Superseded** by CSR round 12 Platform (`docs/specs/2026-10-19-csr-round12-platform-design.md`
+> §4.5). kind and laptop no longer run ingress-nginx: their edge is an Istio gateway in the
+> `iverson-edge` namespace, and the chart renders `GRPCRoute` and `HTTPRoute` objects instead of the
+> nginx Ingresses this design fixed. Kept for history.
+
 ## Goal
 
 Make main's api Ingress (`charts/api/templates/ingress.yaml`) actually work on `local`/`laptop` (ingress-nginx), instead of 400ing every request, and remove the one route on it that no longer needs to be there.

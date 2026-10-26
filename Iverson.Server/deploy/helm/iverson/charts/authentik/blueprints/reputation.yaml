@@ -1,27 +1,46 @@
 version: 1
 metadata:
-  name: Iverson - Login failures by client address
+  name: Iverson - Login throttle
 entries:
-  # CSR round-11 #5. Authentik's own reputation policy sums every (address, username) score for the
-  # address, and a successful login raises its row, so one account's successes offset failures
-  # against another from the same address. This sums only the failing rows. Each failed
-  # identification, password or MFA attempt lowers its row (floored at -5); a row expires
-  # reputation.expiry (default 24 h) after its first failure.
-  - id: login-failures-by-address
-    model: authentik_policies_expression.expressionpolicy
+  # CSR round-12 §2.5: the throttle below replaces round 11's address-only policy, which refused a
+  # whole client address after five failures (a shared NAT included). Its flow-level binding is
+  # deleted first, then the policy. The condition skips the binding entry once the policy is gone:
+  # without it, a later apply would look for a binding whose policy is empty.
+  - model: authentik_policies.policybinding
+    state: absent
+    conditions:
+      - !Find [authentik_policies_expression.expressionpolicy, [name, iverson-login-failures-by-address]]
+    identifiers:
+      policy: !Find [authentik_policies_expression.expressionpolicy, [name, iverson-login-failures-by-address]]
+      target: !Find [authentik_policies.policybindingmodel, [flow__slug, default-authentication-flow]]
+      order: 0
+  - model: authentik_policies_expression.expressionpolicy
+    state: absent
     identifiers:
       name: iverson-login-failures-by-address
+  # Login: the throttle (policy iverson-login-throttle, deny stage iverson-login-throttled) is defined in
+  # recovery-flow.yaml, the document that creates iverson-recovery, so that flow never exists without it
+  # (CSR round-12 §6, a gate in its target's document). This file binds the same stage to the stock login
+  # flow, which no Iverson document creates. Until recovery-flow.yaml and Authentik's own login flow
+  # blueprint have applied, the !Find tags below find nothing, this file fails as a whole, and the next
+  # discovery applies it (docs/runbooks/csr11-identity-plane.md §2 applies it at once).
+  # A deny stage runs only when its policy passes. Evaluated when the stage is reached
+  # (evaluate_on_plan false, re_evaluate_policies true), so it sees the pending user. Never a policy on
+  # the password stage's binding: a failed policy there drops the stage from the plan, and the login
+  # stage does not check that a password stage ran.
+  # After identification (10), before the superuser refusal (15) and the password (20). It refuses new
+  # plans; retries inside a plan are bounded by the password stage's own cancel rule.
+  - id: login-throttle-binding
+    model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      stage: !Find [authentik_stages_deny.denystage, [name, iverson-login-throttled]]
     attrs:
-      expression: |
-        from django.db.models import Sum
-        from authentik.policies.reputation.models import Reputation
-        failures = Reputation.objects.filter(ip=str(ak_client_ip), score__lt=0).aggregate(total=Sum("score"))["total"] or 0
-        return failures > -5
-  # Flow-level, so a refused address is denied before identification. PolicyBinding.target is the
-  # flow's policybindingmodel row (pbm_uuid), not its flow_uuid: a flow !Find here creates the binding
-  # once and then fails every later apply.
+      order: 12
+      evaluate_on_plan: false
+      re_evaluate_policies: true
   - model: authentik_policies.policybinding
     identifiers:
-      policy: !KeyOf login-failures-by-address
-      target: !Find [authentik_policies.policybindingmodel, [flow__slug, default-authentication-flow]]
+      policy: !Find [authentik_policies_expression.expressionpolicy, [name, iverson-login-throttle]]
+      target: !KeyOf login-throttle-binding
       order: 0

@@ -1,12 +1,14 @@
 {{- $backendTls := eq (include "authentik.backendTls" .) "true" }}
+{{- $consoleUrl := printf "%s://%s/admin/" .Values.global.externalScheme .Values.global.ingressHost }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ .Release.Name }}-authentik-tls-proxy
 data:
   # CSR round-10 #5: TLS on 8443 in front of Authentik's plaintext 9000, inside the same pod. Host is
-  # passed through and X-Forwarded-Proto set to https, so Authentik (which trusts both from loopback)
-  # builds https issuer and jwks_uri URLs for this listener.
+  # passed through and X-Forwarded-Proto set to https, so Authentik (which trusts both from
+  # 127.0.0.2, the source address both server blocks bind) builds https issuer and jwks_uri URLs for
+  # this listener.
   default.conf: |
     # CSR round-11 #8: the address Authentik records, by the API's ClientPartitionKey rule and from
     # the same values (global.trustedProxies). A peer inside the trusted ranges is a load balancer or
@@ -47,6 +49,7 @@ data:
       ssl_certificate     /etc/iverson/tls/tls.crt;
       ssl_certificate_key /etc/iverson/tls/tls.key;
       ssl_protocols       TLSv1.2 TLSv1.3;
+      proxy_bind 127.0.0.2;
       location / {
         proxy_pass http://127.0.0.1:9000;
         proxy_set_header Host $http_host;
@@ -55,13 +58,17 @@ data:
         proxy_set_header X-Forwarded-For $remote_addr;
       }
     }
-    # CSR round-10 #4: the public listener behind the Authentik Ingress. It forwards only the paths a
-    # browser needs (login, MFA enrolment, recovery, logout, OIDC), overwrites X-Forwarded-Host, and
-    # marks every request, so the admin-automation policy can tell public traffic from in-cluster
-    # callers. Everything else, the admin interface and admin API included, answers 404 here.
-    # CSR round-11 #4: TLS from the edge when iverson.backendTls is on for this Ingress class. Host is
-    # the one name the Ingress routes here, not the request's: Application Gateway replaces Host with
-    # its backend host name, and Authentik builds its issuer and URLs from Host.
+    # CSR round-10 #4: the public listener behind the Authentik Ingress. It overwrites X-Forwarded-Host
+    # and marks every request, so the admin-automation policy can tell public traffic from in-cluster
+    # callers. CSR round-11 #4: TLS from the edge when iverson.backendTls is on for this Ingress class.
+    # Host is the one name the Ingress routes here, not the request's: Application Gateway replaces
+    # Host with its backend host name, and Authentik builds its issuer and URLs from Host.
+    # CSR round-12 §2.7: it forwards exactly the paths a login, a recovery link, logout and the
+    # console's OIDC client use (Verified assumption 34), and answers 404 for everything else: the
+    # admin and user interfaces, the admin API, initial-setup and every other flow. `= /` redirects
+    # to the console, so a login started without `next` returns there and starts a fresh authorize.
+    # A location that sets its own proxy_set_header inherits none from this block, so /ws/client/
+    # repeats them.
     server {
 {{- if $backendTls }}
       listen 9080 ssl;
@@ -71,16 +78,38 @@ data:
 {{- else }}
       listen 9080;
 {{- end }}
+      proxy_bind 127.0.0.2;
+{{- if eq .Values.global.externalScheme "https" }}
+      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+{{- end }}
       proxy_set_header Host authentik.{{ .Values.global.ingressHost }};
       proxy_set_header X-Forwarded-Host authentik.{{ .Values.global.ingressHost }};
       proxy_set_header X-Iverson-Public-Ingress 1;
       proxy_set_header X-Forwarded-For $iverson_client_addr;
-      location /application/ { proxy_pass http://127.0.0.1:9000; }
-      location /if/flow/ { proxy_pass http://127.0.0.1:9000; }
-      location /api/v3/flows/executor/ { proxy_pass http://127.0.0.1:9000; }
-      location /flows/-/default/ { proxy_pass http://127.0.0.1:9000; }
+      location ~ ^/(if/flow|api/v3/flows/executor)/(default-authentication-flow|iverson-recovery|default-provider-authorization-implicit-consent|default-invalidation-flow|default-provider-invalidation-flow)/\z { proxy_pass http://127.0.0.1:9000; }
+      location = /flows/-/default/authentication/ { proxy_pass http://127.0.0.1:9000; }
+      location = /flows/-/default/invalidation/ { proxy_pass http://127.0.0.1:9000; }
+      location = /flows/-/cancel/ { proxy_pass http://127.0.0.1:9000; }
       location /static/ { proxy_pass http://127.0.0.1:9000; }
-      location = / { proxy_pass http://127.0.0.1:9000; }
+      location /media/ { proxy_pass http://127.0.0.1:9000; }
+      location = /ws/client/ {
+        proxy_pass http://127.0.0.1:9000;
+        proxy_http_version 1.1;
+        proxy_set_header Host authentik.{{ .Values.global.ingressHost }};
+        proxy_set_header X-Forwarded-Host authentik.{{ .Values.global.ingressHost }};
+        proxy_set_header X-Iverson-Public-Ingress 1;
+        proxy_set_header X-Forwarded-For $iverson_client_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+      }
+      location = /application/o/authorize/ { proxy_pass http://127.0.0.1:9000; }
+      location = /application/o/token/ { proxy_pass http://127.0.0.1:9000; }
+      location = /application/o/userinfo/ { proxy_pass http://127.0.0.1:9000; }
+      location = /application/o/revoke/ { proxy_pass http://127.0.0.1:9000; }
+      location = /application/o/iverson-api/end-session/ { proxy_pass http://127.0.0.1:9000; }
+      location = /application/o/iverson-api/jwks/ { proxy_pass http://127.0.0.1:9000; }
+      location = /application/o/iverson-api/.well-known/openid-configuration { proxy_pass http://127.0.0.1:9000; }
       location = /-/health/live/ { proxy_pass http://127.0.0.1:9000; }
+      location = / { return 302 {{ $consoleUrl }}; }
       location / { return 404; }
     }

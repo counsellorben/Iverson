@@ -13,14 +13,17 @@ namespace Iverson.Api.Tenancy;
 /// a caller whose request is cancelled stops waiting without cancelling the reload for the rest.
 /// A reload failure propagates to every caller waiting on it, so the request fails rather than
 /// skipping the check, as <see cref="TenantStatusCache"/> does; the next call starts a fresh
-/// reload. JWT <c>iat</c> has whole-second precision, so a login in the same wall-clock second
-/// as a revocation is refused — failing closed — and the user logs in again.
+/// reload. A token counts as revoked when its <c>iat</c> is at most 5 s after <c>revoked_at</c>
+/// (CSR round 12 §2.3): <c>revoked_at</c> is Postgres's <c>now()</c> and <c>iat</c> is Authentik's
+/// clock, in whole seconds, so the margin absorbs skew between the two. A fresh login within 5 s
+/// of a revocation is therefore refused — failing closed — and the user logs in again.
 /// </summary>
 public sealed class TokenRevocationCache(
     ITokenRevocationRepository repository,
     TimeProvider timeProvider) : ITokenRevocationCache
 {
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan Skew = TimeSpan.FromSeconds(5);
 
     private readonly object _reloadGate = new();
     private volatile Snapshot? _snapshot;
@@ -35,7 +38,7 @@ public sealed class TokenRevocationCache(
 
         // A token with no iat cannot show it was issued after the revocation, so it is refused.
         return snapshot.RevokedAt.TryGetValue(sub, out var revokedAt)
-            && (issuedAt is null || issuedAt <= revokedAt);
+            && (issuedAt is null || issuedAt <= revokedAt + Skew);
     }
 
     public void Invalidate()

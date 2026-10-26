@@ -61,6 +61,7 @@ spec:
             - |
               set -e
               FE_HOST="{{ .Release.Name }}-starrocks-fe-service"
+              FE_REPLICAS="{{ .Values.fe.replicas }}"
               BE_REPLICAS="{{ .Values.be.replicas }}"
               # CSR round 11 #4: every call requires TLS and verifies FE's certificate against the
               # chart CA and FE_HOST, so the passwords below travel only inside TLS. An FE that
@@ -84,37 +85,38 @@ spec:
               do
                 echo "waiting for FE..."; sleep 5
               done
-              # BE's own entrypoint script registers itself with FE via
-              # `mysql -u root` — hardcoded, no password, no way to configure — so changing
-              # root's password (below) before every expected BE has joined permanently
-              # locks any not-yet-joined BE out of the cluster (it only retries for ~15s
-              # before giving up). Wait for BE_REPLICAS backends first, using the same ROOT_HAS_PW
-              # so this is idempotent across upgrades where root already has a password.
-              until [ "$(fe --skip-column-names --batch -e "SHOW BACKENDS;" 2>/dev/null | wc -l)" -ge "$BE_REPLICAS" ]; do
-                echo "waiting for $BE_REPLICAS BE node(s) to register..."; sleep 5
+              # CSR round 12 §4.3 #3: the FE and BE pods log in as root with MYSQL_PWD, root's password
+              # (starrockscluster.yaml), from their first start, so root's password is set as soon as
+              # an FE answers. A BE or FE follower that started before this exits unregistered (a BE
+              # after about 60 s, a follower after 120 s) and joins on its first restart after it. The
+              # rest of the batch waits for BE_REPLICAS backends and FE_REPLICAS frontends.
+              fe -e "SET PASSWORD FOR 'root' = PASSWORD('$ROOT_PW');"
+              ROOT_HAS_PW=1
+              until [ "$(fe --skip-column-names --batch -e "SHOW BACKENDS;" 2>/dev/null | wc -l)" -ge "$BE_REPLICAS" ] &&
+                    [ "$(fe --skip-column-names --batch -e "SHOW FRONTENDS;" 2>/dev/null | wc -l)" -ge "$FE_REPLICAS" ]; do
+                echo "waiting for $BE_REPLICAS BE and $FE_REPLICAS FE node(s) to register..."; sleep 5
               done
               fe -e "
-                SET PASSWORD FOR 'root' = PASSWORD('$ROOT_PW');
                 CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY '$APP_PW';
                 CREATE USER IF NOT EXISTS 'iverson_provisioner'@'%' IDENTIFIED BY '$PROVISIONER_PW';
                 CREATE DATABASE IF NOT EXISTS iverson;
-                GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
                 GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_provisioner'@'%';
                 GRANT user_admin TO 'iverson_provisioner'@'%';
                 REVOKE SELECT, INSERT, UPDATE, DELETE ON iverson.* FROM 'iverson_app'@'%';
                 REVOKE CREATE TABLE, DROP, ALTER ON DATABASE iverson FROM 'iverson_app'@'%';
                 REVOKE CREATE DATABASE ON CATALOG default_catalog FROM 'iverson_app'@'%';
                 REVOKE user_admin FROM 'iverson_app'@'%';
+                REVOKE OPERATE ON SYSTEM FROM USER 'iverson_app'@'%';
                 ALTER USER 'iverson_app' SET PROPERTIES ('session.query_timeout' = '180', 'session.exec_mem_limit' = '4294967296');
               "
               # CSR round 11 §3: two logins. iverson_app runs every query; iverson_provisioner
               # runs only tenant provisioning (EngagementRepository.EnsureTenantProvisionedAsync),
               # and only the worker is given its password.
-              # iverson_app keeps one direct grant, OPERATE ON SYSTEM, needed for `SHOW BACKENDS`:
-              # /health and every EngagementRepository's readiness gate run it as this user with
-              # no role active, and without it they fail with "Access denied; you need (at least
-              # one of) the OPERATE OR NODE privilege(s) on SYSTEM", confirmed empirically
-              # against a live FE (4.1.1). It holds no tenant role (CSR round 12): see the revoke below.
+              # iverson_app holds no grant (CSR round 12 §3.5): /health and every EngagementRepository's
+              # readiness gate run a two-row generate_series probe, which needs none. It held OPERATE
+              # ON SYSTEM for SHOW BACKENDS until then, so the batch revokes it; REVOKE OPERATE ON
+              # SYSTEM succeeds whether or not the user holds it, once the user exists. It holds no
+              # tenant role (CSR round 12): see the role revoke below.
               # iverson_provisioner holds user_admin and a direct CREATE DATABASE ON CATALOG
               # default_catalog. The catalog privilege must be direct: provisioning runs
               # `CREATE DATABASE IF NOT EXISTS` for each new tenant database, StarRocks checks the
@@ -136,9 +138,6 @@ spec:
               # are per-connection session defaults for this user, not global settings — every
               # other tenant/service is unaffected. Idempotent like the GRANTs above: reapplied
               # on every post-install/post-upgrade run of this job.
-              # The batch above has just set root's password to ROOT_PW, so every fe call after it
-              # must send it: on a fresh FE, ROOT_HAS_PW was 0 until now.
-              ROOT_HAS_PW=1
               # CSR round 12 §7.5: iverson_app holds no tenant role any more. Every data
               # connection logs in as its tenant's own login (iverson_t_<suffix>), and
               # provisioning no longer grants the tenant role to iverson_app. This revokes every

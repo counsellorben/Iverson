@@ -43,7 +43,7 @@ benchmark run. What was stopped and what was left alone are both printed.
 readiness -- there is no tier left running afterward to wait on.
 
 `ingest`/`query` then poll for readiness: Qdrant's `GET /readyz`, TEI's `GET /health`,
-and for iverson-api a raw TCP connect to 127.0.0.1:8080 -- port 8080 is h2c/gRPC-only
+and for iverson-api a raw TCP connect to 127.0.0.1:8080 -- port 8080 is gRPC-only over TLS
 (Kestrel configured Http2-only) and refuses HTTP/1.1, so an HTTP probe against it hangs or
 errors rather than reporting readiness. Postgres/authentik-server have no readiness
 check of their own here, and that is still sound even though iverson-api's startup
@@ -169,7 +169,9 @@ def wait_http_200(url, timeout):
 # service -> readiness probe. Services absent here (postgres, authentik-server) are
 # not polled directly -- see the module docstring for why that is sound.
 READY_CHECKS = {
-    "qdrant": lambda timeout: wait_http_200("http://127.0.0.1:6333/readyz", timeout),
+    # CSR round 12 §4.6: Qdrant serves TLS from a certificate that names localhost, not 127.0.0.1;
+    # urllib trusts the compose CA through SSL_CERT_FILE.
+    "qdrant": lambda timeout: wait_http_200("https://localhost:6333/readyz", timeout),
     "tei-embed": lambda timeout: wait_http_200("http://127.0.0.1:8091/health", timeout),
     "iverson-api": lambda timeout: wait_tcp("127.0.0.1", 8080, timeout),
 }

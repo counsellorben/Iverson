@@ -1,8 +1,9 @@
 # Iverson.AdminUI
 
 The admin dashboard for Iverson: a React + TypeScript SPA (Vite, react-router,
-`react-oidc-context`) that lets an operator log in through Authentik and
-manage tenants, view storage, and inspect performance data via Iverson.Api.
+`react-oidc-context`) that lets an admin — an operator or a tenant admin — log in
+through Authentik and see tenants, schemas, data volume and platform metrics via
+Iverson.Api.
 
 ## Prerequisites
 
@@ -20,16 +21,19 @@ manage tenants, view storage, and inspect performance data via Iverson.Api.
   ```
 
   (or `dotnet run` from `Iverson.Server/Iverson.Launcher`). This brings up
-  Authentik at `http://localhost:9000` and the API at `http://localhost:8081`,
-  matching the defaults in `.env.development`.
-- At least one human user in the `operators` Authentik group to log in with —
-  see [Creating a human user and granting operator access](../docs/user-management-and-security.md#creating-a-human-user-and-granting-operator-access)
+  Authentik at `https://localhost:9443` and the API at `https://localhost:8081`,
+  matching the defaults in `.env.development`. Both serve TLS from the compose CA
+  (`Iverson.Server/deploy/compose-tls/ca.crt`, written by
+  `scripts/generate-compose-secrets.sh`): import it into your browser's or your
+  operating system's trusted roots first (`docs/runbooks/csr12-platform.md` §4).
+- At least one admin to log in with: an operator, or a member of `tenant-admins`. Authentik
+  refuses everyone else at sign-in. See [Creating a human user and granting operator access](../docs/user-management-and-security.md#creating-a-human-user-and-granting-operator-access)
   if you don't have one yet. (Bootstrap admin login for compose:
   `admin@iverson.local` / the `AUTHENTIK_BOOTSTRAP_PASSWORD` value generated
   into `.env` by `scripts/generate-compose-secrets.sh`.)
   For compose, one is already seeded: `iverson-loadtest-bypass-user`, whose password is
-  the `IVERSON_BYPASS_PASSWORD` value in the same `.env`; it belongs to `operators` out of
-  the box (`blueprints/compose-only/service-clients.yaml`).
+  the `IVERSON_BYPASS_PASSWORD` value in the same `.env`; it belongs to `operators`, compose's
+  dev-only Operator group, out of the box (`blueprints/compose-only/service-clients.yaml`).
 
 ## Running locally
 
@@ -54,8 +58,8 @@ with defaults for the docker-compose target:
 
 ```
 VITE_OIDC_CLIENT_ID=dev-iverson-human-oidc-client-id
-VITE_OIDC_AUTHORITY=http://localhost:9000/application/o/iverson-api/
-VITE_API_BASE_URL=http://localhost:8081
+VITE_OIDC_AUTHORITY=https://localhost:9443/application/o/iverson-api/
+VITE_API_BASE_URL=https://localhost:8081
 ```
 
 To point at a different target (e.g. a local kind cluster), copy these into
