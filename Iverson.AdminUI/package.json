@@ -12,7 +12,7 @@
     "generate": "bash scripts/generate_protos.sh"
   },
   "dependencies": {
-    "react": "^19.2.7",
+    "react": "^19.3.1",
     "react-dom": "^19.3.0",
     "react-router": "^8.4.0",
     "oidc-client-ts": "^3.5.0",
