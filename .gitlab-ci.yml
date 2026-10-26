@@ -202,7 +202,7 @@ pip-audit-python-sdk:
   script:
     - cd Iverson.Clients/Python
     # the image's own pip 24.0 and setuptools 79.0.1 have published advisories, and the audit reads this interpreter
-    - pip install pip==26.2.1 setuptools==84.0.0
+    - pip install pip==26.2.1 setuptools==84.1.0
     - pip install --require-hashes -r requirements.txt
     - pip install --no-deps .
     - pip check
@@ -217,7 +217,7 @@ pip-audit-agents:
   script:
     - cd Iverson.Agents/Python
     # the image's own pip 24.0 and setuptools 79.0.1 have published advisories, and the audit reads this interpreter
-    - pip install pip==26.2.1 setuptools==84.0.0
+    - pip install pip==26.2.1 setuptools==84.1.0
     - pip install --require-hashes -r requirements.txt
     - pip install --no-deps .
     # the agent imports iverson_client by path (pyproject.toml), as the repo's own venv does

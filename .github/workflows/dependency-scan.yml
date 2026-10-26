@@ -112,7 +112,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - run: pip install pip==26.2.1 setuptools==84.0.0
+      - run: pip install pip==26.2.1 setuptools==84.1.0
       # requirements.txt is the hashed pip-compile lock of requirements.in and holds every dependency, hence --no-deps.
       - run: pip install --require-hashes -r requirements.txt
       - run: pip install --no-deps .
@@ -132,7 +132,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - run: pip install pip==26.2.1 setuptools==84.0.0
+      - run: pip install pip==26.2.1 setuptools==84.1.0
       # requirements.txt is the hashed pip-compile lock of requirements.in and holds every dependency, hence --no-deps.
       - run: pip install --require-hashes -r requirements.txt
       - run: pip install --no-deps .
