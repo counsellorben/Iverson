@@ -147,6 +147,10 @@ resource "helm_release" "cloudnative_pg" {
   chart      = "cloudnative-pg"
   version    = local.operator_charts["cloudnative-pg"].version
   namespace  = kubernetes_namespace.cnpg_system.metadata[0].name
+
+  # CSR round 12 §4.1: the namespace is mesh-labelled, so the operator pods start after istio-cni and
+  # ztunnel are ready and are enrolled from their first start (the same for strimzi and starrocks below).
+  depends_on = [helm_release.istio_cni, helm_release.ztunnel]
 }
 
 resource "helm_release" "strimzi" {
@@ -169,7 +173,7 @@ resource "helm_release" "strimzi" {
     value = kubernetes_namespace.iverson.metadata[0].name
   }
 
-  depends_on = [kubernetes_namespace.iverson]
+  depends_on = [kubernetes_namespace.iverson, helm_release.istio_cni, helm_release.ztunnel]
 }
 
 resource "helm_release" "starrocks_operator" {
@@ -181,6 +185,8 @@ resource "helm_release" "starrocks_operator" {
   chart     = "operator"
   version   = local.operator_charts["operator"].version
   namespace = kubernetes_namespace.starrocks.metadata[0].name
+
+  depends_on = [helm_release.istio_cni, helm_release.ztunnel]
 }
 
 # AWS-only: cluster-autoscaler and the AWS Load Balancer Controller (ALB ingress).

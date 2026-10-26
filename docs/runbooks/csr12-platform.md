@@ -293,10 +293,10 @@ mismatch fails closed (a refused command, a FailedCreate event, or an edge 503),
   ```
 
   The value renders only with `keepFallbacks: true`, which records that the profile keeps a fallback
-  (`csr10-infrastructure-cutover.md` §4).
+  (`csr10-infrastructure-cutover.md` §5 for this fallback, §4 for the `keepFallbacks` rule).
 - **EKS: security groups for pods.** None are enabled today. If they ever are, run the VPC CNI with
-  `POD_SECURITY_GROUP_ENFORCING_MODE=standard`, set through the `vpc-cni` add-on's
-  `configuration_values` in `Iverson.Server/deploy/terraform/modules/cluster-aws/main.tf` (its `env`
-  map): in strict mode the CNI drops the link-local kubelet probes the mesh relies on.
+  `POD_SECURITY_GROUP_ENFORCING_MODE=standard`, set by adding an `env` map to the `vpc-cni` add-on's
+  `configuration_values` in `Iverson.Server/deploy/terraform/modules/cluster-aws/main.tf` (today it sets
+  only `enableNetworkPolicy`): in strict mode the CNI drops the link-local kubelet probes the mesh relies on.
 - **Istio ambient on AKS and GKE** has no vendor support statement. Check that every pod in
   `istio-system` is Ready and run `mesh-check.sh` against the cluster.

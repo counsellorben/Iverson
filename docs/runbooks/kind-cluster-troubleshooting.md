@@ -283,6 +283,31 @@ environment). Disable the config-reload file watcher instead — set the environ
 sandbox-specific workaround; don't commit it to the chart as a permanent value unless the target
 environment is known to have the same constraint.
 
+### 4.4 StarRocks FE exits on every start after its first start crashed
+
+**Symptom:** `iverson-starrocks-fe-0` is in `CrashLoopBackOff`, exits with code 255, and its log ends
+with:
+```
+ERROR NodeMgr.checkCurrentNodeExist() current node is not added to the cluster, will exit
+```
+
+**Root cause:** the FE's very first start died part-way through bootstrapping (seen in the CSR round 12
+kind run when the FE JVM hit the 128 inotify-instance limit of §4.3). That start wrote
+`meta/image/ROLE` and `meta/image/VERSION` to the `fe-meta-<release>-starrocks-fe-0` volume, but no
+`image.0` and no journal entry registering the node. Every later start finds the half-written metadata,
+does not find itself registered, and exits. Fixing the original cause (for example raising
+`fs.inotify.max_user_instances`) does not recover it.
+
+**Fix:** only when the FE has never been healthy on this cluster, so its metadata holds no catalog.
+Deleting `fe-meta` on a working FE throws away its databases and users.
+```bash
+kubectl -n <ns> scale sts <release>-starrocks-fe --replicas=0
+kubectl -n <ns> delete pvc fe-meta-<release>-starrocks-fe-0 --wait=true
+kubectl -n <ns> scale sts <release>-starrocks-fe --replicas=1
+```
+Scale back by hand: a `helm upgrade` does not restore the replicas, because its three-way merge sees
+no change in the chart. The FE then bootstraps on a fresh volume.
+
 ## 5. Testing/verification pitfalls that look like auth or config bugs but aren't
 
 ### 5.1 A freshly-minted bearer token gets rejected with a generic 401, no useful log line
