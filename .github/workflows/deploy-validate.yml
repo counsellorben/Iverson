@@ -20,10 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # CSR round 12 §4.5: every version pin written in more than one place (ci/pins.yaml) holds the same
+      # version everywhere.
+      - name: Pin table consistency
+        run: python3 ci/pins.py consistency
+
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.15.0
+          version: v3.15.4
 
       - name: helm dependency build
         run: helm dependency build Iverson.Server/deploy/helm/iverson
@@ -75,7 +80,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.15.0
+          version: v3.15.4
 
       - name: Install kubeconform
         run: |
@@ -130,7 +135,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.15.0
+          version: v3.15.4
 
       - name: Install kube-score
         run: |
