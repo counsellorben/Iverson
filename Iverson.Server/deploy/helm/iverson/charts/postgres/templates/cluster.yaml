@@ -4,6 +4,7 @@ metadata:
   name: {{ .Release.Name }}-postgres
 spec:
   instances: {{ .Values.instances }}
+  imageName: {{ .Values.imageName | quote }}
   enableSuperuserAccess: false   # least privilege — nothing authenticates as `postgres`: the worker and the hooks use the owner `iverson`, the api uses iverson_api below
   storage:
     size: {{ .Values.storageSize }}

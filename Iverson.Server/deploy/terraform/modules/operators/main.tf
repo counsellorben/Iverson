@@ -149,6 +149,8 @@ resource "helm_release" "cloudnative_pg" {
   chart      = "cloudnative-pg"
   version    = local.operator_charts["cloudnative-pg"].version
   namespace  = kubernetes_namespace.cnpg_system.metadata[0].name
+  # CSR round 12 §3: the operator image pinned by digest (see the file).
+  values = [file("${path.module}/versions/cloudnative-pg-values.yaml")]
 
   # CSR round 12 §4.1: the namespace is mesh-labelled, so the operator pods start after istio-cni and
   # ztunnel are ready and are enrolled from their first start (the same for strimzi and starrocks below).

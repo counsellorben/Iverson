@@ -1,4 +1,9 @@
 instances: 2
+# CSR round 12 §3: CNPG 1.30.0's default PostgreSQL image (its DefaultImageName at the operators stub's chart
+# 0.29.0), pinned by its index digest. On the clouds the admission engine rewrites every image to tag@digest,
+# and CNPG rolls an instance whose image string differs from its target, so a tag-only target would roll the
+# instances on every reconcile; a tag@digest target is written back unchanged. ci/pins.yaml tracks it.
+imageName: "ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185"
 storageSize: 1500Gi
 storageClassName: ""
 resources:
