@@ -185,7 +185,7 @@ Newly introduced by this plan and verified at plan-write time (2026-10-26), most
 | 8 | Consumer | The .NET restore and build sites are exactly `dependency-scan.yml:27`, `dotnet-build.yml:19-20`, `.gitlab-ci.yml:149,237-238` and the four Dockerfiles; codeql's C# autobuild and the harness's .NET driver build keep their implicit (unlocked) restore. | `git grep -E 'dotnet (restore|build|publish|test|run|pack)'`; `codeql.yml:27-28` `csharp` `autobuild`. |
 | 9 | Command | `mvn -N org.apache.maven.plugins:maven-wrapper-plugin:3.3.4:wrapper -Dtype=source -Dmaven=3.9.16` writes `mvnw` (mode 100755, "version 3.3.4"), `mvnw.cmd`, `.mvn/wrapper/MavenWrapperDownloader.java` and `maven-wrapper.properties` with `wrapperVersion=3.3.4`, `distributionType=source`, `distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.zip` and `wrapperUrl=…/maven-wrapper-3.3.4.jar`; the two SHA-256 lines are appended. | Replay; `git ls-files -s` mode `100755` for `mvnw`. |
 | 10 | Code | Under the wrapper (Maven 3.9.16) the record writes `.mvn/checksums/checksums-central.sha256`: 463 entries after `clean install` (227 tests), 647 after `dependency-check-maven:13.0.0:check -DautoUpdate=false` (`NoDataException` expected), starting from no file. | Replay `rec1.log`/`rec2.log`: `Saving 463 checksums`, `Saving 647 checksums`. |
-| 11 | Code | From empty local repositories against the 647 record: codeql's `Iverson.Clients/Java/mvnw -B -f Iverson.Clients/Java/pom.xml -DskipTests clean install` from the root, the owasp `install -DskipTests` and `check -DautoUpdate=false` (stops at `NoDataException`), the harness's `-pl conformance -am -DskipTests package` from the root, `./mvnw -B test` (227 pass) and the GitLab form (`check` with no `install`, `MAVEN_CONFIG` unset) all resolve. | Replay `v-codeql.log` … `gl-check.log`: rc 0, or `NoDataException` with no `Missing from summaryFile`. |
+| 11 | Code | From empty local repositories against the 647 record: codeql's `Iverson.Clients/Java/mvnw -B -f Iverson.Clients/Java/pom.xml -DskipTests clean install` from the root, the owasp `install -DskipTests` and `check -DautoUpdate=false` (stops at `NoDataException`), the harness's `-pl conformance -am -DskipTests package` from the root, `./mvnw -B test` (227 pass) and the GitLab form (`install -DskipTests`, then `check`, `MAVEN_CONFIG` unset) all resolve; a `check` with no `install` fails on `iverson-sample` (`Could not find artifact io.iverson:iverson-client:jar:1.0.0-SNAPSHOT`) once the first module's check passes (shown with `-DfailOnError=false`). | Replay `v-codeql.log` … `gl-check.log`: rc 0, or `NoDataException` with no `Missing from summaryFile`. |
 | 12 | Code | `bin/mvn` run from a directory holding only `.mvn/` reads its `maven.config`: `update-only` resolves against the record (reaches the NVD retries), and a tampered `dependency-check-core` entry fails `trusted checksum mismatch`; its default data directory is `<local repo>/org/owasp/dependency-check-data/11.0`, inside the cached path. | Replay `v-update.log`, `v-update2.log`; `ls m2-nvd/org/owasp/dependency-check-data` → `11.0`. |
 | 13 | Code | The pinned GitLab `maven` image has `curl`, `wget`, `sha256sum`, `jar` and `bash` but no `unzip` or `python3`; `jar xf` unpacks the Maven zip, and `sh <dir>/bin/mvn` runs it (jar drops exec bits). The GitLab `nvd-update` script, run with `sh` in that image, checks the SHA-256, unpacks, and reaches the NVD stage. | `podman run docker.io/library/maven:3.9-eclipse-temurin-21@sha256:99e61abc…`; replay `gl-nvd.log`: `/tmp/maven.zip: OK`, `Maven Stub Project (No POM)`, NVD retries. |
 | 14 | Code | `actions/checkout` at `3d3c42e5…` (v7.0.1) has the inputs `sparse-checkout` and `sparse-checkout-cone-mode`. | Its `action.yml` lines 65, 70. |
@@ -221,6 +221,7 @@ Newly introduced by this plan and verified at plan-write time (2026-10-26), most
 | 44 | Command | kind v0.33.0 (`kind-linux-amd64`, SHA-256 `aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d`) runs here; the published api and admin-ui images and their attestations are readable anonymously. | Downloaded and checked; cosign `verify-attestation` without a login (row 18). |
 | 45 | Order | Tasks run in order with no forward dependency: the wrapper and record (2) precede every workflow that runs `mvnw` (3, 4); every pin location exists before the pin table (11): the wrapper (2), the update-only version (3, 4), the engine pin (7), the CNPG pins (8), the kind and GitLab stubs and the setup comments (9), `pin-freshness.yml` (11 itself); the runbook (16) names what 2–11 built. No later task changes a pom, so the record stays complete. | Per-task replay in this order; Task 11's consistency passes only after 2–10. |
 | 46 | Convention | Commit subjects are lowercase imperative with no prefix; docs under `docs/plans` and `docs/specs` need `git add -f`; `docs/runbooks` is tracked. | `git log --format=%s -15`; `.gitignore:46-51`. |
+| 47 | Code | CNPG v1.30.0's webhook accepts `imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75…` (a `tag@digest` reference). Source read only: the run-tier probe (a `go test` of `validateImageName`) was refused by the session's permission rules; the run is Task 17 Step 6 (user decision 2026-10-26, CIR-1 §3.2 A). | CNPG v1.30.0 `internal/webhook/v1/cluster_webhook.go:771-797` refuses only `latest`, an empty tag or an unparsable tag; machinery v0.5.0 `pkg/image/reference/imagename.go` strips the digest before the tag (`imagename_test.go:44-45`: `New("postgres:13@sha256:…").Tag == "13"`). |
 
 ---
 
@@ -432,15 +433,16 @@ Expected: `restore rc=0`, `27`, `locked rc=0`, `build rc=0`, `0 Error(s)`.
 ```bash
 source /tmp/claude-1000/-home-ben-repositories-Iverson/aab9d0ce-9a20-4b83-9e6a-e2d3793a50aa/scratchpad/csr12s-sdd/env.sh
 cd $WT
+podman images -q --no-trunc -f dangling=true | sort > $SCR/t1-dangling-before.txt
 systemd-run --user --scope -q -p MemoryMax=6G podman build -q -f Iverson.Server/Iverson.Api/Dockerfile -t localhost/csr12s-api:probe . > $SCR/t1-api.log 2>&1; echo "api rc=$?"
 for p in Events Sql Vector; do l=$(echo $p | tr A-Z a-z)
   systemd-run --user --scope -q -p MemoryMax=6G podman build -f Iverson.Server/Iverson.$p/Dockerfile -t localhost/csr12s-$l:probe Iverson.Server > $SCR/t1-$l.log 2>&1
-  echo "$p rc=$? restore-step: $(command grep -c "Restored /src/Iverson.$p/Iverson.$p.csproj" $SCR/t1-$l.log)"; done
+  echo "$p rc=$? restore-step: $(command grep -A3 -- 'restore .*--locked-mode' $SCR/t1-$l.log | command grep -c -E "Restored /src/Iverson.$p/Iverson.$p.csproj|Using cache")"; done
 F=Iverson.Server/Iverson.Api/Iverson.Api.csproj; cp $F $SCR/api.csproj.bak
 sed -i 's/Include="OpenTelemetry.Extensions.Hosting" Version="1.20.0"/Include="OpenTelemetry.Extensions.Hosting" Version="1.15.0"/' $F
 systemd-run --user --scope -q -p MemoryMax=6G podman build -q -f Iverson.Server/Iverson.Api/Dockerfile -t localhost/csr12s-api-neg:probe . > $SCR/t1-neg.log 2>&1; echo "changed version rc=$?"; command grep -m1 -o 'error NU1004' $SCR/t1-neg.log
 cp $SCR/api.csproj.bak $F; git diff --quiet -- $F && echo "csproj restored"
-podman rmi localhost/csr12s-api:probe localhost/csr12s-events:probe localhost/csr12s-sql:probe >/dev/null 2>&1; podman image prune -f >/dev/null 2>&1; true
+podman rmi localhost/csr12s-api:probe localhost/csr12s-events:probe localhost/csr12s-sql:probe >/dev/null 2>&1; comm -13 $SCR/t1-dangling-before.txt <(podman images -q --no-trunc -f dangling=true | sort) | xargs -r podman rmi >/dev/null 2>&1; true
 ```
 
 Expected: `api rc=0`; `Events rc=0 restore-step: 1`; `Sql rc=0 restore-step: 1`; `Vector rc=1 restore-step: 1`; `changed version rc=1`, `error NU1004`; `csproj restored`. (The `Category!=Integration` suites run in Task 17 Step 1.)
@@ -613,7 +615,7 @@ run() { local name=$1 dir=$2; shift 2; rm -rf $SCR/m2-$name
   command grep -m2 -E -o 'Missing from summaryFile[^]]*|trusted checksum mismatch|NoDataException[^.]*|Tests run: [0-9]+, Failures: [0-9]+' $SCR/t2-$name.log | tail -2; }
 run codeql $WT Iverson.Clients/Java/mvnw -B -f Iverson.Clients/Java/pom.xml -DskipTests clean install
 run harness $WT Iverson.Clients/Java/mvnw -B -f Iverson.Clients/Java/pom.xml -pl conformance -am -DskipTests package
-run test $J ./mvnw -B test
+run test $J ./mvnw -B test; command grep -E 'Tests run: [0-9]+, Failures' $SCR/t2-test.log | tail -1
 run gitlab-check $J env -u MAVEN_CONFIG ./mvnw -B org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DautoUpdate=false -DdataDirectory=$SCR/empty-nvd
 # Tampering: a changed record entry, an unrecorded version, a changed distributionSha256Sum, a changed wrapperSha256Sum.
 cp $J/.mvn/checksums/checksums-central.sha256 $SCR/rec.bak; cp $J/.mvn/wrapper/maven-wrapper.properties $SCR/props.bak; cp $J/pom.xml $SCR/pom.bak
@@ -634,7 +636,7 @@ rm -rf $SCR/mvnhome-tamper1 $SCR/mvnhome-tamper2
 ```
 
 Expected:
-- `codeql rc=0`, `harness rc=0`, `test rc=0` with `Tests run: 227, Failures: 0`, `gitlab-check rc=1` with `NoDataException…` and no `Missing from summaryFile`.
+- `codeql rc=0`, `harness rc=0`, `test rc=0` (then two per-class `Tests run:` lines, then the summary `Tests run: 227, Failures: 0, Errors: 0, Skipped: 0`), `gitlab-check rc=1` with `NoDataException…` and no `Missing from summaryFile`.
 - The tamper line prints `1` (or more); `tampered-entry rc=1` with `trusted checksum mismatch`; `unrecorded rc=1` with `Missing from summaryFile`.
 - `tampered distribution rc=1` naming the SHA-256 failure, and `tampered wrapper rc=1` naming `wrapperSha256Sum` (the exact wording is the wrapper's; any refusal that names the sum counts).
 - The status command prints only `?? …` lines for the new `.mvn` files (no `M`): every tampered file is restored.
@@ -665,7 +667,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git show --stat HEAD | tail -1
 ```
 
-Expected: `100755`; `10 files changed`.
+Expected: `100755`; `9 files changed`.
 
 ---
 
@@ -840,7 +842,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Files:** Modify `.gitlab-ci.yml`, `docs/runbooks/csr11-clients-tooling-ci.md` (§5).
 
-- [ ] **Step 1: Apply the patch.** `nvd-update` (schedule only, `environment: { name: nvd-update, action: prepare }`, cache push) and the keyless scan (`needs: [nvd-update]`, cache pull, the absence check as its first line, `unset MAVEN_CONFIG`, `./mvnw`). Runbook §5 now has one definition of the key.
+- [ ] **Step 1: Apply the patch.** `nvd-update` (schedule only, `environment: { name: nvd-update, action: prepare }`, cache push) and the keyless scan (`needs: [nvd-update]`, cache pull, the absence check as its first line, `unset MAVEN_CONFIG`, `./mvnw -B install -DskipTests`, then the keyless `./mvnw` check, as on GitHub). Runbook §5 now has one definition of the key.
 
 ````bash
 source /tmp/claude-1000/-home-ben-repositories-Iverson/aab9d0ce-9a20-4b83-9e6a-e2d3793a50aa/scratchpad/csr12s-sdd/env.sh
@@ -849,7 +851,7 @@ diff --git a/.gitlab-ci.yml b/.gitlab-ci.yml
 index 4b69dd2c..1169f4ca 100644
 --- a/.gitlab-ci.yml
 +++ b/.gitlab-ci.yml
-@@ -179,22 +179,67 @@ govulncheck:
+@@ -179,22 +179,68 @@ govulncheck:
      - go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
      - govulncheck ./...
  
@@ -920,6 +922,7 @@ index 4b69dd2c..1169f4ca 100644
 +    - unset MAVEN_CONFIG
      - cd Iverson.Clients/Java
 -    - mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
++    - ./mvnw -B install -DskipTests
 +    - ./mvnw -B org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DautoUpdate=false -DdataDirectory="$CI_PROJECT_DIR/.nvd-data"
  
  pip-audit-python-sdk:
@@ -977,12 +980,13 @@ import yaml; d=yaml.safe_load(open('.gitlab-ci.yml'))
 for j in ('nvd-update','owasp-dependency-check-java'): print(j, d[j]['rules'], d[j].get('needs'), d[j]['cache'], d[j].get('environment'), d[j].get('variables'))
 print(d['owasp-dependency-check-java']['script'][0])"
 python3 -c "import yaml; print(yaml.safe_load(open('.gitlab-ci.yml'))['nvd-update']['script'][0])" > $SCR/t4-nvd.sh
+podman image exists docker.io/library/maven:3.9-eclipse-temurin-21@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320 && T4_HAD_MAVEN=1
 timeout 900 podman run --rm -v $WT:/builds/iv:ro,z -v $SCR/t4-nvd.sh:/gl.sh:ro,z -e CI_PROJECT_DIR=/tmp/proj \
   -e MAVEN_OPTS=-DnvdApiEndpoint=http://127.0.0.1:1/ -w /builds/iv --entrypoint sh \
   docker.io/library/maven:3.9-eclipse-temurin-21@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320 \
   -c 'mkdir -p /tmp/proj; timeout 240 sh /gl.sh' > $SCR/t4-nvd.log 2>&1
 command grep -m3 -E 'maven.zip: OK|Stub Project|NVD API request failures|Missing from summaryFile|mismatch' $SCR/t4-nvd.log
-podman rmi docker.io/library/maven:3.9-eclipse-temurin-21@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320 >/dev/null 2>&1; true
+[ -n "$T4_HAD_MAVEN" ] || podman rmi docker.io/library/maven:3.9-eclipse-temurin-21@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320 >/dev/null 2>&1; true
 ```
 
 Expected: `nvd-update [{'if': '$CI_PIPELINE_SOURCE == "schedule"'}] None {'key': 'nvd-data', 'paths': ['.nvd-data'], 'policy': 'push'} {'name': 'nvd-update', 'action': 'prepare'} None`; the scan's rules (merge requests never, schedules), `['nvd-update']`, `policy: pull`, no environment, no variables; its first script line is the absence check; then `/tmp/maven.zip: OK`, `Building Maven Stub Project (No POM) 1`, an NVD retry line, and no checksum error.
@@ -1168,7 +1172,7 @@ printf '#!/bin/sh\nexit 0\n' > $T/bin/sleep
 chmod +x $T/bin/*
 for st in 404 200 500 000; do
   out=$(PATH=$T/bin:$PATH FAKE_STATUS=$st REF=ghcr.io/counsellorben/iverson-api:abc NAME=iverson-api GH_TOKEN=x RUNNER_TEMP=$T GITHUB_OUTPUT=$T/out bash $T/step.sh 2>/dev/null); rc=$?
-  echo "api=$st rc=$rc $(printf '%s' "$out" | tail -1 | cut -c1-90)"
+  echo "api=$st rc=$rc $(printf '%s' "$out" | tail -1 | cut -c1-200)"
 done
 rm -rf $T
 T5LOOKUP
@@ -1776,7 +1780,7 @@ print("api policy identical to the probed one:", api == probe)
 T7PROBE
 ```
 
-Expected: the engine image `ghcr.io/sigstore/policy-controller/policy-controller:v0.15.1@sha256:0492bb26…`; the `control-plane: policy-controller-webhook` label (the operator-namespace chart's selector); `schema written`; `Valid: 4, Invalid: 0`; `Valid: 0, Invalid: 1`; `api policy identical to the probed one: True`.
+Expected: the engine image `ghcr.io/sigstore/policy-controller/policy-controller:v0.15.1@sha256:0492bb26…`; the `control-plane: policy-controller-webhook` label (the operator-namespace chart's selector); `schema written`; `Valid: 4, Invalid: 0`; `Valid: 0, Invalid: 4` (all four policies carry the misspelled field); `api policy identical to the probed one: True`.
 
 - [ ] **Step 4: The identity check, Terraform and tfsec.**
 
@@ -1947,7 +1951,7 @@ diff $SCR/t8-images-t8-main.txt $SCR/t8-images-csr12-supply-chain.txt
 git -C /home/ben/repositories/Iverson worktree remove --force $SCR/t8-main
 ```
 
-Expected: every overlay `0 chart(s) failed imageName=1`; `list rc=0` twice; the diff shows only the two CNPG lines, `:1.30.0` → `:1.30.0@sha256:a2701eb9…` and `:18.4-system-trixie` → `:18.4-system-trixie@sha256:42708a75…`. (`Iverson.Server/deploy/helm/iverson/charts/*.tgz` is gitignored.)
+Expected: every overlay `0 chart(s) failed imageName=1`; `list rc=0` twice; the diff shows only the two CNPG lines, `:1.30.0` → `:1.30.0@sha256:a2701eb9…` and `:18.4-system-trixie` → `:18.4-system-trixie@sha256:42708a75…`. (`Iverson.Server/deploy/helm/iverson/charts/*.tgz` is gitignored.) That CNPG v1.30.0's webhook accepts the `tag@digest` `imageName` is checked live in Task 17 Step 6, which applies exactly this `Cluster` (plan-level row 47; CIR-1 §3.2 A); a refusal there comes back to this task.
 
 - [ ] **Step 3: Commit.**
 
@@ -4077,7 +4081,7 @@ sed -i 's/    if args.api_key and not is_https_or_loopback(args.base_url):/    i
 git status --porcelain -- $M $L
 ```
 
-Expected: `23 passed`; `48 passed`; `sh-ok`; `no --api-key flag left` (the remaining mentions are the docstring's `vllm serve --api-key`, which is the server's own flag); the three mutations each `1 failed` or more (`6 failed`, `1 failed`, `1 failed` at plan time); the status lists only this task's five files as modified.
+Expected: `23 passed`; `48 passed`; `sh-ok`; one line, `Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py:370:` (the docstring's `vllm serve --api-key`, the server's own flag), and no other `--api-key` line; the three mutations each `1 failed` or more (`6 failed`, `1 failed`, `1 failed` at plan time); the status lists only this task's five files as modified.
 
 - [ ] **Step 3: Commit.**
 
@@ -4329,7 +4333,7 @@ cd $WT && git apply --check $SCR/t14.patch && git apply $SCR/t14.patch && git st
 source /tmp/claude-1000/-home-ben-repositories-Iverson/aab9d0ce-9a20-4b83-9e6a-e2d3793a50aa/scratchpad/csr12s-sdd/env.sh
 cd $WT/Iverson.Server; F=Iverson.ClientConformance/DriverRunner.cs; cp $F $SCR/dr.bak
 t() { echo "[$1] $(systemd-run --user --scope -q -p MemoryMax=6G dotnet test Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj --filter "$2" 2>&1 | command grep -E '^(Passed|Failed)!' | cut -c1-60)"; cp $SCR/dr.bak $F; }
-t whole-project "FullyQualifiedName~.Iverson.ClientConformance.Tests."
+t whole-project "FullyQualifiedName~Iverson.ClientConformance.Tests."
 sed -i 's/^        psi.Environment.Clear();$/        \/\/ cleared/' $F; t 'no Clear()' "FullyQualifiedName~.DriverRunnerTests."
 sed -i 's/\["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "USER", "SHELL", "M2_HOME", "VIRTUAL_ENV"\]/["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "USER", "SHELL", "M2_HOME", "VIRTUAL_ENV", "SSL_CERT_FILE"]/' $F; t 'CA variable on build steps' "FullyQualifiedName~.DriverRunnerTests."
 git diff --stat -- $F
@@ -4466,10 +4470,10 @@ index a82dc830..95b44356 100644
  
 diff --git a/docs/runbooks/csr12-supply-chain.md b/docs/runbooks/csr12-supply-chain.md
 new file mode 100644
-index 00000000..b3909584
+index 00000000..611324b0
 --- /dev/null
 +++ b/docs/runbooks/csr12-supply-chain.md
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,226 @@
 +# CSR Round-12 Supply Chain — Operator Runbook
 +
 +**Why:** CSR round 12's supply-chain sub-project (`docs/specs/2026-10-26-csr-round12-supply-chain-design.md`)
@@ -4551,7 +4555,9 @@ index 00000000..b3909584
 +   Iverson.Server/deploy/scripts/apply-tag-ruleset.sh --activate
 +   ```
 +
-+   It prints `enforcement=active`. From then on only the admin can create, move or delete a `v*` tag.
++   It prints `enforcement=active`. From then on only the admin can create, move or delete a `v*` tag. If it
++   refuses because the read-back does not show `current_user_can_bypass=always` (GitHub does not document
++   that value for a disabled ruleset), leave the ruleset disabled and stop here: report the read-back.
 +4. **Remove the second writer:**
 +
 +   ```bash
@@ -4568,17 +4574,33 @@ index 00000000..b3909584
 +
 +`Iverson.Server/deploy/terraform/bootstrap/aws` gains GitHub's OIDC provider and the role
 +`iverson-pin-freshness`, which only `main`'s runs can assume and which may only call
-+`eks:DescribeAddonVersions`. An account holds one OIDC provider per URL: if yours already has
-+`token.actions.githubusercontent.com`, import it first.
++`eks:DescribeAddonVersions`. The module also declares the Terraform state bucket `iverson-terraform-state`
++(with its versioning, encryption and public-access block) and the lock table `iverson-terraform-locks`, and no
++state file for the module is kept in the repository, so those must be adopted before the apply rather than
++created again. An account holds one OIDC provider per URL: if yours already has
++`token.actions.githubusercontent.com`, import it too.
 +
 +```bash
-+cd Iverson.Server/deploy/terraform/bootstrap/aws
++cd Iverson.Server/deploy/terraform/bootstrap/aws && terraform init
++# Both must succeed: the bucket and the table are yours. If either fails (403 or 404 for the bucket), stop:
++# the name is taken by another account, and renaming it changes every cloud root's backend.
++aws s3api head-bucket --bucket iverson-terraform-state
++aws dynamodb describe-table --table-name iverson-terraform-locks --query Table.TableName --output text
++terraform import aws_s3_bucket.state iverson-terraform-state
++terraform import aws_s3_bucket_versioning.state iverson-terraform-state
++terraform import aws_s3_bucket_server_side_encryption_configuration.state iverson-terraform-state
++terraform import aws_s3_bucket_public_access_block.state iverson-terraform-state
++terraform import aws_dynamodb_table.locks iverson-terraform-locks
 +aws iam list-open-id-connect-providers --query 'OpenIDConnectProviderList[].Arn' --output text
 +# only if an ARN ending in /token.actions.githubusercontent.com is listed:
 +terraform import aws_iam_openid_connect_provider.github <that ARN>
++terraform plan    # must add only the role, its policy and (unless imported) the OIDC provider, and change nothing else
 +terraform apply
 +gh variable set PIN_FRESHNESS_AWS_ROLE --repo counsellorben/Iverson --body "$(terraform output -raw pin_freshness_role_arn)"
 +```
++
++If `terraform plan` would create, change or destroy anything else (the bucket's settings differ from the
++module, for example), stop and report it rather than apply.
 +
 +The next `pin-freshness` run checks the two add-ons.
 +
@@ -4655,13 +4677,13 @@ index 00000000..b3909584
 +The tests run in the first command, so the test runner's own plugins are recorded; the second ends in
 +`NoDataException` (no NVD database here), which is expected. Commit the record to the pull request.
 +
-+**A Maven or Maven Wrapper bump** (a `Pin behind: maven` or `maven-wrapper` issue) also changes
-+`.mvn/wrapper/maven-wrapper.properties`: the version in `distributionUrl` or `wrapperVersion` and the
-+`wrapperUrl`, and the matching `distributionSha256Sum` or `wrapperSha256Sum`. Download the new zip or jar from
-+Maven Central, take its SHA-256 (`sha256sum`), and check it against the SHA-512 Apache publishes beside the
-+file before writing it. Regenerate the wrapper scripts with
-+`mvn -N org.apache.maven.plugins:maven-wrapper-plugin:<version>:wrapper -Dtype=source -Dmaven=<maven version>`
-+for a wrapper bump, then re-record as above.
++**A Maven or Maven Wrapper bump** (a `Pin behind: maven` or `maven-wrapper` issue) changes
++`.mvn/wrapper/maven-wrapper.properties`. For a wrapper bump, first regenerate the scripts and that file with the
++record's check off (the plugin is not in the record): `mvn -N org.apache.maven.plugins:maven-wrapper-plugin:<version>:wrapper -Dtype=source -Dmaven=<maven version> -Daether.artifactResolver.postProcessor.trustedChecksums=false`.
++It rewrites the file without its two SHA-256 lines. For a Maven bump, edit the version in `distributionUrl`.
++Then download the new zip (and, for a wrapper bump, jar) from Maven Central, take its SHA-256 (`sha256sum`),
++check it against the SHA-512 Apache publishes beside the file, and write `distributionSha256Sum` and
++`wrapperSha256Sum` (after a regeneration, append both). Then re-record as above.
 +
 +## 4. The pin table
 +
@@ -4835,7 +4857,7 @@ SHA=$(git -C /home/ben/repositories/Iverson rev-parse origin/main); echo "main $
 digest() { curl -fsSI -H 'Accept: application/vnd.oci.image.index.v1+json' -H "Authorization: Bearer $(curl -fsS "https://ghcr.io/token?scope=repository:counsellorben/$1:pull" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')" "https://ghcr.io/v2/counsellorben/$1/manifests/$2" | tr -d '\r' | sed -n 's/^docker-content-digest: //Ip'; }
 API_D=$(digest iverson-api $SHA); UI_D=$(digest iverson-admin-ui $SHA); echo "api $API_D ui $UI_D"
 API=ghcr.io/counsellorben/iverson-api@$API_D; UI=ghcr.io/counsellorben/iverson-admin-ui@$UI_D
-pod() { kubectl -n $1 run $2 --image=$3 --restart=Never --command -- sleep 3600 2>&1 | tail -1 | cut -c1-260; }
+pod() { kubectl -n $1 run $2 --image=$3 --restart=Never --command -- sleep 3600 2>&1 | tail -2 | tr '\n' ' ' | cut -c1-2000; }
 # A variant of the chart's api policy: a new name, a glob, and optionally another identity regexp.
 cat > $LIVE/cip.py <<'T17CIP'
 import subprocess, sys, yaml
@@ -4903,7 +4925,7 @@ kill $PF
 python3 $LIVE/cip.py $IP csr12s-local-api "$R/counsellorben/iverson-api*" | kubectl apply -f - > /dev/null
 echo "A6 swap (admin-ui under the api name): $(pod iverson a6 $R/counsellorben/iverson-api@$UI_D)"
 echo "A7 real api copy (control):           $(pod iverson a7 $R/counsellorben/iverson-api@$API_D)"
-kubectl -n iverson apply -f - <<T17INIT 2>&1 | tail -1 | cut -c1-260
+kubectl -n iverson apply -f - <<T17INIT 2>&1 | tail -2 | cut -c1-2000
 apiVersion: v1
 kind: Pod
 metadata: { name: a8 }
@@ -4952,7 +4974,7 @@ kubectl -n cosign-system scale deployment policy-controller-webhook --replicas=1
 ```
 
 Expected:
-- The pinned `imageName` (`…:18.4-system-trixie@sha256:42708a75…`); `condition met`; the pod's uid, its image (the same `tag@digest` string) and its init image (`ghcr.io/cloudnative-pg/cloudnative-pg:1.30.0@sha256:a2701eb9…`); six lines with the same uid and phase `Cluster in healthy state` (no rollout over three minutes).
+- The pinned `imageName` (`…:18.4-system-trixie@sha256:42708a75…`); `condition met`; the pod's uid, its image (the same `tag@digest` string) and its init image (`ghcr.io/cloudnative-pg/cloudnative-pg:1.30.0@sha256:a2701eb9…`); six lines with the same uid and phase `Cluster in healthy state` (no rollout over three minutes). This is also row 47's check that CNPG's webhook accepts the `tag@digest` `imageName`: if the `apply` of the `Cluster` is refused, stop and report it to Task 8.
 - `install exit=0` and the Deployment's stored image `…:<sha>@sha256:…`; `no-change upgrade exit=0` and generation `1`.
 - `engine down, iverson: … failed calling webhook "policy.sigstore.dev" …` (refused); `engine down, free: pod/d2 created`.
 
@@ -4977,8 +4999,8 @@ Not part of subagent-driven development: these are live changes to GitHub, GitLa
 
 - [ ] **R1 (runbook step 2.1): GitLab `NVD_API_KEY`**, only if the user confirms a GitLab project runs this pipeline: the one scoped definition, every other definition deleted.
 - [ ] **R2 (runbook steps 2.2–2.4): checks on `main`:** `nvd-update` saves a cache and the scan runs keyless (GitHub; GitLab's scheduled run passes the absence check); Dependabot's three `helm` jobs succeed and open the stub bumps; `pin-freshness` runs once by hand and its issues are reviewed. Spec §7 expects a pull-request run of the keyless path: if the branch merges without a pull request, the first pull request afterwards (a Dependabot one serves) must show `nvd-update` skipped and `owasp-dependency-check-java` passing.
-- [ ] **R3 (runbook step 3): the repository's settings,** each confirmed: delete the Dependabot `NVD_API_KEY` (only after R2's keyless pass); push protection; the tag ruleset (`--dry-run`, create disabled, read back, the UI check, `--activate`); remove `vadim82`; branch protection last, once all 22 checks are green.
-- [ ] **R4 (runbook step 4): the AWS account:** import an existing GitHub OIDC provider if there is one, apply `bootstrap/aws`, set `PIN_FRESHNESS_AWS_ROLE`.
+- [ ] **R3 (runbook step 3): the repository's settings,** each confirmed: delete the Dependabot `NVD_API_KEY` (only after R2's keyless pass); push protection; the tag ruleset (`--dry-run`, create disabled, read back, the UI check, `--activate`; if the read-back does not show `current_user_can_bypass=always`, `--activate` refuses: leave the ruleset disabled and stop here, CIR-1 §3.1 A); remove `vadim82`; branch protection last, once all 22 checks are green.
+- [ ] **R4 (runbook step 4): the AWS account:** `terraform init`; confirm the state bucket `iverson-terraform-state` and lock table `iverson-terraform-locks` are the user's (stop if not) and import them and the bucket's three settings, which `bootstrap/aws` declares but no state holds; import an existing GitHub OIDC provider if there is one; `terraform plan` must add only the three IAM resources; apply; set `PIN_FRESHNESS_AWS_ROLE` (CIR-1 §3.3 A).
 
 ---
 
@@ -5009,4 +5031,5 @@ Found while planning, outside the spec's scope (accepted by the user 2026-10-26)
 - `Iverson.Server/Iverson.Vector/Dockerfile` does not build on `main` (18 compile errors: it copies none of the projects Vector references); Task 1 checks only its locked restore.
 - The policy-controller chart's leases-cleanup Job uses the floating `cgr.dev/chainguard/kubectl:latest-dev`; it runs only as a `post-delete` hook, on uninstall.
 - GitHub does not document the admin role's ruleset `actor_id`; `apply-tag-ruleset.sh` sends 5 and gates activation on the read-back and the UI check.
+- GitHub does not document what `current_user_can_bypass` reports for a disabled ruleset; if R3's read-back is not `always`, the ruleset stays disabled and R3 stops there (accepted by the user 2026-10-26, CIR-1 §3.1 A).
 - Whether the publish job's `packages: write` token reads the packages endpoint is not documented; if it does not, the new rule fails the run after three denials (fail closed).
