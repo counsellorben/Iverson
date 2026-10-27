@@ -36,7 +36,9 @@ public sealed class AdminAutomationCredentials : IDisposable
         AssertionFile = assertionFile;
         Scope = scope;
         HostHeader = hostHeader;
-        _http = handler is null ? new HttpClient() : new HttpClient(handler);
+        // CSR round 12 §5.1: a redirect is never followed, so the client credentials or assertion go only to the
+        // configured token endpoint; a 3xx is a failed token request (the pattern of AuthentikFlowExecutorClient).
+        _http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false });
     }
 
     public string ClientId { get; }
@@ -84,7 +86,11 @@ public sealed class AdminAutomationCredentials : IDisposable
             using var request = BuildRequest();
             var response = await _http.RequestClientCredentialsTokenAsync(request);
             if (response.IsError)
-                throw new InvalidOperationException($"Failed to acquire admin-automation token: {response.Error}");
+                throw new InvalidOperationException(
+                    $"Failed to acquire admin-automation token: {response.Error}" +
+                    (response.HttpResponse?.Headers.Location is { } location
+                        ? $" (the token endpoint redirected to {location}; token requests do not follow redirects)"
+                        : ""));
             var minted = new CachedToken(response.AccessToken!, DateTimeOffset.UtcNow.AddSeconds(response.ExpiresIn - 60));
             Volatile.Write(ref _cached, minted);
             return minted.Value;
