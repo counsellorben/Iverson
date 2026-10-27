@@ -236,6 +236,7 @@ Newly introduced by this plan and verified at plan-write time (2026-10-26), most
 | 59 | Code | Maven Central publishes a `.sha512` beside the Maven zip and only a `.sha1` (and `.asc`) beside the wrapper jar; the 3.3.4 jar's SHA-1 equals its `.sha1`, and its SHA-256 is the plan's `wrapperSha256Sum`. | CIR-2 D-SHA; rechecked at UIP-2: jar `.sha512` 404, `.sha1` 200 and matching, zip `.sha512` 200, jar SHA-256 `4e2fbf65…`. |
 | 60 | Consumer | `pin-freshness.yml` can open issues (the repository has Issues enabled) and `gh` finds the repository from the checkout's `origin` remote with `GH_TOKEN` set, `persist-credentials: false` notwithstanding. | CIR-2 shard D S5: `has_issues: True`; the step sets `GH_TOKEN`, and the checkout keeps `origin`. |
 | 61 | Consumer | Task 17 Step 5's images exist for `origin/main` at run time (every push to `main` publishes), and Step 7's empty worktree status holds after the harness and builds (all their outputs are ignored). | CIR-2 D-GHCR (`publish-images.yml:13-17`, no `paths:`); D-IGN: `git check-ignore` on all 10 output paths → ignored. |
+| 62 | Code | `pins.py consistency` passes a row with no locations instead of raising `IndexError` on `values[0]`; `load_table` already refuses such a row before `main` calls `consistency`. | DPV-1 §3.1 A (user pick 2026-10-27): the fix re-proved in the model (`fix/Pins.Consistency.dfy`, 36 verified, 0 errors); on the replay, the witness `consistency([{name, source, locations: []}])` passes with the edit (before it: `IndexError('list index out of range')`). |
 
 ---
 
@@ -2729,7 +2730,7 @@ index 00000000..93d84ed2
 +            listing = ", ".join(f"{f}={v}" for f, v in values)
 +            errors.append(f"{row['name']}: the locations disagree: {listing}")
 +        else:
-+            print(f"ok {row['name']} {values[0][1]}")
++            print(f"ok {row['name']} {values[0][1] if values else '(no locations)'}")
 +    return errors
 +
 +
