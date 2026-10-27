@@ -32,6 +32,10 @@ updates:
     directory: "/Iverson.Clients/Java"
     schedule:
       interval: "weekly"
+    # CSR round 12 §2.1: version updates wait a week after a release (security updates are not delayed).
+    # Each Maven PR needs the trusted-checksum re-record before it goes green (docs/runbooks/csr12-supply-chain.md).
+    cooldown:
+      default-days: 7
   - package-ecosystem: "pip"
     directory: "/Iverson.Clients/Python"
     schedule:
