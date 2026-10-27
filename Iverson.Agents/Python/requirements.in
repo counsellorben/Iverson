@@ -3,7 +3,7 @@
 # iverson_client is imported by path, as pyproject.toml explains, so it is not listed here.
 # Regenerate from this directory with:
 #   pip-compile --generate-hashes --allow-unsafe --output-file=requirements.txt requirements.in
-anthropic>=1.0,<2
+anthropic>=1.0,<3
 pydantic>=2,<3
 grpcio>=1.81.1
 protobuf>=5.29.0
