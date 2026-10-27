@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-26-csr-round12-supply-chain-implementation-plan.md, T13 S1
 // Source: Iverson.Server/deploy/scripts/mint_acting_user_token.py and Iverson.Server/Iverson.LoadTest/scripts/teacher_rerank.py each script's is_https_or_loopback; mint main's --base-url guard (its first lines, before any request); teacher main's VLLM_API_KEY lines (its first lines, through the sys.exit refusal)
-// Replay base: 680eb9cf5a6dc2d3dd6374446822969441bfed0f
+// Code ref: d0eab48b734ab0c7023d50d11a58dd51167028fa
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-26-csr-round12-supply-chain-implementation-plan/CredentialEgress.dfy
 
 // ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ function MintIsHttpsOrLoopback(url: Str): bool
 
 datatype MintOutcome = MintRefuse | MintProceed
 
-// mint_acting_user_token.py:494-496, main's --base-url guard
+// mint_acting_user_token.py:494-497, main's --base-url guard
 function MintGuard(baseUrl: Option<Str>): MintOutcome
 {
   // if args.base_url is not None and not is_https_or_loopback(args.base_url): ... return 2
@@ -60,7 +60,7 @@ function MintGuard(baseUrl: Option<Str>): MintOutcome
 // teacher_rerank.py
 // ---------------------------------------------------------------------------
 
-// teacher_rerank.py:608-619 is_https_or_loopback
+// teacher_rerank.py:619-630 is_https_or_loopback
 function TeacherIsHttpsOrLoopback(url: Str): bool
 {
   var parts := UrlSplit(url);
@@ -77,7 +77,7 @@ function TeacherIsHttpsOrLoopback(url: Str): bool
 
 datatype TeacherOutcome = TeacherExit | TeacherProceed(key: Option<Str>)
 
-// teacher_rerank.py:626-629, main's VLLM_API_KEY lines
+// teacher_rerank.py:637-640, main's VLLM_API_KEY lines
 // base: args.base_url (--base-url is required=True, so a str); env: os.environ.get("VLLM_API_KEY")
 function TeacherKey(base: Str, env: Option<Str>): TeacherOutcome
 {

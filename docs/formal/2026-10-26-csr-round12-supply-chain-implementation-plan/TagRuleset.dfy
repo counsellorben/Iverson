@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-26-csr-round12-supply-chain-implementation-plan.md, T6 S1
 // Source: Iverson.Server/deploy/scripts/apply-tag-ruleset.sh the whole script
-// Replay base: 680eb9cf5a6dc2d3dd6374446822969441bfed0f
+// Code ref: d0eab48b734ab0c7023d50d11a58dd51167028fa
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-26-csr-round12-supply-chain-implementation-plan/TagRuleset.dfy
 
 // ---------------------------------------------------------------------------
@@ -21,6 +21,15 @@ const DefaultRepo: Str := [99, 111, 117, 110, 115, 101, 108, 108, 111, 114, 98, 
 const DotDot: Str := [46, 46] // ".."
 const CanBypassAlways: Str := [99, 117, 114, 114, 101, 110, 116, 95, 117, 115, 101, 114, 95, 99, 97, 110, 95, 98, 121, 112, 97, 115, 115, 61, 97, 108, 119, 97, 121, 115, 32] // "current_user_can_bypass=always "
 const AdminRoleActor: Str := [98, 121, 112, 97, 115, 115, 95, 97, 99, 116, 111, 114, 115, 61, 82, 101, 112, 111, 115, 105, 116, 111, 114, 121, 82, 111, 108, 101, 58, 53, 58, 97, 108, 119, 97, 121, 115] // "bypass_actors=RepositoryRole:5:always"
+
+// `" bypass_actors=RepositoryRole:5:always"`, with its leading space (line 101).
+const AdminTail: Str := [32] + AdminRoleActor
+
+// `[[ $s == *"t" ]]`: suffix test.
+predicate EndsWith(s: Str, t: Str)
+{
+  |t| <= |s| && s[|s| - |t|..] == t
+}
 
 // `[[ $s == *"t"* ]]` / `[[ $s != *t* ]]`: substring test.
 predicate Contains(s: Str, t: Str)
@@ -100,10 +109,10 @@ function TagRuleset(args: seq<Str>, listOut: Str, postId: Str, readback: Str): R
         Run(calls0, 1)
       else
         var calls2 := calls0 + [Get(id)];                          // line 96
-        if !(Contains(readback, CanBypassAlways) && Contains(readback, AdminRoleActor)) then  // line 100
-          Run(calls2, 1)                                           // lines 101-102
+        if !(Contains(readback, CanBypassAlways) && EndsWith(readback, AdminTail)) then  // line 101
+          Run(calls2, 1)                                           // lines 102-103
         else
-          Run(calls2 + [Put(id)], 0)                               // line 104
+          Run(calls2 + [Put(id)], 0)                               // line 105
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +192,16 @@ lemma CountOneLine(s: Str, cur: bool)
   }
 }
 
+lemma TailImpliesActor(s: Str)
+  requires EndsWith(s, AdminTail)
+  ensures Contains(s, AdminRoleActor)
+{
+  var k := |s| - |AdminTail| + 1;
+  assert s[|s| - |AdminTail|..] == AdminTail;
+  assert s[k..k + |AdminRoleActor|] == AdminTail[1..];
+  assert AdminTail[1..] == AdminRoleActor;
+}
+
 lemma ParseNoArgs()
   ensures Parse([], DefaultRepo, false, false) == Opts(DefaultRepo, false, false)
 {
@@ -212,7 +231,8 @@ lemma P1_PutOnlyAfterAdminReadBack(args: seq<Str>, listOut: Str, postId: Str, re
   assert p.Opts? && RepoShape(p.repo) && !Contains(p.repo, DotDot) && !p.dryRun;
   assert CountNonEmptyLines(listOut + [NL], false) <= 1;
   assert p.activate && |listOut| > 0;
-  assert Contains(readback, CanBypassAlways) && Contains(readback, AdminRoleActor);
+  assert Contains(readback, CanBypassAlways) && EndsWith(readback, AdminTail);
+  TailImpliesActor(readback);
   assert r.calls == [List, Get(listOut), Put(listOut)];
   assert i == 2;
   assert r.calls[1] == Get(r.calls[i].id);

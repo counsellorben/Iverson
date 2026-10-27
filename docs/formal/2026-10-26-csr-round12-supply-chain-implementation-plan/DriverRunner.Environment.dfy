@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-26-csr-round12-supply-chain-implementation-plan.md, T14 S1
 // Source: Iverson.Server/Iverson.ClientConformance/DriverRunner.cs IsAllowed, BuildStepEnvironment, DriverRunEnvironment, and the existing BuildEnvironment they call
-// Replay base: 680eb9cf5a6dc2d3dd6374446822969441bfed0f
+// Code ref: d0eab48b734ab0c7023d50d11a58dd51167028fa
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction --unicode-char false --allow-deprecation docs/formal/2026-10-26-csr-round12-supply-chain-implementation-plan/DriverRunner.Environment.dfy
 
 // ---------------------------------------------------------------------------
@@ -27,10 +27,12 @@ predicate StartsWith(s: string, prefix: string)
 // ---------------------------------------------------------------------------
 
 const Exact: seq<string> :=
-  ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "USER", "SHELL", "M2_HOME", "VIRTUAL_ENV"]
+  ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "USER", "SHELL", "M2_HOME", "VIRTUAL_ENV", "UseSharedCompilation"]
 
 const Prefixes: seq<string> :=
-  ["LC_", "DOTNET_", "NUGET_", "JAVA_HOME", "MAVEN_", "GO", "NODE_", "NPM_CONFIG_", "npm_config_", "PYTHON", "PIP_"]
+  ["LC_", "DOTNET_", "NUGET_", "JAVA_HOME", "MAVEN_", "GO", "NODE_", "NPM_CONFIG_", "npm_config_", "PYTHON", "PIP_", "MSBUILD"]
+
+const DeniedPrefixes: seq<string> := ["GOOGLE_"]
 
 const CaTrust: seq<string> :=
   ["SSL_CERT_FILE", "SSL_CERT_DIR", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", "JAVA_TOOL_OPTIONS"]
@@ -64,8 +66,8 @@ function AnyStartsWith(prefixes: seq<string>, name: string): bool
 // DriverRunner.cs:383-385 IsAllowed.
 function IsAllowed(name: string): bool
 {
-  name in Exact
-  || AnyStartsWith(Prefixes, name)
+  !AnyStartsWith(DeniedPrefixes, name)
+  && (name in Exact || AnyStartsWith(Prefixes, name))
 }
 
 // DriverRunner.cs:388-397 BuildStepEnvironment. The foreach writes each allowlisted key of
@@ -132,6 +134,16 @@ lemma SecretNotAllowed(s: string)
   NoPrefixMatch(Prefixes, s);
 }
 
+lemma ExactAllowed(v: string)
+  requires v in Exact
+  ensures IsAllowed(v)
+{
+  assert v == "PATH" || v == "HOME" || v == "TMPDIR" || v == "TEMP" || v == "TMP" || v == "LANG" || v == "USER" || v == "SHELL" || v == "M2_HOME" || v == "VIRTUAL_ENV" || v == "UseSharedCompilation";
+  assert |v| > 0 && v[0] != 'G';
+  assert !StartsWith(v, "GOOGLE_");
+  assert AnyStartsWith(DeniedPrefixes, v) == StartsWith(v, "GOOGLE_");
+}
+
 lemma NoPrefixMatch(prefixes: seq<string>, name: string)
   requires forall i | 0 <= i < |prefixes| :: !StartsWith(name, prefixes[i])
   ensures !AnyStartsWith(prefixes, name)
@@ -190,6 +202,7 @@ lemma P5_BuildStepsKeepExactAllowlist(parent: map<string, string>, v: string)
   requires v in parent && v in Exact
   ensures v in BuildStepEnvironment(parent) && BuildStepEnvironment(parent)[v] == parent[v]
 {
+  ExactAllowed(v);
 }
 
 // Citation: test `BuildStepEnvironment_IsTheAllowlistOnly`; "starts every process from an empty environment plus an allowlist" (spec line 184).

@@ -1,6 +1,6 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-26-csr-round12-supply-chain-implementation-plan.md, T11 S1
 // Source: ci/pins.py newest, branches dockerhub-tag and maven-central, and version_key
-// Replay base: 680eb9cf5a6dc2d3dd6374446822969441bfed0f
+// Code ref: d0eab48b734ab0c7023d50d11a58dd51167028fa
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-26-csr-round12-supply-chain-implementation-plan/Pins.NewestInSeries.dfy
 
 // ---- Strings (Python str: code points) -------------------------------------------------------------------
