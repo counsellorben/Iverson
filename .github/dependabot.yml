@@ -23,6 +23,12 @@ updates:
     directory: "/Iverson.AdminUI"
     schedule:
       interval: "weekly"
+    # The @opentelemetry packages pin each other through peer dependencies, so one bumped alone fails
+    # `npm ci` with ERESOLVE. Move them as one PR.
+    groups:
+      opentelemetry:
+        patterns:
+          - "@opentelemetry/*"
   - package-ecosystem: "npm"
     directory: "/Iverson.Clients/TypeScript"
     schedule:
@@ -39,6 +45,11 @@ updates:
     # Each Maven PR needs the trusted-checksum re-record before it goes green (docs/runbooks/csr12-supply-chain.md).
     cooldown:
       default-days: 7
+    # CSR round 12 decision 6 pins one Maven line (3.9) through the wrapper; a minor or major move needs a new
+    # distributionSha256Sum and a checksum re-record, done by hand. 3.9 patches still arrive.
+    ignore:
+      - dependency-name: "org.apache.maven:apache-maven"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: "pip"
     directory: "/Iverson.Clients/Python"
     schedule:
@@ -60,10 +71,25 @@ updates:
       - "/Iverson.Server/Iverson.Vector"
       - "/Iverson.Server/deploy/helm/iverson/charts/tei/model-image"
       - "/Iverson.Server/deploy/helm/iverson/charts/ollama/model-image"
-      # CSR round 12 §4.3: the GitLab job images (never built; see the file).
-      - "/ci/gitlab-images"
     schedule:
       interval: "weekly"
+  # CSR round 12 §4.3: the GitLab job images (never built; see the file), in their own entry so these ignores
+  # stay off the application images. Tool upgrades (helm 4, terraform past 1.7, node and JDK majors) are
+  # deliberate changes across .gitlab-ci.yml and the workflows (ci/pins.yaml); same-tag digest refreshes still
+  # arrive. The maven tag's JDK suffix (temurin-21 -> -26) is not a semver step, so it needs all three types.
+  - package-ecosystem: "docker"
+    directory: "/ci/gitlab-images"
+    schedule:
+      interval: "weekly"
+    ignore:
+      - dependency-name: "alpine/helm"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "hashicorp/terraform"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "maven"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
   - package-ecosystem: "docker-compose"
     directory: "/Iverson.Server"
     schedule:
