@@ -9,7 +9,7 @@ type: application
 version: 0.1.0
 dependencies:
   - name: tigera-operator
-    version: v3.32.2
+    version: v3.33.0
     repository: https://docs.tigera.io/calico/charts
   - name: metrics-server
     version: 3.9.0
