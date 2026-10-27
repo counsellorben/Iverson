@@ -47,19 +47,21 @@ public class Main {
         }
 
         // ── Connect ────────────────────────────────────────────────────────────
-        // This sample deliberately targets a local plaintext (h2c) endpoint — the accepted
-        // dev/test model — so it must explicitly defeat IversonClient's default guard against
-        // attaching credentials to a plaintext channel.
-        try (IversonClient client = IversonClient.plaintext(
-                "localhost", 5000,
+        // TLS (CSR round 12 §5.5): the docker-compose API listens with TLS on localhost:8080. The JVM must
+        // trust compose's CA (JAVA_TOOL_OPTIONS, docs/runbooks/client-conformance-matrix.md);
+        // IVERSON_GRPC_HOST and IVERSON_GRPC_PORT point the sample at another server. The token endpoint
+        // must be https too: no plaintext opt-in.
+        String host = System.getenv().getOrDefault("IVERSON_GRPC_HOST", "localhost");
+        int port = Integer.parseInt(System.getenv().getOrDefault("IVERSON_GRPC_PORT", "8080"));
+        try (IversonClient client = new IversonClient(
+                host, port,
                 new OAuth2ClientCredentials(
                     clientId,
                     clientSecret,
                     tokenEndpoint,
                     "admin schema_admin",
-                    true),
-                actingUserToken,
-                true)) {
+                    false),
+                actingUserToken)) {
 
             // ── Register schemas ───────────────────────────────────────────────
             ObjectMapping.AuthorizationRules sampleRules = ObjectMapping.AuthorizationRules.newBuilder()
