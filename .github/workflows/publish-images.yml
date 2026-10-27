@@ -174,7 +174,7 @@ jobs:
         with:
           # The installer's own bootstrap release, which it checks against a SHA-256 in the pinned
           # action.
-          cosign-release: v3.0.6
+          cosign-release: v3.1.4
       - name: Verify the existing tag
         if: steps.published.outputs.digest != ''
         env:
@@ -329,7 +329,7 @@ jobs:
         with:
           # The installer's own bootstrap release, which it checks against a SHA-256 in the pinned
           # action.
-          cosign-release: v3.0.6
+          cosign-release: v3.1.4
       - name: Sign
         if: steps.digest.outputs.skip == 'false'
         env:

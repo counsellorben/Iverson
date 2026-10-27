@@ -4,15 +4,15 @@
 # does. modules/operators/main.tf (helm_release) and deploy/kind/setup.sh and setup.ps1 install from the
 # four directories this script writes next to itself:
 #
-#   Source:  https://github.com/istio/istio/releases/download/1.31.2/istio-1.31.2-linux-amd64.tar.gz
-#   SHA-256: b3d58081fcffab9456f16b18e990d4dff8fc08b075259bbc0e82b512337a3575
+#   Source:  https://github.com/istio/istio/releases/download/1.31.3/istio-1.31.3-linux-amd64.tar.gz
+#   SHA-256: b32bba09bc6138d738fd19a09ef6d0fcdd5c5c013efeb72969663c24a2bddd47
 #
 # Each directory is the tarball's manifests/charts/<chart> copied unmodified (istio-discovery is
 # manifests/charts/istio-control/istio-discovery). Re-running replaces all four.
 set -euo pipefail
-VERSION=1.31.2
+VERSION=1.31.3
 URL="https://github.com/istio/istio/releases/download/${VERSION}/istio-${VERSION}-linux-amd64.tar.gz"
-SHA256=b3d58081fcffab9456f16b18e990d4dff8fc08b075259bbc0e82b512337a3575
+SHA256=b32bba09bc6138d738fd19a09ef6d0fcdd5c5c013efeb72969663c24a2bddd47
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
