@@ -10,7 +10,8 @@ admission refusal, the Maven checksum re-record, and the pin table. Image verifi
 
 ## 1. After the merge
 
-Each step is a live change; make them in this order and confirm each before the next.
+Each step is a live change; make them in this order and confirm each before the next. Step 1 is the merge
+itself.
 
 ### Step 2: the pipelines on `main`
 
@@ -201,6 +202,12 @@ git add .mvn/checksums/checksums-central.sha256
 The tests run in the first command, so the test runner's own plugins are recorded; the second ends in
 `NoDataException` (no NVD database here), which is expected. Commit the record to the pull request.
 
+**The record is linux-x86_64 only.** It holds only the `linux-x86_64` protoc and protoc-gen-grpc-java
+binaries (they resolve by `${os.detected.classifier}`, `Iverson.Clients/Java/client/pom.xml`), and the check
+runs with `failIfMissing=true`, so every `./mvnw` build on macOS, Linux arm64 or Windows fails with `Missing
+from summaryFile trusted checksum(s)`. A re-record from no file keeps only the recording host's platform, so
+re-record on a linux-x86_64 host.
+
 **A Maven or Maven Wrapper bump** (a `Pin behind: maven` or `maven-wrapper` issue) changes
 `.mvn/wrapper/maven-wrapper.properties`. For a wrapper bump, first regenerate the scripts and that file with the
 record's check off (the plugin is not in the record): `mvn -N org.apache.maven.plugins:maven-wrapper-plugin:<version>:wrapper -Dtype=source -Dmaven=<maven version> -Daether.artifactResolver.postProcessor.trustedChecksums=false`.
@@ -222,5 +229,10 @@ check the zip against the `.sha512` and the jar against the `.sha1` Maven Centra
 - **GitLab images.** Dependabot raises `ci/gitlab-images/Dockerfile`, never `.gitlab-ci.yml`. Its pull request
   stays red on the consistency step until the same tag and digest are copied into every matching `image:`
   line of `.gitlab-ci.yml`.
+  The same applies to a Dependabot `alpine/helm` or `hashicorp/terraform` stub bump: besides the
+  `.gitlab-ci.yml` copy, it needs the six `setup-helm` `version:` inputs or `terraform_version` raised
+  (the `helm` and `terraform` pin rows), or the consistency step stays red.
+- **`dependency-check-maven`.** A Dependabot bump needs the two `:update-only` copies (`.github/workflows/dependency-scan.yml` and
+  `.gitlab-ci.yml`) raised as well as the re-record in §3.
 - **A new pin** gets a row before it merges: a `version:` input belongs to the action it configures, so
   identify the action first.
