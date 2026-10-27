@@ -211,8 +211,8 @@ resource "google_container_cluster" "this" {
 }
 
 # CSR round 12 §3.4: the private cluster's control plane reaches the nodes only on the ports GKE's own
-# firewall rule opens, so the admission webhooks on other ports (CNPG 9443, istiod 15017) are
-# unreachable without this rule.
+# firewall rule opens, so the admission webhooks on other ports (CNPG 9443, istiod 15017 and, CSR round 12
+# §3, the policy-controller's 8443) are unreachable without this rule.
 resource "google_compute_firewall" "control_plane_webhooks" {
   name                    = "${var.cluster_name}-control-plane-webhooks"
   network                 = google_compute_network.this.name
@@ -222,7 +222,7 @@ resource "google_compute_firewall" "control_plane_webhooks" {
 
   allow {
     protocol = "tcp"
-    ports    = ["9443", "15017"]
+    ports    = ["9443", "15017", "8443"]
   }
 }
 

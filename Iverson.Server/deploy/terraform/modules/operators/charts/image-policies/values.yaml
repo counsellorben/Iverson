@@ -1,0 +1,16 @@
+# CSR round 12 §3: one ClusterImagePolicy per first-party image. A pod in a namespace labelled
+# policy.sigstore.dev/include=true (the release namespace on the clouds) is admitted with one of these
+# images only if publish-images.yml attested that digest's SPDX SBOM under this identity, and the
+# attestation's in-toto subject names the same image. That subject check refuses another first-party
+# image's digest pushed under this name.
+registry: ghcr.io/counsellorben
+images:
+  - iverson-api
+  - iverson-admin-ui
+  - iverson-ollama-model
+  - iverson-tei-model
+identity:
+  issuer: https://token.actions.githubusercontent.com
+  # Identical to publish-images.yml's IDENTITY and to docs/runbooks/csr11-clients-tooling-ci.md §2;
+  # deploy-validate.yml checks that the three agree.
+  subjectRegExp: '^https://github\.com/counsellorben/Iverson/\.github/workflows/publish-images\.yml@refs/(heads/main|tags/v.+)$'

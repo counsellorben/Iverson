@@ -24,6 +24,8 @@ resource "kubernetes_namespace" "iverson" {
       # CSR round 12 §4.1: enrolled in the Istio ambient mesh from creation, so every release pod
       # starts enrolled; the chart renders its 15008 (HBONE) rules with its first install.
       "istio.io/dataplane-mode" = "ambient"
+      # CSR round 12 §3: the admission engine checks this namespace's images (helm_release.policy_controller).
+      "policy.sigstore.dev/include" = "true"
     }
   }
 }
@@ -304,8 +306,50 @@ resource "kubernetes_storage_class" "prometheus" {
   volume_binding_mode = "WaitForFirstConsumer"
 }
 
+# CSR round 12 §3: Sigstore policy-controller, the admission engine. Its webhooks select namespaces labelled
+# policy.sigstore.dev/include=true, which only kubernetes_namespace.iverson carries, and fail closed
+# (failurePolicy Fail). In that namespace a first-party image is admitted only with the attestation the
+# image_policies chart requires; any other image is admitted unverified (no-match-policy allow), and every
+# image is rewritten to tag@digest. cosign-system is not enrolled in the mesh: the cloud API server, outside
+# the mesh, must reach the webhook.
+resource "kubernetes_namespace" "cosign_system" {
+  metadata {
+    name = "cosign-system"
+  }
+}
+
+resource "helm_release" "policy_controller" {
+  name       = "policy-controller"
+  repository = local.operator_charts["policy-controller"].repository
+  chart      = "policy-controller"
+  version    = local.operator_charts["policy-controller"].version
+  namespace  = kubernetes_namespace.cosign_system.metadata[0].name
+
+  values = [yamlencode({
+    webhook = {
+      # The chart's default app (0.13.1) lags; v0.15.1 is the release the admission probes verified, pinned
+      # by its index digest (ci/pins.yaml tracks it).
+      image = { version = "v0.15.1@sha256:0492bb264fb1d9bdc8e3f343ef542cc85b7dd7c7fd8d9524b453c2bd31a1d128" }
+      # At the chart's 200m a verification took 5-10 s against the webhook's 10 s timeout; about 3 s here.
+      resources = { limits = { cpu = "1000m" } }
+      # Only first-party images need an attestation; the default (deny) refuses every other image.
+      configData = { "no-match-policy" = "allow" }
+    }
+  })]
+}
+
+# CSR round 12 §3: the ClusterImagePolicies (cluster-scoped, so outside the app chart's admission policy).
+# Their CRD comes with the policy-controller chart.
+resource "helm_release" "image_policies" {
+  name      = "image-policies"
+  chart     = "${path.module}/charts/image-policies"
+  namespace = kubernetes_namespace.cosign_system.metadata[0].name
+
+  depends_on = [helm_release.policy_controller]
+}
+
 # CSR round 12 §3.4 (#16): default-deny with explicit allows in cnpg-system, kafka, starrocks and
-# istio-system. The same chart serves kind (deploy/kind/setup.sh, values-kind.yaml). Each namespace must
+# istio-system (and, CSR round 12 §3, cosign-system). The same chart serves kind (deploy/kind/setup.sh, values-kind.yaml). Each namespace must
 # exist first: Terraform creates each of them above (cnpg-system, kafka and starrocks enrolled in the mesh).
 resource "helm_release" "operator_namespace_policies" {
   name      = "operator-namespace-policies"
@@ -316,10 +360,13 @@ resource "helm_release" "operator_namespace_policies" {
     # CSR round 12 §4.1: the CNPG operator's webhook port 9443 is PERMISSIVE on the clouds, whose API
     # server is outside the mesh (templates/peerauthentication-cnpg.yaml).
     cnpgWebhookPermissive = true
+    # CSR round 12 §3: the policy-controller's namespace.
+    cosignSystem = true
   })]
 
   depends_on = [
     kubernetes_namespace.istio_system,
+    kubernetes_namespace.cosign_system,
     helm_release.istio_base,
     helm_release.cloudnative_pg,
     helm_release.strimzi,
