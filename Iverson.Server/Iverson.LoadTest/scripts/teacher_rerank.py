@@ -32,11 +32,13 @@ brief / the design spec's §9 for the exact invocation).
 """
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import random
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -346,6 +348,17 @@ def build_prompt(query_text, shuffled_doc_ids, corpus):
     return PROMPT_INSTRUCTIONS.format(query=query_text, documents=documents)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect, so the Authorization key goes only to --base-url (spec 5.3): the 3xx becomes
+    an HTTPError, which call_teacher records as http_error."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect())
+
+
 def call_teacher(base_url, model, prompt, seed, api_key=None):
     """POSTs to `{base_url}/v1/chat/completions` with stdlib `urllib.request`, the same transport
     shape as `enrich_bench.py:56-62` (temperature 0, stream false), plus `max_tokens:
@@ -367,7 +380,8 @@ def call_teacher(base_url, model, prompt, seed, api_key=None):
     `api_key`, when given, is sent as `Authorization: Bearer <api_key>` -- some vLLM deployments
     (e.g. a RunPod template that launches `vllm serve --api-key` from a `VLLM_API_KEY` env var
     before the operator ever runs this script) require it; the header is simply omitted when
-    `api_key` is None, so unauthenticated servers are unaffected.
+    `api_key` is None, so unauthenticated servers are unaffected. main() takes it only from
+    VLLM_API_KEY and only for an https or loopback base URL (CSR round 12 §5.3).
 
     HTTP-level failures are caught, not left to crash the whole run (design doc §4): `HTTPError`
     (e.g. an xgrammar/Harmony FSM crash a `structured_outputs` request used to raise) records the
@@ -392,7 +406,7 @@ def call_teacher(base_url, model, prompt, seed, api_key=None):
     if api_key:
         req.add_header("Authorization", f"Bearer {api_key}")
     try:
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        with _OPENER.open(req, timeout=600) as resp:
             parsed = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8", errors="replace")[:2000]
@@ -575,7 +589,6 @@ def build_arg_parser():
     ap.add_argument("--subsample-seed", type=int, default=None, help="seed for --subsample's selection")
     ap.add_argument("--vllm-version", default=None, help="serving identity recorded verbatim in the sidecar's reranker block; omit to record null")
     ap.add_argument("--quantisation", default=None, help="serving identity recorded verbatim in the sidecar's reranker block; omit to record null")
-    ap.add_argument("--api-key", default=None, help="sent as 'Authorization: Bearer <key>' if given; omitted otherwise (some vLLM deployments require it, e.g. RunPod's VLLM_API_KEY template)")
     ap.add_argument("--instance-type", default=None, help="serving identity recorded verbatim in the sidecar's reranker block; omit to record null")
     return ap
 
@@ -603,8 +616,28 @@ def validate_inputs_before_any_model_call(pool, pool_query_order, corpus, querie
         sys.exit("[teacher_rerank] refusing to start -- inputs are incomplete:\n" + "\n".join(lines))
 
 
+def is_https_or_loopback(url):
+    """CSR round 12 §5.3: the rule of CredentialEndpoints.IsHttpsOrLoopback (LoadTest): an absolute https
+    URL, or any scheme to localhost or a loopback address."""
+    parts = urllib.parse.urlsplit(url)
+    if not parts.scheme or not parts.hostname:
+        return False
+    if parts.scheme == "https" or parts.hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(parts.hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def main(argv=None):
     args = build_arg_parser().parse_args(argv)
+    # CSR round 12 §5.3: the vLLM key comes only from VLLM_API_KEY, never argv (every local user can read a
+    # process's command line), and is sent only to an https or loopback base URL.
+    args.api_key = os.environ.get("VLLM_API_KEY") or None
+    if args.api_key and not is_https_or_loopback(args.base_url):
+        sys.exit(f"[teacher_rerank] VLLM_API_KEY is set, but --base-url {args.base_url} is neither https:// nor a "
+                 "loopback address; the key is sent only to one that is")
     if (args.subsample is None) != (args.subsample_seed is None):
         sys.exit("--subsample and --subsample-seed must be given together")
 

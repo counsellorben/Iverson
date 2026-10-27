@@ -31,21 +31,53 @@ it. The `org.opencontainers.image.source` label links each package to the Iverso
 
 ## 2. Verifying an image
 
-Use cosign 3.x, the version the workflow signs with. Both commands must succeed for every image
-you deploy, from any machine with no GHCR login. A failure on a package that is still private is
-an authorization error, not a verification failure.
+Use cosign 3.x, the version the workflow signs with. Both commands of a pair must succeed for every
+image you deploy, from any machine with no GHCR login. A failure on a package that is still private
+is an authorization error, not a verification failure. Verify as strictly as the workflow does
+(CSR round 12 §2.3): pick the pair for the tag's kind.
+
+A commit tag (`main`'s 40-hex SHA) must have been signed by the run for that commit:
 
 ```bash
-cosign verify ghcr.io/counsellorben/iverson-api:<tag> \
+cosign verify ghcr.io/counsellorben/iverson-api:<sha> \
   --certificate-identity-regexp '^https://github\.com/counsellorben/Iverson/\.github/workflows/publish-images\.yml@refs/(heads/main|tags/v.+)$' \
+  --certificate-github-workflow-sha <sha> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-cosign verify-attestation --type spdxjson ghcr.io/counsellorben/iverson-api:<tag> \
+cosign verify-attestation --type spdxjson ghcr.io/counsellorben/iverson-api:<sha> \
   --certificate-identity-regexp '^https://github\.com/counsellorben/Iverson/\.github/workflows/publish-images\.yml@refs/(heads/main|tags/v.+)$' \
+  --certificate-github-workflow-sha <sha> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-Run the same pair for `iverson-admin-ui:<tag>` and for the two model images under the tags the
+A release tag (`X.Y.Z`) must have been signed by the run on `refs/tags/vX.Y.Z`, at the commit that
+tag names (run from a clone with the tags fetched):
+
+```bash
+cosign verify ghcr.io/counsellorben/iverson-api:X.Y.Z \
+  --certificate-identity https://github.com/counsellorben/Iverson/.github/workflows/publish-images.yml@refs/tags/vX.Y.Z \
+  --certificate-github-workflow-sha "$(git rev-list -n1 vX.Y.Z)" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+cosign verify-attestation --type spdxjson ghcr.io/counsellorben/iverson-api:X.Y.Z \
+  --certificate-identity https://github.com/counsellorben/Iverson/.github/workflows/publish-images.yml@refs/tags/vX.Y.Z \
+  --certificate-github-workflow-sha "$(git rev-list -n1 vX.Y.Z)" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The attestation names the image it was made for. Print that name and check that it is the image
+you verified (`ghcr.io/counsellorben/iverson-api` here), so another first-party image's digest
+pushed under this name is caught:
+
+```bash
+cosign verify-attestation --type spdxjson ghcr.io/counsellorben/iverson-api:<tag> \
+  --certificate-identity-regexp '^https://github\.com/counsellorben/Iverson/\.github/workflows/publish-images\.yml@refs/(heads/main|tags/v.+)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com 2>/dev/null \
+  | jq -r '.payload | @base64d | fromjson | .subject[0].name'
+```
+
+Run the same commands for `iverson-admin-ui:<tag>`. The two model images keep the general identity
+(the commands without `--certificate-github-workflow-sha`, accepted in round 11), under the tags the
 chart renders:
 
 ```bash
@@ -59,7 +91,10 @@ A pass means two things. The digest the tag names was signed by `publish-images.
 the same workflow. Signing writes an entry to the public Rekor transparency log, which records
 the repository, workflow and ref.
 
-The clusters do not check signatures at admission. Verification is the operator's check before a
+The cloud clusters (AWS, Azure, GCP) also check the attestation at admission: their `iverson`
+namespace admits a first-party image only when this workflow attested that digest under that image's
+own name (CSR round 12 §3; `docs/runbooks/csr12-supply-chain.md`). kind, local and compose do not
+check (they run unsigned local builds), so there these commands are the operator's check before a
 deploy.
 
 Each run builds and pushes an image only when its tag does not exist yet. A separate
@@ -71,7 +106,7 @@ of both; change them together). For `iverson-api` and `iverson-admin-ui` the sig
 belong to the tag's own build: on a commit-SHA tag the commands add
 `--certificate-github-workflow-sha <tag>`, and on an `X.Y.Z` tag they require exactly
 `--certificate-identity https://github.com/counsellorben/Iverson/.github/workflows/publish-images.yml@refs/tags/vX.Y.Z`
-in place of the regexp. The model images keep the general identity: their tags are derived from
+in place of the regexp, with `--certificate-github-workflow-sha` set to the tagged commit. The model images keep the general identity: their tags are derived from
 the model inputs, so any digest this workflow signed under such a tag was built from the same
 inputs (an accepted residual). If both commands pass, the image was published by this workflow:
 the log carries a notice and nothing else happens for it. If either fails, the job fails with an
@@ -175,17 +210,23 @@ gh api repos/counsellorben/Iverson/branches/main/protection --jq '.required_stat
 
 ## 5. GitLab: `NVD_API_KEY`
 
-The OWASP dependency-check job is the only GitLab job that uses `NVD_API_KEY`, and it no longer runs
-in merge-request pipelines. Job rules do not limit a project-level CI/CD variable: such a variable
-reaches every job of every pipeline, merge-request pipelines included. So define `NVD_API_KEY` in
-one of two ways:
+Only the `nvd-update` job reads `NVD_API_KEY` (CSR round 12 §2.1). It runs only in scheduled
+pipelines, runs no repository code, and receives the key through its `nvd-update` environment. The
+scan job, `owasp-dependency-check-java`, runs keyless from the database `nvd-update` caches. Its first
+line fails the job if the key reached it.
 
-- as a **Protected** variable (project **Settings**, then **CI/CD**, then **Variables**; select
-  **Protect variable**, and mask it), which only pipelines on protected branches and tags receive;
-- or as a variable of a pipeline schedule (**Build**, then **Pipeline schedules**).
+Define the key once, as a project variable `NVD_API_KEY` (project **Settings**, then **CI/CD**, then
+**Variables**) with **Protect variable** and **Mask variable** selected and **Environment scope** set
+to `nvd-update`.
 
-Remove any unprotected project-level `NVD_API_KEY`. GitLab's variable semantics are described at
-https://docs.gitlab.com/ci/variables/.
+Delete every other definition of `NVD_API_KEY`: an unscoped or differently scoped project variable, a
+group-level variable, and a pipeline-schedule variable. A pipeline-schedule variable reaches every job
+of its pipeline, so it is not an option. The scoped variable reaches only a job whose environment is
+`nvd-update`, which no job had before CSR round 12, so define it after that change is on `main`.
+GitLab's variable semantics are described at https://docs.gitlab.com/ci/variables/.
+
+The first scheduled pipeline afterwards is the check: `owasp-dependency-check-java` passes its first
+line and finds the database (`docs/runbooks/csr12-supply-chain.md`, rollout step 2).
 
 ## 6. `IVERSON_ACTING_USER_PASSWORD`
 
@@ -207,9 +248,10 @@ python3 Iverson.Server/deploy/scripts/mint_acting_user_token.py --target compose
 
 ## 7. GitLab image pins
 
-`.gitlab-ci.yml` pins every job image by digest. Dependabot does not read that file, so these pins
-are bumped by hand, and GitLab's tool versions (for example govulncheck's Go toolchain) can lag
-the GitHub workflows, which float.
+`.gitlab-ci.yml` pins every job image by digest. Dependabot does not read that file; it raises the
+same images in `ci/gitlab-images/Dockerfile` (CSR round 12 §4.3), and `ci/pins.py consistency` fails until
+each bump is copied into `.gitlab-ci.yml` (`csr12-supply-chain.md` §4). GitLab's tool versions (for example
+govulncheck's Go toolchain) can still lag the GitHub workflows, which float.
 
 ## 8. SDK behaviour changes
 

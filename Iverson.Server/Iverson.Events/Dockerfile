@@ -3,8 +3,9 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317 AS build
 WORKDIR /src
 
-COPY ["Iverson.Events/Iverson.Events.csproj", "Iverson.Events/"]
-RUN dotnet restore "Iverson.Events/Iverson.Events.csproj"
+# CSR round 12 §4.6: the lock file goes beside the .csproj for the locked restore.
+COPY ["Iverson.Events/Iverson.Events.csproj", "Iverson.Events/packages.lock.json", "Iverson.Events/"]
+RUN dotnet restore "Iverson.Events/Iverson.Events.csproj" --locked-mode
 
 COPY Iverson.Events/ Iverson.Events/
 

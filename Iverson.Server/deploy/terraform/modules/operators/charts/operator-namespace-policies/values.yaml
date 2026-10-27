@@ -5,6 +5,9 @@ apiServerCidrs: []
 # kind only: also governs tigera-operator and iverson-edge, the namespace of the kind gateway, and
 # admits that gateway to istiod.
 kind: false
+# The clouds only (CSR round 12 §3): also governs cosign-system, the Sigstore policy-controller's namespace,
+# which is not enrolled in the mesh.
+cosignSystem: false
 # The release whose Postgres (CNPG) and Kafka (Strimzi) pods the operators reconcile, and whose
 # api, admin-ui and Authentik pods the kind gateway reaches.
 release:

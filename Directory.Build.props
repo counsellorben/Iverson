@@ -1,0 +1,8 @@
+<Project>
+  <!-- CSR round 12 §4.6: every restore writes packages.lock.json beside its project and honours it.
+       CI and the Dockerfiles restore in locked mode, so a resolution that differs from the committed
+       lock file fails. -->
+  <PropertyGroup>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+</Project>

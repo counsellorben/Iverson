@@ -1,0 +1,265 @@
+# CSR round 12 §4.5: every version pin Dependabot does not raise, with where its newest version is read
+# (`source`) and every place it is written (`locations`: a file and a regex whose one group is the version).
+# ci/pins.py reads this file: `consistency` (deploy-validate.yml, every pull request) fails when a row's
+# locations disagree, and `freshness` (pin-freshness.yml, weekly) opens one issue "Pin behind: <name>" per
+# stale row. Rows with source `dependabot` are pins Dependabot raises in one location; the consistency check
+# keeps their other locations equal. Format: the subset of YAML pins.py reads (plain or single-quoted values,
+# two-space indents, as below). A pin that must stay behind keeps its row and gains a `note:` saying why.
+
+- name: gateway-api
+  source: github-release kubernetes-sigs/gateway-api
+  locations:
+    - file: Iverson.Server/deploy/kind/setup.sh
+      regex: 'gateway-api/releases/download/(v[0-9.]+)/standard-install\.yaml'
+    - file: Iverson.Server/deploy/kind/setup.ps1
+      regex: 'gateway-api/releases/download/(v[0-9.]+)/standard-install\.yaml'
+
+- name: kind
+  source: github-release kubernetes-sigs/kind
+  locations:
+    - file: Iverson.Server/deploy/kind/setup.sh
+      regex: '^KIND_MIN=(v[0-9.]+)$'
+    - file: Iverson.Server/deploy/kind/setup.ps1
+      regex: '^\$KindMin = \[version\]"([0-9.]+)"$'
+    - file: Iverson.Server/deploy/kind/kind-config.yaml
+      regex: 'Run with kind (v[0-9.]+),'
+    - file: Iverson.Server/deploy/kind/setup.sh
+      regex: 'which was run with kind (v[0-9.]+);'
+    - file: Iverson.Server/deploy/kind/setup.ps1
+      regex: 'which was run with kind (v[0-9.]+);'
+
+- name: kindest-node
+  source: dockerhub-tag kindest/node v1.35
+  locations:
+    - file: Iverson.Server/deploy/kind/kind-config.yaml
+      regex: 'image: kindest/node:(v[0-9.]+)@sha256:'
+    - file: Iverson.Server/deploy/kind/setup.sh
+      regex: 'kind-config\.yaml pins kindest/node:(v[0-9.]+),'
+    - file: Iverson.Server/deploy/kind/setup.ps1
+      regex: 'kind-config\.yaml pins kindest/node:(v[0-9.]+),'
+
+- name: istio
+  source: github-release istio/istio
+  locations:
+    - file: Iverson.Server/deploy/terraform/modules/operators/charts/istio/vendor-istio-charts.sh
+      regex: '^VERSION=([0-9.]+)$'
+    - file: Iverson.Server/deploy/terraform/modules/operators/charts/istio/base/Chart.yaml
+      regex: '^version: ([0-9.]+)$'
+    - file: Iverson.Server/deploy/terraform/modules/operators/charts/istio/istio-cni/Chart.yaml
+      regex: '^version: ([0-9.]+)$'
+    - file: Iverson.Server/deploy/terraform/modules/operators/charts/istio/istio-discovery/Chart.yaml
+      regex: '^version: ([0-9.]+)$'
+    - file: Iverson.Server/deploy/terraform/modules/operators/charts/istio/ztunnel/Chart.yaml
+      regex: '^version: ([0-9.]+)$'
+
+- name: policy-controller
+  source: github-release sigstore/policy-controller
+  locations:
+    - file: Iverson.Server/deploy/terraform/modules/operators/main.tf
+      regex: 'image = \{ version = "(v[0-9.]+)@sha256:'
+
+- name: cnpg-postgresql
+  source: cnpg-default cloudnative-pg
+  locations:
+    - file: Iverson.Server/deploy/helm/iverson/charts/postgres/values.yaml
+      regex: '^imageName: "ghcr\.io/cloudnative-pg/postgresql:([^@"]+)@sha256:'
+
+- name: cnpg-operator
+  source: chart-app-version cloudnative-pg
+  locations:
+    - file: Iverson.Server/deploy/terraform/modules/operators/versions/cloudnative-pg-values.yaml
+      regex: '^  tag: "([0-9.]+)@sha256:'
+
+- name: maven
+  source: maven-central org.apache.maven:apache-maven 3.9
+  locations:
+    - file: Iverson.Clients/Java/.mvn/wrapper/maven-wrapper.properties
+      regex: '^distributionUrl=.*/apache-maven-([0-9.]+)-bin\.zip$'
+
+- name: maven-wrapper
+  source: maven-central org.apache.maven.wrapper:maven-wrapper 3
+  locations:
+    - file: Iverson.Clients/Java/.mvn/wrapper/maven-wrapper.properties
+      regex: '^wrapperVersion=([0-9.]+)$'
+    - file: Iverson.Clients/Java/mvnw
+      regex: 'Apache Maven Wrapper startup batch script, version ([0-9.]+)$'
+    - file: Iverson.Clients/Java/mvnw.cmd
+      regex: 'Apache Maven Wrapper startup batch script, version ([0-9.]+)$'
+    - file: Iverson.Clients/Java/.mvn/wrapper/MavenWrapperDownloader.java
+      regex: 'WRAPPER_VERSION = "([0-9.]+)";'
+
+- name: vpc-cni
+  source: eks-addon vpc-cni
+  locations:
+    - file: Iverson.Server/deploy/terraform/modules/cluster-aws/main.tf
+      regex: 'addon_name += "vpc-cni"(?:\n.*)*?\n *addon_version += "([^"]+)"'
+
+- name: aws-ebs-csi-driver
+  source: eks-addon aws-ebs-csi-driver
+  locations:
+    - file: Iverson.Server/deploy/terraform/modules/cluster-aws/main.tf
+      regex: 'addon_name += "aws-ebs-csi-driver"(?:\n.*)*?\n *addon_version += "([^"]+)"'
+
+- name: govulncheck
+  source: go-proxy golang.org/x/vuln
+  locations:
+    - file: .github/workflows/dependency-scan.yml
+      regex: 'golang\.org/x/vuln/cmd/govulncheck@(v[0-9.]+)'
+    - file: .gitlab-ci.yml
+      regex: 'golang\.org/x/vuln/cmd/govulncheck@(v[0-9.]+)'
+
+- name: kubeconform
+  source: github-release yannh/kubeconform
+  locations:
+    - file: .github/workflows/deploy-validate.yml
+      regex: 'kubeconform/releases/download/(v[0-9.]+)/'
+    - file: .gitlab-ci.yml
+      regex: 'kubeconform/releases/download/(v[0-9.]+)/'
+
+- name: kube-score
+  source: github-release zegl/kube-score
+  locations:
+    - file: .github/workflows/deploy-validate.yml
+      regex: 'kube-score/releases/download/(v[0-9.]+)/'
+    - file: .gitlab-ci.yml
+      regex: 'kube-score/releases/download/(v[0-9.]+)/'
+
+- name: tfsec
+  source: github-release aquasecurity/tfsec
+  locations:
+    - file: .github/workflows/deploy-validate.yml
+      regex: 'tfsec/releases/download/(v[0-9.]+)/'
+    - file: .gitlab-ci.yml
+      regex: 'tfsec/releases/download/(v[0-9.]+)/'
+
+- name: trivy
+  source: github-release aquasecurity/trivy
+  locations:
+    - file: .github/workflows/image-scan.yml
+      regex: 'uses: aquasecurity/trivy-action@[0-9a-f]+ # v[0-9.]+\n *with:\n *image-ref: .*\n *version: (v[0-9.]+)$'
+    - file: .github/workflows/image-scan.yml
+      regex: 'docker\.io/aquasec/trivy:([0-9.]+)@sha256:'
+
+- name: cosign
+  source: github-release sigstore/cosign
+  locations:
+    - file: .github/workflows/publish-images.yml
+      regex: 'cosign-release: (v[0-9.]+)$'
+
+- name: helm
+  source: github-release helm/helm
+  locations:
+    - file: .github/workflows/deploy-validate.yml
+      regex: 'uses: azure/setup-helm@[0-9a-f]+ # v[0-9.]+\n *with:\n *version: (v[0-9.]+)$'
+    - file: .github/workflows/image-scan.yml
+      regex: 'uses: azure/setup-helm@[0-9a-f]+ # v[0-9.]+\n *with:\n *version: (v[0-9.]+)$'
+    - file: .github/workflows/publish-images.yml
+      regex: 'uses: azure/setup-helm@[0-9a-f]+ # v[0-9.]+\n *with:\n *version: (v[0-9.]+)$'
+    - file: .github/workflows/pin-freshness.yml
+      regex: 'uses: azure/setup-helm@[0-9a-f]+ # v[0-9.]+\n *with:\n *version: (v[0-9.]+)$'
+    - file: .gitlab-ci.yml
+      regex: 'image: alpine/helm:([0-9.]+)@sha256:'
+
+- name: terraform
+  source: github-release hashicorp/terraform
+  locations:
+    - file: .github/workflows/deploy-validate.yml
+      regex: 'terraform_version: "([0-9.]+)"'
+    - file: .gitlab-ci.yml
+      regex: 'image: hashicorp/terraform:([0-9.]+)@sha256:'
+
+- name: pip
+  source: pypi pip
+  locations:
+    - file: .github/workflows/dependency-scan.yml
+      regex: '\bpip==([0-9.]+)'
+    - file: .gitlab-ci.yml
+      regex: '\bpip==([0-9.]+)'
+
+- name: setuptools
+  source: pypi setuptools
+  locations:
+    - file: .github/workflows/dependency-scan.yml
+      regex: '\bsetuptools==([0-9.]+)'
+    - file: .gitlab-ci.yml
+      regex: '\bsetuptools==([0-9.]+)'
+
+- name: pip-audit
+  source: pypi pip-audit
+  locations:
+    - file: .github/workflows/dependency-scan.yml
+      regex: '\bpip-audit==([0-9.]+)'
+    - file: .gitlab-ci.yml
+      regex: '\bpip-audit==([0-9.]+)'
+
+- name: kubectl
+  source: github-release kubernetes/kubernetes
+  locations:
+    - file: Iverson.Server/deploy/helm/iverson/charts/authentik/values.yaml
+      regex: 'image: "registry\.k8s\.io/kubectl:(v[0-9.]+)"'
+
+- name: dependency-check-maven
+  source: dependabot
+  locations:
+    - file: Iverson.Clients/Java/pom.xml
+      regex: '<artifactId>dependency-check-maven</artifactId>\s*<version>([0-9.]+)</version>'
+    - file: .github/workflows/dependency-scan.yml
+      regex: 'org\.owasp:dependency-check-maven:([0-9.]+):update-only'
+    - file: .gitlab-ci.yml
+      regex: 'org\.owasp:dependency-check-maven:([0-9.]+):update-only'
+
+- name: gitlab-image-alpine-helm
+  source: dependabot
+  locations:
+    - file: ci/gitlab-images/Dockerfile
+      regex: '^FROM alpine/helm:(\S+)$'
+    - file: .gitlab-ci.yml
+      regex: '^ *image: alpine/helm:(\S+)$'
+
+- name: gitlab-image-terraform
+  source: dependabot
+  locations:
+    - file: ci/gitlab-images/Dockerfile
+      regex: '^FROM hashicorp/terraform:(\S+)$'
+    - file: .gitlab-ci.yml
+      regex: '^ *image: hashicorp/terraform:(\S+)$'
+
+- name: gitlab-image-dotnet-sdk
+  source: dependabot
+  locations:
+    - file: ci/gitlab-images/Dockerfile
+      regex: '^FROM mcr\.microsoft\.com/dotnet/sdk:(\S+)$'
+    - file: .gitlab-ci.yml
+      regex: '^ *image: mcr\.microsoft\.com/dotnet/sdk:(\S+)$'
+
+- name: gitlab-image-node
+  source: dependabot
+  locations:
+    - file: ci/gitlab-images/Dockerfile
+      regex: '^FROM node:(\S+)$'
+    - file: .gitlab-ci.yml
+      regex: '^ *image: node:(\S+)$'
+
+- name: gitlab-image-golang
+  source: dependabot
+  locations:
+    - file: ci/gitlab-images/Dockerfile
+      regex: '^FROM golang:(\S+)$'
+    - file: .gitlab-ci.yml
+      regex: '^ *image: golang:(\S+)$'
+
+- name: gitlab-image-maven
+  source: dependabot
+  locations:
+    - file: ci/gitlab-images/Dockerfile
+      regex: '^FROM maven:(\S+)$'
+    - file: .gitlab-ci.yml
+      regex: '^ *image: maven:(\S+)$'
+
+- name: gitlab-image-python
+  source: dependabot
+  locations:
+    - file: ci/gitlab-images/Dockerfile
+      regex: '^FROM python:(\S+)$'
+    - file: .gitlab-ci.yml
+      regex: '^ *image: python:(\S+)$'

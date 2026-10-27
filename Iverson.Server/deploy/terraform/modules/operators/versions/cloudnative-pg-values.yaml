@@ -1,0 +1,8 @@
+# CSR round 12 §3: the CNPG operator image, the chart's appVersion pinned by its index digest. CNPG compares
+# each instance's bootstrap-controller init container with OPERATOR_IMAGE_NAME, both rendered from this tag;
+# on the clouds the admission engine rewrites a tag-only image to tag@digest, which would differ from the
+# operator's own string and roll every instance. A tag@digest string is written back unchanged.
+# Read by modules/operators/main.tf (helm_release.cloudnative_pg) and .github/workflows/image-scan.yml.
+# A Dependabot bump of the chart in Chart.yaml leaves this tag behind: ci/pins.py freshness reports it.
+image:
+  tag: "1.30.0@sha256:a2701eb97cdd2a34b1fdb2cb51987f544b706e40bec72ae7146cd8580efefebb"

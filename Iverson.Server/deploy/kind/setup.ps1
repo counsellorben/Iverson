@@ -21,19 +21,24 @@ if ([version](($KindVersion.TrimStart('v') -split '-')[0]) -lt $KindMin) {
 # Chart.yaml the cloud Terraform installs read (terraform/modules/operators/versions), which
 # Dependabot keeps current, so kind and the cloud installs run the same operator builds. They are
 # read before anything touches the cluster, so a missing pin stops the script here.
+# CSR round 12 §4.2: the charts only kind installs (Calico, metrics-server) are pinned the same way in
+# deploy/kind/versions.
 $OperatorPins = Join-Path $PSScriptRoot "../terraform/modules/operators/versions"
-function Get-OperatorVersion([string]$Chart) {
-  $list = helm dependency list $OperatorPins
-  if ($LASTEXITCODE -ne 0) { throw "helm dependency list failed for $OperatorPins" }
+$KindPins = Join-Path $PSScriptRoot "versions"
+function Get-OperatorVersion([string]$Pins, [string]$Chart) {
+  $list = helm dependency list $Pins
+  if ($LASTEXITCODE -ne 0) { throw "helm dependency list failed for $Pins" }
   foreach ($line in $list) {
     $cols = "$line".Trim() -split '\s+'
     if ($cols[0] -eq $Chart) { return $cols[1] }
   }
-  throw "no $Chart pin in $(Join-Path $OperatorPins 'Chart.yaml')"
+  throw "no $Chart pin in $(Join-Path $Pins 'Chart.yaml')"
 }
-$CnpgVersion = Get-OperatorVersion "cloudnative-pg"
-$StrimziVersion = Get-OperatorVersion "strimzi-kafka-operator"
-$StarRocksOperatorVersion = Get-OperatorVersion "operator"
+$CnpgVersion = Get-OperatorVersion $OperatorPins "cloudnative-pg"
+$StrimziVersion = Get-OperatorVersion $OperatorPins "strimzi-kafka-operator"
+$StarRocksOperatorVersion = Get-OperatorVersion $OperatorPins "operator"
+$CalicoVersion = Get-OperatorVersion $KindPins "tigera-operator"
+$MetricsServerVersion = Get-OperatorVersion $KindPins "metrics-server"
 
 # CSR round 12 §5: with no argument this script runs the whole fresh install. On an existing cluster the
 # upgrade runs the platform steps one at a time (docs/runbooks/csr12-platform.md §3): `setup.ps1 --only
@@ -164,7 +169,7 @@ kubectl create namespace tigera-operator --dry-run=client -o yaml | kubectl appl
 # disabled values) to add the CRs now that the CRDs exist.
 helm upgrade --install calico tigera-operator `
   --repo https://docs.tigera.io/calico/charts `
-  --version v3.32.2 `
+  --version $CalicoVersion `
   --namespace tigera-operator `
   --set installation.enabled=false `
   --set apiServer.enabled=false `
@@ -181,7 +186,7 @@ for ($i = 0; $i -lt 30; $i++) {
 kubectl wait --for=condition=Established crd/installations.operator.tigera.io --timeout=60s
 helm upgrade --install calico tigera-operator `
   --repo https://docs.tigera.io/calico/charts `
-  --version v3.32.2 `
+  --version $CalicoVersion `
   --namespace tigera-operator `
   --reset-values `
   --wait
@@ -232,7 +237,7 @@ Write-Host "Installing metrics-server..."
 # metrics-server will otherwise reject.
 helm upgrade --install metrics-server metrics-server `
   --repo https://kubernetes-sigs.github.io/metrics-server/ `
-  --version 3.9.0 `
+  --version $MetricsServerVersion `
   --namespace kube-system `
   --set 'args={--kubelet-insecure-tls}' `
   --wait

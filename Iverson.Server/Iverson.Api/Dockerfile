@@ -10,15 +10,17 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317 AS build
 WORKDIR /src
 
-COPY ["Iverson.Server/Iverson.Api/Iverson.Api.csproj",                                               "Iverson.Server/Iverson.Api/"]
-COPY ["Iverson.Server/Iverson.Sql/Iverson.Sql.csproj",                                               "Iverson.Server/Iverson.Sql/"]
-COPY ["Iverson.Server/Iverson.StarRocks/Iverson.StarRocks.csproj",                                   "Iverson.Server/Iverson.StarRocks/"]
-COPY ["Iverson.Server/Iverson.Embeddings/Iverson.Embeddings.csproj",                                 "Iverson.Server/Iverson.Embeddings/"]
-COPY ["Iverson.Server/Iverson.Vector/Iverson.Vector.csproj",                                         "Iverson.Server/Iverson.Vector/"]
-COPY ["Iverson.Server/Iverson.Patterns/Iverson.Patterns.csproj",                                     "Iverson.Server/Iverson.Patterns/"]
-COPY ["Iverson.Server/Iverson.Events/Iverson.Events.csproj",                                         "Iverson.Server/Iverson.Events/"]
-COPY ["Iverson.Clients/DotNet/Iverson.Client.Contracts/Iverson.Client.Contracts.csproj",             "Iverson.Clients/DotNet/Iverson.Client.Contracts/"]
-RUN dotnet restore "Iverson.Server/Iverson.Api/Iverson.Api.csproj"
+# CSR round 12 §4.6: each project's packages.lock.json goes beside its .csproj, so the locked restore
+# below checks the resolution against the committed lock file instead of re-resolving it.
+COPY ["Iverson.Server/Iverson.Api/Iverson.Api.csproj", "Iverson.Server/Iverson.Api/packages.lock.json", "Iverson.Server/Iverson.Api/"]
+COPY ["Iverson.Server/Iverson.Sql/Iverson.Sql.csproj", "Iverson.Server/Iverson.Sql/packages.lock.json", "Iverson.Server/Iverson.Sql/"]
+COPY ["Iverson.Server/Iverson.StarRocks/Iverson.StarRocks.csproj", "Iverson.Server/Iverson.StarRocks/packages.lock.json", "Iverson.Server/Iverson.StarRocks/"]
+COPY ["Iverson.Server/Iverson.Embeddings/Iverson.Embeddings.csproj", "Iverson.Server/Iverson.Embeddings/packages.lock.json", "Iverson.Server/Iverson.Embeddings/"]
+COPY ["Iverson.Server/Iverson.Vector/Iverson.Vector.csproj", "Iverson.Server/Iverson.Vector/packages.lock.json", "Iverson.Server/Iverson.Vector/"]
+COPY ["Iverson.Server/Iverson.Patterns/Iverson.Patterns.csproj", "Iverson.Server/Iverson.Patterns/packages.lock.json", "Iverson.Server/Iverson.Patterns/"]
+COPY ["Iverson.Server/Iverson.Events/Iverson.Events.csproj", "Iverson.Server/Iverson.Events/packages.lock.json", "Iverson.Server/Iverson.Events/"]
+COPY ["Iverson.Clients/DotNet/Iverson.Client.Contracts/Iverson.Client.Contracts.csproj", "Iverson.Clients/DotNet/Iverson.Client.Contracts/packages.lock.json", "Iverson.Clients/DotNet/Iverson.Client.Contracts/"]
+RUN dotnet restore "Iverson.Server/Iverson.Api/Iverson.Api.csproj" --locked-mode
 
 # Explicit copies (CSR round-10 #19): only the projects the publish needs reach the build stage.
 COPY Iverson.Server/Iverson.Api/ Iverson.Server/Iverson.Api/
@@ -34,7 +36,7 @@ RUN dotnet publish "Iverson.Server/Iverson.Api/Iverson.Api.csproj" -c Release -o
 
 # Pinned by digest (CSR round-3 finding #13) — same rationale as the sdk stage above.
 # Manifest-list digest for mcr.microsoft.com/dotnet/aspnet:10.0 as of 2026-10-06.
-FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:de0ee358cdd672f7017a003bed21e9ac9ed48a27c922a59b18175b6e82fa7fee AS runtime
 WORKDIR /app
 EXPOSE 8080
 EXPOSE 8081

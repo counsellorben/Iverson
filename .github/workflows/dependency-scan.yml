@@ -24,7 +24,8 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: "10.0.x"
-      - run: dotnet restore Iverson.slnx
+      # CSR round 12 §4.6: locked to the committed packages.lock.json files.
+      - run: dotnet restore Iverson.slnx --locked-mode
       - run: dotnet list Iverson.slnx package --vulnerable --include-transitive 2>&1 | tee scan.log
       - run: grep -q "has the following vulnerable packages" scan.log && exit 1 || exit 0
 
@@ -69,38 +70,86 @@ jobs:
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - run: govulncheck ./...
 
-  owasp-dependency-check-java:
+  # CSR round 12 §2.1 (#10): the only job that holds NVD_API_KEY, and it runs no repository code. Its
+  # checkout holds only Iverson.Clients/Java/.mvn/, which it copies into an otherwise empty directory, so
+  # no pom.xml is present and no project code or build extension can load. It installs the pinned Maven
+  # itself, refused unless its SHA-256 equals the wrapper's distributionSha256Sum, rather than through
+  # mvnw. The .mvn/maven.config it runs beside makes the plugin's own resolution checksum-verified.
+  # Pull requests (Dependabot's included) never run it; they scan keyless from main's cache.
+  nvd-update:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # A cold NVD download with an API key has taken up to 40 minutes; without a bound a throttled
     # download holds its runner for the 6-hour default.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: Iverson.Clients/Java/.mvn/
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: "21"
+          distribution: "temurin"
+      # The NVD database lives under the local Maven repository. Restore the newest copy so the update
+      # fetches only what changed since.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: nvd-${{ github.run_id }}
+          restore-keys: nvd-
+      - name: Install the pinned Maven beside a copy of .mvn/ only
+        run: |
+          set -euo pipefail
+          props=Iverson.Clients/Java/.mvn/wrapper/maven-wrapper.properties
+          url=$(sed -n 's/^distributionUrl=//p' "$props")
+          sum=$(sed -n 's/^distributionSha256Sum=//p' "$props")
+          [[ $url =~ ^https://repo\.maven\.apache\.org/maven2/org/apache/maven/apache-maven/[0-9.]+/apache-maven-[0-9.]+-bin\.zip$ && $sum =~ ^[0-9a-f]{64}$ ]] ||
+            { echo "::error::$props names no Maven Central distribution and SHA-256"; exit 1; }
+          curl -fsSL -o "$RUNNER_TEMP/maven.zip" "$url"
+          echo "$sum  $RUNNER_TEMP/maven.zip" | sha256sum -c -
+          # jar, not unzip: the GitLab job's image has no unzip, and both jobs install Maven the same way.
+          mkdir "$RUNNER_TEMP/maven" && (cd "$RUNNER_TEMP/maven" && jar xf ../maven.zip)
+          echo "MVN=$RUNNER_TEMP/maven/$(basename "$url" -bin.zip)/bin/mvn" >> "$GITHUB_ENV"
+          mkdir "$RUNNER_TEMP/nvd" && cp -R Iverson.Clients/Java/.mvn "$RUNNER_TEMP/nvd/"
+      - name: Update the NVD database
+        working-directory: ${{ runner.temp }}/nvd
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        # The plugin version is the pom's; ci/pins.py consistency keeps the three copies equal.
+        run: sh "$MVN" -B org.owasp:dependency-check-maven:13.0.0:update-only -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: nvd-${{ github.run_id }}
+
+  # Keyless (CSR round 12 §2.1): it builds the project and scans against the database nvd-update keeps,
+  # never updating it, so it holds no key on any event. On pull requests nvd-update is skipped, and a
+  # skipped `needs` job skips its dependants unless their `if` continues, which this one does. A missing
+  # database fails the check loudly (NoDataException).
+  owasp-dependency-check-java:
+    needs: nvd-update
+    if: ${{ !cancelled() && (needs.nvd-update.result == 'success' || needs.nvd-update.result == 'skipped') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     defaults:
       run:
         working-directory: Iverson.Clients/Java
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           java-version: "21"
           distribution: "temurin"
-      # The NVD database lives under the local Maven repository. Restore the newest copy so the check
-      # fetches only what changed since; PRs (Dependabot's included) can read main's caches.
+      # PRs (Dependabot's included) can read main's caches.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.m2/repository/org/owasp/dependency-check-data
           key: nvd-${{ github.run_id }}
           restore-keys: nvd-
-      - run: mvn install -DskipTests
-      - run: mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
-        env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-      # Only main saves, so PR runs do not fill the repository's cache quota with copies of the database.
-      # It saves even when the check fails on a finding, because the updated database is still good.
-      - if: always() && github.ref == 'refs/heads/main' && hashFiles('Iverson.Clients/Java/target/dependency-check-report.html') != ''
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.m2/repository/org/owasp/dependency-check-data
-          key: nvd-${{ github.run_id }}
+      - run: ./mvnw -B install -DskipTests
+      - run: ./mvnw -B org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DautoUpdate=false
 
   pip-audit-python-sdk:
     runs-on: ubuntu-latest

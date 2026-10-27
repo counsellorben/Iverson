@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Web;
 using FluentAssertions;
@@ -34,6 +35,63 @@ public class AdminAutomationCredentialsTests
                     Encoding.UTF8, "application/json"),
             };
         }
+    }
+
+    // A loopback token endpoint that answers every request with a 307 to another path on itself and counts the
+    // requests, so a test sees whether the client's real handler followed the redirect; a scripted
+    // HttpMessageHandler never follows one.
+    private sealed class RedirectingEndpoint : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private int _requests;
+
+        public RedirectingEndpoint()
+        {
+            var probe = new TcpListener(IPAddress.Loopback, 0);
+            probe.Start();
+            var port = ((IPEndPoint)probe.LocalEndpoint).Port;
+            probe.Stop();
+            Url = $"http://127.0.0.1:{port}/application/o/token/";
+            Location = $"http://127.0.0.1:{port}/elsewhere/";
+            _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            _listener.Start();
+            _ = Task.Run(ServeAsync);
+        }
+
+        public string Url { get; }
+        public string Location { get; }
+        public int Requests => Volatile.Read(ref _requests);
+
+        private async Task ServeAsync()
+        {
+            while (true)
+            {
+                HttpListenerContext context;
+                try { context = await _listener.GetContextAsync(); }
+                catch (Exception e) when (e is HttpListenerException or ObjectDisposedException) { return; }
+                Interlocked.Increment(ref _requests);
+                context.Response.StatusCode = 307;
+                context.Response.RedirectLocation = Location;
+                context.Response.Close();
+            }
+        }
+
+        public void Dispose() => _listener.Close();
+    }
+
+    // CSR round 12 §5.1: the default handler does not follow a redirect, so the secret is sent once, to the
+    // configured endpoint, and the failure names where the redirect pointed.
+    [Fact]
+    public async Task GetTokenAsync_DoesNotFollowARedirect_AndNamesItsLocation()
+    {
+        using var endpoint = new RedirectingEndpoint();
+        using var creds = new AdminAutomationCredentials("id", endpoint.Url, "s3cret", null, null, null);
+
+        var act = () => creds.GetTokenAsync();
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage($"*redirected to {endpoint.Location}*");
+        endpoint.Requests.Should().Be(1);
     }
 
     private static Func<string, string?> Env(params (string Key, string Value)[] vars) =>

@@ -1,0 +1,16 @@
+# CSR round 12 §4.2: the remote charts only kind installs (deploy/kind/setup.sh and setup.ps1: Calico, which
+# enforces NetworkPolicy on kind, and metrics-server), pinned here so Dependabot's helm ecosystem proposes
+# their bumps. A dependencies-only stub: nothing renders, packages or deploys this chart. Keep each entry's
+# order (name, version, repository) and the versions unquoted, the form Dependabot rewrites.
+apiVersion: v2
+name: iverson-kind
+description: Version pins for the charts deploy/kind/setup.sh and setup.ps1 install (not deployed)
+type: application
+version: 0.1.0
+dependencies:
+  - name: tigera-operator
+    version: v3.32.2
+    repository: https://docs.tigera.io/calico/charts
+  - name: metrics-server
+    version: 3.9.0
+    repository: https://kubernetes-sigs.github.io/metrics-server/

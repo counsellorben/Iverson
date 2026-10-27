@@ -15,6 +15,9 @@ creates istio-system and iverson-edge, before installing this chart.
 {{- if .Values.kind }}
 {{- $namespaces = concat $namespaces (list "tigera-operator" "iverson-edge") }}
 {{- end }}
+{{- if .Values.cosignSystem }}
+{{- $namespaces = append $namespaces "cosign-system" }}
+{{- end }}
 {{- $rel := .Values.release.name }}
 {{- $relNs := .Values.release.namespace }}
 {{- range $ns := $namespaces }}
@@ -175,4 +178,27 @@ spec:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: istio-system } }
           podSelector: { matchLabels: { app: istiod } }
       ports: [{ protocol: TCP, port: 15012 }, { protocol: TCP, port: 15008 }]
+{{- end }}
+{{- if .Values.cosignSystem }}
+---
+# CSR round 12 §3: the policy-controller webhook. The API server calls it on 8443 (its Service's 443); it
+# reads the attestations from GHCR and, at startup, Sigstore's TUF repository, both on 443. cosign-system
+# is not enrolled in the mesh, so there is no 15008 here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: policy-controller-webhook
+  {{- include "onp.metadata" (dict "ns" "cosign-system") | nindent 2 }}
+spec:
+  podSelector:
+    matchLabels: { control-plane: policy-controller-webhook }
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        {{- range .Values.apiServerCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+      ports: [{ protocol: TCP, port: 8443 }]
+  egress:
+    - ports: [{ protocol: TCP, port: 443 }]
 {{- end }}

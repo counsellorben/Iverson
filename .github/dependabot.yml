@@ -1,4 +1,32 @@
 version: 2
+# CSR round 12 §4.1: an update job reaches only allowlisted hosts, and declaring a registry here allowlists it,
+# even with anonymous access. Without these the helm jobs failed on every chart repository (403, "egress not
+# allowlisted"). One per chart repository a helm entry below reads.
+registries:
+  cloudnative-pg:
+    type: helm-registry
+    url: https://cloudnative-pg.github.io/charts
+  strimzi:
+    type: helm-registry
+    url: https://strimzi.io/charts/
+  starrocks:
+    type: helm-registry
+    url: https://starrocks.github.io/starrocks-kubernetes-operator
+  autoscaler:
+    type: helm-registry
+    url: https://kubernetes.github.io/autoscaler
+  eks-charts:
+    type: helm-registry
+    url: https://aws.github.io/eks-charts
+  sigstore:
+    type: helm-registry
+    url: https://sigstore.github.io/helm-charts
+  calico:
+    type: helm-registry
+    url: https://docs.tigera.io/calico/charts
+  metrics-server:
+    type: helm-registry
+    url: https://kubernetes-sigs.github.io/metrics-server/
 updates:
   - package-ecosystem: "nuget"
     directory: "/"
@@ -32,6 +60,10 @@ updates:
     directory: "/Iverson.Clients/Java"
     schedule:
       interval: "weekly"
+    # CSR round 12 §2.1: version updates wait a week after a release (security updates are not delayed).
+    # Each Maven PR needs the trusted-checksum re-record before it goes green (docs/runbooks/csr12-supply-chain.md).
+    cooldown:
+      default-days: 7
   - package-ecosystem: "pip"
     directory: "/Iverson.Clients/Python"
     schedule:
@@ -53,6 +85,8 @@ updates:
       - "/Iverson.Server/Iverson.Vector"
       - "/Iverson.Server/deploy/helm/iverson/charts/tei/model-image"
       - "/Iverson.Server/deploy/helm/iverson/charts/ollama/model-image"
+      # CSR round 12 §4.3: the GitLab job images (never built; see the file).
+      - "/ci/gitlab-images"
     schedule:
       interval: "weekly"
   - package-ecosystem: "docker-compose"
@@ -73,7 +107,19 @@ updates:
     directories:
       - "/Iverson.Server/deploy/helm/iverson"
       - "/Iverson.Server/deploy/helm/iverson/charts/*"
-      - "/Iverson.Server/deploy/terraform/modules/operators/versions"
+    registries: "*"
+    schedule:
+      interval: "weekly"
+    # CSR round 12 §4.1: the umbrella's own images (built locally, not on Docker Hub) and the kubectl image
+    # (looked up at a wrong path); ci/pins.yaml tracks kubectl instead.
+    ignore:
+      - dependency-name: "iverson-api"
+      - dependency-name: "iverson-admin-ui"
+      - dependency-name: "registry.k8s.io/kubectl"
+  # The operator charts the cloud Terraform installs (CSR round 12 §4.1: its own entry, with the registries).
+  - package-ecosystem: "helm"
+    directory: "/Iverson.Server/deploy/terraform/modules/operators/versions"
+    registries: "*"
     schedule:
       interval: "weekly"
     # These two move in lockstep with other files (see the coupling notes in the stub's Chart.yaml): minor/major bumps are done by hand.
@@ -82,3 +128,9 @@ updates:
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "aws-load-balancer-controller"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+  # CSR round 12 §4.2: the charts only kind installs.
+  - package-ecosystem: "helm"
+    directory: "/Iverson.Server/deploy/kind/versions"
+    registries: "*"
+    schedule:
+      interval: "weekly"

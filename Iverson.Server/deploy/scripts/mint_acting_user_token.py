@@ -57,6 +57,7 @@ import argparse
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import socket
@@ -95,6 +96,20 @@ KIND_OPERATOR_IMPERSONATION = [
 
 def log(msg):
     print(msg, file=sys.stderr, flush=True)
+
+
+def is_https_or_loopback(url: str) -> bool:
+    """CSR round 12 §5.2: the rule of CredentialEndpoints.IsHttpsOrLoopback (LoadTest): an absolute https
+    URL, or any scheme to localhost or a loopback address."""
+    parts = urllib.parse.urlsplit(url)
+    if not parts.scheme or not parts.hostname:
+        return False
+    if parts.scheme == "https" or parts.hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(parts.hostname).is_loopback
+    except ValueError:
+        return False
 
 
 # --- TOTP (RFC 6238) --------------------------------------------------------
@@ -474,6 +489,11 @@ def parse_args():
 
 def main() -> int:
     args = parse_args()
+    # CSR round 12 §5.2: the password, the TOTP code and the token travel to the base URL, so an override must be
+    # https or loopback. Checked before any request and before the kind port-forward starts.
+    if args.base_url is not None and not is_https_or_loopback(args.base_url):
+        log(f"ERROR: --base-url {args.base_url} must be https:// or a loopback address: the password and token are sent to it.")
+        return 2
 
     if args.target == "compose":
         base_url = args.base_url or DEFAULT_COMPOSE_BASE_URL

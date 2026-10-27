@@ -1,0 +1,41 @@
+name: Pin Freshness
+
+# CSR round 12 §4.5: for each pin in ci/pins.yaml that Dependabot does not raise, reads the newest version
+# from its source and opens or updates one issue "Pin behind: <name>" while the pin is behind, closing it
+# once the pin is current. It changes no code. The EKS add-on rows need the read-only AWS role from
+# Iverson.Server/deploy/terraform/bootstrap/aws (repository variable PIN_FRESHNESS_AWS_ROLE); without it
+# they report "skipped: no AWS role" and the other rows still run.
+on:
+  schedule:
+    - cron: '15 5 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # For the chart-app-version and cnpg-default rows (helm show chart).
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.15.4
+      - name: Assume the pin-freshness AWS role
+        if: vars.PIN_FRESHNESS_AWS_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.PIN_FRESHNESS_AWS_ROLE }}
+          aws-region: us-east-1
+      - name: Report stale pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PIN_FRESHNESS_AWS_ROLE: ${{ vars.PIN_FRESHNESS_AWS_ROLE }}
+        run: python3 ci/pins.py freshness

@@ -29,6 +29,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import teacher_rerank as tr  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def no_vllm_api_key(monkeypatch):
+    """main() reads VLLM_API_KEY (CSR round 12 §5.3); a value in the developer's shell must not leak in."""
+    monkeypatch.delenv("VLLM_API_KEY", raising=False)
+
+
 def write(path, text):
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
@@ -378,15 +384,24 @@ DOC_ID_IN_PROMPT = re.compile(r"^\[(\S+)\]", re.M)
 
 
 # --------------------------------------------------------------------------------------------
-# --api-key: some vLLM deployments require Authorization: Bearer <key> (e.g. a RunPod template
+# The vLLM key: some vLLM deployments require Authorization: Bearer <key> (e.g. a RunPod template
 # that launches `vllm serve --api-key` from VLLM_API_KEY before the operator runs this script).
-# The plumbing test proves args.api_key reaches call_teacher through main(), via ScriptedTeacher
-# recording what it received. The transport test proves call_teacher itself sends the header when
-# given a key and omits it when not, against a real HTTP server on loopback -- not a mock of
-# urllib, since a mock could assert the header was passed to the wrong urllib call.
+# CSR round 12 §5.3: main() takes it only from VLLM_API_KEY, never from argv, and sends it only
+# to an https or loopback --base-url. The plumbing tests prove the key reaches call_teacher through
+# main(), via ScriptedTeacher recording what it received. The transport test proves call_teacher
+# itself sends the header when given a key and omits it when not, against a real HTTP server on
+# loopback -- not a mock of urllib, since a mock could assert the header was passed to the wrong
+# urllib call.
 # --------------------------------------------------------------------------------------------
 
-def test_main_passes_api_key_through_to_call_teacher(tmp_path, monkeypatch):
+def with_base_url(argv, url):
+    argv = list(argv)
+    argv[argv.index("--base-url") + 1] = url
+    return argv
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8000", "http://localhost:8000", "https://vllm.example.com"])
+def test_main_passes_the_environment_key_to_an_https_or_loopback_base_url(tmp_path, monkeypatch, url):
     run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
     responses_path = str(tmp_path / "responses.jsonl")
     out_path = str(tmp_path / "teacher.chunks.trec")
@@ -397,12 +412,38 @@ def test_main_passes_api_key_through_to_call_teacher(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(tr, "call_teacher", scripted)
 
-    argv = base_argv(run_path, corpus_path, queries_path, responses_path, out_path)
-    argv += ["--api-key", "sk-test-through-main"]
+    argv = with_base_url(base_argv(run_path, corpus_path, queries_path, responses_path, out_path), url)
+    monkeypatch.setenv("VLLM_API_KEY", "sk-test-through-main")
     monkeypatch.setattr(sys, "argv", ["teacher_rerank.py"] + argv)
     tr.main()
 
     assert scripted.api_key == "sk-test-through-main"
+
+
+def test_main_refuses_to_send_the_key_to_a_plain_remote_base_url(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    scripted = ScriptedTeacher([])
+    monkeypatch.setattr(tr, "call_teacher", scripted)
+    argv = with_base_url(base_argv(run_path, corpus_path, queries_path, str(tmp_path / "r.jsonl"),
+                                   str(tmp_path / "teacher.chunks.trec")), "http://vllm.example.com:8000")
+    monkeypatch.setenv("VLLM_API_KEY", "sk-test-refused")
+    monkeypatch.setattr(sys, "argv", ["teacher_rerank.py"] + argv)
+
+    with pytest.raises(SystemExit) as exit_info:
+        tr.main()
+
+    assert "neither https:// nor a loopback address" in str(exit_info.value.code)
+    assert "sk-test-refused" not in str(exit_info.value.code)
+    assert scripted.calls == 0
+
+
+def test_the_api_key_flag_is_gone(tmp_path, monkeypatch):
+    run_path, corpus_path, queries_path = make_fixture_files(tmp_path)
+    argv = base_argv(run_path, corpus_path, queries_path, str(tmp_path / "r.jsonl"), str(tmp_path / "t.chunks.trec"))
+    monkeypatch.setattr(sys, "argv", ["teacher_rerank.py"] + argv + ["--api-key", "sk-on-argv"])
+    with pytest.raises(SystemExit) as exit_info:
+        tr.main()
+    assert exit_info.value.code == 2
 
 
 def test_main_omits_api_key_when_not_given(tmp_path, monkeypatch):
@@ -473,6 +514,67 @@ def test_call_teacher_omits_authorization_header_when_api_key_is_none():
         thread.join(timeout=5)
 
 
+class _RedirectingHandler(http.server.BaseHTTPRequestHandler):
+    """Answers every POST with a 302 (the code urllib follows for a POST, as a GET) to `target`, recording the Authorization header it saw."""
+
+    target = None
+    seen_auth = []
+
+    def do_POST(self):
+        _RedirectingHandler.seen_auth.append(self.headers.get("Authorization"))
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(302)
+        self.send_header("Location", _RedirectingHandler.target)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+class _RedirectTargetHandler(http.server.BaseHTTPRequestHandler):
+    """The redirect target: records every request it receives, whatever the method."""
+
+    seen = []
+
+    def _record(self):
+        _RedirectTargetHandler.seen.append((self.command, self.headers.get("Authorization")))
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_POST = _record
+
+    def log_message(self, *args):
+        pass
+
+
+def test_call_teacher_does_not_follow_a_redirect_so_the_key_goes_to_the_base_url_only():
+    """Spec 5.3: the key is sent only to the --base-url. A 302 must become the HTTP error path, and the
+    redirect target must receive no request."""
+    _RedirectTargetHandler.seen = []
+    _RedirectingHandler.seen_auth = []
+    second = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RedirectTargetHandler)
+    _RedirectingHandler.target = f"http://127.0.0.1:{second.server_address[1]}/v1/chat/completions"
+    first = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RedirectingHandler)
+    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (first, second)]
+    for t in threads:
+        t.start()
+    try:
+        content, finish_reason, *_ = tr.call_teacher(
+            f"http://127.0.0.1:{first.server_address[1]}", "m", "p", 0, api_key="sk-secret"
+        )
+        assert finish_reason == "http_error"
+        assert content.startswith("HTTP 302")
+        assert _RedirectingHandler.seen_auth == ["Bearer sk-secret"]
+        assert _RedirectTargetHandler.seen == []  # the second port was never called
+    finally:
+        for s in (first, second):
+            s.shutdown()
+        for t in threads:
+            t.join(timeout=5)
+
+
 class _HTTPErrorResponseHandler(http.server.BaseHTTPRequestHandler):
     """Responds with a non-2xx status to test the HTTPError exception handler."""
 
@@ -519,7 +621,7 @@ def test_call_teacher_catches_oserror_and_returns_http_error_finish_reason(monke
     def mock_urlopen(req, timeout=None):
         raise OSError("simulated connection failure")
 
-    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    monkeypatch.setattr(tr._OPENER, "open", mock_urlopen)
 
     content, finish_reason, reasoning, completion_tokens, prompt_tokens = tr.call_teacher(
         "http://unused.invalid", "m", "p", 0

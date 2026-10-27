@@ -20,10 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # CSR round 12 §4.5: every version pin written in more than one place (ci/pins.yaml) holds the same
+      # version everywhere.
+      - name: Pin table consistency
+        run: python3 ci/pins.py consistency
+
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.15.0
+          version: v3.15.4
 
       - name: helm dependency build
         run: helm dependency build Iverson.Server/deploy/helm/iverson
@@ -49,6 +54,24 @@ jobs:
           C=Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies
           helm lint "$C" -f "$C/values-kind.yaml"
 
+      # CSR round 12 §3: the clouds' ClusterImagePolicies. kubeconform has no schema for their CRD, so the
+      # lint (which renders them) is the CI check; the live check is docs/runbooks/csr12-supply-chain.md's.
+      - name: helm lint the image-policies chart
+        run: helm lint Iverson.Server/deploy/terraform/modules/operators/charts/image-policies
+
+      # CSR round 12 §3: the publish workflow, the runbook's verification commands and the clusters'
+      # admission policies must trust the same signing identity.
+      - name: The publish identity is the same in the workflow, the runbook and the image policies
+        run: |
+          set -euo pipefail
+          wf=$(sed -n "s/^ *IDENTITY: '\(.*\)'$/\1/p" .github/workflows/publish-images.yml)
+          ip=$(sed -n "s/^ *subjectRegExp: '\(.*\)'$/\1/p" Iverson.Server/deploy/terraform/modules/operators/charts/image-policies/values.yaml)
+          rb=$(sed -n "s/.*--certificate-identity-regexp '\([^']*\)'.*/\1/p" docs/runbooks/csr11-clients-tooling-ci.md | sort -u)
+          echo "workflow:      $wf"
+          echo "image-policies: $ip"
+          echo "runbook:       $rb"
+          [ -n "$wf" ] && [ "$ip" = "$wf" ] && [ "$rb" = "$wf" ] || { echo "::error::the three identities differ"; exit 1; }
+
   helm-template-kubeconform:
     runs-on: ubuntu-latest
     steps:
@@ -57,7 +80,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.15.0
+          version: v3.15.4
 
       - name: Install kubeconform
         run: |
@@ -93,8 +116,8 @@ jobs:
             Iverson.Server/deploy/terraform/modules/operators/charts/pvc-storageclass-policy \
             | kubeconform -kubernetes-version 1.35.0 -summary
 
-      # The operator-namespace policy chart renders NetworkPolicies, kind's set and the clouds' (kind=false)
-      # with the same addresses, and the CNPG operator's PeerAuthentication (CSR round 12 §4.1), an Istio
+      # The operator-namespace policy chart renders NetworkPolicies, kind's set and the clouds' (kind=false,
+      # with cosign-system) with the same addresses, and the CNPG operator's PeerAuthentication (CSR round 12 §4.1), an Istio
       # kind kubeconform has no schema for: that kind alone is skipped, so a missing schema for anything
       # else still fails.
       - name: helm template | kubeconform the operator-namespace policy chart
@@ -102,7 +125,7 @@ jobs:
           set -e
           C=Iverson.Server/deploy/terraform/modules/operators/charts/operator-namespace-policies
           helm template operator-namespace-policies "$C" -f "$C/values-kind.yaml" | kubeconform -kubernetes-version 1.35.0 -summary -skip PeerAuthentication
-          helm template operator-namespace-policies "$C" -f "$C/values-kind.yaml" --set kind=false --set cnpgWebhookPermissive=true | kubeconform -kubernetes-version 1.35.0 -summary -skip PeerAuthentication
+          helm template operator-namespace-policies "$C" -f "$C/values-kind.yaml" --set kind=false --set cnpgWebhookPermissive=true --set cosignSystem=true | kubeconform -kubernetes-version 1.35.0 -summary -skip PeerAuthentication
 
   security-audit:
     runs-on: ubuntu-latest
@@ -112,7 +135,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.15.0
+          version: v3.15.4
 
       - name: Install kube-score
         run: |

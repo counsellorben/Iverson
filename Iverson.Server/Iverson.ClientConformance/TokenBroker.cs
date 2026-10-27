@@ -174,9 +174,12 @@ public sealed class TokenBroker : IDisposable
         return document.RootElement.TryGetProperty(claim, out var value) ? value.GetString() : null;
     }
 
-    private static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentials creds, CancellationToken ct)
+    // CSR round 12 §5.1: a redirect is never followed, so the client secret goes only to the configured token
+    // endpoint; a 3xx is a failed token request. The handler parameter is for tests.
+    internal static async Task<string> MintClientCredentialsTokenAsync(
+        IversonClientCredentials creds, CancellationToken ct, HttpMessageHandler? handler = null)
     {
-        using var http = new HttpClient();
+        using var http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false });
         var request = new ClientCredentialsTokenRequest
         {
             Address = creds.TokenEndpoint,
@@ -189,7 +192,11 @@ public sealed class TokenBroker : IDisposable
 
         var response = await http.RequestClientCredentialsTokenAsync(request, ct);
         if (response.IsError)
-            throw new InvalidOperationException($"Failed to acquire admin-automation token: {response.Error}");
+            throw new InvalidOperationException(
+                $"Failed to acquire admin-automation token: {response.Error}" +
+                (response.HttpResponse?.Headers.Location is { } location
+                    ? $" (the token endpoint redirected to {location}; token requests do not follow redirects)"
+                    : ""));
         return response.AccessToken!;
     }
 

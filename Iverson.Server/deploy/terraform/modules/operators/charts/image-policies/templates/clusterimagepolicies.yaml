@@ -1,0 +1,33 @@
+{{- /*
+CSR round 12 §3. Each image's glob is its own name followed by "*", and the four names share no prefix
+with each other, so no image matches another's policy. policy-controller v0.15.1 cannot verify the
+workflow's cosign v3 bundle signature, but it verifies the SPDX attestation, which the same workflow
+identity signs for the same digest (signatureFormat: bundle).
+*/}}
+{{- range .Values.images }}
+{{- $image := printf "%s/%s" $.Values.registry . }}
+---
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: {{ . }}
+spec:
+  images:
+  - glob: {{ printf "%s*" $image | quote }}
+  authorities:
+  - signatureFormat: bundle
+    keyless:
+      url: https://fulcio.sigstore.dev
+      identities:
+      - issuer: {{ $.Values.identity.issuer }}
+        subjectRegExp: {{ $.Values.identity.subjectRegExp | squote }}
+    ctlog:
+      url: https://rekor.sigstore.dev
+    attestations:
+    - name: sbom
+      predicateType: https://spdx.dev/Document
+      policy:
+        type: cue
+        data: |
+          subject: [{name: {{ $image | quote }}}]
+{{- end }}

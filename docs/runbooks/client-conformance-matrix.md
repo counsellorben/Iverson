@@ -110,8 +110,14 @@ trade than documenting it here.
 
 ## Toolchains
 
-A language whose toolchain is absent is reported as `skip`. Drivers need: .NET SDK, `python3`,
-`npx`/`node`, `go`, and `mvn`.
+A language whose toolchain is absent is reported as `skip`, except Java. Drivers need: .NET SDK, `python3`,
+`npx`/`node`, `go`, and a JDK (the harness runs `Iverson.Clients/Java/mvnw`, not `mvn`). A host without a JDK
+reports the Java column as Broken (`mvnw` exits 1), not `skip`.
+
+The Java build is linux-x86_64-only: `Iverson.Clients/Java/.mvn/checksums/checksums-central.sha256` holds only
+the `linux-x86_64` protoc and protoc-gen-grpc-java binaries, so on macOS, Linux arm64 or Windows `./mvnw`
+fails with `Missing from summaryFile trusted checksum(s)` and the Java column is Broken. A re-record from no
+file keeps only the recording host's platform (docs/runbooks/csr12-supply-chain.md §3).
 
 ## After a run
 

@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Text.Json;
 using FluentAssertions;
 using Xunit;
@@ -186,6 +187,125 @@ public class DriverRunnerTests
         }
         finally
         {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    // CSR round 12 §4.7: the Java build runs the repository's own Maven Wrapper (the one Maven the
+    // trusted-checksum record was written under), resolved against the repository root, never an `mvn`
+    // found on PATH.
+    [Fact]
+    public async Task RunPhaseAsync_BuildsTheJavaDriverWithTheRepositorysMavenWrapper()
+    {
+        var root = Directory.CreateTempSubdirectory("iverson-conformance-fake-").FullName;
+        var wrapper = Path.Combine(root, "Iverson.Clients", "Java", "mvnw");
+        Directory.CreateDirectory(Path.GetDirectoryName(wrapper)!);
+        File.WriteAllText(wrapper, "#!/bin/sh\necho \"repository wrapper ran: $*\" >&2\nexit 3\n");
+        File.SetUnixFileMode(wrapper, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        try
+        {
+            var outcomes = await new DriverRunner(root).RunPhaseAsync(Phase.Register, ["java"], Context());
+
+            var broken = outcomes.Should().ContainSingle().Which.Should().BeOfType<DriverPhaseOutcome.Broken>().Subject;
+            broken.ExitCode.Should().Be(3);
+            broken.Stderr.Should().Contain("repository wrapper ran: -B -f Iverson.Clients/Java/pom.xml");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    // CSR round 12 §5.4: build steps and drivers start from an empty environment plus an allowlist, so the
+    // harness's own credentials never reach a build tool or a driver.
+    private static readonly string[] HarnessSecrets =
+        ["IVERSON_CLIENT_SECRET", "IVERSON_CLIENT_ID", "IVERSON_TOKEN_ENDPOINT", "IVERSON_CLIENT_SCOPE", "IVERSON_ACTING_USER_HOST_HEADER"];
+
+    private static Hashtable Parent() => new()
+    {
+        ["PATH"] = "/usr/bin", ["HOME"] = "/home/u", ["LC_ALL"] = "C.UTF-8", ["NUGET_PACKAGES"] = "/n",
+        ["JAVA_HOME"] = "/jdk", ["MAVEN_OPTS"] = "-Xmx1g", ["GOMODCACHE"] = "/g", ["npm_config_cache"] = "/npm",
+        ["NODE_EXTRA_CA_CERTS"] = "/ca.crt", ["PYTHONUSERBASE"] = "/py", ["SSL_CERT_FILE"] = "/bundle.pem",
+        ["JAVA_TOOL_OPTIONS"] = "-Djavax.net.ssl.trustStore=/ts.p12", ["IVERSON_CLIENT_SECRET"] = "harness-secret",
+        ["IVERSON_CLIENT_ID"] = "harness-id", ["IVERSON_TOKEN_ENDPOINT"] = "https://t/", ["IVERSON_CLIENT_SCOPE"] = "s",
+        ["IVERSON_ACTING_USER_HOST_HEADER"] = "h", ["AWS_SECRET_ACCESS_KEY"] = "aws",
+    };
+
+    [Theory]
+    [InlineData("PATH", true)]
+    [InlineData("LC_ALL", true)]
+    [InlineData("JAVA_HOME_21_X64", true)]
+    [InlineData("GOFLAGS", true)]
+    [InlineData("GOPATH", true)]
+    [InlineData("MSBUILDDISABLENODEREUSE", true)]
+    [InlineData("UseSharedCompilation", true)]
+    [InlineData("GOOGLE_APPLICATION_CREDENTIALS", false)]
+    [InlineData("GOOGLE_API_KEY", false)]
+    [InlineData("npm_config_cache", true)]
+    [InlineData("IVERSON_CLIENT_SECRET", false)]
+    [InlineData("SSL_CERT_FILE", false)]
+    [InlineData("JAVA_TOOL_OPTIONS", false)]
+    [InlineData("AWS_SECRET_ACCESS_KEY", false)]
+    [InlineData("path", false)]
+    public void IsAllowed_MatchesExactNamesAndPrefixesOnly(string name, bool allowed) =>
+        DriverRunner.IsAllowed(name).Should().Be(allowed);
+
+    [Fact]
+    public void BuildStepEnvironment_IsTheAllowlistOnly()
+    {
+        var environment = DriverRunner.BuildStepEnvironment(Parent());
+
+        environment.Keys.Should().BeEquivalentTo(
+            ["PATH", "HOME", "LC_ALL", "NUGET_PACKAGES", "JAVA_HOME", "MAVEN_OPTS", "GOMODCACHE", "npm_config_cache",
+             "NODE_EXTRA_CA_CERTS", "PYTHONUSERBASE"]);
+    }
+
+    [Fact]
+    public void DriverRunEnvironment_AddsTheCaTrustVariablesAndTheContext_AndNoHarnessSecret()
+    {
+        var environment = DriverRunner.DriverRunEnvironment(Parent(), Context());
+
+        environment.Should().Contain("SSL_CERT_FILE", "/bundle.pem")
+            .And.Contain("JAVA_TOOL_OPTIONS", "-Djavax.net.ssl.trustStore=/ts.p12")
+            .And.Contain("IVERSON_DRIVER_CLIENT_SECRET", "client-secret")
+            .And.Contain("IVERSON_DRIVER_ACTING_TOKEN", "acting-token")
+            .And.Contain("PATH", "/usr/bin");
+        environment.Keys.Should().NotContain(HarnessSecrets).And.NotContain("AWS_SECRET_ACCESS_KEY");
+    }
+
+    [Fact]
+    public async Task RunPhaseAsync_StartsTheDriverWithOnlyTheAllowlistedEnvironment()
+    {
+        // Reports two variables this test process sets: one under an allowlisted prefix, one not.
+        var root = FakePythonDriverRepo("""
+            import json, os, sys
+            out = sys.argv[sys.argv.index("--out") + 1]
+            names = ["PYTHON_CONFORMANCE_ALLOWED_PROBE", "IVERSON_CONFORMANCE_DENIED_PROBE", "IVERSON_DRIVER_ACTING_TOKEN"]
+            keys = {name: os.environ.get(name, "<unset>") for name in names}
+            with open(out, "w") as f:
+                json.dump({"language": "python", "phase": "register",
+                           "steps": [{"name": "env", "ok": True, "keys": keys}]}, f)
+            """);
+        Environment.SetEnvironmentVariable("PYTHON_CONFORMANCE_ALLOWED_PROBE", "allowed");
+        Environment.SetEnvironmentVariable("IVERSON_CONFORMANCE_DENIED_PROBE", "denied");
+        try
+        {
+            var runner = new DriverRunner(root);
+
+            var outcomes = await runner.RunPhaseAsync(Phase.Register, ["python"], Context());
+
+            outcomes.Should().ContainSingle().Which.Should().BeOfType<DriverPhaseOutcome.Success>();
+            runner.KeysByLanguage["python"].Should().BeEquivalentTo(new Dictionary<string, string>
+            {
+                ["PYTHON_CONFORMANCE_ALLOWED_PROBE"] = "allowed",
+                ["IVERSON_CONFORMANCE_DENIED_PROBE"] = "<unset>",
+                ["IVERSON_DRIVER_ACTING_TOKEN"] = "acting-token",
+            });
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PYTHON_CONFORMANCE_ALLOWED_PROBE", null);
+            Environment.SetEnvironmentVariable("IVERSON_CONFORMANCE_DENIED_PROBE", null);
             Directory.Delete(root, recursive: true);
         }
     }
