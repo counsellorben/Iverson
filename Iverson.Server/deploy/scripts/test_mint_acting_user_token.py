@@ -140,3 +140,26 @@ def test_there_is_no_password_flag(monkeypatch, fakes):
         main_with(monkeypatch, "--target", "compose", "--password", "argv-pw")
     assert exit_info.value.code == 2
     assert "password" not in fakes
+
+
+# CSR round 12 §5.2: --base-url must be https or a loopback host, checked before any request.
+@pytest.mark.parametrize("url", ["http://example.com", "http://10.0.0.5:9000", "http://localhost.example.com:9000",
+                                 "ftp://", "localhost:9000"])
+def test_a_plain_remote_base_url_is_refused_before_any_request(monkeypatch, fakes, capsys, url):
+    monkeypatch.setenv(ENV, "env-pw")
+    assert main_with(monkeypatch, "--target", "compose", "--base-url", url) == 2
+    assert "password" not in fakes
+    assert "must be https:// or a loopback address" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("url", ["https://auth.example.com", "http://localhost:9000", "http://127.0.0.1:9000",
+                                 "http://127.8.9.10", "http://[::1]:9000", "https://localhost:9443"])
+def test_an_https_or_loopback_base_url_is_used(monkeypatch, fakes, url):
+    monkeypatch.setenv(ENV, "env-pw")
+    assert main_with(monkeypatch, "--target", "compose", "--base-url", url) == 0
+    assert fakes["base_url"] == url
+
+
+def test_the_kind_target_refuses_a_plain_remote_base_url_before_its_port_forward(monkeypatch, fakes):
+    assert main_with(monkeypatch, "--target", "kind", "--base-url", "http://example.com") == 2
+    assert "port_forward" not in fakes and fakes["secrets"] == []

@@ -27,8 +27,9 @@
 #                     re-run against the same seeds does not resume into pre-fix ledger entries
 #   CONCURRENCY    -- max concurrent teacher_rerank.py invocations per pass (default 6)
 #   BASE_URL       -- vLLM base URL (default http://127.0.0.1:8000)
-#   VLLM_API_KEY   -- if set, forwarded as --api-key (RunPod's vLLM template enforces this even
-#                     when --api-key never shows in `ps aux` -- confirmed live 2026-09-21)
+#   VLLM_API_KEY   -- if set, teacher_rerank.py reads it from the environment and sends it to BASE_URL
+#                     (RunPod's vLLM template enforces it -- confirmed live 2026-09-21); it is never
+#                     put on a command line (CSR round 12 §5.3)
 #   SEEDS          -- default "101 102 103 104 105 106 107 108"
 #   RUN_SUMMARIZER -- "0" to skip the summarizer step (default: run it)
 
@@ -56,11 +57,6 @@ for f in "$S/teacher_rerank.py" "$B/runs/rerank-a0prime.chunks.trec" "$B/beir/co
   fi
 done
 
-API_KEY_ARGS=()
-if [ -n "${VLLM_API_KEY:-}" ]; then
-  API_KEY_ARGS=(--api-key "$VLLM_API_KEY")
-fi
-
 echo "=== measurement batch: seeds [$SEEDS], model=$MODEL_ID vllm=$VLLM_VERSION sku=$INSTANCE_SKU ==="
 
 read -ra SEED_ARR <<< "$SEEDS"
@@ -78,7 +74,6 @@ for PASS in 1 2; do
         --base-url "$BASE_URL" --model "$MODEL_ID" \
         --seed "$SEED" --shuffle-seed "$SEED" --subsample 1 --subsample-seed "$SEED" \
         --vllm-version "$VLLM_VERSION" --quantisation mxfp4 --instance-type "$INSTANCE_SKU" \
-        "${API_KEY_ARGS[@]}" \
         --responses "$A/q$SEED.responses.jsonl" --out "$A/q$SEED.chunks.trec" \
         > "$A/q$SEED.pass$PASS.log" 2>&1 < /dev/null &
       PIDS+=("$!")
