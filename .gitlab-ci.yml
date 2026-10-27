@@ -145,7 +145,7 @@ terraform-validate:
 
 nuget-audit:
   stage: dependency-scan
-  image: mcr.microsoft.com/dotnet/sdk:10.0@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317
+  image: mcr.microsoft.com/dotnet/sdk:10.0@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b
   extends: .rules-dependency-scan
   script:
     # CSR round 12 §4.6: locked to the committed packages.lock.json files.
@@ -278,7 +278,7 @@ pip-audit-agents:
 
 dotnet-build-test:
   stage: build-test
-  image: mcr.microsoft.com/dotnet/sdk:10.0@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317
+  image: mcr.microsoft.com/dotnet/sdk:10.0@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
