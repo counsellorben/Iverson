@@ -27,7 +27,7 @@ dependencies:
   # AWS only. 1.9.0 has appVersion v2.9.0, matching the controller IAM policy cluster-aws commits
   # (files/aws-load-balancer-controller-iam-policy-v2.9.0.json). Bump the two together.
   - name: aws-load-balancer-controller
-    version: 1.9.0
+    version: 1.9.2
     repository: https://aws.github.io/eks-charts
   # CSR round 12 §3: the admission engine. The chart's default app lags; main.tf sets the engine image
   # (ci/pins.yaml tracks it).
