@@ -21,9 +21,10 @@ RUN npm run build
 
 # Pinned by digest (CSR round-3 finding #13) — same rationale and same caveat about
 # platform-specific vs. manifest-list digests as the node stage above. Manifest-list
-# digest for docker.io/nginxinc/nginx-unprivileged:1.30.5-alpine as of 2026-10-12 (CSR round-11:
-# the rebuild that carries tiff 4.7.2-r0, the fix for CVE-2026-4775).
-FROM docker.io/nginxinc/nginx-unprivileged:1.31.6-alpine@sha256:884e0b7f42f303641b0f4e78755aea647521dca0b89ca3be7992ad78b5c07434 AS runtime
+# digest for docker.io/nginxinc/nginx-unprivileged:1.31.7-alpine as of 2026-10-27 (the 2026-10-19
+# rebuild, which carries libexpat 2.9.0-r0 and libx11 1.8.14-r0, the fixes for CVE-2026-77214 and
+# CVE-2026-88806).
+FROM docker.io/nginxinc/nginx-unprivileged:1.31.7-alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e AS runtime
 # The base image already sets USER 101 as its own default, but /usr/share/nginx/html
 # is baked into that base image as root:root 755 — COPY (even with --chown on the
 # copied files) never retroactively chowns a pre-existing destination directory
@@ -33,6 +34,11 @@ FROM docker.io/nginxinc/nginx-unprivileged:1.31.6-alpine@sha256:884e0b7f42f30364
 # tries to write config.js at container startup — crashing the container). Switch
 # to root explicitly to fix the directory's own ownership before dropping back down.
 USER root
+# That base still ships brotli-libs 1.2.0-r1 and curl/libcurl 8.22.0-r0 (CVE-2026-111497, CVE-2026-92392);
+# Alpine 3.24 has the fixed 1.2.1-r0 and 8.23.0-r0, so take just those three until a base rebuild
+# carries them (the image-scan workflow's first-party job fails on any fixed HIGH/CRITICAL). Drop this
+# line when the pinned base already has them.
+RUN apk upgrade --no-cache brotli-libs curl libcurl
 COPY --from=build --chown=101:101 /src/dist /usr/share/nginx/html
 RUN chown 101:101 /usr/share/nginx/html
 # Replaces the base image's stock default.conf, which has no SPA fallback:
