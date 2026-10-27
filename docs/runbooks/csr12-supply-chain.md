@@ -39,24 +39,30 @@ itself.
    titled `Dependabot config file validation` when it passes:
 
    ```bash
-   gh api repos/counsellorben/Iverson/commits/<push head sha>/check-suites --jq '.check_suites[] | select(.app.slug=="dependabot") | .id'
+   gh api repos/counsellorben/Iverson/commits/<push head sha>/check-suites?per_page=100 --jq '.check_suites[] | select(.app.slug=="dependabot") | .id'
    gh api repos/counsellorben/Iverson/check-suites/<suite id>/check-runs --jq '.check_runs[] | "\(.name) \(.conclusion) \(.output.title)"'
    ```
 
-   Then the job verdicts, from the three helm update runs that follow that push (the **Insights** page
-   returns 404):
+   Right after the push the check run can still be queued, and its conclusion prints `null`; wait until it
+   reads `success` or `failure`. On `failure`, its `.output.summary` names the property at fault; restore
+   the file by reverting the commit that changed `.github/dependabot.yml` and pushing, as `8b273b52` did.
+
+   Then the job verdicts, from the three helm update runs that follow that push, the ones whose `headSha` is
+   the push head (the **Insights** page returns 404):
 
    ```bash
-   gh run list --repo counsellorben/Iverson --event dynamic --limit 40 --json databaseId,displayTitle,conclusion,createdAt --jq '.[] | select(.displayTitle | startswith("helm in"))'
+   gh run list --repo counsellorben/Iverson --event dynamic --limit 40 --json databaseId,displayTitle,conclusion,createdAt,headSha --jq '.[] | select(.displayTitle | startswith("helm in"))'
    gh run view <run id> --repo counsellorben/Iverson --log | grep -o 'egress not allowlisted [^ ]*' | sort | uniq -c
    gh pr list --repo counsellorben/Iverson --state all --limit 1000 --json number,state,headRefName --jq '.[] | select(.headRefName | startswith("dependabot/helm/"))'
    ```
 
    No run logs `egress not allowlisted`, except the umbrella run's 60 lines that name `charts` (its
-   `file://` subcharts). The operators run logs `Submitting … pull request for creation` for the stub bumps
-   still outstanding (cloudnative-pg, Strimzi, the StarRocks operator and aws-load-balancer-controller at
-   the time of writing), and the kind run logs `No update possible for tigera-operator …` and
-   `… metrics-server …` while both are current.
+   `file://` subcharts). Run `gh run view` for each of the three run ids. The operators run logs
+   `Submitting … pull request for creation` for the stub bumps still outstanding (cloudnative-pg, Strimzi,
+   the StarRocks operator and aws-load-balancer-controller at the time of writing), and the kind run logs `No update possible for tigera-operator …` and
+   `… metrics-server …` while both are current. That holds only with no `egress not allowlisted` line for
+   the chart's host, because the same line also appears for a blocked host. The kind run opens no pull
+   request while both charts are current.
 4. **Pin freshness.** Run it once by hand and review the issues it opens (§4):
 
    ```bash
