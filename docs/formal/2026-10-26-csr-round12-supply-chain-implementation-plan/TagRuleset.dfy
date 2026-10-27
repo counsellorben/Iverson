@@ -1,239 +1,221 @@
 // Plan: /home/ben/repositories/Iverson/docs/plans/2026-10-26-csr-round12-supply-chain-implementation-plan.md, T6 S1
 // Source: Iverson.Server/deploy/scripts/apply-tag-ruleset.sh the whole script
-// Replay base: a6c008dce9e4c846f8c34456ddd6297636d31979
+// Replay base: 680eb9cf5a6dc2d3dd6374446822969441bfed0f
 // Re-run: dafny verify --verification-time-limit 30 --warn-contradictory-assumptions --manual-lemma-induction docs/formal/2026-10-26-csr-round12-supply-chain-implementation-plan/TagRuleset.dfy
 
 // ---------------------------------------------------------------------------
-// Strings: bytes (Bash has no string unit of its own; as for Go).
+// Strings: Bash values as byte sequences.
 // ---------------------------------------------------------------------------
 newtype Byte = x: int | 0 <= x < 256
 type Str = seq<Byte>
 
-// Named literals: the script's literals as bytes.
-// "counsellorben/Iverson" (line 21)
-const DefaultRepo: Str := [99, 111, 117, 110, 115, 101, 108, 108, 111, 114, 98, 101, 110, 47, 73, 118, 101, 114, 115, 111, 110]
-// "--repo" (line 26)
-const RepoArg: Str := [45, 45, 114, 101, 112, 111]
-// "--dry-run" (line 31)
-const DryRunArg: Str := [45, 45, 100, 114, 121, 45, 114, 117, 110]
-// "--activate" (line 35)
-const ActivateArg: Str := [45, 45, 97, 99, 116, 105, 118, 97, 116, 101]
-// "-h" and "--help" (line 39)
-const ShortHelpArg: Str := [45, 104]
-const HelpArg: Str := [45, 45, 104, 101, 108, 112]
-// ".." in the pattern *..* (line 49)
-const DotDot: Str := [46, 46]
-// "current_user_can_bypass=always " (line 100; note the trailing space)
-const CanBypassAlways: Str := [99, 117, 114, 114, 101, 110, 116, 95, 117, 115, 101, 114, 95, 99, 97, 110, 95, 98, 121, 112, 97, 115, 115, 61, 97, 108, 119, 97, 121, 115, 32]
-// "bypass_actors=RepositoryRole:5:always" (line 100)
-const AdminRoleActor: Str := [98, 121, 112, 97, 115, 115, 95, 97, 99, 116, 111, 114, 115, 61, 82, 101, 112, 111, 115, 105, 116, 111, 114, 121, 82, 111, 108, 101, 58, 53, 58, 97, 108, 119, 97, 121, 115]
-const Newline: Byte := 10
+const NL: Byte := 10
+
+// Literals of the script, as bytes.
+const RepoArg: Str := [45, 45, 114, 101, 112, 111] // "--repo"
+const DryRunArg: Str := [45, 45, 100, 114, 121, 45, 114, 117, 110] // "--dry-run"
+const ActivateArg: Str := [45, 45, 97, 99, 116, 105, 118, 97, 116, 101] // "--activate"
+const ShortHelpArg: Str := [45, 104] // "-h"
+const HelpArg: Str := [45, 45, 104, 101, 108, 112] // "--help"
+const DefaultRepo: Str := [99, 111, 117, 110, 115, 101, 108, 108, 111, 114, 98, 101, 110, 47, 73, 118, 101, 114, 115, 111, 110] // "counsellorben/Iverson"
+const DotDot: Str := [46, 46] // ".."
+const CanBypassAlways: Str := [99, 117, 114, 114, 101, 110, 116, 95, 117, 115, 101, 114, 95, 99, 97, 110, 95, 98, 121, 112, 97, 115, 115, 61, 97, 108, 119, 97, 121, 115, 32] // "current_user_can_bypass=always "
+const AdminRoleActor: Str := [98, 121, 112, 97, 115, 115, 95, 97, 99, 116, 111, 114, 115, 61, 82, 101, 112, 111, 115, 105, 116, 111, 114, 121, 82, 111, 108, 101, 58, 53, 58, 97, 108, 119, 97, 121, 115] // "bypass_actors=RepositoryRole:5:always"
+
+// `[[ $s == *"t"* ]]` / `[[ $s != *t* ]]`: substring test.
+predicate Contains(s: Str, t: Str)
+{
+  exists k {:trigger s[k..k + |t|]} :: 0 <= k && k + |t| <= |s| && s[k..k + |t|] == t
+}
+
+// `grep -c .`: the number of non-empty lines (a final line without a newline counts).
+// `cur` is whether the line being read so far is non-empty.
+function CountNonEmptyLines(s: Str, cur: bool): nat
+  decreases |s|
+{
+  if |s| == 0 then (if cur then 1 else 0)
+  else if s[0] == NL then (if cur then 1 else 0) + CountNonEmptyLines(s[1..], false)
+  else CountNonEmptyLines(s[1..], true)
+}
 
 // ---------------------------------------------------------------------------
 // Library boundary.
 // ---------------------------------------------------------------------------
+// The `gh api` calls the script makes, in order. A failing `gh` call (which ends the run under
+// `set -e`) is not modelled; each call succeeds with the output passed to TagRuleset.
 datatype Call = List | Post | Get(id: Str) | Put(id: Str)
 datatype Run = Run(calls: seq<Call>, exit: int)
 
-// The --repo ERE ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ (line 49): axiomatised.
+// The `--repo` ERE `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$` (approved axiom).
 predicate RepoShape(repo: Str)
 
 lemma {:axiom} DefaultRepoShape()
   ensures RepoShape(DefaultRepo)
 
-// [[ $s == *"t"* ]] (and $s != *..*): t occurs in s, i.e. t is a prefix of some suffix of s.
-predicate Contains(s: Str, t: Str)
-  decreases |s|
-{
-  |t| <= |s| && (s[..|t|] == t || (|s| > 0 && Contains(s[1..], t)))
-}
-
-// printf '%s\n' "$s" | grep -c . : the number of non-empty lines of s.
-// A non-empty line starts at each position k with s[k] != '\n' and (k == 0 or s[k-1] == '\n');
-// the trailing '\n' printf adds only terminates the last line.
-function NonEmptyLines(s: Str): nat
-  decreases |s|
-{
-  if |s| == 0 then 0
-  else NonEmptyLines(s[..|s| - 1])
-       + (if s[|s| - 1] != Newline && (|s| == 1 || s[|s| - 2] == Newline) then 1 else 0)
-}
-
 // ---------------------------------------------------------------------------
 // Transliteration.
 // ---------------------------------------------------------------------------
+// Lines 21-48: the option loop. `rest` is "$@" after the shifts so far.
+datatype Parsed = ParseExit(code: int) | Opts(repo: Str, dryRun: bool, activate: bool)
 
-// Lines 21-48: argument parsing. ParseExit(c) is `usage; exit c` (or -h/--help's exit 0).
-datatype Parse = Parsed(repo: Str, dryRun: bool, activate: bool) | ParseExit(code: int)
-
-function ParseArgs(args: seq<Str>, repo: Str, dryRun: bool, activate: bool): Parse
-  decreases |args|
+function Parse(rest: seq<Str>, repo: Str, dryRun: bool, activate: bool): Parsed
+  decreases |rest|
 {
-  if |args| == 0 then Parsed(repo, dryRun, activate)                     // while [[ $# -gt 0 ]]
-  else if args[0] == RepoArg then                                          // --repo)
-    if |args| >= 2 then ParseArgs(args[2..], args[1], dryRun, activate)    //   repo=$2; shift 2
-    else ParseExit(2)                                                      //   [[ $# -ge 2 ]] || { usage; exit 2; }
-  else if args[0] == DryRunArg then ParseArgs(args[1..], repo, true, activate)   // --dry-run)
-  else if args[0] == ActivateArg then ParseArgs(args[1..], repo, dryRun, true)   // --activate)
-  else if args[0] == ShortHelpArg || args[0] == HelpArg then ParseExit(0)        // -h|--help) usage; exit 0
-  else ParseExit(2)                                                              // *) usage; exit 2
+  if |rest| == 0 then Opts(repo, dryRun, activate)                 // while [[ $# -gt 0 ]]
+  else if rest[0] == RepoArg then                                  // --repo)
+    if !(|rest| >= 2) then ParseExit(2)                            //   [[ $# -ge 2 ]] || { usage; exit 2; }
+    else Parse(rest[2..], rest[1], dryRun, activate)               //   repo=$2; shift 2
+  else if rest[0] == DryRunArg then                                // --dry-run)
+    Parse(rest[1..], repo, true, activate)                         //   dry_run=1; shift
+  else if rest[0] == ActivateArg then                              // --activate)
+    Parse(rest[1..], repo, dryRun, true)                           //   activate=1; shift
+  else if rest[0] == ShortHelpArg || rest[0] == HelpArg then       // -h|--help)
+    ParseExit(0)                                                   //   usage; exit 0
+  else                                                             // *)
+    ParseExit(2)                                                   //   usage; exit 2
 }
 
-// Lines 95-105: the read-back GET, then the --activate check and PUT.
-function ReadBack(calls: seq<Call>, id: Str, activate: bool, readback: Str): Run
-{
-  var calls1 := calls + [Get(id)];                                                         // line 96
-  if activate then                                                                         // line 99
-    if !(Contains(readback, CanBypassAlways) && Contains(readback, AdminRoleActor)) then  // line 100
-      Run(calls1, 1)                                                                       // lines 101-102
-    else
-      Run(calls1 + [Put(id)], 0)                                                           // line 104
-  else
-    Run(calls1, 0)                                                                         // end of script
-}
-
-// The whole script. listOut: the list call's captured output ($id, line 81); postId: the POST's (line 86);
-// readback: the GET's (line 96).
+// The whole script. `listOut`, `postId` and `readback` are the values the command substitutions
+// on lines 81, 86 and 96 yield.
 function TagRuleset(args: seq<Str>, listOut: Str, postId: Str, readback: Str): Run
 {
-  match ParseArgs(args, DefaultRepo, false, false)                   // lines 21-48
-  case ParseExit(c) => Run([], c)
-  case Parsed(repo, dryRun, activate) =>
-    if !(RepoShape(repo) && !Contains(repo, DotDot)) then Run([], 2)  // line 49
-    else if dryRun then Run([], 0)                                    // lines 74-78
+  match Parse(args, DefaultRepo, false, false)                     // lines 21-23 defaults
+  case ParseExit(code) => Run([], code)
+  case Opts(repo, dryRun, activate) =>
+    if !(RepoShape(repo) && !Contains(repo, DotDot)) then          // line 49
+      Run([], 2)
+    else if dryRun then                                            // lines 74-78
+      Run([], 0)
     else
-      var calls := [List];                                            // line 81
-      var id := listOut;
-      if !(NonEmptyLines(id) <= 1) then Run(calls, 1)                 // line 82
-      else if !activate then                                          // line 84
-        if |id| == 0 then                                             // line 85
-          ReadBack(calls + [Post], postId, activate, readback)        // lines 86-87, then 95-
+      var id := listOut;                                           // line 81
+      var calls0 := [List];
+      if !(CountNonEmptyLines(id + [NL], false) <= 1) then         // line 82
+        Run(calls0, 1)
+      else if !activate then                                       // line 84
+        var calls1 := if |id| == 0 then calls0 + [Post] else calls0;  // lines 85-89: POST only when -z $id
+        var id1 := if |id| == 0 then postId else id;               // line 86: id=$(... POST ...)
+        var calls2 := calls1 + [Get(id1)];                         // line 96
+        Run(calls2, 0)                                             // line 99: activate = 0
+      else if !(|id| > 0) then                                     // line 92
+        Run(calls0, 1)
+      else
+        var calls2 := calls0 + [Get(id)];                          // line 96
+        if !(Contains(readback, CanBypassAlways) && Contains(readback, AdminRoleActor)) then  // line 100
+          Run(calls2, 1)                                           // lines 101-102
         else
-          ReadBack(calls, id, activate, readback)                     // line 89, then 95-
-      else if !(|id| > 0) then Run(calls, 1)                          // line 92
-      else ReadBack(calls, id, activate, readback)                    // then 95-
+          Run(calls2 + [Put(id)], 0)                               // line 104
 }
 
 // ---------------------------------------------------------------------------
 // Helper lemmas.
 // ---------------------------------------------------------------------------
-
-lemma ParseActivateFromArg(args: seq<Str>, repo: Str, dryRun: bool, activate: bool)
-  requires ParseArgs(args, repo, dryRun, activate).Parsed?
-  requires ParseArgs(args, repo, dryRun, activate).activate
-  ensures activate || ActivateArg in args
-  decreases |args|
+lemma ParseActivateNeedsArg(rest: seq<Str>, repo: Str, dryRun: bool, activate: bool)
+  ensures Parse(rest, repo, dryRun, activate).Opts? && Parse(rest, repo, dryRun, activate).activate
+          ==> activate || ActivateArg in rest
+  decreases |rest|
 {
-  if |args| == 0 {
-  } else if args[0] == RepoArg {
-    ParseActivateFromArg(args[2..], args[1], dryRun, activate);
-    if ActivateArg in args[2..] {
-      var k :| 0 <= k < |args[2..]| && args[2..][k] == ActivateArg;
-      assert args[k + 2] == ActivateArg;
+  if |rest| == 0 {
+  } else if rest[0] == RepoArg {
+    if |rest| >= 2 {
+      ParseActivateNeedsArg(rest[2..], rest[1], dryRun, activate);
+      if ActivateArg in rest[2..] {
+        var k :| 0 <= k < |rest[2..]| && rest[2..][k] == ActivateArg;
+        assert rest[k + 2] == ActivateArg;
+      }
     }
-  } else if args[0] == DryRunArg {
-    ParseActivateFromArg(args[1..], repo, true, activate);
-    if ActivateArg in args[1..] {
-      var k :| 0 <= k < |args[1..]| && args[1..][k] == ActivateArg;
-      assert args[k + 1] == ActivateArg;
+  } else if rest[0] == DryRunArg {
+    ParseActivateNeedsArg(rest[1..], repo, true, activate);
+    if ActivateArg in rest[1..] {
+      var k :| 0 <= k < |rest[1..]| && rest[1..][k] == ActivateArg;
+      assert rest[k + 1] == ActivateArg;
     }
-  } else if args[0] == ActivateArg {
-    assert args[0] in args;
-  } else {
+  } else if rest[0] == ActivateArg {
+    assert rest[0] in rest;
   }
 }
 
-lemma ParseNoActivate(args: seq<Str>, repo: Str, dryRun: bool)
-  requires ActivateArg !in args
-  requires ParseArgs(args, repo, dryRun, false).Parsed?
-  ensures !ParseArgs(args, repo, dryRun, false).activate
+lemma ActivateNeedsArg(args: seq<Str>)
+  ensures Parse(args, DefaultRepo, false, false).Opts? && Parse(args, DefaultRepo, false, false).activate
+          ==> ActivateArg in args
 {
-  if ParseArgs(args, repo, dryRun, false).activate {
-    ParseActivateFromArg(args, repo, dryRun, false);
-  }
+  ParseActivateNeedsArg(args, DefaultRepo, false, false);
 }
 
-lemma NoDotNoDotDot(s: Str)
-  requires forall k :: 0 <= k < |s| ==> s[k] != 46
-  ensures !Contains(s, DotDot)
-  decreases |s|
+lemma DefaultRepoHasNoDotDot()
+  ensures !Contains(DefaultRepo, DotDot)
 {
-  if |DotDot| <= |s| {
-    assert s[..|DotDot|][0] == s[0];
-    NoDotNoDotDot(s[1..]);
+  forall k {:trigger DefaultRepo[k..k + 2]} | 0 <= k && k + 2 <= |DefaultRepo|
+    ensures DefaultRepo[k..k + 2] != DotDot
+  {
+    assert DefaultRepo[k..k + 2][0] == DefaultRepo[k];
+    assert DefaultRepo[k] != 46 by {
+      assert DefaultRepo[0] != 46 && DefaultRepo[1] != 46 && DefaultRepo[2] != 46 && DefaultRepo[3] != 46;
+      assert DefaultRepo[4] != 46 && DefaultRepo[5] != 46 && DefaultRepo[6] != 46 && DefaultRepo[7] != 46;
+      assert DefaultRepo[8] != 46 && DefaultRepo[9] != 46 && DefaultRepo[10] != 46 && DefaultRepo[11] != 46;
+      assert DefaultRepo[12] != 46 && DefaultRepo[13] != 46 && DefaultRepo[14] != 46 && DefaultRepo[15] != 46;
+      assert DefaultRepo[16] != 46 && DefaultRepo[17] != 46 && DefaultRepo[18] != 46 && DefaultRepo[19] != 46;
+    }
   }
 }
 
-lemma DefaultRepoAccepted()
+lemma DefaultRepoPasses()
   ensures RepoShape(DefaultRepo) && !Contains(DefaultRepo, DotDot)
 {
   DefaultRepoShape();
-  NoDotNoDotDot(DefaultRepo);
+  DefaultRepoHasNoDotDot();
 }
 
-lemma OneLine(s: Str)
-  requires |s| > 0 && forall k :: 0 <= k < |s| ==> s[k] != 10
-  ensures NonEmptyLines(s) == 1
+// A newline-free line followed by one newline is one non-empty line when it, or the line
+// read so far, is non-empty.
+lemma CountOneLine(s: Str, cur: bool)
+  requires forall k :: 0 <= k < |s| ==> s[k] != NL
+  ensures CountNonEmptyLines(s + [NL], cur) == (if cur || |s| > 0 then 1 else 0)
   decreases |s|
 {
-  if |s| == 1 {
-    assert NonEmptyLines(s[..0]) == 0;
+  if |s| == 0 {
+    assert s + [NL] == [NL];
+    var one: Str := [NL];
+    assert one[1..] == [];
   } else {
-    OneLine(s[..|s| - 1]);
+    assert (s + [NL])[0] == s[0];
+    assert (s + [NL])[1..] == s[1..] + [NL];
+    CountOneLine(s[1..], true);
   }
 }
 
-// Every run the script can produce is one of these shapes (Put only last, right after the matching Get).
-lemma Shape(args: seq<Str>, listOut: Str, postId: Str, readback: Str)
-  ensures var r := TagRuleset(args, listOut, postId, readback);
-    (forall c :: c in r.calls ==> !c.Put?)
-    || (exists pre: seq<Call>, id: Str ::
-          r.calls == pre + [Get(id), Put(id)]
-          && (forall c :: c in pre ==> !c.Put?)
-          && ParseArgs(args, DefaultRepo, false, false).Parsed?
-          && ParseArgs(args, DefaultRepo, false, false).activate
-          && Contains(readback, CanBypassAlways) && Contains(readback, AdminRoleActor))
+lemma ParseNoArgs()
+  ensures Parse([], DefaultRepo, false, false) == Opts(DefaultRepo, false, false)
 {
-  var r := TagRuleset(args, listOut, postId, readback);
-  var p := ParseArgs(args, DefaultRepo, false, false);
-  if p.Parsed? && RepoShape(p.repo) && !Contains(p.repo, DotDot) && !p.dryRun
-     && NonEmptyLines(listOut) <= 1 && p.activate && |listOut| > 0
-     && Contains(readback, CanBypassAlways) && Contains(readback, AdminRoleActor) {
-    assert r.calls == [List] + [Get(listOut), Put(listOut)];
-    forall c | c in [List] ensures !c.Put? {}
-  }
+}
+
+lemma ParseActivateOnly()
+  ensures Parse([ActivateArg], DefaultRepo, false, false) == Opts(DefaultRepo, false, true)
+{
+  assert [ActivateArg][0] == ActivateArg;
+  assert ActivateArg != RepoArg;
+  assert ActivateArg != DryRunArg;
+  assert [ActivateArg][1..] == [];
 }
 
 // ---------------------------------------------------------------------------
-// Properties (frozen).
+// Properties.
 // ---------------------------------------------------------------------------
-
 // Citation: design RolloutOrder.P2_ActivateOnlyAfterAdminReadBack: "switches it to `active` only with `--activate` once the read-back shows the admin role" (spec line 57).
 lemma P1_PutOnlyAfterAdminReadBack(args: seq<Str>, listOut: Str, postId: Str, readback: Str, i: int)
   requires 0 <= i < |TagRuleset(args, listOut, postId, readback).calls| && TagRuleset(args, listOut, postId, readback).calls[i].Put?
   ensures ActivateArg in args && Contains(readback, CanBypassAlways) && Contains(readback, AdminRoleActor)
   ensures exists j :: 0 <= j < i && TagRuleset(args, listOut, postId, readback).calls[j] == Get(TagRuleset(args, listOut, postId, readback).calls[i].id)
 {
+  ActivateNeedsArg(args);
   var r := TagRuleset(args, listOut, postId, readback);
-  Shape(args, listOut, postId, readback);
-  assert r.calls[i] in r.calls;
-  var pre: seq<Call>, id: Str :| r.calls == pre + [Get(id), Put(id)]
-    && (forall c :: c in pre ==> !c.Put?)
-    && ParseArgs(args, DefaultRepo, false, false).Parsed?
-    && ParseArgs(args, DefaultRepo, false, false).activate
-    && Contains(readback, CanBypassAlways) && Contains(readback, AdminRoleActor);
-  ParseActivateFromArg(args, DefaultRepo, false, false);
-  assert |r.calls| == |pre| + 2;
-  forall k | 0 <= k < |pre|
-    ensures !r.calls[k].Put?
-  {
-    assert r.calls[k] == pre[k];
-    assert pre[k] in pre;
-  }
-  assert !r.calls[|pre|].Put?;
-  assert i == |pre| + 1;
-  assert r.calls[i] == Put(id);
-  assert r.calls[|pre|] == Get(id);
+  var p := Parse(args, DefaultRepo, false, false);
+  assert p.Opts? && RepoShape(p.repo) && !Contains(p.repo, DotDot) && !p.dryRun;
+  assert CountNonEmptyLines(listOut + [NL], false) <= 1;
+  assert p.activate && |listOut| > 0;
+  assert Contains(readback, CanBypassAlways) && Contains(readback, AdminRoleActor);
+  assert r.calls == [List, Get(listOut), Put(listOut)];
+  assert i == 2;
+  assert r.calls[1] == Get(r.calls[i].id);
 }
 
 // Citation: Expected `[none ] rc=0 put=0 post=1`, `[disabled-ok ] rc=0 put=0 post=0` (plan T6 S2).
@@ -241,19 +223,18 @@ lemma P2_NoActivateNoPut(args: seq<Str>, listOut: Str, postId: Str, readback: St
   requires ActivateArg !in args
   ensures forall c :: c in TagRuleset(args, listOut, postId, readback).calls ==> !c.Put?
 {
-  var p := ParseArgs(args, DefaultRepo, false, false);
-  if p.Parsed? {
-    ParseNoActivate(args, DefaultRepo, false);
-  }
-  Shape(args, listOut, postId, readback);
+  ActivateNeedsArg(args);
 }
 
 // Citation: Expected `[none ] rc=0 put=0 post=1`.
 lemma P3_AbsentRulesetCreatedOnce(postId: Str, readback: Str)
   ensures TagRuleset([], [], postId, readback) == Run([List, Post, Get(postId)], 0)
 {
-  DefaultRepoAccepted();
-  assert NonEmptyLines([]) == 0;
+  ParseNoArgs();
+  DefaultRepoPasses();
+  CountOneLine([], false);
+  var empty: Str := [];
+  assert empty + [NL] == [NL];
 }
 
 // Citation: Expected `[disabled-ok ] rc=0 put=0 post=0`.
@@ -261,8 +242,9 @@ lemma P4_ExistingRulesetLeftUnchanged(listOut: Str, postId: Str, readback: Str)
   requires |listOut| > 0 && forall k :: 0 <= k < |listOut| ==> listOut[k] != 10
   ensures TagRuleset([], listOut, postId, readback) == Run([List, Get(listOut)], 0)
 {
-  DefaultRepoAccepted();
-  OneLine(listOut);
+  ParseNoArgs();
+  DefaultRepoPasses();
+  CountOneLine(listOut, false);
 }
 
 // Citation: Expected `[disabled-ok --activate] rc=0 put=1 post=0`, `[disabled-never --activate] rc=1 put=0 post=0`, `[none --activate] rc=1 put=0 post=0`.
@@ -272,10 +254,10 @@ lemma P5_ActivateOutcomes(listOut: Str, postId: Str, readback: Str)
   ensures !Contains(readback, CanBypassAlways) ==> TagRuleset([ActivateArg], listOut, postId, readback) == Run([List, Get(listOut)], 1)
   ensures TagRuleset([ActivateArg], [], postId, readback) == Run([List], 1)
 {
-  DefaultRepoAccepted();
-  OneLine(listOut);
-  assert NonEmptyLines([]) == 0;
-  assert ParseArgs([ActivateArg], DefaultRepo, false, false) == Parsed(DefaultRepo, false, true) by {
-    assert [ActivateArg][1..] == [];
-  }
+  ParseActivateOnly();
+  DefaultRepoPasses();
+  CountOneLine(listOut, false);
+  CountOneLine([], false);
+  var empty: Str := [];
+  assert empty + [NL] == [NL];
 }
