@@ -175,17 +175,23 @@ gh api repos/counsellorben/Iverson/branches/main/protection --jq '.required_stat
 
 ## 5. GitLab: `NVD_API_KEY`
 
-The OWASP dependency-check job is the only GitLab job that uses `NVD_API_KEY`, and it no longer runs
-in merge-request pipelines. Job rules do not limit a project-level CI/CD variable: such a variable
-reaches every job of every pipeline, merge-request pipelines included. So define `NVD_API_KEY` in
-one of two ways:
+Only the `nvd-update` job reads `NVD_API_KEY` (CSR round 12 §2.1). It runs only in scheduled
+pipelines, runs no repository code, and receives the key through its `nvd-update` environment. The
+scan job, `owasp-dependency-check-java`, runs keyless from the database `nvd-update` caches. Its first
+line fails the job if the key reached it.
 
-- as a **Protected** variable (project **Settings**, then **CI/CD**, then **Variables**; select
-  **Protect variable**, and mask it), which only pipelines on protected branches and tags receive;
-- or as a variable of a pipeline schedule (**Build**, then **Pipeline schedules**).
+Define the key once, as a project variable `NVD_API_KEY` (project **Settings**, then **CI/CD**, then
+**Variables**) with **Protect variable** and **Mask variable** selected and **Environment scope** set
+to `nvd-update`.
 
-Remove any unprotected project-level `NVD_API_KEY`. GitLab's variable semantics are described at
-https://docs.gitlab.com/ci/variables/.
+Delete every other definition of `NVD_API_KEY`: an unscoped or differently scoped project variable, a
+group-level variable, and a pipeline-schedule variable. A pipeline-schedule variable reaches every job
+of its pipeline, so it is not an option. The scoped variable reaches only a job whose environment is
+`nvd-update`, which no job had before CSR round 12, so define it after that change is on `main`.
+GitLab's variable semantics are described at https://docs.gitlab.com/ci/variables/.
+
+The first scheduled pipeline afterwards is the check: `owasp-dependency-check-java` passes its first
+line and finds the database (`docs/runbooks/csr12-supply-chain.md`, rollout step 2).
 
 ## 6. `IVERSON_ACTING_USER_PASSWORD`
 

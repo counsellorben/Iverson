@@ -179,22 +179,68 @@ govulncheck:
     - go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
     - govulncheck ./...
 
+# CSR round 12 §2.1 (#10): the only job that receives NVD_API_KEY, and it runs no repository code. The
+# key is a project variable scoped to the nvd-update environment (docs/runbooks/csr11-clients-tooling-ci.md
+# §5); `action: prepare` gives this job that environment's variables without creating a deployment. It
+# installs the pinned Maven itself, refused unless its SHA-256 equals the wrapper's distributionSha256Sum,
+# and runs it from a directory holding only a copy of Iverson.Clients/Java/.mvn/, whose maven.config makes
+# the plugin's own resolution checksum-verified. It pushes the database to the cache the scan pulls.
+nvd-update:
+  stage: dependency-scan
+  image: maven:3.9-eclipse-temurin-21@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  environment:
+    name: nvd-update
+    action: prepare
+  cache:
+    key: nvd-data
+    paths: [.nvd-data]
+    policy: push
+  script:
+    - |
+      set -eu
+      props=Iverson.Clients/Java/.mvn/wrapper/maven-wrapper.properties
+      url=$(sed -n 's/^distributionUrl=//p' "$props")
+      sum=$(sed -n 's/^distributionSha256Sum=//p' "$props")
+      case "$url" in
+        https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/*-bin.zip) ;;
+        *) echo "$props names no Maven Central distribution"; exit 1 ;;
+      esac
+      curl -fsSL -o /tmp/maven.zip "$url"
+      echo "$sum  /tmp/maven.zip" | sha256sum -c -
+      # jar, not unzip: this image has no unzip.
+      mkdir /tmp/maven && (cd /tmp/maven && jar xf /tmp/maven.zip)
+      mkdir /tmp/nvd && cp -R Iverson.Clients/Java/.mvn /tmp/nvd/
+      cd /tmp/nvd
+      # The plugin version is the pom's; ci/pins.py consistency keeps the three copies equal.
+      sh "/tmp/maven/$(basename "$url" -bin.zip)/bin/mvn" -B org.owasp:dependency-check-maven:13.0.0:update-only \
+        -DnvdApiKeyEnvironmentVariable=NVD_API_KEY -DdataDirectory="$CI_PROJECT_DIR/.nvd-data"
+
+# Keyless (CSR round 12 §2.1): it scans against the database nvd-update pushed, never updating it. It
+# never runs in a merge-request pipeline (these rules replace .rules-dependency-scan's, which also admit
+# merge requests). Its first line fails the job if NVD_API_KEY reached it at all, which proves the key's
+# environment scoping on every scheduled run. A missing database fails the check loudly (NoDataException).
 owasp-dependency-check-java:
   stage: dependency-scan
   image: maven:3.9-eclipse-temurin-21@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320
-  # CSR round-11 #19: the only job that reads NVD_API_KEY, so it never runs in a merge-request
-  # pipeline (these rules replace .rules-dependency-scan's, which also admit merge requests). Job
-  # rules decide which jobs run, not which variables a pipeline receives: NVD_API_KEY must also be a
-  # Protected (or pipeline-schedule) variable (docs/runbooks/csr11-clients-tooling-ci.md).
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-  variables:
-    NVD_API_KEY: $NVD_API_KEY
+  needs: [nvd-update]
+  cache:
+    key: nvd-data
+    paths: [.nvd-data]
+    policy: pull
   script:
+    - test -z "${NVD_API_KEY+x}" || { echo "NVD_API_KEY must be scoped to the nvd-update environment"; exit 1; }
+    # The image sets MAVEN_CONFIG=/root/.m2, which mvnw would pass to Maven as arguments; only the image's
+    # entrypoint unsets it, and not every executor runs entrypoints.
+    - unset MAVEN_CONFIG
     - cd Iverson.Clients/Java
-    - mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
+    - ./mvnw -B install -DskipTests
+    - ./mvnw -B org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DautoUpdate=false -DdataDirectory="$CI_PROJECT_DIR/.nvd-data"
 
 pip-audit-python-sdk:
   stage: dependency-scan
