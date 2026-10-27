@@ -123,6 +123,8 @@ jobs:
         id: published
         env:
           REF: ${{ matrix.image }}:${{ matrix.tag }}
+          NAME: ${{ matrix.name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # A published tag never moves. Only the registry's "not found" or "denied" answers count
@@ -137,7 +139,7 @@ jobs:
                  grep -Eq 'manifest unknown|name unknown|MANIFEST_UNKNOWN|NAME_UNKNOWN' "$err"; then
               state=absent; break
             # GHCR may answer a lookup in a package that does not exist yet with denied/unauthorized;
-            # after retries it counts as absent, since a real permission problem still fails at the push.
+            # after retries the packages API decides whether the package exists (below).
             elif grep -Eq 'denied:|unauthorized:|401 Unauthorized|403 Forbidden' "$err"; then
               state=denied
               if [ "$try" -lt 3 ]; then sleep 5; fi
@@ -156,7 +158,16 @@ jobs:
             absent) echo "$REF is not published yet; building it" ;;
             denied)
               cat "$err" >&2
-              echo "$REF is not visible to this run (the registry denied the lookup $try times); treating it as not published and building it" ;;
+              # CSR round 12 §2.3: GHCR denies lookups in a package that does not exist yet, so only a
+              # package the packages API does not know counts as unpublished. If the package exists, the
+              # denial is a real failure, and building could move a tag that may already exist.
+              status=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" \
+                -H 'Accept: application/vnd.github+json' "https://api.github.com/users/counsellorben/packages/container/$NAME")
+              case $status in
+                404) echo "$REF is not visible to this run (the registry denied the lookup $try times) and the package $NAME does not exist yet; building it" ;;
+                200) echo "::error::the registry denied the lookup of $REF $try times, but the package $NAME exists, so this run cannot tell whether the tag is published; not building"; exit 1 ;;
+                *) echo "::error::the registry denied the lookup of $REF $try times and the packages API answered $status for $NAME; not building"; exit 1 ;;
+              esac ;;
           esac
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         if: steps.published.outputs.digest != ''
@@ -189,7 +200,8 @@ jobs:
               cert_flags=(--certificate-identity-regexp "$IDENTITY" --certificate-github-workflow-sha "$TAG") ;;
             release)
               [[ $TAG =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not X.Y.Z"; exit 1; }
-              cert_flags=(--certificate-identity "$WORKFLOW@refs/tags/v$TAG") ;;
+              # CSR round 12 §2.3: bound to the tagged commit too (on a tag run GITHUB_SHA is that commit).
+              cert_flags=(--certificate-identity "$WORKFLOW@refs/tags/v$TAG" --certificate-github-workflow-sha "$GITHUB_SHA") ;;
             content)
               # Accepted residual: any digest this workflow signed under a content-derived tag was
               # built from the same model inputs, so no commit or release binding is required.

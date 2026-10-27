@@ -31,21 +31,53 @@ it. The `org.opencontainers.image.source` label links each package to the Iverso
 
 ## 2. Verifying an image
 
-Use cosign 3.x, the version the workflow signs with. Both commands must succeed for every image
-you deploy, from any machine with no GHCR login. A failure on a package that is still private is
-an authorization error, not a verification failure.
+Use cosign 3.x, the version the workflow signs with. Both commands of a pair must succeed for every
+image you deploy, from any machine with no GHCR login. A failure on a package that is still private
+is an authorization error, not a verification failure. Verify as strictly as the workflow does
+(CSR round 12 §2.3): pick the pair for the tag's kind.
+
+A commit tag (`main`'s 40-hex SHA) must have been signed by the run for that commit:
 
 ```bash
-cosign verify ghcr.io/counsellorben/iverson-api:<tag> \
+cosign verify ghcr.io/counsellorben/iverson-api:<sha> \
   --certificate-identity-regexp '^https://github\.com/counsellorben/Iverson/\.github/workflows/publish-images\.yml@refs/(heads/main|tags/v.+)$' \
+  --certificate-github-workflow-sha <sha> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-cosign verify-attestation --type spdxjson ghcr.io/counsellorben/iverson-api:<tag> \
+cosign verify-attestation --type spdxjson ghcr.io/counsellorben/iverson-api:<sha> \
   --certificate-identity-regexp '^https://github\.com/counsellorben/Iverson/\.github/workflows/publish-images\.yml@refs/(heads/main|tags/v.+)$' \
+  --certificate-github-workflow-sha <sha> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-Run the same pair for `iverson-admin-ui:<tag>` and for the two model images under the tags the
+A release tag (`X.Y.Z`) must have been signed by the run on `refs/tags/vX.Y.Z`, at the commit that
+tag names (run from a clone with the tags fetched):
+
+```bash
+cosign verify ghcr.io/counsellorben/iverson-api:X.Y.Z \
+  --certificate-identity https://github.com/counsellorben/Iverson/.github/workflows/publish-images.yml@refs/tags/vX.Y.Z \
+  --certificate-github-workflow-sha "$(git rev-list -n1 vX.Y.Z)" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+cosign verify-attestation --type spdxjson ghcr.io/counsellorben/iverson-api:X.Y.Z \
+  --certificate-identity https://github.com/counsellorben/Iverson/.github/workflows/publish-images.yml@refs/tags/vX.Y.Z \
+  --certificate-github-workflow-sha "$(git rev-list -n1 vX.Y.Z)" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The attestation names the image it was made for. Print that name and check that it is the image
+you verified (`ghcr.io/counsellorben/iverson-api` here), so another first-party image's digest
+pushed under this name is caught:
+
+```bash
+cosign verify-attestation --type spdxjson ghcr.io/counsellorben/iverson-api:<tag> \
+  --certificate-identity-regexp '^https://github\.com/counsellorben/Iverson/\.github/workflows/publish-images\.yml@refs/(heads/main|tags/v.+)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com 2>/dev/null \
+  | jq -r '.payload | @base64d | fromjson | .subject[0].name'
+```
+
+Run the same commands for `iverson-admin-ui:<tag>`. The two model images keep the general identity
+(the commands without `--certificate-github-workflow-sha`, accepted in round 11), under the tags the
 chart renders:
 
 ```bash
@@ -59,7 +91,10 @@ A pass means two things. The digest the tag names was signed by `publish-images.
 the same workflow. Signing writes an entry to the public Rekor transparency log, which records
 the repository, workflow and ref.
 
-The clusters do not check signatures at admission. Verification is the operator's check before a
+The cloud clusters (AWS, Azure, GCP) also check the attestation at admission: their `iverson`
+namespace admits a first-party image only when this workflow attested that digest under that image's
+own name (CSR round 12 §3; `docs/runbooks/csr12-supply-chain.md`). kind, local and compose do not
+check (they run unsigned local builds), so there these commands are the operator's check before a
 deploy.
 
 Each run builds and pushes an image only when its tag does not exist yet. A separate
@@ -71,7 +106,7 @@ of both; change them together). For `iverson-api` and `iverson-admin-ui` the sig
 belong to the tag's own build: on a commit-SHA tag the commands add
 `--certificate-github-workflow-sha <tag>`, and on an `X.Y.Z` tag they require exactly
 `--certificate-identity https://github.com/counsellorben/Iverson/.github/workflows/publish-images.yml@refs/tags/vX.Y.Z`
-in place of the regexp. The model images keep the general identity: their tags are derived from
+in place of the regexp, with `--certificate-github-workflow-sha` set to the tagged commit. The model images keep the general identity: their tags are derived from
 the model inputs, so any digest this workflow signed under such a tag was built from the same
 inputs (an accepted residual). If both commands pass, the image was published by this workflow:
 the log carries a notice and nothing else happens for it. If either fails, the job fails with an
