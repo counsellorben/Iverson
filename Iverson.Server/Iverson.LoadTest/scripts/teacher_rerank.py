@@ -348,6 +348,17 @@ def build_prompt(query_text, shuffled_doc_ids, corpus):
     return PROMPT_INSTRUCTIONS.format(query=query_text, documents=documents)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect, so the Authorization key goes only to --base-url (spec 5.3): the 3xx becomes
+    an HTTPError, which call_teacher records as http_error."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect())
+
+
 def call_teacher(base_url, model, prompt, seed, api_key=None):
     """POSTs to `{base_url}/v1/chat/completions` with stdlib `urllib.request`, the same transport
     shape as `enrich_bench.py:56-62` (temperature 0, stream false), plus `max_tokens:
@@ -395,7 +406,7 @@ def call_teacher(base_url, model, prompt, seed, api_key=None):
     if api_key:
         req.add_header("Authorization", f"Bearer {api_key}")
     try:
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        with _OPENER.open(req, timeout=600) as resp:
             parsed = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8", errors="replace")[:2000]

@@ -514,6 +514,67 @@ def test_call_teacher_omits_authorization_header_when_api_key_is_none():
         thread.join(timeout=5)
 
 
+class _RedirectingHandler(http.server.BaseHTTPRequestHandler):
+    """Answers every POST with a 302 (the code urllib follows for a POST, as a GET) to `target`, recording the Authorization header it saw."""
+
+    target = None
+    seen_auth = []
+
+    def do_POST(self):
+        _RedirectingHandler.seen_auth.append(self.headers.get("Authorization"))
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(302)
+        self.send_header("Location", _RedirectingHandler.target)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+class _RedirectTargetHandler(http.server.BaseHTTPRequestHandler):
+    """The redirect target: records every request it receives, whatever the method."""
+
+    seen = []
+
+    def _record(self):
+        _RedirectTargetHandler.seen.append((self.command, self.headers.get("Authorization")))
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_POST = _record
+
+    def log_message(self, *args):
+        pass
+
+
+def test_call_teacher_does_not_follow_a_redirect_so_the_key_goes_to_the_base_url_only():
+    """Spec 5.3: the key is sent only to the --base-url. A 302 must become the HTTP error path, and the
+    redirect target must receive no request."""
+    _RedirectTargetHandler.seen = []
+    _RedirectingHandler.seen_auth = []
+    second = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RedirectTargetHandler)
+    _RedirectingHandler.target = f"http://127.0.0.1:{second.server_address[1]}/v1/chat/completions"
+    first = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RedirectingHandler)
+    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (first, second)]
+    for t in threads:
+        t.start()
+    try:
+        content, finish_reason, *_ = tr.call_teacher(
+            f"http://127.0.0.1:{first.server_address[1]}", "m", "p", 0, api_key="sk-secret"
+        )
+        assert finish_reason == "http_error"
+        assert content.startswith("HTTP 302")
+        assert _RedirectingHandler.seen_auth == ["Bearer sk-secret"]
+        assert _RedirectTargetHandler.seen == []  # the second port was never called
+    finally:
+        for s in (first, second):
+            s.shutdown()
+        for t in threads:
+            t.join(timeout=5)
+
+
 class _HTTPErrorResponseHandler(http.server.BaseHTTPRequestHandler):
     """Responds with a non-2xx status to test the HTTPError exception handler."""
 
@@ -560,7 +621,7 @@ def test_call_teacher_catches_oserror_and_returns_http_error_finish_reason(monke
     def mock_urlopen(req, timeout=None):
         raise OSError("simulated connection failure")
 
-    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    monkeypatch.setattr(tr._OPENER, "open", mock_urlopen)
 
     content, finish_reason, reasoning, completion_tokens, prompt_tokens = tr.call_teacher(
         "http://unused.invalid", "m", "p", 0
