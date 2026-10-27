@@ -123,7 +123,7 @@ services:
   # post-upgrade hook, so it runs on every `up`, before iverson-worker and iverson-api start, and
   # nothing grants iverson_app a tenant role any more.
   starrocks-init:
-    image: mysql:8.0.46@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+    image: mysql:26.10.0@sha256:f51c9c01c16b0eb5d81bb70ab7e7fcb3b96abc6a54114be3a94e8e569cae7815
     container_name: iverson-starrocks-init
     depends_on:
       starrocks:
@@ -184,7 +184,7 @@ services:
       retries: 5
 
   ollama:
-    image: ollama/ollama:0.40.3@sha256:adca95a12c2b386a8f9a995e7fa0600e187e3323b5e5522f5a6c3b1ec73eff99
+    image: ollama/ollama:0.40.9@sha256:5c6707fcf2e1a30cffe2ecb7e315584fc87747c389327e4bc711c4959aa1eecc
     container_name: iverson-ollama
     restart: unless-stopped
     ports:
@@ -374,7 +374,7 @@ services:
   # entrypoint is overridden here because that same routing swallows any bare command.
   # Idempotent: a re-run on a migrated database exits 0 with "No migrations to apply."
   authentik-migrate:
-    image: ghcr.io/goauthentik/server:2026.8.4@sha256:e7226ae116dac5aa0a5643803e735b010038f492c401e08e16b3bf1ac54c090c
+    image: ghcr.io/goauthentik/server:2026.8.5@sha256:602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5
     container_name: iverson-authentik-migrate
     entrypoint: ["python", "-m", "lifecycle.migrate"]
     restart: "no"
@@ -394,7 +394,7 @@ services:
         condition: service_healthy
 
   authentik-server:
-    image: ghcr.io/goauthentik/server:2026.8.4@sha256:e7226ae116dac5aa0a5643803e735b010038f492c401e08e16b3bf1ac54c090c
+    image: ghcr.io/goauthentik/server:2026.8.5@sha256:602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5
     container_name: iverson-authentik-server
     restart: unless-stopped
     command: server
@@ -448,7 +448,7 @@ services:
       start_period: 30s
 
   authentik-worker:
-    image: ghcr.io/goauthentik/server:2026.8.4@sha256:e7226ae116dac5aa0a5643803e735b010038f492c401e08e16b3bf1ac54c090c
+    image: ghcr.io/goauthentik/server:2026.8.5@sha256:602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5
     container_name: iverson-authentik-worker
     restart: unless-stopped
     command: worker
