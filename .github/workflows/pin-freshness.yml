@@ -26,7 +26,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.15.4
+          version: v3.22.1
       - name: Assume the pin-freshness AWS role
         if: vars.PIN_FRESHNESS_AWS_ROLE != ''
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0

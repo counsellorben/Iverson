@@ -1,7 +1,51 @@
 version: 2
-# CSR round 12 §4.1 declared one anonymous helm-registry per chart repository here, so the helm jobs could
-# reach them; GitHub's validator rejects a helm-registry without credentials and then refuses the whole file
-# (2026-10-27). Until a form it accepts is found, the helm entries below fail on "egress not allowlisted".
+# CSR round 12 §4.1 (amended 2026-10-27, docs/specs/2026-10-27-csr-round12-dependabot-helm-registries-design.md):
+# an update job reaches only allowlisted hosts, and declaring a registry allowlists its host (some hosts,
+# docs.tigera.io and kubernetes-sigs.github.io among them, are reachable without one). GitHub rejects a
+# helm-registry without credentials, so each carries a dummy username and password; these chart repositories
+# are public and ignore them. cloudnative-pg.github.io redirects to cloudnative-pg.io, which needs its own entry.
+# docs.tigera.io refuses basic auth, so it has no entry; the kind job reaches it undeclared.
+registries:
+  cloudnative-pg:
+    type: helm-registry
+    url: https://cloudnative-pg.github.io/charts
+    username: x
+    password: x
+  cloudnative-pg-io:
+    type: helm-registry
+    url: https://cloudnative-pg.io/charts
+    username: x
+    password: x
+  strimzi:
+    type: helm-registry
+    url: https://strimzi.io/charts/
+    username: x
+    password: x
+  starrocks:
+    type: helm-registry
+    url: https://starrocks.github.io/starrocks-kubernetes-operator
+    username: x
+    password: x
+  autoscaler:
+    type: helm-registry
+    url: https://kubernetes.github.io/autoscaler
+    username: x
+    password: x
+  eks-charts:
+    type: helm-registry
+    url: https://aws.github.io/eks-charts
+    username: x
+    password: x
+  sigstore:
+    type: helm-registry
+    url: https://sigstore.github.io/helm-charts
+    username: x
+    password: x
+  metrics-server:
+    type: helm-registry
+    url: https://kubernetes-sigs.github.io/metrics-server/
+    username: x
+    password: x
 updates:
   - package-ecosystem: "nuget"
     directory: "/"
@@ -108,6 +152,7 @@ updates:
     directories:
       - "/Iverson.Server/deploy/helm/iverson"
       - "/Iverson.Server/deploy/helm/iverson/charts/*"
+    registries: "*"
     schedule:
       interval: "weekly"
     # CSR round 12 §4.1: the umbrella's own images (built locally, not on Docker Hub) and the kubectl image
@@ -116,9 +161,10 @@ updates:
       - dependency-name: "iverson-api"
       - dependency-name: "iverson-admin-ui"
       - dependency-name: "registry.k8s.io/kubectl"
-  # The operator charts the cloud Terraform installs (CSR round 12 §4.1: its own entry).
+  # The operator charts the cloud Terraform installs (CSR round 12 §4.1: its own entry, with the registries).
   - package-ecosystem: "helm"
     directory: "/Iverson.Server/deploy/terraform/modules/operators/versions"
+    registries: "*"
     schedule:
       interval: "weekly"
     # These two move in lockstep with other files (see the coupling notes in the stub's Chart.yaml): minor/major bumps are done by hand.
@@ -130,5 +176,6 @@ updates:
   # CSR round 12 §4.2: the charts only kind installs.
   - package-ecosystem: "helm"
     directory: "/Iverson.Server/deploy/kind/versions"
+    registries: "*"
     schedule:
       interval: "weekly"

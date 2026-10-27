@@ -159,7 +159,7 @@ services:
     restart: "no"
 
   qdrant:
-    image: qdrant/qdrant:v1.19.2@sha256:b7b0444c4c351c970b98e90a6f89c2ee4287c65b44e52b4cb503fa5b2aa927ad
+    image: qdrant/qdrant:v1.20.0@sha256:9bfc89f9914fc14876a88c05270685921a55b8877b254a98bcc1cc2f0a424cd2
     container_name: iverson-qdrant
     restart: unless-stopped
     environment:
@@ -184,7 +184,7 @@ services:
       retries: 5
 
   ollama:
-    image: ollama/ollama:0.40.10@sha256:4c5b27871a3239a717048f9b93057680a51b60c8119a7016aebb57f938e25e35
+    image: ollama/ollama:0.40.11@sha256:dea72d1e22270fe095b68fdf756d2b489d615643c5a2eaebbc5f569181e322d8
     container_name: iverson-ollama
     restart: unless-stopped
     ports:
