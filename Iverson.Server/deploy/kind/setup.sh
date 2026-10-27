@@ -24,18 +24,22 @@ fi
 # CSR round-11 #19: the CNPG, Strimzi and StarRocks operator chart versions come from the stub
 # Chart.yaml the cloud Terraform installs read (terraform/modules/operators/versions), which
 # Dependabot keeps current, so kind and the cloud installs run the same operator builds. They are
-# read before anything touches the cluster, so a missing pin stops the script here.
+# read before anything touches the cluster, so a missing pin stops the script here. CSR round 12 §4.2: the
+# charts only kind installs (Calico, metrics-server) are pinned the same way in deploy/kind/versions.
 OPERATOR_PINS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform/modules/operators/versions" && pwd)"
-operator_version() {   # $1 = chart name in $OPERATOR_PINS/Chart.yaml; prints its version
+KIND_PINS="$(cd "$(dirname "${BASH_SOURCE[0]}")/versions" && pwd)"
+operator_version() {   # $1 = a stub chart directory, $2 = a chart name in its Chart.yaml; prints its version
   local list
-  list=$(helm dependency list "$OPERATOR_PINS") ||
-    { echo "helm dependency list failed for $OPERATOR_PINS" >&2; return 1; }
-  printf '%s\n' "$list" | awk -v chart="$1" '$1 == chart && !n++ { print $2 } END { exit !n }' ||
-    { echo "no $1 pin in $OPERATOR_PINS/Chart.yaml" >&2; return 1; }
+  list=$(helm dependency list "$1") ||
+    { echo "helm dependency list failed for $1" >&2; return 1; }
+  printf '%s\n' "$list" | awk -v chart="$2" '$1 == chart && !n++ { print $2 } END { exit !n }' ||
+    { echo "no $2 pin in $1/Chart.yaml" >&2; return 1; }
 }
-CNPG_VERSION=$(operator_version cloudnative-pg)
-STRIMZI_VERSION=$(operator_version strimzi-kafka-operator)
-STARROCKS_OPERATOR_VERSION=$(operator_version operator)
+CNPG_VERSION=$(operator_version "$OPERATOR_PINS" cloudnative-pg)
+STRIMZI_VERSION=$(operator_version "$OPERATOR_PINS" strimzi-kafka-operator)
+STARROCKS_OPERATOR_VERSION=$(operator_version "$OPERATOR_PINS" operator)
+CALICO_VERSION=$(operator_version "$KIND_PINS" tigera-operator)
+METRICS_SERVER_VERSION=$(operator_version "$KIND_PINS" metrics-server)
 
 # CSR round 12 §5: with no argument this script runs the whole fresh install. On an existing cluster the
 # upgrade runs the platform steps one at a time (docs/runbooks/csr12-platform.md §3): `setup.sh --only
@@ -152,11 +156,10 @@ kubectl create namespace tigera-operator --dry-run=client -o yaml | kubectl appl
 # disabled values) to add the CRs now that the CRDs exist.
 # CSR round-2 finding #12: pin every operator install to an explicit chart
 # version rather than letting it float to whatever the repo's index.yaml
-# currently calls "latest" — verified current stable as of this fix pass
-# (docs.tigera.io/calico/charts/index.yaml).
+# currently calls "latest"; the version is read from deploy/kind/versions (CSR round 12 §4.2).
 helm upgrade --install calico tigera-operator \
   --repo https://docs.tigera.io/calico/charts \
-  --version v3.32.2 \
+  --version "$CALICO_VERSION" \
   --namespace tigera-operator \
   --set installation.enabled=false \
   --set apiServer.enabled=false \
@@ -173,7 +176,7 @@ done
 kubectl wait --for=condition=Established crd/installations.operator.tigera.io --timeout=60s
 helm upgrade --install calico tigera-operator \
   --repo https://docs.tigera.io/calico/charts \
-  --version v3.32.2 \
+  --version "$CALICO_VERSION" \
   --namespace tigera-operator \
   --reset-values \
   --wait
@@ -238,11 +241,10 @@ echo "Installing metrics-server..."
 # `kubectl top` work, which the laptop profile's capacity numbers depend on.
 # --kubelet-insecure-tls is required on kind: kubelet serves a self-signed cert that
 # metrics-server will otherwise reject.
-# CSR round-2 finding #12: verified current stable as of this fix pass
-# (kubernetes-sigs.github.io/metrics-server/index.yaml).
+# CSR round-2 finding #12: an explicit chart version, read from deploy/kind/versions (CSR round 12 §4.2).
 helm upgrade --install metrics-server metrics-server \
   --repo https://kubernetes-sigs.github.io/metrics-server/ \
-  --version 3.9.0 \
+  --version "$METRICS_SERVER_VERSION" \
   --namespace kube-system \
   --set 'args={--kubelet-insecure-tls}' \
   --wait
