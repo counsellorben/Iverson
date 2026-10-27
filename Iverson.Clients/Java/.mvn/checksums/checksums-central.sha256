@@ -20,6 +20,7 @@
 0773e72eaf375e1285df330575bfec5bda5da674d544d0e142a17f89c8f754da  com/google/protobuf/protobuf-java/4.36.2/protobuf-java-4.36.2.jar
 07d2895d5360e3e29d298d74349577c97610713f17ed442e92db1bcf4a4a6ac2  org/eclipse/packager/packager-rpm/0.21.0/packager-rpm-0.21.0.jar
 08a02856e487c9357f9b29e38745f8ae805848111e72d15aad0352338f1632e1  org/junit/junit-bom/5.14.3/junit-bom-5.14.3.pom
+08bc136b79e93f8030e167444960fd3fd80fc5423a178a84a32cbdd02de75e55  io/grpc/grpc-protobuf/1.85.1/grpc-protobuf-1.85.1.jar
 093be1b03331bce2932d6825c37e98272d7621e6a9e9fb93289a002518b8dd5a  org/tukaani/xz/1.9/xz-1.9.pom
 0a1b692d7fcc90d6a45dae2e50f4660d48f7a44504f174aa60ef34fbe1327f6a  org/codehaus/plexus/plexus/4.0/plexus-4.0.pom
 0af961e05dbd5d694ca59c7c99f37246527fe500e99293de65be3330438fd195  org/mockito/mockito-bom/5.23.0/mockito-bom-5.23.0.pom
@@ -34,13 +35,13 @@
 0f18f85a552c6d3f702867938985d75ec32632209384fe8d76edf8014cedf2c2  org/codehaus/plexus/plexus-compiler-manager/2.17.0/plexus-compiler-manager-2.17.0.jar
 0f3555096b720b820bbacab0b515589bee0200bee099bda14c561738ae837ba1  org/ow2/asm/asm-tree/9.9.1/asm-tree-9.9.1.jar
 0f4665c943df2692d75e28b6b24923ab18ff00369b8c7f5eba4bedef07e4ecd4  org/codehaus/plexus/plexus-interpolation/1.28/plexus-interpolation-1.28.pom
-0f9f4f1cfcd4423eff4fd5729f07e34c9d2e3d551e6db3402fffb86fd5577478  io/grpc/grpc-protobuf/1.84.3/grpc-protobuf-1.84.3.jar
 0ffa0ad084ebff5712540a7b7ea0abda487c53d3a18f78c98d1a3675dab9bf61  org/codehaus/plexus/plexus-utils/3.1.0/plexus-utils-3.1.0.jar
 10937d44c425984cb8739225d34712e1a3145641ca93ac3f7ef186fa25f6babc  org/junit/junit-bom/5.10.3/junit-bom-5.10.3.pom
 10f7e85b5ce53014c946b14c750b09097bed1892ecaf2cea05d12aab6e8677d2  org/junit/jupiter/junit-jupiter-params/6.1.3/junit-jupiter-params-6.1.3.pom
 10faba526d66760cf3a57176636976cc78865935e94faddbf1637f3cce64c21b  org/jsoup/jsoup/1.23.1/jsoup-1.23.1.pom
 1133991af570f16d65af64b4269869ad2f7acd13513c28303f153eeb699acbc1  org/codehaus/plexus/plexus-java/1.5.0/plexus-java-1.5.0.pom
 1197a74ac2b4d71172f56cb9c4b09e54c001e6ae89f46a7873b38c6e6b608bd5  org/junit/platform/junit-platform-launcher/1.14.4/junit-platform-launcher-1.14.4.pom
+11c67cb8d0510e9e6e6c17494050df85035074b2d2ab296aa41fa1e80b61cb8d  io/grpc/grpc-util/1.85.1/grpc-util-1.85.1.jar
 1205a1f229999170dcadcfb885a278ad0bc2295540a251f4c438f887ead7bbd9  org/apache/maven/maven-aether-provider/3.0/maven-aether-provider-3.0.jar
 12b20cf922773445c3445c2883cbf671fa982111e9bf9f875020f9313b3814b1  javax/xml/bind/jaxb-api/2.3.1/jaxb-api-2.3.1.pom
 12c6fe08223820089f60969b6088e6ac5d358aa872de78357585cdacb6c61049  org/apache/commons/commons-jcs3-core/3.2.1/commons-jcs3-core-3.2.1.jar
@@ -50,6 +51,7 @@
 13d15ddfe9946b8427bb7b4b081ab63962285eed0bf6fa5142aea25a46e15814  org/sonatype/spice/spice-parent/15/spice-parent-15.pom
 14570838500034fc1b47c8205ce1c9d6b255c1ccdd2d1afdcdcbf75e89b24a33  com/google/j2objc/j2objc-annotations/3.1/j2objc-annotations-3.1.pom
 1473d1eb9e2ffbed025819892b078985c5dd55c190b1d82fd1b5685505b2b819  org/codehaus/plexus/plexus-utils/3.1.0/plexus-utils-3.1.0.pom
+159371ce7ecb1de72f910571436f7866baa595c820271fcb930961212b7c6363  io/grpc/grpc-api/1.85.1/grpc-api-1.85.1.jar
 169dd904a4b0f6520cffe658cc62292bfe9f3c14a989fa92120724cde43a9968  org/junit/junit-bom/5.10.2/junit-bom-5.10.2.pom
 172f76e8ad94a07a700ed7d5afc775c91f80cbd131eb60378b0d83d57d8131d9  org/apache/maven/surefire/surefire/3.6.0/surefire-3.6.0.pom
 17e81388d88ba61c4055450ec90a32ee30acd07f46dc6e31e096b8e53735f4b2  org/apache/maven/shared/maven-shared-components/39/maven-shared-components-39.pom
@@ -63,11 +65,9 @@
 1933a6037439b389bda2feaccfc0113880fd8d88f7d240d2052b91108dd5ae89  org/apache/apache/5/apache-5.pom
 19889dbdf1b254b2601a5ee645b8147a974644882297684c798afe5d63d78dfe  com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.pom
 19d4b747b204805325b6334553296f986562277a4ac1cb5e593a5e4c4f5e4115  org/junit/junit-bom/5.11.4/junit-bom-5.11.4.pom
-1a01f2f69eb321b68de23bef394799709bd4011841e3e225899364f9ac98e297  io/grpc/grpc-stub/1.84.3/grpc-stub-1.84.3.pom
 1a8faf7a6a2b848acb26a959954ee115c0d79dbe75a6206fb3b8c7c2f45a237f  org/apache/maven/maven-parent/34/maven-parent-34.pom
 1af699f8d9ddab67f9a0d202fbd7915eb0362a5a6dfd5ffc54cafa3465c9cb0a  net/java/jvnet-parent/5/jvnet-parent-5.pom
 1bc264824ec876b0ca6f4f5838175c541c638cbc43326a268b9aee7d4778b5ef  org/codehaus/plexus/plexus-containers/1.5.5/plexus-containers-1.5.5.pom
-1bc711db7a31f80ff056c6425ef48af7d00614eaaffb34213cf27d0179738010  io/grpc/grpc-protobuf-lite/1.84.3/grpc-protobuf-lite-1.84.3.pom
 1c0a088d7352d52ea8f3581d05778c0c4a679613fff2c58737fba55f1007fe24  org/apache/maven/maven-parent/44/maven-parent-44.pom
 1c19157d1171d560088e485be97c93a7a2f7e9f56e517f0a30273c5c39df6231  org/apache/velocity/velocity-engine-core/2.4.1/velocity-engine-core-2.4.1.jar
 1c5c5ac5e8f29aefc8faa051ffa14eccd85b9e20f4bb35dc82fba7d5da50d326  org/sonatype/aether/aether-api/1.7/aether-api-1.7.jar
@@ -81,7 +81,6 @@
 1fa0122c0e3733192642861c36be4c6f799a795327a23bdd2922691b6e9ba480  com/google/code/gson/gson/2.14.0/gson-2.14.0.pom
 1fad6e6be7557781e4d33729d49ae1cdc8fdda6fe477bb0cc68ce351eafdfbab  org/jspecify/jspecify/1.0.0/jspecify-1.0.0.jar
 1fb0dbd26fba2b009a75355e87620256b0689cb46f124f4836bc66fc296942c1  org/jboss/weld/weld-api-parent/1.0/weld-api-parent-1.0.pom
-202097e0866d5a5677099acf34b03c31a421a0aea37da9749436b6a55bff6734  io/grpc/grpc-api/1.84.3/grpc-api-1.84.3.jar
 2032531f05994121c2fdb5df7235ed548f53d294d0b7ac45e797148d85a30ee2  org/apache/maven/reporting/maven-reporting-api/4.0.0/maven-reporting-api-4.0.0.pom
 211b306cfc44f8f96df3a0a3ddaf75ba8c5289eed77d60d72f889bb855f535e5  org/tukaani/xz/1.9/xz-1.9.jar
 21a19b26dbe5c38ddb5114cf4eadbf5ccb411bc6b128fdd5949b1ccb12f3683e  org/sonatype/spice/spice-parent/12/spice-parent-12.pom
@@ -133,7 +132,6 @@
 32ac469785dd1547ac71437e4c3916c4a56a3d69303cb08d789ecdd0bfd1d6de  org/apache/maven/shared/file-management/3.2.0/file-management-3.2.0.jar
 32c74899ae919b52bdc07cac28aba2c6651b73172ab9f4111f7c527b60760adb  org/apache/maven/resolver/maven-resolver/1.9.22/maven-resolver-1.9.22.pom
 32e154b3a63889e75283e70c3aaa8dcf34b40d09971c887bfca38b74340306d3  org/sonatype/buildsupport/buildsupport/13/buildsupport-13.pom
-33012aabac29052d00964a0f6ec9f6aa9a5c0f79d57656d9fa63754e5478ebab  io/grpc/grpc-netty-shaded/1.84.3/grpc-netty-shaded-1.84.3.pom
 335513ce1dd2cf4c7d1dbfa1b8aa14656d9be5f9f3f0d0875ac528893c9f0f06  org/apache/maven/resolver/maven-resolver-api/1.4.1/maven-resolver-api-1.4.1.pom
 33dc67306cc95da14e5444e8b494d967924abf1d01bae1894676164cbd3f6112  org/apache/maven/resolver/maven-resolver-api/1.4.1/maven-resolver-api-1.4.1.jar
 34028f01a88cf7d032809c581e22bc005740391704b88f8147eeeb358fd75068  io/github/jeremylong/open-vulnerability-clients/9.0.6/open-vulnerability-clients-9.0.6.jar
@@ -172,10 +170,12 @@
 42fdf46c5355bcb9aa0b240d52ac9d89ee728f8cb1386e43127588af916b3e06  com/github/package-url/packageurl-java/1.5.0/packageurl-java-1.5.0.pom
 43125840dd928065fa83fb76c89873be4fc34e28c8b6fb62fd66be9be965100d  javax/enterprise/cdi-api/1.0/cdi-api-1.0.pom
 4345debfc767b1aeac68abdd72fc67d18b521d4b390372a11b63ff0c586b2320  org/apache/commons/commons-parent/72/commons-parent-72.pom
+4387dccec2d22b46e1f412a2ecb052de836839c5eb0b5d801627cada3499a8b7  io/grpc/grpc-stub/1.85.1/grpc-stub-1.85.1.pom
 43fdef0b5b6ceb31b0424b208b930c74ab58fac2ceeb7b3f6fd3aeb8b5ca4393  javax/activation/javax.activation-api/1.2.0/javax.activation-api-1.2.0.jar
 4408d69bebbf7f4d63bcd57f1276b96f14a2ab4d666004d5d7c4f977ad18c91c  org/codehaus/plexus/plexus-compiler-javac/2.17.0/plexus-compiler-javac-2.17.0.pom
 441ffde95bfa0b6fa235797b00341c3c622be8fb568e2c2490ed35cd5b34cf8f  org/apache/maven/plugin-tools/maven-plugin-tools/3.5.2/maven-plugin-tools-3.5.2.pom
 44508fd1576500688c790b190acdd16fec4f8c79a3e0b900afd70503cf055f55  org/slf4j/slf4j-api/2.0.18/slf4j-api-2.0.18.jar
+44a5f4986a2dd4b791eecb3b0dc6ed1f1305599b4b24e790bd422101560686d2  io/grpc/grpc-context/1.85.1/grpc-context-1.85.1.jar
 44fcba73912b950d3ec88129e38e03c181b975f5b5ee73d7bab7866a4b376c50  io/opentelemetry/opentelemetry-bom/1.49.0/opentelemetry-bom-1.49.0.pom
 459bebb8191906bacfeb73c62fcebc3e8c1e405a54594212b5f148d0567e668a  org/apache/commons/commons-dbcp2/2.14.0/commons-dbcp2-2.14.0.jar
 45e7fbb2c231db903a5d5aadafc636a173a4d54560f78a11ff498028ef9e345e  org/apache/commons/commons-lang3/3.5/commons-lang3-3.5.pom
@@ -183,6 +183,7 @@
 468a1262e9aaa5febf9d604e2836267f815351f2b4520f28fb17f53c71e33554  org/apache/maven/maven-parent/43/maven-parent-43.pom
 46a4a251ca406e78e4853d7a2bae83282844a4992851439ee9a1f23716f06b97  javax/annotation/javax.annotation-api/1.3.2/javax.annotation-api-1.3.2.pom
 47f22e99c7bf466391def16f8377985e5d3ba6f5bbcf65853644805513e15fad  com/google/errorprone/error_prone_parent/2.18.0/error_prone_parent-2.18.0.pom
+48254e0cfae18187dabb5226c2618d1fc208a8ebde7172b1a5e8f8ff986527c0  io/grpc/grpc-context/1.85.1/grpc-context-1.85.1.pom
 48345abc9f63837e73ef0af83193b268e05d1c0e63e2934fdcbd78e26e8932ff  com/fasterxml/jackson/dataformat/jackson-dataformat-yaml/2.22.1/jackson-dataformat-yaml-2.22.1.pom
 488ededfcc481666845265a64dccc322fc8f0205940b4943a53de2d8ed04c48c  org/apache/commons/commons-pool2/2.13.0/commons-pool2-2.13.0.jar
 48e2df636cab6563ced64dcdff8abb2355627cb236ef0bf37598682ddf742f1b  org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.jar
@@ -193,6 +194,7 @@
 4be32a6a44a70fcc1cb0890feb8a51abf440cc0ab920d45271598a47ddd597b4  org/apache/maven/surefire/surefire-providers/3.6.0/surefire-providers-3.6.0.pom
 4cfc5aa20112d131c6949f80bb1e8adce39ffea9a5a935b4c9a37b7c9aab1c91  commons-codec/commons-codec/1.22.1/commons-codec-1.22.1.pom
 4d0329cd9e72f2420e5ca15724cbfe6ffa6e5fd2888361516271190fdc342ed7  org/junit/junit-bom/5.9.3/junit-bom-5.9.3.pom
+4d93f01cf105edb879a2ec49cf39a370a2603af46d264b4d5cab645289fc8ecb  io/grpc/grpc-protobuf-lite/1.85.1/grpc-protobuf-lite-1.85.1.jar
 4df7a6a7be64b35bbccf60b5c115697f9ea3421d22674ae67135dde375fcca1f  org/codehaus/plexus/plexus-component-annotations/1.5.5/plexus-component-annotations-1.5.5.jar
 4eeeae8d20c078abb64b015ec158add383ac581571cddc45c68f0c9ae0230720  org/apache/commons/commons-lang3/3.18.0/commons-lang3-3.18.0.jar
 4fdf1aa46d1fb722e15508b4edeb7b651344c6e29774cd2b76cbec3a84c23a11  org/codehaus/mojo/mojo-parent/95/mojo-parent-95.pom
@@ -218,6 +220,7 @@
 5879e023d9bcafda006d28b42b2495c6f3db587d3e71eefa0a3cedeeea36d987  org/apache/maven/shared/maven-shared-components/45/maven-shared-components-45.pom
 58d2da30f058512a1e7f914e39241deca4dff5c27a085b4ed2faa9e7208067f6  org/apache/commons/commons-text/1.15.0/commons-text-1.15.0.jar
 58ddbb8e429cb5e9054c2f5f7b7cdfeb7adbcdfda21d92b67f67fa2b94edf982  org/apache/maven/plugins/maven-plugins/47/maven-plugins-47.pom
+59557737915f7b9f4ca7a5fa20e22557644ffbbc4a7bb59da12a514d91ed77a2  io/grpc/grpc-protobuf/1.85.1/grpc-protobuf-1.85.1.pom
 599f23931f427ca0f2b0f4e9581f79f51f89435c44e1a1479d6d14e60d75810c  org/apache/maven/surefire/surefire-api/3.5.4/surefire-api-3.5.4.pom
 59d50f5c951e6455c474fe5261b7d84b2c546b9c1fc73976fb2cd66db5849338  io/netty/netty-bom/4.2.16.Final/netty-bom-4.2.16.Final.pom
 5a15fdba22669e0fdd06e10dcce6320879e1f7398fbc910cd0677b50672a78c4  org/sonatype/plexus/plexus-cipher/1.4/plexus-cipher-1.4.jar
@@ -235,7 +238,6 @@
 5f3668799cb6936767868cc2267038eb7e4031bad59d2cf5e5223b8462eca731  org/eclipse/sisu/sisu-plexus/0.3.3/sisu-plexus-0.3.3.pom
 6072dd103bdba3199584c5b73ed45b00567cd3ea918e2160b10bc7437c9e8181  org/apache/maven/shared/maven-shared-components/43/maven-shared-components-43.pom
 60d320f3a7b36047cc2969397aa8f0ce673afcd88a60ef04e2b032b7c0011969  org/apache/maven/doxia/doxia/2.1.0/doxia-2.1.0.pom
-60deafe107037cdf99803c66acfc63aea3d961f6b23d16af30ecc89338c62857  io/grpc/grpc-stub/1.84.3/grpc-stub-1.84.3.jar
 612a1751377f324c1a6167c6d70a26800cbe3f1b2a37d03a9377ef4f80e7b526  org/apache/maven/maven-compat/3.0/maven-compat-3.0.pom
 6138300481471c7fe6aeb115f912961f886e1a46ee9c2bd2841b65184824da28  org/codehaus/plexus/plexus-utils/3.6.0/plexus-utils-3.6.0.pom
 618112f616b84b9cd87165a81c998563c7f114e2b9f39eaeaa09260a1135570c  org/apache/maven/doxia/doxia-sink-api/2.1.0/doxia-sink-api-2.1.0.pom
@@ -271,7 +273,6 @@
 6ec96f889bc29250f90b167c14e547f1b05aa23565c63f9079595befbde816bb  org/codehaus/plexus/plexus/3.3.1/plexus-3.3.1.pom
 6f3828a215c920059a5efa2fb55c233d6c54ec5cadca99ce1b1bdd10077c7ddd  org/ow2/asm/asm/9.9.1/asm-9.9.1.jar
 6f65df20eed028bc1a2eba1506e27f943203534d099f94e16b6842391afb72f5  joda-time/joda-time/2.14.2/joda-time-2.14.2.jar
-6fa3ea39b3b654ea279a238f57866cc1599ec03c50471da1b5f57716e91198c1  io/grpc/grpc-api/1.84.3/grpc-api-1.84.3.pom
 705cb0a1bfc42670f8147315c877f8b031326c0b468d0088b3d827f1bea290c5  org/apache/maven/surefire/maven-surefire-common/3.6.0/maven-surefire-common-3.6.0.pom
 70be2643085e0edba106691211535c9023bdb6fcc2c8348ea43a8438333c43d5  org/eclipse/packager/packager-core/0.21.0/packager-core-0.21.0.jar
 71752ed4c2435a1d8385fe0a4d330f39d04efec89f0d1ba5d1598d39f7397a44  org/apache/apache/39/apache-39.pom
@@ -279,6 +280,7 @@
 719095c07d4203961320da593441d8b3b643c18eb1d81aa98ea933bb7eb351ba  org/skyscreamer/jsonassert/1.5.3/jsonassert-1.5.3.jar
 7190d0b07f278e9f4c603f44e543940f81cf1a2559f851c6f298c9bb2be2978c  com/google/code/gson/gson/2.9.0/gson-2.9.0.pom
 71a0680d277324bab46bec4b00f6f111c1b794a931d0d8cda79bcb9246982f92  com/google/errorprone/error_prone_annotations/2.50.0/error_prone_annotations-2.50.0.pom
+71b4e8d4cf47824bf0230a0d3431d5f4420eac8dcfdc8a4ea15198acabf328a8  io/grpc/grpc-protobuf-lite/1.85.1/grpc-protobuf-lite-1.85.1.pom
 7220ede61026596fbc720ee4b93246fa2d14f328058532b59ef053de397c7d83  com/google/guava/guava-parent/33.4.0-android/guava-parent-33.4.0-android.pom
 727c1e2bbd28aacb90eb4b19617d30dabc3f799fa2f18bcd72baed7aee9a2026  org/sonatype/buildsupport/buildsupport/28/buildsupport-28.pom
 72c7d66ea49256ea64a82b28a15df69177d13066d12afeb4a1ee0616da4648f1  org/apache/maven/plugins/maven-resources-plugin/3.4.0/maven-resources-plugin-3.4.0.jar
@@ -287,6 +289,7 @@
 7458c23a0ceeb99210b2db695ff285cd08ebc2934bbc69e9fc1547149044783b  org/apache/maven/plugins/maven-shade-plugin/3.6.2/maven-shade-plugin-3.6.2.pom
 74a12548f0d6aad13c728666288c1e81201c24bd05bb4e4ec8c1558517b379a7  org/apache/maven/resolver/maven-resolver-util/1.9.27/maven-resolver-util-1.9.27.jar
 74ab64d978a3415cab65c3639b7c5ba5a20599ca5578251b748dd81c882a6088  org/jboss/weld/weld-parent/6/weld-parent-6.pom
+755b4dbccbfa3ea68bbd6e8af78ca6997c9b118710e6c194058dd55af1acdbc4  io/grpc/grpc-stub/1.85.1/grpc-stub-1.85.1.jar
 755c07a1ae47cff80f633265b224341d6d8cc26f02d37eb407bc45ff5db9a71d  org/apache/maven/maven-aether-provider/3.0/maven-aether-provider-3.0.pom
 7562657fc3492649dee836ffdda07990aaf46f4133cad048c4dcd7330bfd3917  org/apache/maven/plugins/maven-jar-plugin/3.5.0/maven-jar-plugin-3.5.0.jar
 759079b9cf0cddae5ba06c96fd72347d82d0bc1d903c95d398c96522b139e470  org/apache/maven/maven-artifact/3.0/maven-artifact-3.0.jar
@@ -298,7 +301,6 @@
 7728c57471730a6ec9e04654b60f37f57c01a2708e53aa6a0d7005aad29cbb10  org/codehaus/plexus/plexus/23/plexus-23.pom
 77614f6fcc6638eef7b9ed57294ba349f35802497fbed87fb3cfdfd5cb07f7bd  org/apache/maven/surefire/surefire-booter/3.6.0/surefire-booter-3.6.0.pom
 7831307285fd475bbc36b20ae38e7882f11c3153b1d5930f852d44eda8f33c17  org/apache/apache/18/apache-18.pom
-7833368a96dcb5ccbc54ab895285510de544a189f93e19a99c5f7121c56124a4  io/grpc/grpc-context/1.84.3/grpc-context-1.84.3.pom
 78a5d732fbd715e2d10bd7150d2f8030bae57267f8aacc5c88f642cb6c2e5d3f  commons-codec/commons-codec/1.22.1/commons-codec-1.22.1.jar
 78fd2b4399e786aee919118f6b2f1993849f6dfb0f29e203b752cccff3b7efb3  org/apache/maven/plugin-tools/maven-plugin-annotations/3.5.2/maven-plugin-annotations-3.5.2.pom
 7925d9c5a0e2040d24b8fae3f612eb399cbffe5838b33ba368777dc7bddf6dda  org/apache/maven/shared/maven-shared-utils/3.3.4/maven-shared-utils-3.3.4.jar
@@ -344,7 +346,6 @@
 8a86be8c76f691ef2213ede052886e5692e2fc9a30e4a0af8efb038c41eb5721  org/apache/maven/plugins/maven-surefire-plugin/3.6.0/maven-surefire-plugin-3.6.0.pom
 8ac96fc686512d777fca85e144f196cd7cfe0c0aec23127229497d1a38ff651c  org/apache/commons/commons-lang3/3.5/commons-lang3-3.5.jar
 8b15e2b28eeb1e0a88a9b7dab4dc0c23524491c56959785dea22f7846897b668  org/jsoup/jsoup/1.23.1/jsoup-1.23.1.jar
-8b9e2a43bedd36e09c3055cbc2372e8a8714d0ddb3c199e638e0d1757552ea83  io/grpc/grpc-bom/1.84.3/grpc-bom-1.84.3.pom
 8d3e51c3902fd7596e548eab121ebf6b0d4aa73857077f26a24fc86f9b8455b4  org/codehaus/plexus/plexus/19/plexus-19.pom
 8d4e1e606c5e4e3b1d603f91fadc49b60de17647100405233808d0305851a68e  org/apache/maven/maven-model/3.5.3/maven-model-3.5.3.pom
 8d6feb1da335f3ab13c584c613e23c7b3c61b392e37956872057baf8f0ca1d6f  com/github/luben/zstd-jni/1.5.7-6/zstd-jni-1.5.7-6.jar
@@ -390,7 +391,6 @@
 9bf7cffc410f3e8372c2522578df9ca56d9d43bd937e30948706c232a943b355  org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.pom
 9c5f7cd5226ac8c3798cb1f800c031f7dedc1606dc50dc29567877c8224459a7  org/sonatype/forge/forge-parent/6/forge-parent-6.pom
 9e6814cb71816988a4fd1b07a993a8f21bb7058d522c162b1de849e19bea54ae  com/google/errorprone/error_prone_annotations/2.18.0/error_prone_annotations-2.18.0.jar
-9ea314c7a48705825454e5a8ebfbbcf58f18badd86fa7a357606709a603f1717  io/grpc/grpc-context/1.84.3/grpc-context-1.84.3.jar
 a177f84e01c3829a357b8f135686ae7dd8c35d1c2089a390ef089340aa47cd21  org/apache/maven/plugins/maven-plugins/43/maven-plugins-43.pom
 a1a2ac23bd9262ee4f01e36d3a58575b1320e035e1276b0994298c07f483467c  org/apache/maven/surefire/surefire-extensions-spi/3.6.0/surefire-extensions-spi-3.6.0.pom
 a1a922d0d9b6d183ed3800dfac01d1e1eb159f0e8c6f94736931c1def54a941f  javax/annotation/jsr250-api/1.0/jsr250-api-1.0.jar
@@ -402,6 +402,7 @@ a4774ae923c109544034aeae7c762cf017fbcdd1342403ba90e0921984b608c3  org/junit/plat
 a483ef99599cc5fe2c6105a91e2aa7ac46c1c357b559beb76c7045326dcbd3d1  org/apache/httpcomponents/core5/httpcore5/5.4.3/httpcore5-5.4.3.pom
 a51cafc20b9914631a6bdb1c620134036649ab18c889c832f8747b4af3592c2a  com/esotericsoftware/minlog/1.3.1/minlog-1.3.1.pom
 a58c932e967e85e7bcb8d4adaedd14a5221a1750a1d089c5086c4d73df505155  org/apache/maven/resolver/maven-resolver-util/1.4.1/maven-resolver-util-1.4.1.pom
+a598d6955d8499ab5e6291c3d2eb40cc018795331fbd88cb319134434028112b  io/grpc/grpc-api/1.85.1/grpc-api-1.85.1.pom
 a5991ead85259ba9f8c985d194aace3b069e14bcd8cde68fce928223714d3968  org/sonatype/sisu/sisu-inject/1.4.2/sisu-inject-1.4.2.pom
 a5a3a1aec96113b1e953545c3d8c5117ff0220c56f7293c6fff7d35b1cd37c14  org/junit/platform/junit-platform-commons/6.1.3/junit-platform-commons-6.1.3.pom
 a5a8a19df914af051d29eeb4084189a118c8c301054df41472d9f180ddcc6747  org/sonatype/aether/aether-spi/1.7/aether-spi-1.7.pom
@@ -460,7 +461,6 @@ b64a3f8098a7572034fb30085cdee01b34ec81fb0e5a31b471536af58dc6c01b  org/apache/luc
 b657bef2e1eb11e029a70cd688bde6adad29e4e99dacb18516bf651ecca32435  org/apache/maven/plugins/maven-clean-plugin/3.2.0/maven-clean-plugin-3.2.0.jar
 b67a109066cf06f60bb447a6cbcc6709b94d1a5a41ced84330d68e8023e8e0c5  com/google/protobuf/protobuf-java-util/4.36.2/protobuf-java-util-4.36.2.jar
 b748c05658b1fed1ceb73f527a05983593572e351d90b411f780ed1fa05b4afa  org/codehaus/plexus/plexus-compiler-api/2.17.0/plexus-compiler-api-2.17.0.jar
-b82ec0b1ccd2bba4f2318edee762988a503cd7e6b05219124ee6d281e15c5df2  io/grpc/grpc-protobuf/1.84.3/grpc-protobuf-1.84.3.pom
 b8cae78767db8c6660f9f07e635ec3e001b883f4e74087f60e995f39a848627e  org/apache/maven/surefire/surefire-api/3.6.0/surefire-api-3.6.0.jar
 ba01ae7a744cb52fe8ecf3b023cbc32e0ccc8c6beef9f26de77a47808239447d  org/yaml/snakeyaml/2.5/snakeyaml-2.5.pom
 ba03294ee53e7ba31838e4950f280d033c7744c6c7b31253afc75aa351fbd989  org/apache/maven/maven-core/3.0/maven-core-3.0.jar
@@ -474,6 +474,7 @@ bc10624e0623f36577fac5639ca2936d3240ed152fb6d8d533ab4d270543491c  org/apache/apa
 bc4235a95cd1ebae42644c81ebba9c1d4c52565f81e96ab204b6e56e3e378cc1  org/codehaus/plexus/plexus-utils/4.0.1/plexus-utils-4.0.1.pom
 bd6e3842c57b8281fd5b2cc2e82ee91ff928438547e3dd2a1a96868054da5279  org/apache/lucene/lucene-core/9.12.3/lucene-core-9.12.3.pom
 bdbdf81072c190ee9a8b181a5c58f5bd917a750fb13a256debbf53f5dbd33a2a  commons-io/commons-io/2.20.0/commons-io-2.20.0.pom
+bddadfc809c1d7d3cc01b0c9d10be9a1e0a3bb04179c9fa2978422ccc5ef0cd1  io/grpc/grpc-netty-shaded/1.85.1/grpc-netty-shaded-1.85.1.pom
 bea12e747708d25e73410ca1c731ebdfa102e8bdb6ec7d81bd4522583b234bcc  org/codehaus/plexus/plexus/2.0.6/plexus-2.0.6.pom
 beadeb0485fc7f3505f26b0cfcf26602639b83e9badaebac4a3ce5345cc19c0e  org/apache/maven/surefire/surefire-extensions-spi/3.6.0/surefire-extensions-spi-3.6.0.jar
 beb8107f340dc0bb04bf40d1a61631a21e450c58aad93c160959f0292136d99f  com/google/api/grpc/proto-google-common-protos/2.64.1/proto-google-common-protos-2.64.1.jar
@@ -532,6 +533,7 @@ d354465fe9d8c6c723d9a25e937731f9bd425cadea488c0d24508c1240f776ef  org/apache/luc
 d3b541b93039a8782d26f8f3402374ec1dd1bd4ee610688c599f32115c72987c  org/apache/maven/surefire/surefire-api/3.6.0/surefire-api-3.6.0.pom
 d3ef575e3e4979678dc01bf1dcce51021493b4d11fb7f1be8ad982877c16a1c0  org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar
 d40318527f56033e0ff0789971cc38c856aa99a685eea11270814e7f1eda9fba  org/apache/commons/commons-parent/98/commons-parent-98.pom
+d47fa188604f6cb144a46a7d40aa7b7d6ae30806a0fa100b70cd3fbdb48e847f  io/grpc/grpc-core/1.85.1/grpc-core-1.85.1.pom
 d4886a0ce0d92d0de0f41f6a5309d4b53559080c4b2cb0bba47db548a7efe292  org/apache/maven/surefire/surefire/3.5.4/surefire-3.5.4.pom
 d4a5121988ec22355b54d84f68a2638bdb7315814e650756183ba90a9b7cd0d2  org/apache/maven/surefire/surefire-booter/3.6.0/surefire-booter-3.6.0.jar
 d4bfeba02a1952f8524bf120d20415cfd507b0d56a442414765f8095e26fe0b1  org/apache/maven/surefire/surefire-extensions-api/3.5.4/surefire-extensions-api-3.5.4.jar
@@ -542,6 +544,7 @@ d567697f3916228e4f721df5362501c276d99773e686fd2b0364b842ad7e6384  io/grpc/protoc
 d5e650c50ef6958c028ed024b59af04cf3d38e1453a77d542b6b484bc0f4ca0b  org/sonatype/plexus/plexus-sec-dispatcher/1.3/plexus-sec-dispatcher-1.3.pom
 d6592abaa335e02502854e23f5425a6af4abfaa580ad44dd63d2a07f6a396645  com/google/protobuf/protobuf-bom/4.36.2/protobuf-bom-4.36.2.pom
 d671b45e5954211f3566722aa614fbd3b5d46e95f4f9da4dc58c173280bb1799  org/json/json/20260522/json-20260522.jar
+d67ef84969bfb99b53ddf4a4959588e75f95ce867fe3106e20eb9d2908741446  io/grpc/grpc-bom/1.85.1/grpc-bom-1.85.1.pom
 d77be81708cf9836db7a09908e6d9e4d94c527e090bd594cc4af06711b9d853d  org/junit/platform/junit-platform-commons/1.14.4/junit-platform-commons-1.14.4.pom
 d78bd8524c5f8380a190a6525686629a95dfe512df21111383a6d8c0923a4415  org/apache/apache/33/apache-33.pom
 d7a08a99b2502f0bb68cd4e1f984f0bf69324aaa208bd0f73366c03fc3548a42  org/junit/junit-bom/5.13.4/junit-bom-5.13.4.pom
@@ -549,8 +552,6 @@ d80c889a4a6f711f6945fbee79e05ec247b178a567e9d5abf58eb26ebf0a0752  com/google/err
 d82408269aada2eb1521ee8ff17f7c67333684f8ed2a09a9e35badd2e7575957  org/apache/maven/shared/maven-shared-components/19/maven-shared-components-19.pom
 d8531a746c988f7f68ed5f188cdea945006aea993ec5df9e524e0d27d61491da  org/mockito/mockito-bom/4.11.0/mockito-bom-4.11.0.pom
 d85541c8677e755ca476db11fa0ee6b877a4f9314af05c27b0675556dd329a32  org/apache/lucene/lucene-sandbox/9.12.3/lucene-sandbox-9.12.3.pom
-d8785dc7decdbc56a15e092bb347005282c0876ec975baa68ed2be3982d5d1e5  io/grpc/grpc-util/1.84.3/grpc-util-1.84.3.pom
-d996e3c2f07569a66c6f5604ce4b922c44fbe4614f3513feaead2d73afeb813a  io/grpc/grpc-netty-shaded/1.84.3/grpc-netty-shaded-1.84.3.jar
 da2926f3c8be898643cc10acdec6de0b0351a57fb2735770fa0177b06ade71b9  javax/activation/javax.activation-api/1.2.0/javax.activation-api-1.2.0.pom
 dbb0cd14bf7d67ae4866b9124c834c595099f1a4fc93b7f4611a7feb8c8b95a3  org/vafer/jdependency/2.15/jdependency-2.15.pom
 dbc7d80d79d3760fed777bea9e41b1c0a370442ea8ecf930d04a6a5620d36b6e  org/codehaus/plexus/plexus/27/plexus-27.pom
@@ -560,13 +561,11 @@ dda475efc33b7603a6c20db4af82a9df553128b2fe05255578b5b00cd890c9c3  org/owasp/depe
 ddf5fa77eb71f06a410f30fcba6b6abb83bb81490ccc9b3040a41e8fcba40e4d  org/sonatype/ossindex/ossindex-service/1.8.2/ossindex-service-1.8.2.pom
 de6da39002b5eb4b5aad04003bea0d18728e86c263f90c80ed4ec5e28073af9b  org/owasp/dependency-check-core/13.0.0/dependency-check-core-13.0.0.pom
 def70fa7d3a4bb71660bc661523329579a4bc31ccc96c42d3a5c3b9f76a6b649  org/ow2/asm/asm-commons/9.9.1/asm-commons-9.9.1.pom
-defe5280f6f01c371b52a447cf48b9f70f80916601b88025b1f89d52ebdcb4ff  io/grpc/grpc-core/1.84.3/grpc-core-1.84.3.pom
 df1186d2fc652c4bedd9809638292000787f21a157a1e15e880134fa9fcbedb2  org/codehaus/plexus/plexus-java/1.5.0/plexus-java-1.5.0.jar
-df3c360eb77e95bb96bf6d0d64c98350bf64c4ea8201def081b20dd796f9be0b  io/grpc/grpc-core/1.84.3/grpc-core-1.84.3.jar
 df75d06bfae02394214c2db08dae6615c53f84b456487a28ea722de3f708860c  org/apache/maven/resolver/maven-resolver-api/1.9.22/maven-resolver-api-1.9.22.pom
 df8cc1a8387d4ce842363b7209fdc6d35df9763839fd3fcab558a0f83f9d841c  org/apache/commons/commons-compress/1.27.1/commons-compress-1.27.1.pom
 dfb7bae2f404cfe0b72b4d23944698cb716b7665171812a0a4d0f5926c0fac79  com/vaadin/external/google/android-json/0.0.20131108.vaadin1/android-json-0.0.20131108.vaadin1.jar
-e0146ba1329e11bb009b1d498ee211d18dacb8d0233dd414093388dcef0a1bea  io/grpc/grpc-util/1.84.3/grpc-util-1.84.3.jar
+e02c71ce988c0f79f605ef8a95065b0798e9ea34f0582b401809d58485df0a8e  io/grpc/grpc-util/1.85.1/grpc-util-1.85.1.pom
 e04ba5195bcd555dc95650f7cc614d151e4bcd52d29a10b8aa2197f3ab89ab9b  javax/annotation/javax.annotation-api/1.3.2/javax.annotation-api-1.3.2.jar
 e067317a47ed9e84b2ba85a76d3cf72980e2b0dc873a90b9cbfe74fe80c37c17  org/sonatype/plexus/plexus-build-api/0.0.7/plexus-build-api-0.0.7.pom
 e09d345e73ca3fbca7f3e05f30deb74e9d39dd6b79a93fee8c511f23417b6828  com/google/google/5/google-5.pom
@@ -592,9 +591,9 @@ e855b04820e58822bda1ab448f7b29e2fccf363f1b2ca95c8c05f2d625b28928  org/sonatype/a
 e8ec1e4d85dc2a71819dfb4a27507258175569941aa4a27ee08ec899319dbd24  org/apache/maven/surefire/surefire-logger-api/3.5.4/surefire-logger-api-3.5.4.jar
 e8f71c97443b22fab60339f83508812c4f49cabb2d5126a4ea3592a8a5b82267  org/apache/maven/surefire/surefire-extensions-api/3.6.0/surefire-extensions-api-3.6.0.pom
 ea297dcd114136e8b8e8b630230d52a76c2fc69f6c5db25d672b1857000728b8  org/apache/apache/35/apache-35.pom
+ea75fb829517724d40c1ebedd6dad1362b284203716725a1b5ae740f4c91931e  io/grpc/grpc-netty-shaded/1.85.1/grpc-netty-shaded-1.85.1.jar
 eae8e0ffbd8b31fa8f8a610d62d387b4e10295ba74d0e14d66404560b74d8295  org/slf4j/jul-to-slf4j/2.0.18/jul-to-slf4j-2.0.18.pom
 eb0341df87279f506b0b24e528730a94a459e7e86d0a3f0aa22246b8fd183aec  org/apache/maven/maven-plugin-api/3.5.3/maven-plugin-api-3.5.3.jar
-ebeee12f965e7fa676860c73dc280d1a620cdd2ee8f4853a2a19cb389b941d31  io/grpc/grpc-protobuf-lite/1.84.3/grpc-protobuf-lite-1.84.3.jar
 ebfffb41861ab1ccc989de2c9c2d11924e5ddded2728b053f5f2fddc8409c0e1  org/junit/jupiter/junit-jupiter/6.1.3/junit-jupiter-6.1.3.pom
 ec0abd25951e7de9fb49197af69328e6b4937fc69d372cf4eed4aa7c2ac3e04f  org/sonatype/ossindex/ossindex-service-client/1.8.2/ossindex-service-client-1.8.2.pom
 ec5c36d57d2dbe100f84878f944575cb7871da32c7a115b8d7e0721277045d67  org/slf4j/jcl-over-slf4j/2.0.18/jcl-over-slf4j-2.0.18.jar
@@ -624,6 +623,7 @@ f5e2f9adbbc91dee52932837955c62bf016196372e14974f0dcfd2024a765513  org/sonatype/o
 f5ecc6eaa4a32ee0c115d31525f588f491b2cc75fdeb4ed3c0c662c12ac0c32f  org/apache/maven/maven-plugin-api/3.0/maven-plugin-api-3.0.jar
 f70e12ebea93f119f4f63766c2b8a3386c34bb48e588df710cb98c8e3822f7c7  org/apache/maven/maven-core/3.0/maven-core-3.0.pom
 f7a76d3a3bbeb53f5f36e19ee57ddc2099f3be1d599039090254d1f0fdf0b854  org/codehaus/plexus/plexus-io/3.5.1/plexus-io-3.5.1.pom
+f84e7108e027405aa10cd6baae38ef5f4c1610d2ba76201517b36ae166c8e837  io/grpc/grpc-core/1.85.1/grpc-core-1.85.1.jar
 f8698ab46ca996ce889c1afc8ca4f25eb8ac6b034dc898d4583742360016cc04  com/google/guava/guava-parent/26.0-android/guava-parent-26.0-android.pom
 f87276cbfe1c1907d7b8b884009b13fb41d25734f071cdaaf8832e1708df4be3  com/h3xstream/retirejs/retirejs-root-pom/3.0.4/retirejs-root-pom-3.0.4.pom
 f877d304660ac2a142f3865badfc971dec7ed73c747c7f8d5d2f5139ca736513  commons-io/commons-io/2.6/commons-io-2.6.jar
