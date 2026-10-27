@@ -370,10 +370,19 @@ public sealed class DriverRunner : IDriverRunner
     // reach a build tool, a package script or a driver. A variable a toolchain needs and this list lacks is added
     // here, with a comment naming the toolchain.
     private static readonly string[] AllowedNames =
-        ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "USER", "SHELL", "M2_HOME", "VIRTUAL_ENV"];
+        ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "USER", "SHELL", "M2_HOME", "VIRTUAL_ENV",
+         // The dotnet driver's build: with MSBUILDDISABLENODEREUSE (below) it stops `dotnet build` leaving
+         // VBCSCompiler and MSBuild nodes behind.
+         "UseSharedCompilation"];
 
     private static readonly string[] AllowedPrefixes =
-        ["LC_", "DOTNET_", "NUGET_", "JAVA_HOME", "MAVEN_", "GO", "NODE_", "NPM_CONFIG_", "npm_config_", "PYTHON", "PIP_"];
+        ["LC_", "DOTNET_", "NUGET_", "JAVA_HOME", "MAVEN_", "GO", "NODE_", "NPM_CONFIG_", "npm_config_", "PYTHON", "PIP_",
+         // The dotnet driver's build (MSBUILDDISABLENODEREUSE, see UseSharedCompilation above).
+         "MSBUILD"];
+
+    // Checked first: names that pass an allowed prefix but are credentials (spec §5.4: build tools get no
+    // secrets). GOOGLE_ starts with the "GO" prefix the Go toolchain needs (GOFLAGS, GOPATH, ...).
+    private static readonly string[] DeniedPrefixes = ["GOOGLE_"];
 
     // The drivers verify the compose stack's TLS server through these (docs/runbooks/client-conformance-matrix.md):
     // the driver run gets them, the build steps do not.
@@ -381,8 +390,9 @@ public sealed class DriverRunner : IDriverRunner
         ["SSL_CERT_FILE", "SSL_CERT_DIR", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", "JAVA_TOOL_OPTIONS"];
 
     internal static bool IsAllowed(string name) =>
-        AllowedNames.Contains(name, StringComparer.Ordinal)
-        || AllowedPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.Ordinal));
+        !DeniedPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.Ordinal))
+        && (AllowedNames.Contains(name, StringComparer.Ordinal)
+            || AllowedPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.Ordinal)));
 
     /// <summary>A build step's environment: the allowlisted variables of <paramref name="parent"/> and nothing else.</summary>
     internal static Dictionary<string, string> BuildStepEnvironment(IDictionary parent)
