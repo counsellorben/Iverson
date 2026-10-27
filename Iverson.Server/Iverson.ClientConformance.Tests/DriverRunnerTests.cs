@@ -190,6 +190,31 @@ public class DriverRunnerTests
         }
     }
 
+    // CSR round 12 §4.7: the Java build runs the repository's own Maven Wrapper (the one Maven the
+    // trusted-checksum record was written under), resolved against the repository root, never an `mvn`
+    // found on PATH.
+    [Fact]
+    public async Task RunPhaseAsync_BuildsTheJavaDriverWithTheRepositorysMavenWrapper()
+    {
+        var root = Directory.CreateTempSubdirectory("iverson-conformance-fake-").FullName;
+        var wrapper = Path.Combine(root, "Iverson.Clients", "Java", "mvnw");
+        Directory.CreateDirectory(Path.GetDirectoryName(wrapper)!);
+        File.WriteAllText(wrapper, "#!/bin/sh\necho \"repository wrapper ran: $*\" >&2\nexit 3\n");
+        File.SetUnixFileMode(wrapper, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        try
+        {
+            var outcomes = await new DriverRunner(root).RunPhaseAsync(Phase.Register, ["java"], Context());
+
+            var broken = outcomes.Should().ContainSingle().Which.Should().BeOfType<DriverPhaseOutcome.Broken>().Subject;
+            broken.ExitCode.Should().Be(3);
+            broken.Stderr.Should().Contain("repository wrapper ran: -B -f Iverson.Clients/Java/pom.xml");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     // The timeout message prints the driver's command line, so it must not carry a secret either.
     [Fact]
     public async Task RunPhaseAsync_TimeoutMessage_CarriesNoSecret()

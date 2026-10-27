@@ -143,7 +143,9 @@ public sealed class DriverRunner : IDriverRunner
             "bin/conformance", []),
         new DriverSpec(
             "java", null,
-            "mvn", ["-B", "-f", "Iverson.Clients/Java/pom.xml", "-pl", "conformance", "-am", "-DskipTests", "package"],
+            // CSR round 12 §4.7: the repository's Maven Wrapper, which runs the one Maven the trusted-checksum
+            // record was written under (Iverson.Clients/Java/.mvn).
+            "Iverson.Clients/Java/mvnw", ["-B", "-f", "Iverson.Clients/Java/pom.xml", "-pl", "conformance", "-am", "-DskipTests", "package"],
             "java", ["-jar", "Iverson.Clients/Java/conformance/target/iverson-conformance-driver.jar"]),
     ];
 
@@ -172,8 +174,9 @@ public sealed class DriverRunner : IDriverRunner
 
             if (spec.BuildCommand is not null && !_builtLanguages.Contains(spec.Language))
             {
+                var buildCwd = ResolveCwd(spec.Cwd);
                 var buildResult = await RunProcessAsync(
-                    spec.BuildCommand, spec.BuildArgs!, ResolveCwd(spec.Cwd), ct);
+                    ResolveCommand(spec.BuildCommand, buildCwd), spec.BuildArgs!, buildCwd, ct);
 
                 if (buildResult is ProcessOutcome.ToolMissing missing)
                 {
