@@ -28,7 +28,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.15.4
+          version: v3.22.1
 
       - name: helm dependency build
         run: helm dependency build Iverson.Server/deploy/helm/iverson
@@ -80,12 +80,12 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.15.4
+          version: v3.22.1
 
       - name: Install kubeconform
         run: |
-          curl -sSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
-          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  kubeconform.tar.gz" | sha256sum -c -
+          curl -sSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tar.gz" | sha256sum -c -
           tar xzf kubeconform.tar.gz kubeconform
           sudo mv kubeconform /usr/local/bin/
 
@@ -135,12 +135,12 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.15.4
+          version: v3.22.1
 
       - name: Install kube-score
         run: |
-          curl -sSL -o kube-score.tar.gz https://github.com/zegl/kube-score/releases/download/v1.19.0/kube-score_1.19.0_linux_amd64.tar.gz
-          echo "a5b10e509bd845f0bc32a529f4e8165c021877f924ee6f6be66678039f75a761  kube-score.tar.gz" | sha256sum -c -
+          curl -sSL -o kube-score.tar.gz https://github.com/zegl/kube-score/releases/download/v1.20.0/kube-score_1.20.0_linux_amd64.tar.gz
+          echo "ff777b4b3f45905b2d22c69e93c57a7a170e61529a79d54e59cb95cca4bc2a55  kube-score.tar.gz" | sha256sum -c -
           tar xzf kube-score.tar.gz kube-score
           sudo mv kube-score /usr/local/bin/
 
@@ -170,11 +170,11 @@ jobs:
       - name: Install tfsec
         # tfsec publishes a raw unarchived binary at tfsec-linux-amd64 with no checksum
         # manifest entry for that exact asset; the tar.gz sibling asset is the only form
-        # the project publishes a SHA-256 for (tfsec_1.28.6_checksums.txt), so fetch
+        # the project publishes a SHA-256 for (tfsec_1.28.14_checksums.txt), so fetch
         # that instead.
         run: |
-          curl -sSL -o tfsec.tar.gz https://github.com/aquasecurity/tfsec/releases/download/v1.28.6/tfsec_1.28.6_linux_amd64.tar.gz
-          echo "8cbd8d64cbd1f25b38f33fa04db602466dade79e99c99dc9da053b5962d34014  tfsec.tar.gz" | sha256sum -c -
+          curl -sSL -o tfsec.tar.gz https://github.com/aquasecurity/tfsec/releases/download/v1.28.14/tfsec_1.28.14_linux_amd64.tar.gz
+          echo "329ae7f67f2f1813ebe08de498719ea7003c75d3ca24bb0b038369062508008e  tfsec.tar.gz" | sha256sum -c -
           tar xzf tfsec.tar.gz tfsec
           chmod +x tfsec && sudo mv tfsec /usr/local/bin/
 
