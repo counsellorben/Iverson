@@ -1,3 +1,4 @@
+using System.Collections;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text.Json;
@@ -176,7 +177,8 @@ public sealed class DriverRunner : IDriverRunner
             {
                 var buildCwd = ResolveCwd(spec.Cwd);
                 var buildResult = await RunProcessAsync(
-                    ResolveCommand(spec.BuildCommand, buildCwd), spec.BuildArgs!, buildCwd, ct);
+                    ResolveCommand(spec.BuildCommand, buildCwd), spec.BuildArgs!, buildCwd, ct,
+                    BuildStepEnvironment(Environment.GetEnvironmentVariables()));
 
                 if (buildResult is ProcessOutcome.ToolMissing missing)
                 {
@@ -207,7 +209,8 @@ public sealed class DriverRunner : IDriverRunner
 
             var cwd = ResolveCwd(spec.Cwd);
             var execResult = await RunProcessAsync(
-                ResolveCommand(spec.ExecCommand, cwd), execArgs, cwd, ct, BuildEnvironment(context));
+                ResolveCommand(spec.ExecCommand, cwd), execArgs, cwd, ct,
+                DriverRunEnvironment(Environment.GetEnvironmentVariables(), context));
 
             if (execResult is ProcessOutcome.ToolMissing execMissing)
             {
@@ -362,6 +365,54 @@ public sealed class DriverRunner : IDriverRunner
         ["IVERSON_DRIVER_WRONG_ACTING_TOKEN"] = context.WrongActingToken,
     };
 
+    // CSR round 12 §5.4: every build and driver process starts from an empty environment plus these names and
+    // prefixes, so the harness's own credentials (IVERSON_CLIENT_SECRET and the other variables it reads) never
+    // reach a build tool, a package script or a driver. A variable a toolchain needs and this list lacks is added
+    // here, with a comment naming the toolchain.
+    private static readonly string[] AllowedNames =
+        ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "USER", "SHELL", "M2_HOME", "VIRTUAL_ENV"];
+
+    private static readonly string[] AllowedPrefixes =
+        ["LC_", "DOTNET_", "NUGET_", "JAVA_HOME", "MAVEN_", "GO", "NODE_", "NPM_CONFIG_", "npm_config_", "PYTHON", "PIP_"];
+
+    // The drivers verify the compose stack's TLS server through these (docs/runbooks/client-conformance-matrix.md):
+    // the driver run gets them, the build steps do not.
+    private static readonly string[] CaTrustNames =
+        ["SSL_CERT_FILE", "SSL_CERT_DIR", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", "JAVA_TOOL_OPTIONS"];
+
+    internal static bool IsAllowed(string name) =>
+        AllowedNames.Contains(name, StringComparer.Ordinal)
+        || AllowedPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.Ordinal));
+
+    /// <summary>A build step's environment: the allowlisted variables of <paramref name="parent"/> and nothing else.</summary>
+    internal static Dictionary<string, string> BuildStepEnvironment(IDictionary parent)
+    {
+        var environment = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (DictionaryEntry entry in parent)
+        {
+            if (entry.Key is string name && entry.Value is string value && IsAllowed(name))
+                environment[name] = value;
+        }
+        return environment;
+    }
+
+    /// <summary>
+    /// A driver run's environment: a build step's, plus <paramref name="parent"/>'s CA-trust variables, plus
+    /// <see cref="BuildEnvironment"/>'s values for this <paramref name="context"/>.
+    /// </summary>
+    internal static Dictionary<string, string> DriverRunEnvironment(IDictionary parent, DriverContext context)
+    {
+        var environment = BuildStepEnvironment(parent);
+        foreach (var name in CaTrustNames)
+        {
+            if (parent[name] is string value)
+                environment[name] = value;
+        }
+        foreach (var (name, value) in BuildEnvironment(context))
+            environment[name] = value;
+        return environment;
+    }
+
     /// <summary>
     /// Turns a driver-relative executable path into an absolute one. <c>ProcessStartInfo</c>
     /// resolves a relative <c>FileName</c> against the CALLING process's current directory, not
@@ -393,7 +444,7 @@ public sealed class DriverRunner : IDriverRunner
 
     private static async Task<ProcessOutcome> RunProcessAsync(
         string command, IReadOnlyList<string> args, string cwd, CancellationToken ct,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string> environment)
     {
         var psi = new ProcessStartInfo
         {
@@ -405,11 +456,10 @@ public sealed class DriverRunner : IDriverRunner
         };
         foreach (var arg in args)
             psi.ArgumentList.Add(arg);
-        if (environment is not null)
-        {
-            foreach (var (name, value) in environment)
-                psi.Environment[name] = value;
-        }
+        // CSR round 12 §5.4: exactly the given environment, nothing inherited (see AllowedNames).
+        psi.Environment.Clear();
+        foreach (var (name, value) in environment)
+            psi.Environment[name] = value;
 
         using var process = new Process { StartInfo = psi };
 
