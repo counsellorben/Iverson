@@ -34,7 +34,7 @@ stages:
 # read this file, so these pins are bumped by hand.
 helm-lint:
   stage: validate
-  image: alpine/helm:3.15.4@sha256:105741fa6621ed9a3ea944066de78bb27d4b9bb93a56ce8e7cb4d621e1e4bbf2
+  image: alpine/helm:3.22.1@sha256:8191701ad1f82ee3695c87211fcbfe6d7b1bb7df92ac1c8de9ccdb0995a6a2c1
   extends: .rules-deploy-changes
   script:
     - helm dependency build Iverson.Server/deploy/helm/iverson
@@ -54,7 +54,7 @@ helm-lint:
 
 helm-template-kubeconform:
   stage: validate
-  image: alpine/helm:3.15.4@sha256:105741fa6621ed9a3ea944066de78bb27d4b9bb93a56ce8e7cb4d621e1e4bbf2
+  image: alpine/helm:3.22.1@sha256:8191701ad1f82ee3695c87211fcbfe6d7b1bb7df92ac1c8de9ccdb0995a6a2c1
   extends: .rules-deploy-changes
   before_script:
     - apk add --no-cache curl
@@ -85,7 +85,7 @@ helm-template-kubeconform:
 
 security-audit:
   stage: validate
-  image: alpine/helm:3.15.4@sha256:105741fa6621ed9a3ea944066de78bb27d4b9bb93a56ce8e7cb4d621e1e4bbf2
+  image: alpine/helm:3.22.1@sha256:8191701ad1f82ee3695c87211fcbfe6d7b1bb7df92ac1c8de9ccdb0995a6a2c1
   extends: .rules-deploy-changes
   before_script:
     - apk add --no-cache curl
