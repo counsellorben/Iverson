@@ -2,13 +2,13 @@
 
 **Amends:** `docs/specs/2026-10-26-csr-round12-supply-chain-design.md` (the parent) §4.1, §4.2 and §4.5. The parent carries a pointer to this spec at each corrected line.
 **Trigger:** rollout step 2's helm check (parent §6 step 2). GitHub's `dependabot` check on `main` @ `dbb1ffe1` failed with `The property '#/registries/<name>/' of type object did not match one or more of the required schemas`, once for each of the eight anonymous `helm-registry` entries. An invalid file is refused whole.
-**Base:** `main` @ `8b273b52`. That interim commit removed the `registries:` block and the three `registries: "*"` lines, so the file is valid again (its `dependabot` check passes) and the helm jobs fail on `egress not allowlisted` as they did before the parent.
+**Base:** `main` @ `8b273b52`. That interim commit removed the `registries:` block and the three `registries: "*"` lines, so the file is valid again (its `dependabot` check passes). At `8b273b52` all three helm jobs report `success`, but the operators job logs `egress not allowlisted` for its six chart hosts (10 each) and opens no pull request (run 40543040473), while the kind job, with no registry declared, reached `docs.tigera.io` and `kubernetes-sigs.github.io` and opened #233 (`tigera-operator` v3.33.0) and #236 (`metrics-server` 3.14.0) (run 40543039603), both since merged (VA 13).
 
 ## Decisions (user, 2026-10-27)
 
 1. **Interim fix first** (`8b273b52`, pushed), then the real fix goes through a spec.
 2. **Each registry carries a literal dummy username and password** (`x`/`x`), not a secret: probed below. A secret-backed password would need a Dependabot secret again, and a job fails when the secret is absent (VA 3).
-3. **`tigera-operator` stays in the kind stub,** Dependabot ignores it, and `ci/pins.yaml` tracks it (option 1 of 3). Its chart repository refuses any basic auth (VA 6), and an anonymous registry is invalid (VA 1).
+3. **Dependabot tracks `tigera-operator` with no registry for its host** (CDR-1 §3.1, option B). `docs.tigera.io` refuses any basic auth (VA 6) and an anonymous registry is invalid (VA 1), so it cannot be declared; the kind job reaches it undeclared (VA 13). Its first bump, #233 (v3.33.0), is merged.
 4. **This amendment is its own spec,** so its review covers this change only; the parent gets pointer corrections.
 
 ## 1. Goals and non-goals
@@ -16,7 +16,7 @@
 **Goal:** the parent §4.1's intent, which never worked: the operators stub and kind stub `helm` jobs reach their chart repositories and open bump pull requests, with `.github/dependabot.yml` valid.
 
 **Non-goals:**
-- Bumping any chart. The rollout check only confirms the pull requests open. The parent's §6 step 2 names cnpg 0.29.1, Strimzi 1.3.0 and StarRocks 1.11.8, and the new `tigera-operator` row reports v3.33.0.
+- Bumping any chart. The rollout check only confirms the pull requests open. The parent's §6 step 2 names cnpg 0.29.1, Strimzi 1.3.0 and StarRocks 1.11.8.
 - The umbrella job's 60 `could not find protocol handler for: file` errors for its `file://` subcharts. They occur with and without the registries (VA 9) and were already in the parent's VA 26.
 
 ## 2. Design
@@ -37,65 +37,43 @@ The top-level `registries:` block returns with eight `helm-registry` entries. Ea
 | `metrics-server` | `https://kubernetes-sigs.github.io/metrics-server/` |
 
 There is no Calico (`docs.tigera.io`) entry. The comment above the block replaces `8b273b52`'s interim comment and says:
-- a registry declaration is what allowlists a host;
+- a registry declaration allowlists its host (some hosts, `docs.tigera.io` and `kubernetes-sigs.github.io` among them, are reachable without one, VA 13);
 - GitHub rejects a `helm-registry` without credentials, and these repositories are public and ignore the dummy pair;
 - `cloudnative-pg.github.io` redirects to a host that needs its own entry;
-- `docs.tigera.io` refuses basic auth, so `ci/pins.yaml` tracks `tigera-operator`.
+- `docs.tigera.io` refuses basic auth, so it has no entry; the kind job reaches it undeclared.
 
 The stub's `cloudnative-pg` repository URL stays `cloudnative-pg.github.io`. Terraform installs from that field (`terraform/modules/operators/main.tf:12,148`), so the redirect target gets a registry entry instead.
 
-The three `helm` entries (the umbrella, the operators stub and the kind stub) regain `registries: "*"`, as the parent §4.1 had them. The operators entry's comment again reads "its own entry, with the registries". The kind entry gains:
-
-```yaml
-    # docs.tigera.io refuses the registry's basic auth (see registries above); ci/pins.yaml tracks tigera-operator.
-    ignore:
-      - dependency-name: "tigera-operator"
-```
+The three `helm` entries (the umbrella, the operators stub and the kind stub) regain `registries: "*"`, as the parent §4.1 had them. The operators entry's comment again reads "its own entry, with the registries". The kind entry gets nothing else: no `ignore`, so Dependabot looks up `tigera-operator` at `docs.tigera.io` without credentials (VA 13).
 
 Every other entry is unchanged.
 
 ### 2.2 `ci/pins.yaml`
 
-A new row, placed after `kindest-node` (the other kind rows) and preceded by a two-line comment giving the reason:
-
-```yaml
-- name: tigera-operator
-  source: github-release projectcalico/calico
-  locations:
-    - file: Iverson.Server/deploy/kind/versions/Chart.yaml
-      regex: '- name: tigera-operator\n    version: (v[0-9.]+)\n'
-```
-
-The regex spans the dependency's `name` and `version` lines, so it matches only `tigera-operator`'s version, not `metrics-server`'s (VA 7). `setup.sh` and `setup.ps1` keep reading the version from the stub (`setup.sh:41`, `setup.ps1:40`). The pin stays at v3.32.2.
+No change (CDR-1 §3.1, option B): `tigera-operator` stays a Dependabot dependency, and its version stays in the kind stub, where `setup.sh:41` and `setup.ps1:40` read it.
 
 ### 2.3 Dependents
 
-- **`Iverson.Server/deploy/kind/versions/Chart.yaml`:** its header comment (lines 1–4) says both charts are "pinned here so Dependabot's helm ecosystem proposes their bumps". It gains that `tigera-operator`'s bumps come from the `ci/pins.yaml` row instead.
 - **`docs/runbooks/csr12-supply-chain.md`, rollout step 2 item 3:**
-  - it states that the three helm jobs succeed and open the stub bumps, as now;
-  - it reads the verdict from GitHub's `dependabot` check suite on `main`'s head commit, with the `gh api` commands of VA 2, instead of the **Insights** path, which returned 404 for the user;
-  - it notes that a `Pin behind: tigera-operator` issue comes from pin freshness, not Dependabot.
+  - it states §3's rollout checks: no `egress not allowlisted` line except the umbrella's `charts` ones, and the stub bumps opened or current;
+  - it reads the verdict from GitHub's `dependabot` check suite on `main`'s head commit, with the `gh api` commands of VA 2, instead of the **Insights** path, which returned 404 for the user.
 - **The parent spec,** each correction ending with a pointer to this spec:
   - §4.1's registries bullet (line 135);
-  - VA 27;
-  - §4.2's "its own Dependabot `helm` entry with the registries";
-  - §4.5's row list, which gains `tigera-operator`.
+  - VA 27.
 - **The parent plan's row 27** repeats VA 27. It is corrected when this amendment's plan is written.
 
 ## 3. Testing and verification
 
 - **Config:** GitHub's `dependabot` check on the pushed commit passes; the throwaway repository has no stand-in for this. Read it with VA 2's commands. A local schema check does not count: the public schema accepts the rejected form (VA 1).
-- **Pins:** `python3 ci/pins.py consistency` exits 0 and prints `ok tigera-operator v3.32.2`, and `python3 -m pytest -q ci/test_pins.py` passes (VA 7, 8).
 - **Rollout, on `main`:**
-  - the three helm jobs succeed;
+  - no `egress not allowlisted` line in the operators or kind job log, and none in the umbrella's except the 60 that name `charts` (its `file://` subcharts);
   - the operators job opens the cnpg, Strimzi and StarRocks bumps, plus aws-load-balancer-controller 1.9.2 (patch only, under the existing ignore rule);
-  - the kind job opens metrics-server's bump and logs `All versions of tigera-operator ignored`;
-  - the next pin-freshness run opens `Pin behind: tigera-operator`.
+  - the kind job finds `tigera-operator` v3.33.0 and `metrics-server` 3.14.0 current (#233 and #236 are merged) and opens no pull request.
 
 ## 4. Known issues / accepted as out of scope
 
 1. **The dummy credentials are sent** as basic auth to seven public chart hosts on every helm job. They are in the file, carry no access, and the hosts answer 200 (VA 4).
-2. **Dependabot cannot track Calico's chart.** Its index host refuses any `Authorization` header, and GitHub refuses a registry without one. The pin table tracks it weekly instead.
+2. **`docs.tigera.io` is reached undeclared.** Its index host refuses any `Authorization` header and GitHub refuses a registry without one, so it cannot be declared; the kind job reaches it without a declaration today (VA 13), for reasons GitHub does not document. If that stops, its lookups log `egress not allowlisted docs.tigera.io`, the job still reports `success` (item 3), and Calico bumps stop silently. Accepted by the user (counsellorben), 2026-10-27 (CDR-1 §3.1, option B).
 3. **A host that starts redirecting** (as `cloudnative-pg.github.io` does) silently drops its charts out of the helm job (`egress not allowlisted <host>` in the job log) until it gets a registry entry. The job still reports success (VA 5).
 
 ## Verified assumptions
@@ -139,14 +117,9 @@ Evidence gathered 2026-10-27. Probe commits are in the private throwaway reposit
    - `curl -u x:x` returns 403 `<Code>InvalidArgument</Code><Message>Unsupported Authorization Type</Message>`, served by Netlify in front of S3 (`x-amz-request-id`).
    - In-job (run 40546305887): `400 https://docs.tigera.io:443/calico/charts/index.yaml`, then "Error parsing Helm index".
    - The chart files are `github.com/projectcalico/calico` release assets (`tigera-operator-v3.33.0.tgz`).
-7. **The pin row works.**
-   - Built in a scratch worktree of `8b273b52`.
-   - `found()` (`ci/pins.py:93-105`, `re.findall(…, re.M)`) returns only `('…/kind/versions/Chart.yaml', 'v3.32.2')`.
-   - `consistency` exits 0 and prints `ok tigera-operator v3.32.2`.
-   - `newest('github-release projectcalico/calico', '.')` returns `v3.33.0`, which is stale against v3.32.2 once `norm` strips the `v`.
-   - `releases/latest` is `v3.33.0` (2026-10-01), the newest chart version in the index.
-8. **No test fixes the table's rows.** `python3 -m pytest -q ci/test_pins.py`: 29 passed with the row added.
-9. **The exact config, on copies of all three Iverson helm directories** (`c428e40`, from `git archive` of `8b273b52`), passes validation ("All changes look good"). Runs:
+7. *Withdrawn by CDR-1 §3.1, option B:* it verified the `ci/pins.yaml` `tigera-operator` row, which the design no longer has.
+8. *Withdrawn by CDR-1 §3.1, option B:* it ran `ci/test_pins.py` with that row.
+9. **The config as first proposed (with the kind entry's `tigera-operator` ignore, since dropped by CDR-1 §3.1, option B), on copies of all three Iverson helm directories** (`c428e40`, from `git archive` of `8b273b52`), passes validation ("All changes look good"). Runs:
 
    | Run | Entry | Result |
    |---|---|---|
@@ -158,5 +131,8 @@ Evidence gathered 2026-10-27. Probe commits are in the private throwaway reposit
 10. **Push protection does not scan for generic passwords.** Iverson's `secret_scanning_non_provider_patterns` is `disabled`, so `password: x` is not a push-protection pattern.
 11. **Nothing else describes the anonymous form.**
     - `command grep -rn -i 'helm-registry|anonymous|egress not allowlisted|registries'` over `docs/runbooks`, `ci`, `.github` and both stubs finds only `dependabot.yml`, plus `image-scan.yml:101` (an unrelated Docker Hub remark).
-    - The runbook's step 2 item 3 (`csr12-supply-chain.md:35-37`) and the kind stub's header comment are the only dependent texts (§2.3).
-12. **The stub still pins the bumps the rollout expects:** `cloudnative-pg 0.29.0`, `strimzi-kafka-operator 1.1.0`, `operator 1.11.5`, `tigera-operator v3.32.2`, `metrics-server 3.9.0`.
+    - The runbook's step 2 item 3 (`csr12-supply-chain.md:35-37`) is the only dependent text (§2.3).
+12. **The stubs pin what the rollout expects.** The operators stub pins `cloudnative-pg 0.29.0`, `strimzi-kafka-operator 1.1.0` and `operator 1.11.5`, unchanged on `origin/main` @ `21aaf096`. The kind stub there pins `tigera-operator v3.33.0` and `metrics-server 3.14.0` (#233 and #236 merged 2026-10-27).
+13. **Some hosts are reachable undeclared, and a declared registry's credentials go only to its own host.**
+    - At `8b273b52` (no `registries:`), Iverson's kind run 40543039603 logged `200 https://docs.tigera.io` ×3 and `200 https://kubernetes-sigs.github.io` ×2, with no `egress not allowlisted` or `authenticating` line, and opened #233 and #236. In the same commit's operators run 40543040473, six hosts were blocked (`egress not allowlisted`, 10 each): `aws.github.io`, `cloudnative-pg.github.io`, `kubernetes.github.io`, `sigstore.github.io`, `starrocks.github.io`, `strimzi.io`.
+    - Probe `a9fe1d1` (the eight registries and no `ignore`): validation "All changes look good"; kind run 40557957369 (`success`): `GET https://docs.tigera.io…/index.yaml` → `200` with no `authenticating helm registry request (host: docs.tigera.io)` line (the only one is for `kubernetes-sigs.github.io`), `Found latest version v3.33.0 for tigera-operator`, and the bump PR opened.
