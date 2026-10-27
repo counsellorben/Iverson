@@ -97,7 +97,8 @@ readback=$(gh api "repos/${repo}/rulesets/${id}" --jq '"enforcement=\(.enforceme
 echo "read back: ${readback}"
 
 if [[ $activate = 1 ]]; then
-  [[ $readback == *"current_user_can_bypass=always "* && $readback == *"bypass_actors=RepositoryRole:5:always"* ]] || {
+  # bypass_actors= is the read-back's last field, so the tail match refuses any extra bypass actor.
+  [[ $readback == *"current_user_can_bypass=always "* && $readback == *" bypass_actors=RepositoryRole:5:always" ]] || {
     echo "not activating: the read-back must show bypass_actors=RepositoryRole:5:always and current_user_can_bypass=always for the admin running this script" >&2
     exit 1
   }
