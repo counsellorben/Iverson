@@ -248,9 +248,10 @@ python3 Iverson.Server/deploy/scripts/mint_acting_user_token.py --target compose
 
 ## 7. GitLab image pins
 
-`.gitlab-ci.yml` pins every job image by digest. Dependabot does not read that file, so these pins
-are bumped by hand, and GitLab's tool versions (for example govulncheck's Go toolchain) can lag
-the GitHub workflows, which float.
+`.gitlab-ci.yml` pins every job image by digest. Dependabot does not read that file; it raises the
+same images in `ci/gitlab-images/Dockerfile` (CSR round 12 §4.3), and `ci/pins.py consistency` fails until
+each bump is copied into `.gitlab-ci.yml` (`csr12-supply-chain.md` §4). GitLab's tool versions (for example
+govulncheck's Go toolchain) can still lag the GitHub workflows, which float.
 
 ## 8. SDK behaviour changes
 
