@@ -1,6 +1,6 @@
 # CSR round 12, supply chain amendment: Dependabot helm registries — design
 
-**Amends:** `docs/specs/2026-10-26-csr-round12-supply-chain-design.md` (the parent) §4.1, §4.2 and §4.5. The parent carries a pointer to this spec at each corrected line.
+**Amends:** `docs/specs/2026-10-26-csr-round12-supply-chain-design.md` (the parent) §4.1 (its registries bullet) and VA 27. The parent carries a pointer to this spec at each corrected line.
 **Trigger:** rollout step 2's helm check (parent §6 step 2). GitHub's `dependabot` check on `main` @ `dbb1ffe1` failed with `The property '#/registries/<name>/' of type object did not match one or more of the required schemas`, once for each of the eight anonymous `helm-registry` entries. An invalid file is refused whole.
 **Base:** `main` @ `8b273b52`. That interim commit removed the `registries:` block and the three `registries: "*"` lines, so the file is valid again (its `dependabot` check passes). At `8b273b52` all three helm jobs report `success`, but the operators job logs `egress not allowlisted` for its six chart hosts (10 each) and opens no pull request (run 40543040473), while the kind job, with no registry declared, reached `docs.tigera.io` and `kubernetes-sigs.github.io` and opened #233 (`tigera-operator` v3.33.0) and #236 (`metrics-server` 3.14.0) (run 40543039603), both since merged (VA 13).
 
@@ -56,7 +56,8 @@ No change (CDR-1 §3.1, option B): `tigera-operator` stays a Dependabot dependen
 
 - **`docs/runbooks/csr12-supply-chain.md`, rollout step 2 item 3:**
   - it states §3's rollout checks: no `egress not allowlisted` line except the umbrella's `charts` ones, and the stub bumps opened or current;
-  - it reads the verdict from GitHub's `dependabot` check suite on `main`'s head commit, with the `gh api` commands of VA 2, instead of the **Insights** path, which returned 404 for the user.
+  - it reads the config verdict with VA 2's commands, on the commit that changed `.github/dependabot.yml` (the `dependabot` suite exists only on such a commit), instead of the **Insights** path, which returned 404 for the user;
+  - it reads the job verdicts from the three helm update runs that follow that push: `gh run list --repo counsellorben/Iverson --event dynamic --limit 40 --json databaseId,displayTitle,conclusion,createdAt --jq '.[] | select(.displayTitle | startswith("helm in"))'`; for each run, `gh run view <id> --repo counsellorben/Iverson --log | grep -o 'egress not allowlisted [^ ]*' | sort | uniq -c`; the operators run's `Submitting … pull request for creation` lines and the kind run's `No update possible for tigera-operator v3.33.0` and `… metrics-server 3.14.0`; and the opened PRs, `gh pr list --repo counsellorben/Iverson --state all --json number,state,headRefName --jq '.[] | select(.headRefName | startswith("dependabot/helm/"))'`.
 - **The parent spec,** each correction ending with a pointer to this spec:
   - §4.1's registries bullet (line 135);
   - VA 27.
@@ -85,7 +86,7 @@ Evidence gathered 2026-10-27. Probe commits are in the private throwaway reposit
    - Probe `c5b76d1` (the same form) failed the same way.
    - The SchemaStore `dependabot-2.0.json` validates Iverson's pre-fix file with 0 errors.
    - The docs say "Declare a registry … even if it allows anonymous access".
-2. **Where the verdict is.** `gh api repos/<o>/<r>/commits/<sha>/check-suites --jq '.check_suites[] | select(.app.slug=="dependabot")'`, then `gh api repos/<o>/<r>/check-suites/<id>/check-runs --jq '.check_runs[].output.summary'`. The **Insights → Dependency graph → Dependabot** page (`/network/updates`) returned 404.
+2. **Where the verdict is.** `gh api repos/<o>/<r>/commits/<sha>/check-suites --jq '.check_suites[] | select(.app.slug=="dependabot")'`, then `gh api repos/<o>/<r>/check-suites/<id>/check-runs --jq '.check_runs[].output.summary'`. The **Insights → Dependency graph → Dependabot** page (`/network/updates`) returned 404. The `dependabot` suite exists only on a commit that changes `.github/dependabot.yml` and holds one check run, `Dependabot config file validation` (suites 109889628759 on `8b273b52` and 109939808298 on `d616995d`); a merge such as `21aaf096` carries only `github-actions` suites. The update jobs are separate Actions runs (`gh run list --event dynamic`, titled `helm in <directory> - Update #…`), and their logs carry the `egress not allowlisted` lines and the per-chart outcomes (runs 40560916404, 40560914422 and 40560912616 on `d616995d`).
 3. **Credential forms**, each a probe push read through VA 2's commands:
 
    | Form | Validation | Job |
