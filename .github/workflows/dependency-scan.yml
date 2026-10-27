@@ -24,7 +24,8 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: "10.0.x"
-      - run: dotnet restore Iverson.slnx
+      # CSR round 12 §4.6: locked to the committed packages.lock.json files.
+      - run: dotnet restore Iverson.slnx --locked-mode
       - run: dotnet list Iverson.slnx package --vulnerable --include-transitive 2>&1 | tee scan.log
       - run: grep -q "has the following vulnerable packages" scan.log && exit 1 || exit 0
 

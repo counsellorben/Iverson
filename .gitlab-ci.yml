@@ -146,7 +146,8 @@ nuget-audit:
   image: mcr.microsoft.com/dotnet/sdk:10.0@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317
   extends: .rules-dependency-scan
   script:
-    - dotnet restore Iverson.slnx
+    # CSR round 12 §4.6: locked to the committed packages.lock.json files.
+    - dotnet restore Iverson.slnx --locked-mode
     - dotnet list Iverson.slnx package --vulnerable --include-transitive 2>&1 | tee scan.log
     - grep -q "has the following vulnerable packages" scan.log && exit 1 || exit 0
 
@@ -234,7 +235,10 @@ dotnet-build-test:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
   script:
-    - dotnet build Iverson.slnx
+    # CSR round 12 §4.6: restore locked to the committed packages.lock.json files, then build without
+    # a second, unlocked restore.
+    - dotnet restore Iverson.slnx --locked-mode
+    - dotnet build Iverson.slnx --no-restore
     - dotnet test Iverson.slnx --filter "Category!=Integration"
 
 typescript-sdk-build-test:
