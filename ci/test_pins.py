@@ -6,6 +6,7 @@ No network: the sources read recorded responses (trimmed copies of the real ones
 and aws are fakes that record their arguments."""
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -82,20 +83,32 @@ def test_the_repositorys_table_is_consistent():
     assert pins.consistency(rows, ROOT) == []
 
 
-@pytest.mark.parametrize("row, path, old, new", [
-    ("istio", "Iverson.Server/deploy/terraform/modules/operators/charts/istio/ztunnel/Chart.yaml", "version: 1.31.2", "version: 1.31.3"),
-    ("gitlab-image-node", ".gitlab-ci.yml", "image: node:22@sha256:0e5f", "image: node:22@sha256:1e5f"),
-    ("pip-audit", ".gitlab-ci.yml", "pip-audit==2.10.1", "pip-audit==2.10.0"),
+@pytest.mark.parametrize("row, path", [
+    ("istio", "Iverson.Server/deploy/terraform/modules/operators/charts/istio/ztunnel/Chart.yaml"),
+    ("gitlab-image-node", ".gitlab-ci.yml"),
+    ("pip-audit", ".gitlab-ci.yml"),
 ])
-def test_consistency_catches_a_one_location_change_in_the_repositorys_table(tmp_path, row, path, old, new):
+def test_consistency_catches_a_one_location_change_in_the_repositorys_table(tmp_path, row, path):
+    # The pinned value is read from the copied files, so a legitimate version bump cannot break this test.
     rows = [r for r in pins.load_table(open(pins.TABLE).read()) if r["name"] == row]
     for loc in rows[0]["locations"]:
         write(tmp_path, loc["file"], open(os.path.join(ROOT, loc["file"])).read())
+    loc = next(l for l in rows[0]["locations"] if l["file"] == path)
     text = open(os.path.join(tmp_path, path)).read()
-    assert text.count(old) >= 1
-    write(tmp_path, path, text.replace(old, new, 1))
+    m = re.search(loc["regex"], text, re.M)
+    old = m[1]
+    new = old[:-1] + ("0" if old[-1] != "0" else "1")
+    write(tmp_path, path, text[:m.start(1)] + new + text[m.end(1):])
     (error,) = pins.consistency(rows, str(tmp_path))
     assert f"{row}: the locations disagree" in error
+
+
+def synthetic_inputs(root):
+    """The two repository files newest() reads, as stubs: the values the Fakes below expect (CNPG chart 0.29.0,
+    EKS 1.35) live here, so the repository's own versions can move without breaking these tests."""
+    write(root, pins.OPERATOR_STUB, "dependencies:\n  - name: cloudnative-pg\n    version: 0.29.0\n"
+          "    repository: https://cloudnative-pg.github.io/charts\n")
+    write(root, pins.EKS_VARIABLES, 'variable "kubernetes_version" {\n  type    = string\n  default = "1.35"\n}\n')
 
 
 # --- sources, against recorded responses ---------------------------------------------------------------------
@@ -182,9 +195,10 @@ class Fakes:
     ("cnpg-default cloudnative-pg", "18.4-system-trixie"),
     ("eks-addon vpc-cni", "v1.23.10-eksbuild.2"),
 ])
-def test_each_source_reads_the_newest_version(source, expected):
+def test_each_source_reads_the_newest_version(source, expected, tmp_path):
+    synthetic_inputs(tmp_path)
     fakes = Fakes()
-    assert pins.newest(source, ROOT, http=fakes.http, run=fakes.run) == expected
+    assert pins.newest(source, str(tmp_path), http=fakes.http, run=fakes.run) == expected
 
 
 def test_the_kindest_node_series_keeps_the_newest_patch_of_its_own_minor_across_pages():
@@ -226,8 +240,7 @@ FRESH_TABLE = """- name: kind
 def fresh_root(tmp_path):
     write(tmp_path, "pom.txt", "dc 13.0.0\n")
     write(tmp_path, "eks.txt", "vpc-cni v1.23.1-eksbuild.1\n")
-    write(tmp_path, os.path.relpath(os.path.join(ROOT, pins.EKS_VARIABLES), ROOT),
-          open(os.path.join(ROOT, pins.EKS_VARIABLES)).read())
+    synthetic_inputs(tmp_path)
     return tmp_path
 
 
@@ -278,3 +291,4 @@ def test_with_the_aws_role_the_eks_rows_are_checked(fresh_root):
 def test_dependabot_rows_never_reach_a_source_or_an_issue(fresh_root):
     errors, fakes = run_freshness(fresh_root, "v0.33.0")
     assert not any("dependency-check-maven" in " ".join(c) for c in fakes.calls)
+    assert errors == 0  # a row that reached newest() would raise, be counted and be swallowed
