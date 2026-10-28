@@ -17,6 +17,6 @@
     <PackageReference Include="MySqlConnector" Version="2.6.2" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.14" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
-    <PackageReference Include="Polly.Core" Version="8.7.0" />
+    <PackageReference Include="Polly.Core" Version="8.9.0" />
   </ItemGroup>
 </Project>
