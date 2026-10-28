@@ -42,9 +42,9 @@
       },
       "Qdrant.Client": {
         "type": "Direct",
-        "requested": "[1.18.1, )",
-        "resolved": "1.18.1",
-        "contentHash": "eBwFLihGMvN02/jr/BNdcop2XmtA10y8VMOclVZ7K2H8yheAhl7jbkf7I8e4X3RYpT+cAxgcalP4xmOhgs4KJg==",
+        "requested": "[1.20.0, )",
+        "resolved": "1.20.0",
+        "contentHash": "SfkTdO2prx0VNzyBnopACw9yuBhpckr6u2DD9wHr91nXjPWIXA+/MmkLGUWFSUiDOD1DlMxaDcmk7//kIId1MA==",
         "dependencies": {
           "Google.Protobuf": "3.31.0",
           "Grpc.Net.Client": "2.71.0"
