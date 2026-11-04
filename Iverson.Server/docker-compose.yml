@@ -291,7 +291,7 @@ services:
       - zookeeper_logs:/var/lib/zookeeper/log
 
   kafka:
-    image: confluentinc/cp-kafka:7.6.0@sha256:24cdd3a7fa89d2bed150560ebea81ff1943badfa61e51d66bb541a6b0d7fb047
+    image: confluentinc/cp-kafka:8.4.0@sha256:dfc55ae0803ae960c7aaa4f669f74fc884938b6d8e9ef2f9107078b49628642f
     container_name: iverson-kafka
     init: true
     restart: unless-stopped
