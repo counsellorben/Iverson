@@ -169,7 +169,7 @@ jobs:
                 *) echo "::error::the registry denied the lookup of $REF $try times and the packages API answered $status for $NAME; not building"; exit 1 ;;
               esac ;;
           esac
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         if: steps.published.outputs.digest != ''
         with:
           # The installer's own bootstrap release, which it checks against a SHA-256 in the pinned
@@ -324,7 +324,7 @@ jobs:
           current=$(printf '%s' "$manifest" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("digest", ""))')
           [ "$current" = "$DIGEST" ] ||
             { echo "::error::$TAG_REF now names ${current:-no digest}, not the $DIGEST this run built; not signing"; exit 1; }
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         if: steps.digest.outputs.skip == 'false'
         with:
           # The installer's own bootstrap release, which it checks against a SHA-256 in the pinned
