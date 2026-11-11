@@ -1,6 +1,6 @@
 # Iverson.Events is a class library — it is packaged into Iverson.Api at build time.
 # This Dockerfile builds just the library for standalone artifact inspection or packaging.
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0@sha256:65f3c7c6a25a239ab3e6719f2896147e7b68242ff2d8818dd70498bde6ef8bea AS build
 WORKDIR /src
 
 # CSR round 12 §4.6: the lock file goes beside the .csproj for the locked restore.
